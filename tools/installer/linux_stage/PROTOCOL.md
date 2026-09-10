@@ -11,6 +11,16 @@ private initramfs. It registers descriptors and strings, opens ep1/ep2 and creat
 The service continuously consumes ep0 events, waits for ENABLE, and exits on
 disconnection/disable or malformed protocol. Unsupported control requests stall.
 
+Startup ordering was checked against the actual device kernel's
+`drivers/usb/gadget/function/f_fs.c`: the strings write creates endpoint files,
+sets `FFS_ACTIVE`, then invokes the ready callback (lines 302–318 in the reviewed
+tree). `ffs_epfile_open` (1000–1021) checks ACTIVE and exclusive ownership, then
+returns; it does not wait for USB enable. The enable wait is in endpoint I/O,
+which this service delays until its ep0 ENABLE event. The android gadget ready
+callback only marks the function opened when configuration is disabled.
+Consequently opening ep1/ep2 and creating the marker before init enables USB does
+not introduce a circular wait. This is source validation, not a hardware test.
+
 The ABI uses the packed legacy v1 FunctionFS header supported in this device's
 Linux 3.18 tree (`include/uapi/linux/usb/functionfs.h`), with FS and HS descriptors,
 a vendor interface and bulk OUT/IN endpoints. Actual addresses can be remapped;
