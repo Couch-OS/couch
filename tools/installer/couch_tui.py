@@ -255,6 +255,30 @@ class Terminal:
             raise EOFError
         return answer.strip()
 
+    def browse_releases(self):
+        from release_discovery import discover, inspect_manifest
+        channel = self.ask("Release channel [stable/alpha, default stable]: ") or 'stable'
+        version = self.ask("Exact version (for example v0.1.0-alpha.1), or Enter to browse: ") or None
+        choices = discover(channel, version)
+        if not choices:
+            self.line("No published releases with verified manifest metadata match this selection.")
+            return
+        for index, item in enumerate(choices, 1):
+            self.line(f"  {index}  {item.tag} · {item.channel}")
+        answer = self.ask("Choose a release number to inspect its metadata, or Enter to cancel: ")
+        if not answer:
+            return
+        if not answer.isdecimal() or not 1 <= int(answer) <= len(choices):
+            raise core.InstallError("Choose a listed release number")
+        selected = choices[int(answer)-1]
+        metadata = inspect_manifest(selected)
+        self.release_selection = selected
+        self.line(f"Pinned selection: {selected.tag} · manifest SHA-256 {selected.sha256}")
+        self.line(f"Manifest lists {len(metadata['files'])} files; publisher installable flag: {metadata['installable']}.")
+        self.line("Only release metadata was downloaded. No installer or OS payload was downloaded or executed.")
+        self.line("GitHub checksums identify these bytes; they are not an independently verified publisher signature.")
+        self.line("Planned installation uses WiFi for image transfer and USB for bootstrap/recovery. Public flashing remains disabled.")
+
     def run(self, adapter, simulation=False):
         self.line(LOGO)
         self.line("Couch installer · Linux")
@@ -267,20 +291,25 @@ class Terminal:
             if private:
                 self.line("  3  Switch install / restore")
                 self.line("  4  Resume existing journal: " + ("YES" if adapter.args.resume else "NO"))
+            if not private and not simulation:
+                self.line("  r  Browse GitHub releases (metadata only)")
             self.line("  q  Quit")
             try:
-                choice = self.ask("Choose [1/2/3/4/q]: " if private else "Choose [1/2/q]: ").lower()
+                choice = self.ask("Choose [1/2/3/4/q]: " if private else "Choose [1/2/q]: " if simulation else "Choose [1/2/r/q]: ").lower()
                 if private and choice in ("3","4"):
                     (adapter.toggle_restore if choice == "3" else adapter.toggle_resume)()
                     continue
                 if choice in ('q', 'quit'):
                     return 0
+                if choice == 'r' and not private and not simulation:
+                    self.browse_releases()
+                    continue
                 if choice == '2':
                     self.line("Connect the remote by USB and reboot it. Ctrl-C stops observation.")
                     adapter.observe(self.writer)
                     continue
                 if choice != '1':
-                    self.line("Choose 1, 2 or q.")
+                    self.line("Choose a listed option.")
                     continue
                 self.line("Verifying release files and planning inputs; this may take a moment. No USB session is opened.")
                 plan = adapter.plan()
