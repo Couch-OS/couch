@@ -4,7 +4,7 @@ This is an offline-built throughput experiment, not an installer or an approved
 boot image. No command writes storage. No host helper resets USB, changes its
 configuration, detaches kernel drivers, flashes, or boots the device.
 
-`probe/` builds a dependency-free Rust static ARMv7 musl binary named
+`probe/` builds a Rust static ARMv7 musl binary named
 `couch-installer-probe`. Run `/bin/couch-installer-probe /dev/ffs-couch` in the
 private initramfs. It registers descriptors and strings, opens ep1/ep2 and creates
 `/tmp/couch-probe.ready`. Init may then enable the legacy android_usb gadget.
@@ -40,6 +40,8 @@ Malformed requests terminate the service; there is no recovery/retry protocol.
 | 1 | 1–67,108,864 | Send that many RAM bytes, all `0xa5` |
 | 2 | 1–67,108,864 | Receive/check RAM pattern, then send empty acknowledgment |
 | 3 | 1 | Hash fixed recovery partition, return 64 ASCII hex bytes + u64 elapsed nanoseconds |
+| 4 | 1–16,384 | USB-only JSON Wi-Fi/TLS provisioning payload; empty acknowledgment |
+| 5 | 0 | USB-only bounded JSON Wi-Fi status/IP |
 
 RAM streaming uses a fixed 64 KiB buffer. Hash command accepts no filename or
 partition name: it checks `/sys/class/block/mmcblk0p9/size` equals 32768 sectors,
@@ -56,6 +58,7 @@ Build on Ollie, not the Mac. With Rust and the ARM musl standard library install
 
 ```sh
 cargo test --manifest-path probe/Cargo.toml
+CC_armv7_unknown_linux_musleabihf=arm-linux-gnueabihf-gcc \
 CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=rust-lld \
   cargo build --manifest-path probe/Cargo.toml --release \
   --target armv7-unknown-linux-musleabihf
@@ -73,4 +76,54 @@ Optional `--hash-recovery` requests the fixed read-only SHA benchmark. Reports
 include transfer direction, bytes, elapsed seconds and measured MiB/s. Each USB
 operation has a 30-second timeout; a failure aborts without reset or retry. This
 prototype does not yet benchmark flash writes, identity transport, compression,
-Wi-Fi, or installation. No physical throughput has been measured by its tests.
+or installation. No physical throughput has been measured by its tests.
+
+
+## Wi-Fi primary transport prototype
+
+`wifi_benchmark.py` uses USB only to identify the exact service, provision its
+RAM-only network/TLS session and obtain its DHCP address. Both large RAM transfers
+then use TLS over Wi-Fi. Optional recovery SHA runs locally and returns only its
+hash and timing. The TLS service survives subsequent USB disconnection; USB
+re-enumeration/reprovisioning requires a new RAM-stage boot.
+
+The host prompts for SSID and password rather than accepting passwords in process
+arguments. Scope is WPA2-Personal (8–63 printable ASCII passphrase) or explicitly
+selected open networks; WPA3-only, enterprise authentication and captive portals
+are unsupported. SSID is encoded as at most 32 bytes of hex. WPA2 PSK is derived
+on the host using the standard PBKDF2 construction, so no raw network text is
+interpolated into configuration. Neither SSID nor password is transmitted over
+LAN by the installer protocol or logged by the helpers.
+
+An ephemeral EC P-256 certificate, PKCS#8 key and random 32-byte token are generated
+in a private temporary host directory. The key, token and network configuration
+are sent only over the selected physical USB link. Rust validates all fields,
+certificate/key and bounds before atomically renaming a mode-0600 tmpfs WPA
+configuration and `/tmp/couch-wifi.request`. Init uses
+`/tmp/couch-wpa_supplicant.conf`, updates `/tmp/couch-wifi.status` and writes
+`/tmp/couch-wifi.ip` after DHCP. No credentials or TLS keys are stored on eMMC.
+
+LAN traffic uses **TLS 1.3 only** through rustls with its ring crypto provider.
+The Python client trusts only the freshly generated certificate, checks the
+`couch-probe` hostname and requires ordinary certificate verification. The server
+requires the USB-issued token inside TLS before accepting any command, comparing
+it with the vetted subtle constant-time helper. LAN accepts only operations 0–3,
+at most 16 requests per connection, with 30-second socket I/O timeouts. USB
+provisioning operations cannot be invoked over LAN. Each data request remains
+bounded to 64 MiB with 64 KiB buffering. This measures secure transport; it does
+not authorize any installer partition write or publish a public release.
+
+```sh
+python3 wifi_benchmark.py --vid 0xVID --pid 0xPID --bus 1 --ports 2.1 \
+  --mib 32 --hash-recovery
+```
+
+Rust dependencies are locked; only ring's C implementation needs the ARM cross
+compiler, installed on Ollie. No AWS-LC, full Android NDK or new kernel build is
+required. Tests include actual loopback rustls handshakes rejecting an untrusted
+certificate and wrong session token, plus the known WPA2 derivation vector and
+credential injection/length validation. Loopback results are not device Wi-Fi
+throughput measurements.
+
+Official TLS API references: [rustls configuration](https://docs.rs/rustls/latest/rustls/struct.ConfigBuilder.html)
+and [ring provider](https://docs.rs/rustls/latest/rustls/crypto/ring/index.html).

@@ -1,4 +1,5 @@
 //! Read-only Linux 3.18 FunctionFS throughput prototype. No storage writer exists.
+mod wifi;
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
@@ -47,7 +48,10 @@ fn request(header: &[u8; 16]) -> io::Result<(u32, u64)> {
     }
     let op = u32::from_le_bytes(header[4..8].try_into().unwrap());
     let length = u64::from_le_bytes(header[8..].try_into().unwrap());
-    if !matches!((op, length), (0, 0) | (1..=2, 1..=MAX) | (3, 1)) {
+    if !matches!(
+        (op, length),
+        (0, 0) | (1..=2, 1..=MAX) | (3, 1) | (4, 1..=16384) | (5, 0)
+    ) {
         return Err(invalid("unsupported command or length"));
     }
     Ok((op, length))
@@ -128,6 +132,9 @@ fn run(root: &Path) -> io::Result<()> {
         let mut event = [0u8; 12];
         loop {
             if control.read_exact(&mut event).is_err() {
+                if wifi::active() {
+                    return;
+                }
                 std::process::exit(2);
             }
             match event[8] {
@@ -135,6 +142,9 @@ fn run(root: &Path) -> io::Result<()> {
                     flag.store(true, Ordering::Release);
                 }
                 1 | 3 => {
+                    if wifi::active() {
+                        return;
+                    }
                     std::process::exit(2);
                 }
                 4 => {
@@ -168,6 +178,17 @@ fn run(root: &Path) -> io::Result<()> {
                 response(&mut output, data.len() as u64)?;
                 output.write_all(&data)?;
             }
+            4 => {
+                let mut payload = vec![0; length as usize];
+                input.read_exact(&mut payload)?;
+                wifi::provision(&payload)?;
+                response(&mut output, 0)?;
+            }
+            5 => {
+                let data = wifi::status();
+                response(&mut output, data.len() as u64)?;
+                output.write_all(&data)?;
+            }
             _ => unreachable!(),
         }
     }
@@ -177,6 +198,12 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "/dev/ffs-couch".into());
     if let Err(error) = run(Path::new(&root)) {
+        if wifi::active() {
+            eprintln!("USB control ended; provisioned TLS benchmark remains available.");
+            loop {
+                thread::park();
+            }
+        }
         eprintln!("Probe stopped: {error}");
         std::process::exit(1);
     }

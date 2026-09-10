@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Explicit private USB RAM benchmark. No device-storage writes or reset commands."""
 import argparse
+from contextlib import contextmanager
 import struct
 import time
 
@@ -53,15 +54,8 @@ def benchmark(out, incoming, length, direction):
             'bytes': length, 'seconds': elapsed, 'MiB_per_second': length / 1048576 / elapsed}
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--bus', type=int, required=True)
-    parser.add_argument('--ports', required=True)
-    parser.add_argument('--vid', type=lambda n: int(n, 0), required=True)
-    parser.add_argument('--pid', type=lambda n: int(n, 0), required=True)
-    parser.add_argument('--mib', type=int, default=32, choices=range(1, 65))
-    parser.add_argument('--hash-recovery', action='store_true')
-    args = parser.parse_args()
+@contextmanager
+def usb_probe(args):
     import usb.core
     import usb.util
     ports = tuple(int(n) for n in args.ports.split('.'))
@@ -97,6 +91,23 @@ def main():
         response(incoming, 4)
         if read_exact(incoming, 4) != b'CBP1':
             raise ValueError('Not the read-only probe protocol')
+        yield out, incoming
+    finally:
+        if claimed is not None:
+            usb.util.release_interface(dev, claimed)
+        usb.util.dispose_resources(dev)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--bus', type=int, required=True)
+    parser.add_argument('--ports', required=True)
+    parser.add_argument('--vid', type=lambda n: int(n, 0), required=True)
+    parser.add_argument('--pid', type=lambda n: int(n, 0), required=True)
+    parser.add_argument('--mib', type=int, default=32, choices=range(1, 65))
+    parser.add_argument('--hash-recovery', action='store_true')
+    args = parser.parse_args()
+    with usb_probe(args) as (out, incoming):
         for direction in (1, 2):
             print(benchmark(out, incoming, args.mib * 1048576, direction), flush=True)
         if args.hash_recovery:
@@ -106,10 +117,6 @@ def main():
             result = read_exact(incoming, 72)
             print({'partition': 'recovery', 'sha256': result[:64].decode('ascii'),
                    'local_seconds': struct.unpack('<Q', result[64:])[0] / 1e9})
-    finally:
-        if claimed is not None:
-            usb.util.release_interface(dev, claimed)
-        usb.util.dispose_resources(dev)
 
 
 if __name__ == '__main__':
