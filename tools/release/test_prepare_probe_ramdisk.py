@@ -16,10 +16,12 @@ class ProbeRamdiskTests(unittest.TestCase):
         raw = probe.ramdisk(b'init', b'busybox', b'probe')
         offset = 0
         blocks = []
+        names = []
         while raw[offset:offset+6] == b'070701':
             fields = [int(raw[offset+6+i*8:offset+14+i*8], 16) for i in range(13)]
             mode, size, major, minor, length = fields[1], fields[6], fields[9], fields[10], fields[11]
             name = raw[offset+110:offset+110+length-1].decode()
+            names.append(name)
             if name == 'TRAILER!!!':
                 break
             if mode & 0o170000 == 0o060000:
@@ -27,6 +29,7 @@ class ProbeRamdiskTests(unittest.TestCase):
             offset = (offset+110+length+3) & ~3
             offset = (offset+size+3) & ~3
         self.assertEqual(blocks, [('dev/mmcblk0p9', 0o060400, 179, 9)])
+        self.assertNotIn('dev/ttyGS0', names)  # Its major must be discovered at runtime.
 
     def test_pack_roundtrip_pinned_kernel_private_gates_and_missing_service(self):
         fixture = fixtures.KernelProvenanceTests()

@@ -8,9 +8,26 @@ $BB mount -t sysfs sysfs /sys
 $BB mount -t tmpfs -o mode=700,size=8m tmpfs /tmp
 $BB mkdir -p /dev/ffs-couch
 AUSB=/sys/class/android_usb/android0
+for cpu in 1 2 3; do
+    online=/sys/devices/system/cpu/cpu$cpu/online
+    [ ! -w "$online" ] || echo 1 > "$online"
+done
+for state in /sys/devices/system/cpu/online \
+    /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor \
+    /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
+    [ ! -r "$state" ] || echo "$state=$($BB cat "$state")" >> /tmp/probe.log
+done
 
 # This is a diagnostic output channel, deliberately not a command shell.
 serial_log() {
+    # Gadget serial allocates its major dynamically; a stock cpio value is unsafe.
+    major=$($BB awk '$2 == "ttyGS" { print $1; exit }' /proc/devices)
+    case "$major" in
+        ''|*[!0-9]*) echo 'No ttyGS major; diagnostics remain in RAM' >> /tmp/probe.log
+                      while true; do $BB sleep 3600; done ;;
+    esac
+    $BB rm -f /dev/ttyGS0
+    $BB mknod -m 600 /dev/ttyGS0 c "$major" 0 || return
     while true; do
         { echo 'Couch RAM-only probe; no partition writes or mounts';
           $BB cat /tmp/probe.log 2>/dev/null; } > /dev/ttyGS0

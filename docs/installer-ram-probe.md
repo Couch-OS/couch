@@ -24,6 +24,11 @@ enables `CONFIG_USB_F_FS` and `CONFIG_USB_G_ANDROID`; the separate standalone
 `CONFIG_USB_FUNCTIONFS` option is not required. Composite enumeration remains a
 physical validation step.
 
+The ACM node uses the `ttyGS` major observed in `/proc/devices` after gadget
+configuration, rather than a stock hardcoded major. Init requests CPUs 1–3 online
+as normal init does, and records available CPU online/governor/frequency values
+in RAM for interpreting benchmark results. It does not change CPU governors.
+
 The verified candidate BusyBox was checked under ARM QEMU on Ollie for `mount`,
 `mkdir`, `kill`, `sleep`, `cat` and `sha256sum`. No Android/vendor runtime files,
 WiFi credentials or device-specific properties are needed for this USB probe.
@@ -57,3 +62,13 @@ sh -n tools/installer/probe/init
 
 Measure RAM bulk transfer separately from device-local recovery hashing. Neither
 test validates a future write protocol, image installation or power-loss recovery.
+
+## First private artifact (2026-09-10)
+
+Ollie packaging completed with the actual static service, without accessing USB
+or the remote. The full 16 MiB image SHA-256 is
+`1a2cc44dbba4a96fb5d56320522033215cd22d12ca908f16a12c8f2acba53935`;
+the service SHA-256 is
+`94d1d1fd4db38b3185763684a22b22d861a4ce707d9184c3cc43d5d79dd1ef4b`.
+Kernel provenance and compressed-ramdisk roundtrip checks passed. These hashes
+identify a private test artifact; boot and throughput remain unverified.

@@ -38,7 +38,7 @@ def ramdisk(init, busybox, service):
     for name, content in (('init', init), ('bin/busybox', busybox), ('bin/couch-installer-probe', service)):
         entry(name, 0o100755, content)
     for name, major, minor in (('null', 1, 3), ('zero', 1, 5), ('urandom', 1, 9),
-                                ('console', 5, 1), ('ttyGS0', 233, 0)):
+                                ('console', 5, 1)):
         entry('dev/' + name, 0o020600, major=major, minor=minor)
     # Protocol exposes only a read-only recovery hash; never the whole eMMC.
     entry('dev/mmcblk0p9', 0o060400, major=179, minor=9)
