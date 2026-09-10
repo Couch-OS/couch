@@ -164,6 +164,12 @@ fn session(stream: &mut (impl Read + Write), token: &[u8]) -> io::Result<()> {
     }
     Ok(())
 }
+fn status_label(status: &str) -> &str {
+    match status.trim() {
+        "initializing" | "ready" | "connecting" | "connected" | "failed" => status.trim(),
+        _ => "waiting",
+    }
+}
 pub fn status() -> Vec<u8> {
     let ip = fs::read_to_string("/tmp/couch-wifi.ip").unwrap_or_default();
     let status = fs::read_to_string("/tmp/couch-wifi.status").unwrap_or_else(|_| "waiting".into());
@@ -172,10 +178,7 @@ pub fn status() -> Vec<u8> {
         .parse::<std::net::Ipv4Addr>()
         .map(|v| v.to_string())
         .unwrap_or_default();
-    let status = match status.trim() {
-        "initializing" | "ready" | "connecting" | "failed" => status.trim(),
-        _ => "waiting",
-    };
+    let status = status_label(&status);
     serde_json::json!({"ip":ip,"status":status,"port":8443})
         .to_string()
         .into_bytes()
@@ -191,6 +194,12 @@ mod tests {
             private_key_hex: String::new(),
             token_hex: String::new(),
         }
+    }
+    #[test]
+    fn dhcp_connected_status_is_preserved_and_unknown_status_is_bounded() {
+        assert_eq!(status_label("connected\n"), "connected");
+        assert_eq!(status_label("failed"), "failed");
+        assert_eq!(status_label("untrusted status"), "waiting");
     }
     #[test]
     fn credentials_are_hex_bounded_and_injection_is_rejected() {
