@@ -99,6 +99,9 @@ def vendor_files(bundle):
     manifest = verify_bundle(bundle)
     pin = json.loads(regular(REPO / 'tools/release/ha100_official_runtime.json'))
     require(manifest.get('source_images') == pin['images'], 'Vendor source is not pinned official runtime')
+    pinned_files = {record['path']: (record['size'], record['sha256']) for record in pin['files']}
+    observed_files = {record['path']: (record['size'], record['sha256']) for record in manifest['files']}
+    require(observed_files == pinned_files, 'Vendor file bytes differ from pinned official runtime')
     report = audit(bundle)
     require(not report['missing_required'], 'Incomplete Bionic WMT dependency closure')
     names = set(report['wmt_dependency_names'])

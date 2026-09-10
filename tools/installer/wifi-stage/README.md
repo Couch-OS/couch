@@ -22,11 +22,16 @@ scan/create all device nodes, load obsolete vendor modules, replay Android
 properties, mount userdata, or write boot markers. The only block device packaged
 is recovery, mode 0400, for the existing read-only hash operation. Calibration
 behavior currently follows the driver's missing-NVRAM defaults; this remains a
-hardware validation item before any production release.
+hardware validation item before any production release. The driver may generate an
+ephemeral MAC: this stage does not fabricate the normal runtime's CID-derived
+NVRAM record. Existing calibration partitions remain untouched, and full stock
+calibration behavior is not claimed.
 
 After USB provisioning creates `/tmp/couch-wpa_supplicant.conf` and then
 `/tmp/couch-wifi.request`, the watcher starts supplicant and DHCP once. DHCP
-publishes `/tmp/couch-wifi.ip`; `/tmp/couch-wifi.status` reports progress. Network
+publishes `/tmp/couch-wifi.ip`; `/tmp/couch-wifi.status` reports progress. The host
+reads the assigned address through USB status; it must not assume a previous
+DHCP lease or the remote's normal address. Network
 configuration, credentials, TLS material, logs, and transfer buffers remain in
 RAM. There is no setup AP, SSH dependency, or persistent network configuration.
 A failed attempt requires a new bootstrap session.

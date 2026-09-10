@@ -5,6 +5,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import prepare_wifi_ramdisk as wifi
 
@@ -40,6 +41,17 @@ class WifiRamdiskTests(unittest.TestCase):
             self.assertNotIn(forbidden, scripts)
         self.assertIn('/tmp/couch-wpa_supplicant.conf', scripts)
         self.assertIn('>/dev/null 2>&1', scripts)
+
+    def test_vendor_manifest_cannot_self_authorize_changed_payload(self):
+        pin = json.loads((wifi.REPO / 'tools/release/ha100_official_runtime.json').read_text())
+        records = [dict(record) for record in pin['files']]
+        records[0]['sha256'] = '0' * 64
+        manifest = {'source_images': pin['images'], 'files': records}
+        with patch.object(wifi, 'verify_bundle', return_value=manifest), \
+                patch.object(wifi, 'audit') as audit:
+            with self.assertRaisesRegex(ValueError, 'pinned official runtime'):
+                wifi.vendor_files(Path('/unused'))
+            audit.assert_not_called()
 
     def test_cached_package_hash_verified_before_parsing(self):
         with tempfile.TemporaryDirectory() as temporary:
