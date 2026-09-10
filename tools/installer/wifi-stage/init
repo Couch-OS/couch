@@ -1,0 +1,68 @@
+#!/bin/busybox sh
+# Private benchmark only. Root, configuration and logs remain in RAM.
+BB=/bin/busybox
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+umask 077
+$BB mount -t proc proc /proc
+$BB mount -t sysfs sysfs /sys
+$BB mount -t tmpfs -o mode=700,size=192m tmpfs /tmp
+$BB mkdir -p /dev/ffs-couch /run /dev/__properties__
+$BB --install -s /bin
+/bin/couch-wifi-init >/tmp/wifi-init.log 2>&1 &
+AUSB=/sys/class/android_usb/android0
+for cpu in 1 2 3; do
+    online=/sys/devices/system/cpu/cpu$cpu/online
+    [ ! -w "$online" ] || echo 1 > "$online"
+done
+for state in /sys/devices/system/cpu/online \
+    /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor \
+    /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
+    [ ! -r "$state" ] || echo "$state=$($BB cat "$state")" >> /tmp/probe.log
+done
+
+# This is a diagnostic output channel, deliberately not a command shell.
+serial_log() {
+    # Gadget serial allocates its major dynamically; a stock cpio value is unsafe.
+    major=$($BB awk '$2 == "ttyGS" { print $1; exit }' /proc/devices)
+    case "$major" in
+        ''|*[!0-9]*) echo 'No ttyGS major; diagnostics remain in RAM' >> /tmp/probe.log
+                      while true; do $BB sleep 3600; done ;;
+    esac
+    $BB rm -f /dev/ttyGS0
+    $BB mknod -m 600 /dev/ttyGS0 c "$major" 0 || return
+    while true; do
+        { echo 'Couch RAM-only probe; no partition writes or mounts';
+          $BB cat /tmp/probe.log 2>/dev/null; } > /dev/ttyGS0
+        $BB sleep 5
+    done
+}
+fallback() {
+    echo 'FunctionFS unavailable; ACM diagnostics only' >> /tmp/probe.log
+    echo 0 > "$AUSB/enable"
+    echo acm > "$AUSB/functions"
+    echo 1 > "$AUSB/enable"
+    serial_log
+}
+
+echo 1 > /sys/devices/platform/mt_usb/cmode
+echo 0 > "$AUSB/enable"
+echo 1 > "$AUSB/f_acm/instances"
+echo 0e8d > "$AUSB/idVendor"
+echo 201c > "$AUSB/idProduct"
+echo 'Couch RAM probe' > "$AUSB/iProduct"
+echo couch > "$AUSB/f_ffs/aliases" || fallback
+$BB mount -t functionfs couch /dev/ffs-couch || fallback
+echo ffs,acm > "$AUSB/functions" || fallback
+/bin/couch-installer-probe /dev/ffs-couch >> /tmp/probe.log 2>&1 &
+probe_pid=$!
+n=0
+while [ ! -f /tmp/couch-probe.ready ]; do
+    $BB kill -0 "$probe_pid" 2>/dev/null || fallback
+    [ "$n" -lt 10 ] || { $BB kill "$probe_pid"; fallback; }
+    $BB sleep 1
+    n=$((n+1))
+done
+echo 1 > "$AUSB/enable" || fallback
+serial_log &
+wait "$probe_pid"
+fallback

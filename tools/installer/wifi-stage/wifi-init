@@ -1,0 +1,61 @@
+#!/bin/busybox sh
+# RAM-only network bootstrap. Never mount userdata or replay Android properties.
+BB=/bin/busybox
+umask 077
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+echo initializing > /tmp/couch-wifi.status
+fail() { echo failed > /tmp/couch-wifi.status; exit 1; }
+for spec in ttyMT1:210 ttyMT2:211 ttyMT3:212; do
+    [ -e /dev/${spec%%:*} ] || $BB mknod /dev/${spec%%:*} c 204 ${spec##*:}
+done
+# mdev -s would expose writable block devices. Discover only required char nodes.
+node() {
+    major=$($BB awk -v name="$2" '$2==name {print $1;exit}' /proc/devices)
+    case "$major" in ''|*[!0-9]*) return 1;; esac
+    [ -e "/dev/$1" ] || $BB mknod -m 600 "/dev/$1" c "$major" 0
+}
+node wmtdetect mtk_wcn_detect || fail
+for firmware in /vendor/firmware/*; do
+    [ ! -f "$firmware" ] || $BB ln -s "$firmware" / 2>/dev/null
+done
+LD_LIBRARY_PATH=/system/lib:/vendor/lib /vendor/bin/wmt_loader >/tmp/wmt-loader.log 2>&1 || fail
+node stpwmt mtk_stp_wmt || fail
+node wmtWifi mtk_wmt_WIFI_chrdev || fail
+LD_LIBRARY_PATH=/system/lib:/vendor/lib:/system/lib/hw:/vendor/lib/hw \
+    /vendor/bin/wmt_launcher -p /vendor/firmware/ >/tmp/wmt-launcher.log 2>&1 &
+launcher=$!
+n=0
+while ! $BB dmesg | $BB grep -qE 'set STP mode success|wmt_lib_set_hif:new hifType'; do
+    $BB kill -0 "$launcher" 2>/dev/null || fail
+    [ "$n" -lt 20 ] || fail
+    $BB sleep 1; n=$((n+1))
+done
+# Use driver default calibration behavior. No fabricated/persisted device identity.
+echo 1 > /dev/wmtWifi || fail
+n=0
+while [ ! -d /sys/class/net/wlan0 ]; do
+    [ "$n" -lt 15 ] || fail
+    $BB sleep 1; n=$((n+1))
+done
+$BB ifconfig wlan0 up || fail
+echo ready > /tmp/couch-wifi.status
+while true; do
+    if [ -f /tmp/couch-wifi.request ] && [ -f /tmp/couch-wpa_supplicant.conf ]; then
+        $BB rm -f /tmp/couch-wifi.request /tmp/couch-wifi.ip
+        echo connecting > /tmp/couch-wifi.status
+        # Provisioning is one-shot per boot; no concurrent supplicant instances.
+        /sbin/wpa_supplicant -i wlan0 -Dnl80211 -c /tmp/couch-wpa_supplicant.conf \
+            >/dev/null 2>&1 &
+        supplicant=$!
+        $BB udhcpc -i wlan0 -f -n -t 20 -T 3 -s /bin/couch-dhcp \
+            >/dev/null 2>&1 &
+        dhcp=$!
+        while $BB kill -0 "$supplicant" 2>/dev/null && $BB kill -0 "$dhcp" 2>/dev/null; do
+            $BB sleep 2
+        done
+        $BB kill "$supplicant" "$dhcp" 2>/dev/null
+        $BB rm -f /tmp/couch-wifi.ip
+        fail
+    fi
+    $BB sleep 1
+done

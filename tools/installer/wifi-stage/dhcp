@@ -1,0 +1,22 @@
+#!/bin/busybox sh
+# BusyBox udhcpc hook. All state is in RAM, never logs credentials.
+BB=/bin/busybox
+umask 077
+[ "$interface" = wlan0 ] || exit 1
+case "$1" in
+    deconfig)
+        $BB ifconfig wlan0 0.0.0.0
+        $BB rm -f /tmp/couch-wifi.ip
+        ;;
+    bound|renew)
+        case "$ip" in ''|*[!0-9.]*) exit 1;; esac
+        $BB ifconfig wlan0 "$ip" netmask "${subnet:-255.255.255.0}" || exit 1
+        $BB route del default dev wlan0 2>/dev/null
+        for gateway in $router; do
+            $BB route add default gw "$gateway" dev wlan0 && break
+        done
+        echo "$ip" > /tmp/couch-wifi.ip.new
+        $BB mv /tmp/couch-wifi.ip.new /tmp/couch-wifi.ip
+        echo connected > /tmp/couch-wifi.status
+        ;;
+esac
