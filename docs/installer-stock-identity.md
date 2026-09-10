@@ -77,3 +77,34 @@ Userdata is neither read nor written. A new `baseline.json` is published only
 after successful DA exit (when selected) and USB cleanup. The prior baseline is
 untouched. A failure retains the journal and identity snapshots for review;
 never treat a partial journal as permission to retry automatically.
+
+## Bootstrap stock Android into the private Linux RAM stage
+
+`tools/installer/bootstrap_linux_stage.py` implements a separate development-only
+bootstrap exception: back up the current stock boot and recovery plus all five
+identity partitions, then write **only boot** with the reviewed RAM-stage image.
+It does not back up or modify userdata and does not alter public installation
+policy. Original recovery remains available as the retained recovery path.
+
+Inputs include the trusted old baseline/CID, pinned stock manifest, pinned raw
+original recovery file, and loader/board-data inputs from finalization. Explicit
+`--allow-private-flash --stock-boot-confirmed` are required. Additionally supply
+`--stage-image`, `--stage-sha256`, `--stage-metadata`, and
+`--stage-metadata-sha256`. The metadata must match the existing builder's private
+read-only RAM-stage schema, exact filename/16MiB size/image hash and declared
+read-only recovery operation. No unpublished image is automatically selected or
+trusted based only on its filename. Run `--check-only` before the physical trial.
+
+Observed boot, recovery and odmdtbo must match stock pins before capture. The
+command independently reads back saved identity/boot/recovery originals and
+persists their hashes in a journal before allowing the boot-only writer. It
+then verifies stage boot readback and unchanged recovery, odmdtbo and calibration.
+Only after clean completion does it publish `baseline.json` and
+`backup-receipt.json`; the receipt binds to the completed journal's hash.
+
+Use a new private `--backup-dir` each time; resume and automatic retries are
+unsupported. Optional `--boot-after-capture` requests DA exit only after all
+checks pass. On the HA100 this may power off: hold Power to start the RAM stage.
+Successful readback is not proof that the stage booted or Wi-Fi works. This
+command neither restores its own saved boot nor exposes a subsequent installer
+write service; those are separately reviewed operations.
