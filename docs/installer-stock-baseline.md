@@ -86,10 +86,10 @@ Original init declares `flash_recovery`, but the original system image lacks
 No automatic p9 replacement mechanism was found through that standard path;
 this observation applies only to the inspected original system image.
 
-Stock boot from the newly formatted userdata is still unvalidated. The public
-trial must eventually discover/capture an original Android device through USB
-without SSH or a previously prepared Couch runtime baseline. Preparation alone
-does not complete that test or change public release gates.
+Stock boot from the newly formatted userdata was subsequently validated as
+recorded below. The public trial must still discover/capture an original Android
+device through USB without SSH or a previously prepared Couch runtime baseline.
+Stock restoration alone does not complete that test or change public release gates.
 
 ## Current-partition comparison before restoration
 
@@ -114,6 +114,39 @@ large overlay change. A strictly stock baseline should restore the original
 overlay after root review; retaining it would retain Couch's 8 ms debounce.
 The shared overlay affects both boot slots. Current system/vendor need no
 restoration based on their matching hashes.
+
+## Completed stock restoration and local verification
+
+The September 10 trial wrote the full fresh F2FS image, then stopped the slow DA
+readback at the operator's request. The interrupted journal remains incomplete;
+its `writing` state is not a verification receipt. The operator entered retained
+Couch recovery using **Back** during power-on, correcting the old Volume Up
+instructions.
+
+Recovery ran entirely from its ramdisk, with userdata unmounted. After flushing
+the partition's block buffers, BusyBox SHA-256 read all 5,905,055,744 bytes locally
+and matched `378ec33f...2b3653` exactly. Exit status was zero; uptime timestamps
+81.81–369.31 establish **287.5 seconds (19.6 MiB/s)**. This fresh-boot independent
+storage read avoided USB readback and was approximately 8.5 times the measured
+2.30 MiB/s DA read rate. It does not measure Wi-Fi throughput.
+
+Original boot and overlay were uploaded compressed into recovery RAM, expanded,
+size/hash checked, written to their checked partition nodes, flushed and hashed
+locally. Both matched the original hashes above. All five identity partitions
+still matched the pre-restoration baseline before Android ran. The existing
+`boot-recovery` request was cleared using the documented first-512-byte BCB
+operation; bootloaders and the rest of `para` were untouched.
+
+The operator observed original Android startup; Android independently reported
+`sys.boot_completed=1`, version **8.1.0**, and a mounted F2FS `/data`. Original
+Android recovery was then staged in `/dev` (RAM), written to p9, flushed and
+verified against `dd925ba4...49b4ae8d`. Both boot slots are now stock. This stock
+restoration used existing recovery/ADB access as laboratory preparation, not as
+a public installer prerequisite.
+
+A separate private local-verification record preserves these results alongside
+the interrupted DA journal. A fresh post-Android identity capture is still needed
+before bootstrapping the RAM installer; Android may update its own NVRAM.
 
 ## Obtaining a stable complete Couch backup
 
