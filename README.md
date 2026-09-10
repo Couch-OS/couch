@@ -107,8 +107,9 @@ The next debug build will take longer. Do not delete `build/` wholesale.
 * Unclaimed sessions self-reboot after 15 minutes. `touch /tmp/stay` keeps one
   alive; `stage2.sh` does it once it reaches the GUI, so only a boot that fails
   before that falls back.
-* lk's boot menu still works: hold Volume Up at power-on, **Volume Up moves the
-  selector, Volume Down selects**; `[Recovery Mode]` is the Couch recovery.
+* Enter recovery using the physical **Back** button during power-on (confirmed
+  on the HA100). Do not use the previously documented Volume Up entry sequence.
+  The Couch recovery screen provides the USB serial shell.
 * If both slots are bad, MTK download mode over USB (mtkclient) rewrites a
   partition from the backup. **Never write `preloader_*` or `lk`.**
 
