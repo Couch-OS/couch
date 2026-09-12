@@ -6,11 +6,11 @@ candidate before starting its DA handshake; tests never open USB.
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
+import json
 import importlib.util
 import os
 from pathlib import Path
 import stat
-import subprocess
 import sys
 
 from couch_install import InstallError, REPO, regular, require
@@ -39,33 +39,39 @@ class ReadPolicy:
     skip_watchdog_changes: bool = True
 
 
+SOURCE_INVENTORY = Path(__file__).with_name("mtk_source_inventory.json")
+SOURCE_INVENTORY_SHA256 = "d678c872b024f53c4ea69e6bd7ec9ae5e02dee297d8d33d36d360704a29a699a"
+
+
 def source_pin(checkout):
+    """Admit exactly the reviewed packaged source without requiring runtime Git."""
     checkout = Path(checkout).resolve()
-    def git(*args):
-        try:
-            return subprocess.check_output(["git", "-C", str(checkout), *args], stderr=subprocess.PIPE)
-        except (OSError, subprocess.CalledProcessError) as error:
-            raise InstallError("Cannot inspect pinned mtkclient checkout with Git; verify the checkout "
-                               "and its ownership under the same user running capture. No USB was claimed.") from error
-    require(git("rev-parse", "HEAD").decode().strip() == REVIEWED_REVISION, "Unreviewed mtkclient checkout")
-    tracked = {}
-    for record in git("ls-tree", "-rz", "--full-tree", "HEAD", "--", "mtkclient").split(b"\0"):
-        if not record:
-            continue
-        metadata, filename = record.split(b"\t", 1)
-        mode, kind, oid = metadata.decode().split()
-        name = filename.decode()
-        if not name.endswith(".py"):
-            continue
-        require(kind == "blob" and mode in ("100644", "100755"), "Unexpected Python source type")
-        path = regular(checkout / name)
-        data = path.read_bytes()
-        blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-        require(blob == oid, f"Pinned source differs: {name}")
-        tracked[path.resolve()] = hashlib.sha256(data).hexdigest()
-    actual = {path.resolve() for path in (checkout / "mtkclient").rglob("*.py")}
-    require(tracked and actual == set(tracked), "Untracked or missing mtkclient Python source")
-    return tracked
+    try:
+        inventory_bytes = regular(SOURCE_INVENTORY).read_bytes()
+        require(hashlib.sha256(inventory_bytes).hexdigest() == SOURCE_INVENTORY_SHA256,
+                "Reviewed mtkclient source inventory differs")
+        inventory = json.loads(inventory_bytes)
+        require(inventory.get("schema") == 1 and inventory.get("kind") == "couch-reviewed-mtk-source"
+                and inventory.get("revision") == REVIEWED_REVISION,
+                "Unreviewed mtkclient source inventory")
+        tracked = {}
+        for name, expected in inventory["files"].items():
+            if not name.startswith("mtkclient/") or not name.endswith(".py"):
+                continue
+            require(not Path(name).is_absolute() and ".." not in Path(name).parts,
+                    "Invalid reviewed mtkclient source path")
+            path = regular(checkout / name)
+            require(path.resolve().is_relative_to(checkout), "Pinned source escapes checkout")
+            data = path.read_bytes()
+            require(len(data) == expected["size"] and hashlib.sha256(data).hexdigest() == expected["sha256"],
+                    f"Pinned source differs: {name}")
+            tracked[path.resolve()] = expected["sha256"]
+        actual = {path.resolve() for path in (checkout / "mtkclient").rglob("*.py")}
+        require(tracked and actual == set(tracked), "Untracked or missing mtkclient Python source")
+        return tracked
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise InstallError("Cannot inspect pinned mtkclient source package; verify its receipt and files. "
+                           "No USB was claimed.") from error
 
 
 def verify_loaded_sources(pinned):

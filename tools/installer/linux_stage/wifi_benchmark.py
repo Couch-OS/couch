@@ -19,9 +19,9 @@ from benchmark import benchmark, header, read_exact, response, usb_probe
 
 
 def credentials(ssid, password):
-    encoded = ssid.encode('utf-8')
+    encoded = ssid if isinstance(ssid, bytes) else ssid.encode('utf-8')
     if not 1 <= len(encoded) <= 32:
-        raise ValueError('SSID must be 1–32 UTF-8 bytes')
+        raise ValueError('SSID must be 1–32 bytes')
     if password is None:
         psk = None
     else:
@@ -64,6 +64,55 @@ class TlsEndpoint:
         return len(data)
 
 
+FAILURES = {
+    'detect-node': 'Wi-Fi detection device is missing',
+    'loader-exit': 'Vendor Wi-Fi loader exited unsuccessfully',
+    'transport-node': 'Wi-Fi transport device is missing',
+    'wifi-node': 'Wi-Fi power-control device is missing',
+    'launcher-exit': 'Vendor Wi-Fi launcher stopped',
+    'transport-timeout': 'Wi-Fi transport initialization timed out',
+    'power-on': 'Wi-Fi chip power-on failed',
+    'interface-timeout': 'Wi-Fi interface did not appear',
+    'interface-up': 'Wi-Fi interface could not be enabled',
+    'dhcp-exit': 'Address acquisition stopped; association or DHCP may have failed',
+    'supplicant-exit': 'Wi-Fi authentication process stopped',
+}
+
+
+def wifi_status(out, incoming):
+    if out.write(struct.pack('<4sIQ', b'CBP1', 5, 0), timeout=30000) != 16:
+        raise ValueError('Short status request')
+    magic, status, size = struct.unpack('<4sIQ', read_exact(incoming, 16))
+    if magic != b'CBR1' or status != 0 or not 1 <= size <= 512:
+        raise ValueError('Invalid Wi-Fi status frame')
+    value = json.loads(read_exact(incoming, size))
+    if not isinstance(value, dict) or value.get('status') not in (
+            'waiting', 'initializing', 'ready', 'connecting', 'connected', 'failed'):
+        raise ValueError('Invalid Wi-Fi status')
+    return value
+
+
+def check_failure(value):
+    if value['status'] == 'failed':
+        error = value.get('error')
+        reason = FAILURES.get(error) if isinstance(error, str) else None
+        raise ValueError('RAM-stage Wi-Fi failed: ' + (reason or
+                         'This stage cannot identify the cause; a diagnostic stage boot is needed'))
+
+
+def wait_ready(out, incoming):
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        value = wifi_status(out, incoming)
+        check_failure(value)
+        if value.get('provisioned') or value['status'] in ('connecting', 'connected'):
+            raise ValueError('This RAM stage already received credentials. Reboot it for a new session.')
+        if value['status'] == 'ready':
+            return
+        time.sleep(1)
+    raise ValueError('Wi-Fi hardware did not become ready; credentials were not requested or sent')
+
+
 def provision(out, incoming, payload):
     data = json.dumps(payload, separators=(',', ':')).encode()
     if not 1 <= len(data) <= 16384:
@@ -74,21 +123,15 @@ def provision(out, incoming, payload):
     response(incoming, 0)
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
-        if out.write(struct.pack('<4sIQ', b'CBP1', 5, 0), timeout=30000) != 16:
-            raise ValueError('Short status request')
-        magic, status, size = struct.unpack('<4sIQ', read_exact(incoming, 16))
-        if magic != b'CBR1' or status != 0 or size > 512:
-            raise ValueError('Invalid Wi-Fi status frame')
-        value = json.loads(read_exact(incoming, size))
-        if value.get('ip'):
+        value = wifi_status(out, incoming)
+        check_failure(value)
+        if value['status'] == 'connected' and value.get('ip'):
             return str(ipaddress.IPv4Address(value['ip']))
-        if value.get('status') == 'failed':
-            raise ValueError('RAM-stage Wi-Fi connection failed')
         time.sleep(1)
     raise ValueError('Timed out waiting for RAM-stage Wi-Fi')
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bus', type=int, required=True)
     parser.add_argument('--ports', required=True)
@@ -97,11 +140,14 @@ def main():
     parser.add_argument('--open-network', action='store_true')
     parser.add_argument('--mib', type=int, default=32, choices=range(1, 65))
     parser.add_argument('--hash-recovery', action='store_true')
-    args = parser.parse_args()
-    network = credentials(input('Wi-Fi SSID: '), None if args.open_network else getpass.getpass('WPA2 password: '))
-    with tempfile.TemporaryDirectory(prefix='couch-tls-') as temporary:
-        pem, identity = ephemeral_identity(temporary)
-        with usb_probe(args) as (out, incoming):
+    args = parser.parse_args(argv)
+    print('Checking Wi-Fi hardware over USB before asking for credentials...', flush=True)
+    with usb_probe(args) as (out, incoming):
+        wait_ready(out, incoming)
+        print('Credentials are sent over USB into temporary RAM only.', flush=True)
+        network = credentials(input('Wi-Fi SSID: '), None if args.open_network else getpass.getpass('WPA2 password: '))
+        with tempfile.TemporaryDirectory(prefix='couch-tls-') as temporary:
+            pem, identity = ephemeral_identity(temporary)
             address = provision(out, incoming, {**network, **identity})
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.minimum_version = context.maximum_version = ssl.TLSVersion.TLSv1_3

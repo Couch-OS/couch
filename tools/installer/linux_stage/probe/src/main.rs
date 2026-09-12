@@ -1,4 +1,7 @@
-//! Read-only Linux 3.18 FunctionFS throughput prototype. No storage writer exists.
+//! Linux 3.18 FunctionFS probe; the private-install feature adds USB-bound TLS installation.
+#[cfg(feature = "private-install")]
+mod install;
+mod scan;
 mod wifi;
 use std::{
     fs::{File, OpenOptions},
@@ -13,6 +16,10 @@ use std::{
 };
 const MAX: u64 = 64 * 1024 * 1024;
 const CHUNK: usize = 65536;
+#[cfg(feature = "private-install")]
+const CAPABILITIES: &str = "COUCH_PRIVATE_WIFI_INSTALLER_V1";
+#[cfg(not(feature = "private-install"))]
+const CAPABILITIES: &str = "COUCH_READONLY_RAM_PROBE_V1";
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -48,10 +55,13 @@ fn request(header: &[u8; 16]) -> io::Result<(u32, u64)> {
     }
     let op = u32::from_le_bytes(header[4..8].try_into().unwrap());
     let length = u64::from_le_bytes(header[8..].try_into().unwrap());
-    if !matches!(
+    let known = matches!(
         (op, length),
-        (0, 0) | (1..=2, 1..=MAX) | (3, 1) | (4, 1..=16384) | (5, 0)
-    ) {
+        (0, 0) | (1..=2, 1..=MAX) | (3, 1) | (4, 1..=16384) | (5, 0) | (7, 0)
+    );
+    #[cfg(feature = "private-install")]
+    let known = known || matches!((op, length), (6, 1..=512) | (10, 0));
+    if !known {
         return Err(invalid("unsupported command or length"));
     }
     Ok((op, length))
@@ -189,11 +199,29 @@ fn run(root: &Path) -> io::Result<()> {
                 response(&mut output, data.len() as u64)?;
                 output.write_all(&data)?;
             }
+            7 => {
+                let data = scan::response();
+                response(&mut output, data.len() as u64)?;
+                output.write_all(&data)?;
+            }
+            #[cfg(feature = "private-install")]
+            6 => {
+                let mut payload = vec![0; length as usize];
+                input.read_exact(&mut payload)?;
+                install::bind(&payload)?;
+                response(&mut output, 0)?;
+            }
+            #[cfg(feature = "private-install")]
+            10 => return Err(invalid("installation is TLS-only")),
             _ => unreachable!(),
         }
     }
 }
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--capabilities") {
+        println!("{CAPABILITIES}");
+        return;
+    }
     let root = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "/dev/ffs-couch".into());
@@ -234,6 +262,11 @@ mod tests {
             (3, 1, true),
             (3, 2, false),
             (4, 0, false),
+            (7, 0, true),
+            (7, 1, false),
+            (6, 128, cfg!(feature = "private-install")),
+            (6, 513, false),
+            (10, 0, cfg!(feature = "private-install")),
         ] {
             let mut h = [0u8; 16];
             h[..4].copy_from_slice(b"CBP1");

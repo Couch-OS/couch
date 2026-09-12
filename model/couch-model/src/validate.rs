@@ -108,20 +108,34 @@ impl Config {
         let mut connection_ids = Vec::new();
         for (i,c) in self.connections.iter().enumerate() {
             check_entity(&mut problems, &mut connection_ids, "connections", i, &c.id, &c.name);
-            if let crate::Provider::Kodi{host,port}|crate::Provider::Denon{host,port}=&c.provider {
+            if let crate::Provider::Kodi{host,port}|crate::Provider::CoreElec{host,port}|crate::Provider::Denon{host,port}=&c.provider {
                 if host.trim().is_empty() || *port==0 { problems.push(Problem{at:alloc::format!("connections[{i}]"),message:"Connection needs an address and a TCP port from 1 to 65535".into()}); }
+            }
+            if let crate::Provider::Sonos { host } = &c.provider {
+                if host.parse::<core::net::Ipv4Addr>().is_err() {
+                    problems.push(Problem { at: alloc::format!("connections[{i}]"), message: "Sonos needs an IPv4 address".into() });
+                }
             }
             if c.provider==crate::Provider::Ir && self.connections[..i].iter().any(|old|old.provider==crate::Provider::Ir) { problems.push(Problem{at:alloc::format!("connections[{i}]"),message:"Use the built-in IR connection and configure a separate codeset on each device".into()}); }
             if c.id.as_str().len()>128 || !c.id.as_str().bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-' || b==b'_') { problems.push(Problem{at:alloc::format!("connections[{i}]"),message:"Connection IDs must be safe alphanumeric identifiers".into()}); }
         }
         for (room,device) in self.devices() {
+            if let crate::Integration::Sonos { host } = &device.integration {
+                if host.parse::<core::net::Ipv4Addr>().is_err() {
+                    problems.push(Problem {
+                        at: alloc::format!("rooms.{}.devices.{}", room.id, device.id),
+                        message: "Sonos needs an IPv4 address".into(),
+                    });
+                }
+            }
             if let crate::Integration::Connection{connection_id,resource_id}=&device.integration {
                 let at=alloc::format!("rooms.{}.devices.{}",room.id,device.id);
                 match self.connection(connection_id) {
                     None=>problems.push(Problem{at,message:"This device refers to a missing connection; remove its devices before deleting the connection".into()}),
                     Some(c)=>{
                         let valid=match c.provider {
-                            crate::Provider::Kodi{..}|crate::Provider::Denon{..}|crate::Provider::WebOs|crate::Provider::AndroidTv|crate::Provider::AppleTv=>resource_id.is_empty(),
+                            crate::Provider::Kodi{..}|crate::Provider::CoreElec{..}|crate::Provider::Sonos{..}|crate::Provider::Denon{..}|crate::Provider::WebOs|crate::Provider::AndroidTv|crate::Provider::AppleTv=>resource_id.is_empty(),
+                            crate::Provider::UnifiProtect=>device.kind==crate::DeviceKind::Camera && !resource_id.is_empty() && resource_id.len()<=128 && resource_id.bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-' || b==b'_'),
                             crate::Provider::HomeAssistant=>valid_ha_resource(resource_id, device.kind),
                             crate::Provider::Hue=>{ let id=resource_id.strip_prefix("room:").unwrap_or(resource_id); id.len()==36 && id.bytes().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){b==b'-'}else{b.is_ascii_hexdigit()}) },
                             crate::Provider::Ir=>!resource_id.is_empty() && resource_id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'||b==b'-'),
@@ -285,6 +299,23 @@ mod tests {
 
     fn room(id: &str, name: &str) -> Room {
         Room { id: Id::new(id), name: name.to_string(), icon: None, devices: vec![] }
+    }
+
+    #[test]
+    fn direct_sonos_integrations_require_literal_ipv4_addresses() {
+        for (host, valid) in [("192.0.2.1", true), ("speaker.local", false), ("::1", false), ("", false), ("256.1.1.1", false)] {
+            let mut room = room("living", "Living room");
+            let mut device = Device::new(Id::new("speaker"), "Sonos", DeviceKind::Speaker);
+            device.integration = crate::Integration::Sonos { host: host.into() };
+            room.devices.push(device);
+            let cfg = Config { rooms: vec![room], ..Config::default() };
+            if valid {
+                assert!(cfg.validate().is_ok(), "{host}");
+            } else {
+                let error = cfg.validate().unwrap_err();
+                assert!(error.problems.iter().any(|p| p.at == "rooms.living.devices.speaker" && p.message == "Sonos needs an IPv4 address"));
+            }
+        }
     }
 
     #[test]

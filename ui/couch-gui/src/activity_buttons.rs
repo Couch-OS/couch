@@ -323,6 +323,10 @@ pub(crate) fn execute_with_input(
         _ => "",
     };
     match integration {
+        Integration::Sonos { host } => {
+            let client=couch_sonos::Client::connect(host.parse().map_err(|_|"Sonos requires an IPv4 address")?).map_err(|e|e.to_string())?;
+            client.command_if_current(&command.id(),current).map_err(|e|e.to_string())
+        }
         Integration::Ir { .. } => Err(format!("No IR code assigned to {}", command.id())),
         Integration::AndroidTv | Integration::AppleTv => {
             let kind = if matches!(integration, Integration::AppleTv) {

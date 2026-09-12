@@ -43,7 +43,7 @@ link a real switch would drop.
 
 **SSH** — a single toggle. OK starts or stops sshd (host keys generated on
 first use), and the choice persists as `ssh=` in settings.conf, which the boot
-`sshd.sh` reads so a device that was turned off stays off across a reboot.
+`couch-system` reads so a device that was turned off stays off across a reboot.
 Enrolment - a key or a root password - stays gated on the setup portal's
 physical-press step; the toggle only runs the daemon for someone already
 enrolled, and shows "unset" otherwise. Turning SSH off from here stops the

@@ -11,6 +11,7 @@ use std::{
 struct Target {
     generation: u64,
     connection: String,
+    apple: bool,
 }
 struct Snapshot {
     generation: u64,
@@ -133,6 +134,7 @@ impl Controller {
         *self.target.lock().unwrap() = Target {
             generation,
             connection: key.connection.clone(),
+            apple: app.get_tv_apple(),
         };
     }
     pub fn clear(&mut self, app: &App) {
@@ -170,7 +172,7 @@ impl Controller {
         app.set_tv_media_art(slint::Image::default());
     }
     pub fn poll(&mut self, app: &App) {
-        if !app.get_tv_shown() || !app.get_tv_android() {
+        if !app.get_tv_shown() || !(app.get_tv_android() || app.get_tv_apple()) {
             if self.generation != 0 {
                 self.clear(app);
             }
@@ -197,7 +199,11 @@ impl Controller {
                 latest
                     .as_ref()
                     .and_then(|s| s.status.app_name.as_deref())
-                    .unwrap_or("Android TV")
+                    .unwrap_or(if app.get_tv_apple() {
+                        "Apple TV"
+                    } else {
+                        "Android TV"
+                    })
                     .into(),
             );
             app.set_tv_media_title(media.title.as_str().into());
@@ -207,6 +213,9 @@ impl Controller {
                     "PLAYING" => "Playing",
                     "PAUSED" => "Paused",
                     "BUFFERING" => "Buffering",
+                    "STOPPED" => "Stopped",
+                    "INTERRUPTED" => "Interrupted",
+                    "SEEKING" => "Seeking",
                     _ => "",
                 }
                 .into(),
@@ -288,15 +297,74 @@ fn failure(generation: u64) -> Snapshot {
 fn observe(target: Arc<Mutex<Target>>, latest: Arc<Mutex<Option<Snapshot>>>) {
     let mut current = Target::default();
     let mut client = None;
+    let mut airplay = None;
+    let mut stored_stamp = None;
     let mut retry = Instant::now();
     loop {
         let requested = target.lock().unwrap().clone();
         if requested != current {
             current = requested;
             client = None;
+            airplay = None;
+            stored_stamp = None;
             retry = Instant::now();
         }
         if current.generation == 0 {
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        if current.apple {
+            let path = crate::connections::file(&current.connection, "appletv-metadata");
+            let stamp = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
+            let control_stamp =
+                std::fs::metadata(crate::connections::file(&current.connection, "appletv"))
+                    .ok()
+                    .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
+            let stamp = (stamp, control_stamp);
+            if Some(stamp) != stored_stamp {
+                airplay = None;
+                stored_stamp = Some(stamp);
+                retry = Instant::now();
+            }
+            if airplay.is_none() && Instant::now() >= retry {
+                airplay = couch_appletv::metadata::StoredConnection::load(&path)
+                    .ok()
+                    .filter(|c| {
+                        couch_control::StreamingConnection::load(&crate::connections::file(
+                            &current.connection,
+                            "appletv",
+                        ))
+                        .ok()
+                        .is_some_and(|control| {
+                            control.kind() == "appletv" && control.address() == c.settings.address
+                        })
+                    })
+                    .and_then(|c| {
+                        couch_appletv::metadata::Client::connect(&c.settings, &c.credentials).ok()
+                    });
+                retry = Instant::now() + Duration::from_secs(10);
+            }
+            let status = if let Some(c) = airplay.as_mut() {
+                match c.poll() {
+                    Ok(_) => Some(apple_status(&c.now_playing(), std::time::SystemTime::now())),
+                    Err(_) => {
+                        airplay = None;
+                        retry = Instant::now() + Duration::from_secs(10);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            if *target.lock().unwrap() == current {
+                *latest.lock().unwrap() = Some(Snapshot {
+                    generation: current.generation,
+                    status: status.unwrap_or_default(),
+                    at: Instant::now(),
+                });
+            }
             std::thread::sleep(Duration::from_millis(100));
             continue;
         }
@@ -334,6 +402,47 @@ fn observe(target: Arc<Mutex<Target>>, latest: Arc<Mutex<Option<Snapshot>>>) {
             }
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+// Map observed values into the shared presentation. Never fetch an AirPlay artwork URL.
+fn apple_status(m: &couch_appletv::metadata::NowPlaying, now: std::time::SystemTime) -> Status {
+    use couch_appletv::metadata::PlaybackState;
+    let text = |v: Option<&str>| {
+        v.unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(512)
+            .collect::<String>()
+    };
+    let position = m.position_at(now);
+    let known = m.title.is_some() || m.item_id.is_some() || m.state != PlaybackState::Unknown;
+    Status {
+        connected: true,
+        media_status_known: true,
+        app_name: m.app_name.as_deref().map(|s| text(Some(s))),
+        now_playing: known.then(|| couch_androidtv::cast::NowPlaying {
+            title: text(m.title.as_deref()),
+            subtitle: text(
+                m.subtitle
+                    .as_deref()
+                    .or(m.artist.as_deref())
+                    .or(m.series.as_deref()),
+            ),
+            position: position.unwrap_or(0.),
+            position_known: position.is_some(),
+            duration: m.duration,
+            live: m.is_live == Some(true),
+            player_state: match m.state {
+                PlaybackState::Playing => "PLAYING",
+                PlaybackState::Paused => "PAUSED",
+                PlaybackState::Stopped => "STOPPED",
+                PlaybackState::Interrupted => "INTERRUPTED",
+                PlaybackState::Seeking => "SEEKING",
+                PlaybackState::Unknown => "",
+            }
+            .into(),
+            ..Default::default()
+        }),
     }
 }
 fn timeline(position: f64, duration: Option<f64>, live: bool) -> (String, Option<String>, f32) {
@@ -453,6 +562,127 @@ fn decode(data: &[u8]) -> Option<Pixels> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn apple_metadata_maps_unknown_live_and_untrusted_artwork() {
+        use couch_appletv::metadata::{NowPlaying, PlaybackState};
+        let now = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        assert!(apple_status(&NowPlaying::default(), now)
+            .now_playing
+            .is_none());
+        let mut value = NowPlaying {
+            title: Some("Fixture\nmovie".into()),
+            state: PlaybackState::Paused,
+            artwork_url: Some("http://127.0.0.1/private".into()),
+            ..Default::default()
+        };
+        let m = apple_status(&value, now).now_playing.unwrap();
+        assert_eq!(m.title, "Fixturemovie");
+        assert!(!m.position_known);
+        assert!(m.artwork_url.is_none());
+        assert_eq!(m.player_state, "PAUSED");
+        value.state = PlaybackState::Playing;
+        value.position = Some(20.);
+        value.position_timestamp = Some(90.);
+        value.duration = Some(25.);
+        assert_eq!(apple_status(&value, now).now_playing.unwrap().position, 25.);
+        value.is_live = Some(true);
+        let m = apple_status(&value, now).now_playing.unwrap();
+        assert!(timeline(m.position, m.duration, m.live).1.is_none());
+    }
+    #[test]
+    fn apple_metadata_screen_clears_on_failure_and_generation_change() {
+        if std::env::var_os("COUCH_TEST_APPLE_METADATA").is_none() {
+            let output=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","tv::media::tests::apple_metadata_screen_clears_on_failure_and_generation_change"]).env("COUCH_TEST_APPLE_METADATA","1").output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use slint::ComponentHandle;
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = App::new().unwrap();
+        app.set_tv_apple(true);
+        app.set_tv_shown(true);
+        app.set_tv_title("Living room Apple TV".into());
+        app.set_tv_status("Connected · Companion".into());
+        let mut controller = Controller::new();
+        controller.generation = 1;
+        let value = couch_appletv::metadata::NowPlaying {
+            title: Some("The Long Way Home".into()),
+            artist: Some("Episode 3 · A new beginning".into()),
+            app_name: Some("TV".into()),
+            state: couch_appletv::metadata::PlaybackState::Paused,
+            position: Some(624.),
+            duration: Some(2820.),
+            ..Default::default()
+        };
+        *controller.latest.lock().unwrap() = Some(Snapshot {
+            generation: 1,
+            status: apple_status(&value, std::time::SystemTime::now()),
+            at: Instant::now(),
+        });
+        controller.poll(&app);
+        assert!(app.get_tv_media_active());
+        assert_eq!(app.get_tv_media_title(), "The Long Way Home");
+        assert_eq!(app.get_tv_media_state(), "Paused");
+        assert!(!app.get_tv_media_has_art());
+        let actions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let received = actions.clone();
+        app.on_tv_action(move |a| received.borrow_mut().push(a.to_string()));
+        app.show().unwrap();
+        app.invoke_focus_tv();
+        slint::platform::update_timers_and_animations();
+        if let Some(path) = std::env::var_os("COUCH_APPLE_METADATA_SCREENSHOT") {
+            window.draw_if_needed(|renderer| {
+                let mut pixels = vec![slint::Rgb8Pixel::default(); 480 * 800];
+                renderer.render(&mut pixels, 480);
+                let bytes: Vec<u8> = pixels.into_iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+                image::save_buffer(
+                    std::path::Path::new(&path),
+                    &bytes,
+                    480,
+                    800,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            });
+        }
+        for (x, y) in [
+            (84., 586.),
+            (186., 586.),
+            (288., 586.),
+            (390., 586.),
+            (230., 687.),
+        ] {
+            for pressed in [true, false] {
+                let position = slint::LogicalPosition::new(x, y);
+                let button = slint::platform::PointerEventButton::Left;
+                window.dispatch_event(if pressed {
+                    slint::platform::WindowEvent::PointerPressed { position, button }
+                } else {
+                    slint::platform::WindowEvent::PointerReleased { position, button }
+                });
+            }
+        }
+        assert_eq!(
+            &*actions.borrow(),
+            &["previous", "play", "pause", "next", "wake"]
+        );
+        *controller.latest.lock().unwrap() = Some(failure(1));
+        controller.poll(&app);
+        assert!(!app.get_tv_media_active());
+        assert_eq!(app.get_tv_status(), "Connected · Companion");
+        *controller.latest.lock().unwrap() = Some(Snapshot {
+            generation: 2,
+            status: apple_status(&value, std::time::SystemTime::now()),
+            at: Instant::now(),
+        });
+        controller.poll(&app);
+        assert!(!app.get_tv_media_active());
+    }
     #[test]
     fn reentry_restores_decoded_art_and_empty_snapshot_clears_it() {
         if std::env::var_os("COUCH_TEST_MEDIA_CACHE").is_none() {

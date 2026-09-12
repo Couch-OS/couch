@@ -118,6 +118,12 @@ pub struct Setup {
 }
 impl Setup {
     pub fn new(pin: &str, salt: &[u8], server: &[u8]) -> Result<Self> {
+        Self::with_pin(pin, salt, server, false)
+    }
+    pub fn new_airplay(pin: &str, salt: &[u8], server: &[u8]) -> Result<Self> {
+        Self::with_pin(pin, salt, server, true)
+    }
+    fn with_pin(pin: &str, salt: &[u8], server: &[u8], airplay: bool) -> Result<Self> {
         if pin.len() != 4 || !pin.bytes().all(|b| b.is_ascii_digit()) {
             return Err(Error::InvalidPin);
         }
@@ -126,12 +132,15 @@ impl Setup {
         }
         let mut private = [0; 32];
         rand::rngs::OsRng.fill_bytes(&mut private);
-        // Companion treats the displayed PIN as a decimal number (pyatv's
-        // pairing API accepts an integer), so remove display-only leading zeros.
-        let normalized = pin
-            .parse::<u16>()
-            .map_err(|_| Error::InvalidPin)?
-            .to_string();
+        // Companion hashes a decimal PIN, but AirPlay hashes exactly four
+        // characters (pyatv AirPlayPairingHandler.finish uses zfill(4)).
+        let normalized = if airplay {
+            pin.to_owned()
+        } else {
+            pin.parse::<u16>()
+                .map_err(|_| Error::InvalidPin)?
+                .to_string()
+        };
         let (public, proof, expected, key) =
             srp_exchange(&private, normalized.as_bytes(), salt, server)?;
         Ok(Self {
@@ -255,6 +264,19 @@ impl Verify {
         server: &[u8],
         encrypted: &[u8],
     ) -> Result<(Vec<u8>, [u8; 32], [u8; 32])> {
+        let (response, shared) = self.reply_shared(creds, server, encrypted)?;
+        Ok((
+            response,
+            derive(&shared, "", "ClientEncrypt-main")?,
+            derive(&shared, "", "ServerEncrypt-main")?,
+        ))
+    }
+    pub fn reply_shared(
+        self,
+        creds: &Credentials,
+        server: &[u8],
+        encrypted: &[u8],
+    ) -> Result<(Vec<u8>, [u8; 32])> {
         let server: [u8; 32] = server.try_into().map_err(|_| Error::Authentication)?;
         let shared = self.secret.diffie_hellman(&PublicKey::from(server));
         if !shared.was_contributory() {
@@ -288,11 +310,7 @@ impl Verify {
             &tlv(&[(1, &creds.client_id), (10, &signature)]),
             &[],
         )?;
-        Ok((
-            response,
-            derive(shared.as_bytes(), "", "ClientEncrypt-main")?,
-            derive(shared.as_bytes(), "", "ServerEncrypt-main")?,
-        ))
+        Ok((response, *shared.as_bytes()))
     }
 }
 #[cfg(test)]
@@ -338,6 +356,31 @@ mod tests {
         assert_eq!(proof.as_slice(),hex("46b6dc08b52d7663d391bafc6a376bc365271985e112c5c9a6ce7e00d2c992a71fdba85c07b1b42c6e42d294d0b87665d531bf6c4daae73539fc1fd20ec98b7d"));
         assert_eq!(expected.as_slice(),hex("e3adabdc41ec272680ae0ed71066b7a711beec055ab4c56758cc0b3ad0ba20670d83c5f073671ec7c67fcb9050ea46fc7532cdd877bad0f2898e9ca82172d31a"));
         assert_eq!(key.as_slice(),hex("9e3a14995d2b65bcb7d9b9d459c33e21a86cd2ce9bb4ba0793d528c7545d1a72cb9bb7b484abd8c2ce2212285fe7eb754b7635e7c9b970cae980ce71901cff1b"));
+    }
+    #[test]
+    fn airplay_leading_zero_pin_matches_independent_srptools_vector() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("metadata/fixtures/airplay-srp-0123.json")).unwrap();
+        let hex = |name: &str| {
+            let value = fixture[name].as_str().unwrap();
+            (0..value.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&value[i..i + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let (private, salt, server) = (hex("private"), hex("salt"), hex("server"));
+        let (public, proof, expected, key) =
+            srp_exchange(&private, b"0123", &salt, &server).unwrap();
+        assert_eq!(public, hex("public"));
+        assert_eq!(proof.as_slice(), hex("proof"));
+        assert_eq!(expected.as_slice(), hex("server_proof"));
+        assert_eq!(key.as_slice(), hex("key"));
+        let airplay = Setup::new_airplay("0123", &salt, &server).unwrap();
+        let (_, expected, _, _) = srp_exchange(&airplay.private, b"0123", &salt, &server).unwrap();
+        assert_eq!(airplay.proof, expected);
+        let companion = Setup::new("0123", &salt, &server).unwrap();
+        let (_, expected, _, _) = srp_exchange(&companion.private, b"123", &salt, &server).unwrap();
+        assert_eq!(companion.proof, expected);
     }
     #[test]
     fn setup_requires_server_proof_and_accessory_signature() {

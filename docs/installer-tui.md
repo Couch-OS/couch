@@ -1,10 +1,14 @@
 # Installer terminal and bootstrap
 
-Status: implemented terminal front end and offline simulation; **no approved
-public installer release exists**. The default TUI and bootstrap keep hardware writes disabled. An explicit private
-trial adapter delegates to the guarded developer CLI; it is not a public release.
+The current installer interface is the [native Ratatui terminal](../tools/installer/tui/README.md).
+See the [Wi-Fi installer workflow](installer-wifi-wizard.md) for network selection,
+backups, reinstall and recovery. Native frontend binaries are built for Linux,
+macOS and Windows; complete public installer packaging remains separate work.
 
-## Terminal flow
+The Python interface below remains a reference/simulation and guarded developer
+entry point. Its default public gate keeps hardware writes disabled.
+
+## Python reference flow
 
 `tools/installer/couch_tui.py` displays an ASCII `couch.` wordmark and numbered
 menu. It supports Linux with Python 3.10+, without a terminal UI dependency.
@@ -33,7 +37,8 @@ python3 tools/installer/couch_tui.py --simulation \
 
 Use a new empty directory for each demo. The synthetic target confirmation is
 `SIMULATED-HA100-001`; these files cannot boot a remote. `--resume` delegates
-existing journal verification to the core. See the [captured terminal preview](installer-tui-preview.txt).
+existing journal verification to the core. For the current private Wi-Fi interface,
+see the [Ratatui terminal guide](../tools/installer/tui/README.md).
 
 `CoreAdapter.plan/apply/observe` is the integration boundary. The terminal only
 presents the adapter's plan and streams its output; it does not implement USB
@@ -108,3 +113,13 @@ planning/testing should use the existing noninteractive core CLI.
 Tests exercise cancellation, real policy-engine simulation, no physical fallback,
 missing terminals, unpublished-release refusal, checksum failure and unsafe
 archive members. They never connect to USB or flash hardware.
+
+## Host binary builds
+
+`.github/workflows/installer-binaries.yml` builds Linux x64/ARM64, Windows x64,
+and macOS Intel/Apple Silicon executables, including a universal macOS binary.
+These CI artifacts are the terminal interface, not a complete approved installer
+release. Platform USB drivers, backend dependencies, end-to-end flashing, and
+public payload preparation are separate release requirements. Windows uses
+private anonymous pipes; Unix uses an inherited local socket. Native subprocess
+output is redirected away from both transports.

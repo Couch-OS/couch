@@ -1,0 +1,18 @@
+import { Theme } from "../theme.slint";
+import { MediaBack } from "../widgets/media-back.slint";
+export component Camera inherits Rectangle {
+    in property <bool> shown;
+    in property <string> title;
+    in property <string> message;
+    in property <image> frame;
+    callback close();
+    public function take-focus(){keys.focus();}
+    background:Theme.bg;
+    MediaBack { x:24px; y:22px; activate=>{root.close();} }
+    Text {x:88px;y:27px;width:parent.width - 112px;height:32px;text:root.title;font-size:21px;font-weight:600;color:Theme.text;overflow:elide;}
+    Text {x:24px;y:95px;text:"UniFi Protect";font-size:16px;color:Theme.text-secondary;}
+    Image {x:0px;y:170px;width:parent.width;height:270px;source:root.frame;image-fit:contain;}
+    Text {x:24px;y:470px;width:parent.width - 48px;text:root.message;wrap:word-wrap;font-size:18px;color:Theme.text-secondary;}
+    Text {x:24px;y:620px;width:parent.width - 48px;text:"Press Back to close the feed.";font-size:16px;color:Theme.text-secondary;}
+    keys:=FocusScope {enabled:root.shown;key-pressed(e)=>{if(e.text==Key.Escape || e.text==Key.Home){root.close();}return accept;}}
+}

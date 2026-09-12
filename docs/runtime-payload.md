@@ -3,6 +3,10 @@
 `tools/release/runtime_inventory.py BASE_SPEC NEW_OUTPUT` audits explicit local build artifacts and emits `payload-inventory.json`. When the clean Couch portion passes, it also emits a ready-to-use `staging-input.json` for [offline package assembly](releases.md#assemble-offline-packages). It never contacts the remote, reads personal configuration, executes vendor extraction, or copies a vendor tree into the image.
 
 ```sh
+tools/build-wmt-properties.sh
+(cd daemon && cargo build --release --locked --target armv7-unknown-linux-musleabihf -p couch-system)
+tools/build-sonos.sh
+(cd clients && cargo build --release --target armv7-unknown-linux-musleabihf -p couch-coreelec)
 python3 tools/release/runtime_inventory.py build/alpine-staging-input.json build/runtime-payload
 python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json \
   build/offline-armv7 build/packaged-runtime
@@ -14,16 +18,18 @@ python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json
 
 | Role | Files and checks |
 |---|---|
-| GUI, configuration server, boot console | `couch-gui`, `couch-confd`, `fbcon`; little-endian ARM32 ELF, no dynamic-loader/library requirement |
-| Runtime scripts | `stage2.sh`, `confd.sh`, `setup-mode.sh`, `portal.sh`, `setup-watch.sh`, `wifi-conf.sh`, `sshd.sh`, `confirm.sh`, `scanjson.sh`, `join.sh` |
+| GUI, configuration server, boot console | `couch-gui`, `couch-confd`, `couch-system`, `fbcon`; little-endian ARM32 ELF, no dynamic-loader/library requirement |
+| CoreELEC control | `couch-coreelec`, built in the clients workspace; static ARM32 ELF installed at `/opt/couch/couch-coreelec` |
+| Sonos LAN control | `couch-sonos`, built with `tools/build-sonos.sh`; static ARM32 ELF installed at `/opt/couch/couch-sonos` |
+| Runtime scripts | `stage2.sh`, `runtime-boot.sh`, `hardware-init.sh`, `gui-start.sh`, `system.sh`, `confd.sh`, `setup-mode.sh`, `portal.sh`, `wifi-conf.sh`, `station.sh` |
 | Recovery portal | `www/index.html` and exactly `cgi-bin/{save,setpw,scan,enroll}` |
 | Readable notices | Lato/Inter OFL and Lucide ISC notices under `/opt/couch/licenses` |
 | GUI resources | Lato fonts, Slint source/assets and build-policy hashes; fonts/images are embedded by Slint, and the raw Lucide alpha catalog is verified inside the GUI binary |
 | Configuration webUI | Every current `web/couch-web/dist` file must occur verbatim in the daemon binary, including HTML, JavaScript and WASM; a placeholder or stale bundle fails |
 
-Provider clients are Rust libraries linked into GUI/daemon binaries; standalone provider CLIs are not required for normal operation. The diagnostic WMT script is omitted. No settings, network profiles, user configuration, enrollment keys, host keys, properties snapshot, device identity or calibration enters the generated artifact list. The clean stager still generates empty onboarding configuration.
+Provider clients are Rust libraries linked into GUI/daemon binaries. Sonos and CoreELEC also ship standalone CLIs; see [Sonos LAN client](sonos.md) for browser setup, remote controls and diagnostic commands. The offline Alpine closure includes `openssh-client-default` for optional CoreELEC OS controls. Package assembly checks the actual ARM client version and strict batch/host-key options with `ssh -G`, which does not contact a device. The diagnostic WMT script is omitted. No settings, network profiles, user configuration, enrollment keys, host keys, properties snapshot, device identity or calibration enters the generated artifact list. The clean stager still generates empty onboarding configuration.
 
-Both existing Lato font files matched upstream Google Fonts binaries; the previously missing OFL notice is now included. The inventory also records offline, locked Cargo package/license metadata for the ARM target, including build dependencies. This is a declared-license inventory, not automatic approval of a license choice or a binary-reachability analysis. In particular, Slint 1.17.1 declares GPL/Slint license alternatives; the release needs an explicit reviewed route and complete dependency notices.
+Both existing Lato font files matched upstream Google Fonts binaries; the previously missing OFL notice is now included. The inventory also records offline, locked Cargo package/license metadata for the UI, daemon, and clients workspaces on the ARM target, including build dependencies. This is a declared-license inventory, not automatic approval of a license choice or a binary-reachability analysis. In particular, Slint 1.17.1 declares GPL/Slint license alternatives; the release needs an explicit reviewed route and complete dependency notices.
 
 ## Vendor and boot inputs remain separate
 
@@ -96,3 +102,8 @@ references absent `libvndksupport.so`; resolve or remove that unused-library
 branch before claiming the entire historical bundle is dependency-complete.
 Static dependency-name checks do not validate dynamic namespaces, symbol
 versions, firmware behavior or physical Wi-Fi startup.
+
+The normal runtime also requires `build/couch-wmt-properties.so`, built with
+`tools/build-wmt-properties.sh`. It uses the same narrow detected-chip property
+bridge as the RAM installer; only the Android WMT launcher receives LD_PRELOAD.
+A missing radio must not be interpreted as missing saved Wi-Fi credentials.

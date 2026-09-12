@@ -1,3 +1,4 @@
+import { Camera } from "screens/camera.slint";
 import { Thermostat } from "screens/thermostat.slint";
 import { ActivityPages, ActivityTile } from "screens/activity_pages.slint";
 export { ActivityTile }
@@ -143,6 +144,13 @@ export component App inherits Window {
     in-out property <bool> thermostat-feedback-shown;
     in-out property <string> thermostat-feedback-name;
     in-out property <string> thermostat-feedback-value;
+    in-out property <bool> camera-shown;
+    in-out property <string> camera-title;
+    in-out property <string> camera-message;
+    in-out property <image> camera-image;
+    callback open-camera(string,string);
+    callback close-camera();
+    public function focus-camera(){camera-page.take-focus();}
     in-out property <bool> thermostat-shown;
     in-out property <string> thermostat-title;
     // Runtime HA values include these glyphs. Software font embedding scans
@@ -163,6 +171,7 @@ export component App inherits Window {
     in-out property <bool> tv-android: false;
     in-out property <bool> tv-apple: false;
     in-out property <bool> tv-ir: false;
+    in-out property <bool> tv-sonos: false;
     in-out property <bool> tv-media-active: false;
     in-out property <string> tv-media-title;
     in-out property <string> tv-media-subtitle;
@@ -436,7 +445,7 @@ export component App inherits Window {
     }
 
     television := Television {
-        visible:root.tv-shown;shown:root.tv-shown;android-tv:root.tv-android;apple-tv:root.tv-apple;infrared:root.tv-ir;
+        visible:root.tv-shown;shown:root.tv-shown;android-tv:root.tv-android;apple-tv:root.tv-apple;infrared:root.tv-ir;sonos:root.tv-sonos;
         width:parent.width;height:parent.height;
         title:root.tv-title;status:root.tv-status;error:root.tv-error;
         source-name:root.tv-source;sound:root.tv-sound;picture:root.tv-picture;panel:root.tv-panel;choices:root.tv-choices;
@@ -478,6 +487,7 @@ export component App inherits Window {
         range:root.thermostat-range; adjustable:root.thermostat-adjustable; pending:root.thermostat-pending;
         action(name,index) => { root.thermostat-action(name,index); }
     }
+    camera-page := Camera { x:0px;y:0px;width:parent.width;height:parent.height;visible:root.camera-shown;shown:root.camera-shown;title:root.camera-title;message:root.camera-message;frame:root.camera-image;close=>{root.close-camera();} }
     if root.custom-activity-available && root.active-activity!="" && !root.custom-activity-shown && (root.player-shown || root.tv-shown): Rectangle {
         x:parent.width - 112px; y:80px; width:88px; height:44px; border-radius:22px; background:Theme.surface;
         Text { text:"Pages"; color:Theme.text; font-size:18px; horizontal-alignment:center; vertical-alignment:center; }

@@ -1,6 +1,6 @@
 # Installer release discovery
 
-The computer-side terminal can browse published Couch release metadata using
+The Python reference terminal (`python3 tools/installer/couch_tui.py`) can browse published Couch release metadata using
 **r · Browse GitHub releases**. Choose `stable` or `alpha`, optionally enter an
 exact tag, then select a numbered release to inspect its descriptor. Browsing
 does not download or execute installer/OS payloads and never opens USB.
@@ -9,6 +9,9 @@ The planned installation flow uses **WiFi for image transfer**, with USB for
 bootstrap and recovery. This metadata browser does not implement that transport
 or relax the current public installation gates. Existing simulation and private
 trial paths remain separate.
+
+The native Rust terminal remains unchanged; this read-only reference-browser
+entry point does not add a native-terminal installation command.
 
 ## Release selection
 
@@ -59,5 +62,3 @@ are **not an independently verified publisher signature**. Signing, public
 artifact approval and physical installation validation remain separate gates.
 
 Validation: `python3 -m unittest discover -s tools/installer -p 'test_release_discovery.py'`.
-On 2026-09-10, an unauthenticated live query correctly returned zero selectable
-alpha releases while the initial alpha remained a draft without assets.

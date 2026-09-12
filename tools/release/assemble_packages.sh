@@ -20,6 +20,12 @@ for key in /tmp/root/etc/ssh/ssh_host_*; do
 done
 chroot /tmp/root /sbin/wpa_supplicant -v > /out/runtime-checks.txt
 chroot /tmp/root /usr/sbin/sshd -V >> /out/runtime-checks.txt 2>&1
+# CoreELEC OS controls require OpenSSH client options, not Dropbear. -G only
+# expands configuration; this fixture address is never contacted.
+chroot /tmp/root /usr/bin/ssh -V >> /out/runtime-checks.txt 2>&1
+chroot /tmp/root /usr/bin/ssh -F none -G -o BatchMode=yes \
+    -o StrictHostKeyChecking=yes -o IdentityAgent=none \
+    -o ClearAllForwardings=yes root@192.0.2.1 > /out/ssh-client-check.txt
 chroot /tmp/root /usr/sbin/iw --version >> /out/runtime-checks.txt
 # Some maintainer scripts redirect to /dev/null before devtmpfs exists. It may
 # be a temporary regular file here; no /dev runtime contents belong in the image.

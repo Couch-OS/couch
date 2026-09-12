@@ -17,13 +17,13 @@ pub fn editor(app: App, config: &Config) -> AnyView {
         if valid() {
             draft.get()
         } else {
-            "#B794F4".into()
+            Appearance::default().accent
         }
     };
     view!{<section class="card appearance"><h2>"Appearance"</h2><p>"Choose the accent for your physical remote’s focus outlines, headings and controls."</p>
-        <div class="accent-presets">{[("Purple","#B794F4"),("Teal","#4FD1C5"),("Blue","#63B3ED"),("Rose","#F687B3"),("Orange","#E8703A")].into_iter().map(|(name,color)|view!{<button type="button" class="ghost" aria-label=format!("{name} accent") aria-pressed=move ||draft.get().eq_ignore_ascii_case(color) on:click=move |_|draft.set(color.into())><span class="color-swatch" style:background=color></span>{name}</button>}).collect_view()}</div>
+        <div class="accent-presets">{[("White","#FFFFFF"),("Purple","#B794F4"),("Teal","#4FD1C5"),("Blue","#63B3ED"),("Rose","#F687B3"),("Orange","#E8703A")].into_iter().map(|(name,color)|view!{<button type="button" class="ghost" aria-label=format!("{name} accent") aria-pressed=move ||draft.get().eq_ignore_ascii_case(color) on:click=move |_|draft.set(color.into())><span class="color-swatch" style:background=color></span>{name}</button>}).collect_view()}</div>
         <label class="field"><span class="label">"Custom color"</span><input type="color" aria-label="Custom color" prop:value=preview on:input=move |e|draft.set(event_target_value(&e))/></label>
-        {super::connections::field("Hex color",draft,"#B794F4")}
+        {super::connections::field("Hex color",draft,"#FFFFFF")}
         <div class="accent-preview" style:color=preview style:border-color=preview><span>"REMOTE PREVIEW"</span><strong>"Living room"</strong><span>"Selected control"</span></div>
         <p class="dim">"Use a bright color to keep focus outlines visible. Changes apply after saving and persist after reboot."</p>
         <p role="alert">{move ||error.get()}</p><div class="actions"><button class="primary" disabled=move ||app.busy.get() on:click=move |_|{

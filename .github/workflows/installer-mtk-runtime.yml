@@ -1,0 +1,55 @@
+name: Installer Python and MTK runtime
+on:
+  pull_request:
+    paths:
+      - '.gitattributes'
+      - 'tools/release/mtk_dependencies*'
+      - 'tools/release/test_mtk_dependencies.py'
+      - 'tools/installer/mtk_source_inventory.json'
+      - 'tools/installer/mtk_session.py'
+      - '.github/workflows/installer-mtk-runtime.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+          - os: macos-15
+            platform: macos-aarch64
+          - os: macos-15-intel
+            platform: macos-x86_64
+          - os: windows-2022
+            platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test source admission and archive handling
+        shell: python
+        run: |
+          import subprocess, sys
+          subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tools/release', '-p', 'test_mtk_dependencies.py'], check=True)
+          subprocess.run([sys.executable, '-m', 'unittest', 'test_mtk_session.SessionGateTests.test_packaged_source_hash_inventory_and_extra_python_are_checked_without_git'], cwd='tools/installer', check=True)
+      - name: Prepare verified dependencies and smoke imports without USB
+        shell: python
+        env:
+          COUCH_RUNTIME_PLATFORM: ${{ matrix.platform }}
+        run: |
+          import importlib.util, json, os, pathlib
+          path = pathlib.Path('tools/release/mtk_dependencies.py').resolve()
+          spec = importlib.util.spec_from_file_location('mtk_dependencies', path)
+          runtime = importlib.util.module_from_spec(spec); spec.loader.exec_module(runtime)
+          base = pathlib.Path(os.environ['RUNNER_TEMP']) / 'couch-mtk-runtime'
+          output = base / 'runtime'
+          runtime.prepare(os.environ['COUCH_RUNTIME_PLATFORM'], base / 'cache', output)
+          result = runtime.smoke(output, runtime.sha(output / 'runtime.json'))
+          print(json.dumps(result, sort_keys=True))
+          # No DA, vendor payload, device access or runtime artifact publication.

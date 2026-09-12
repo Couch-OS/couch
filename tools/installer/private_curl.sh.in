@@ -1,0 +1,78 @@
+#!/bin/sh
+# Generated private trial launcher. Package bytes are pinned before execution.
+set -eu
+PACKAGE_URL='@PACKAGE_URL@'
+PACKAGE_SHA256='@PACKAGE_SHA256@'
+case "$(uname -s):$(uname -m)" in
+    Linux:x86_64) ;;
+    *) echo 'This private trial supports Linux x86_64 with the remote attached by USB.' >&2; exit 2;;
+esac
+for command in python3 curl git openssl debugfs e2fsck resize2fs sudo; do
+    command -v "$command" >/dev/null 2>&1 || {
+        echo "Missing host tool: $command. Ubuntu prerequisites: python3-venv git curl openssl e2fsprogs libusb-1.0-0 sudo" >&2
+        exit 2
+    }
+done
+python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), "This private package requires Python 3.12"'
+exec 3</dev/tty
+umask 077
+cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/couch-installer"
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}/couch-installer"
+mkdir -p "$cache_root" "$state_root"
+work=$(mktemp -d "$cache_root/trial.XXXXXXXX")
+# Keep the verified package: rollback commands and journals must remain usable.
+echo "Downloading the private installer package..."
+case "$PACKAGE_URL" in
+    https://*) protocols='=https';;
+    http://127.0.0.1:*) protocols='=http';;
+    *) echo 'Installer package URL must use HTTPS (or loopback for this private test).' >&2; exit 2;;
+esac
+curl --fail --location --proto "$protocols" --proto-redir "$protocols" \
+    --connect-timeout 15 --max-time 900 --max-filesize 1073741824 \
+    --output "$work/package.tar.gz" "$PACKAGE_URL"
+python3 - "$work/package.tar.gz" "$PACKAGE_SHA256" "$work/package" <<'COUCH_PRIVATE_EXTRACT'
+import hashlib, os, sys, tarfile
+from pathlib import Path, PurePosixPath
+archive, expected, destination = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+if len(expected)!=64 or any(c not in '0123456789abcdef' for c in expected):
+    raise SystemExit('Invalid package pin')
+with archive.open('rb') as file:
+    if hashlib.file_digest(file,'sha256').hexdigest()!=expected:
+        raise SystemExit('Installer checksum mismatch; nothing executed')
+if archive.stat().st_size>1024**3:
+    raise SystemExit('Package exceeds compressed size limit')
+with tarfile.open(archive,'r:gz') as bundle:
+    members=bundle.getmembers(); names=set(); total=0
+    for item in members:
+        path=PurePosixPath(item.name);total+=item.size
+        if (len(members)>20000 or total>10*1024**3 or path.is_absolute() or '..' in path.parts
+                or not path.parts or path.parts[0]!='couch-installer' or item.name in names
+                or not (item.isdir() or item.isfile())):
+            raise SystemExit('Unsafe installer archive')
+        names.add(item.name)
+    destination.mkdir(mode=0o700)
+    for item in members:
+        output=destination.joinpath(*PurePosixPath(item.name).parts)
+        if item.isdir():
+            output.mkdir(parents=True,exist_ok=True,mode=0o700)
+            continue
+        output.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        with bundle.extractfile(item) as source, output.open('xb') as target:
+            # Preserve exact bytes while keeping zero-filled OS images sparse.
+            while block:=source.read(1024*1024):
+                if not block.strip(b'\0'):target.seek(len(block),1)
+                else:target.write(block)
+            target.truncate(item.size)
+        output.chmod(0o700 if item.mode&0o111 else 0o600)
+entry=destination/'couch-installer/bin/couch-installer-tui'
+if not entry.is_file():raise SystemExit('Missing installer entry point')
+COUCH_PRIVATE_EXTRACT
+package="$work/package/couch-installer"
+python3 -m venv "$work/venv"
+"$work/venv/bin/python" -m pip install --disable-pip-version-check --no-index --no-deps \
+    --require-hashes --find-links "$package/wheels" -r "$package/requirements.txt" >/dev/null
+echo 'Installer verified. USB access needs sudo; Wi-Fi credentials will be requested inside the TUI.'
+echo "Backups and logs will be saved under $state_root"
+sudo env COUCH_INSTALL_STATE="$state_root" "$package/bin/couch-installer-tui" \
+    --python "$work/venv/bin/python" --backend "$package/tools/installer/ratatui_backend.py" \
+    --config "$package/trial.json" "$@" <&3

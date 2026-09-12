@@ -231,6 +231,7 @@ async fn parse(response: gloo_net::http::Response) -> Result<Config, ApiError> {
 /// Integration operations return live state, not a replacement house config.
 pub async fn ha(method: &str, path: &str, body: Option<Value>) -> Result<Value, ApiError> {
     let builder = match method {
+        "DELETE" => Request::delete(path),
         "PUT" => Request::put(path),
         "POST" => Request::post(path),
         _ => Request::get(path),

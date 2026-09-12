@@ -138,31 +138,28 @@ class SessionGateTests(unittest.TestCase):
             with self.assertRaisesRegex(InstallError, "outside the source pin"):
                 session.verify_loaded_sources({})
 
-    def test_git_checkout_failure_has_actionable_capture_error(self):
-        with self.assertRaisesRegex(InstallError, "same user running capture.*No USB was claimed"):
+    def test_missing_source_package_is_rejected_before_usb(self):
+        with self.assertRaises(InstallError):
             session.source_pin(self.root / "missing-checkout")
 
-    def test_tracked_source_hash_and_untracked_python_are_checked(self):
-        repo = self.root / "source"
-        repo.mkdir()
-        package = repo / "mtkclient"
-        package.mkdir()
-        source = package / "__init__.py"
-        source.write_text("# fixture\n")
-        def git(*args):
-            return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.DEVNULL)
-        git("init", "--quiet")
-        git("add", "mtkclient")
-        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
-        revision = git("rev-parse", "HEAD").decode().strip()
-        with patch.object(session, "REVIEWED_REVISION", revision):
+    def test_packaged_source_hash_inventory_and_extra_python_are_checked_without_git(self):
+        import json
+        repo = self.root / "source"; package = repo / "mtkclient"; package.mkdir(parents=True)
+        source = package / "__init__.py"; source.write_text("# fixture\n")
+        inventory = self.root / "inventory.json"
+        inventory.write_text(json.dumps({"schema": 1, "kind": "couch-reviewed-mtk-source", "revision": session.REVIEWED_REVISION,
+            "files": {"mtkclient/__init__.py": {"size": source.stat().st_size, "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}}}))
+        checksum = hashlib.sha256(inventory.read_bytes()).hexdigest()
+        with patch.object(session, "SOURCE_INVENTORY", inventory), patch.object(session, "SOURCE_INVENTORY_SHA256", checksum), patch.object(subprocess, "check_output", side_effect=AssertionError("Git must not run")):
             self.assertIn(source.resolve(), session.source_pin(repo))
             source.write_text("# changed\n")
             with self.assertRaisesRegex(InstallError, "Pinned source differs"):
                 session.source_pin(repo)
-            source.write_text("# fixture\n")
-            (package / "extra.py").write_text("# extra\n")
+            source.write_text("# fixture\n"); (package / "extra.py").write_text("# extra\n")
             with self.assertRaisesRegex(InstallError, "Untracked or missing"):
+                session.source_pin(repo)
+            (package / "extra.py").unlink(); inventory.write_text('{}')
+            with self.assertRaisesRegex(InstallError, "inventory differs"):
                 session.source_pin(repo)
 
 

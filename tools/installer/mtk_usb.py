@@ -366,20 +366,23 @@ class ExactUsbBackend:
             return mtk
 
     def boot_after_capture(self):
-        """Request HOME_SCREEN on the existing legacy DA; never USB-reset/reconnect.
+        """Request the MT6580 legacy DA watchdog reboot after verified work.
 
-        The pinned upstream finish() compares an indexed int with a bytes ACK
-        using `is`, so it cannot complete this exchange. Check exact byte replies.
-        This acknowledges a boot request; it does not verify that Couch booted.
+        FINISH/HOME_SCREEN acknowledges but powers this HA100 off. Use the
+        MT6580-tested exchange in saleemrashid/mediatek_flash_tool commit
+        dd4f3640be4a271ee72bd43005986307ad46050f, src/mtk_da.c:396 and
+        flash_tool/main.c:239: zero delay, synchronous, no download bit, retain
+        RTC. This changes no partition or persistent boot-mode marker.
         """
         require(self.started and self.mtk is not None, "No active DA session")
         require(not getattr(self, "boot_requested", False), "Boot request already attempted")
         self.boot_requested = True  # Never retry an ambiguous protocol result.
         with bounded_operation(10):
-            require(self.ep_out.write(b"\xd9", timeout=1000) == 1, "Short DA finish command")
-            require(bytes(self.ep_in.read(1, timeout=1000)) == b"\x5a", "DA finish command was not acknowledged")
-            require(self.ep_out.write(struct.pack(">I", 1), timeout=1000) == 4, "Short DA normal-boot request")
-            require(bytes(self.ep_in.read(1, timeout=1000)) == b"\x5a", "DA normal-boot request was not acknowledged")
+            for payload in (b"\xdb", struct.pack(">I", 0), b"\x00", b"\x00", b"\x00", b"\x01"):
+                require(self.ep_out.write(payload, timeout=1000) == len(payload),
+                        "Short DA watchdog reboot request")
+            require(bytes(self.ep_in.read(1, timeout=1000)) == b"\x5a",
+                    "DA watchdog reboot was not acknowledged")
             # Let firmware disconnect before cleanup. Do not attach cdc_acm to
             # the DA's malformed CDC descriptors or claim the returning gadget.
             original = self.claimed_candidate()

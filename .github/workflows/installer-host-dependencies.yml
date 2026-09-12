@@ -1,0 +1,34 @@
+name: Installer host dependencies
+on:
+  pull_request:
+    paths:
+      - 'tools/release/host_dependencies.*'
+      - 'tools/release/test_host_dependencies.py'
+      - '.github/workflows/installer-host-dependencies.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  adb:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test dependency validation
+        working-directory: tools/release
+        run: python -m unittest test_host_dependencies -v
+      - name: Download, verify and execute official ADB version
+        shell: python
+        run: |
+          import os, pathlib, subprocess, sys
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'couch-adb-verified'
+          subprocess.run([sys.executable, 'tools/release/host_dependencies.py',
+                          '--output', str(output), '--smoke'], check=True, timeout=300)
+          # No dependency binary, vendor input or private session is uploaded.

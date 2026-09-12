@@ -5,6 +5,7 @@
 //! replaced wholesale after each edit and anything else would have to be
 //! reconciled with it.
 
+pub mod updates;
 pub mod activities;
 mod activity_buttons;
 mod activity_sequences;
@@ -27,6 +28,7 @@ pub fn render(app: App, config: &Config, route: Route) -> AnyView {
         Route::Rooms => overview::rooms(app, config),
         Route::Connections => overview::connections(app, config),
         Route::Settings => remote::screen(app, config),
+        Route::Updates => updates::screen(app),
         Route::Areas => areas::list(app, config),
         Route::Area(id) => areas::detail(app, config, &id),
         Route::Room(id) => rooms::detail(app, config, &id),
@@ -270,3 +272,7 @@ mod streaming_tv;
 mod infrared;
 
 mod device_commands;
+
+mod sonos;
+mod coreelec;
+mod protect;

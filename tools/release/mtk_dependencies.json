@@ -1,0 +1,288 @@
+{
+  "kind": "couch-mtk-dependency-pins",
+  "mtk_source": {
+    "filename": "mtkclient-60e07f3b343a4469389f15967626d63e049968d4.tar.gz",
+    "inventory_sha256": "d678c872b024f53c4ea69e6bd7ec9ae5e02dee297d8d33d36d360704a29a699a",
+    "revision": "60e07f3b343a4469389f15967626d63e049968d4",
+    "sha256": "b130635ab22b293e74f9325fa28591f9a12bf8575c61debe7f267d3a015c0045",
+    "size": 31752817,
+    "url": "https://codeload.github.com/bkerler/mtkclient/tar.gz/60e07f3b343a4469389f15967626d63e049968d4"
+  },
+  "platforms": {
+    "linux-x86_64": {
+      "python": {
+        "filename": "cpython-3.12.14+20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+        "sha256": "72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e47008e7faba4c",
+        "size": 34143368,
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+      },
+      "python_executable": "python/bin/python3.12",
+      "site_packages": "python/lib/python3.12/site-packages",
+      "wheels": [
+        {
+          "filename": "pyusb-1.3.1-py3-none-any.whl",
+          "package": "pyusb",
+          "sha256": "bf9b754557af4717fe80c2b07cc2b923a9151f5c08d17bdb5345dac09d6a0430",
+          "size": 58465,
+          "url": "https://files.pythonhosted.org/packages/28/b8/27e6312e86408a44fe16bd28ee12dd98608b39f7e7e57884a24e8f29b573/pyusb-1.3.1-py3-none-any.whl",
+          "version": "1.3.1"
+        },
+        {
+          "filename": "pyserial-3.5-py2.py3-none-any.whl",
+          "package": "pyserial",
+          "sha256": "c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0",
+          "size": 90585,
+          "url": "https://files.pythonhosted.org/packages/07/bc/587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl",
+          "version": "3.5"
+        },
+        {
+          "filename": "colorama-0.4.6-py2.py3-none-any.whl",
+          "package": "colorama",
+          "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+          "size": 25335,
+          "url": "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl",
+          "version": "0.4.6"
+        },
+        {
+          "filename": "pycryptodome-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "package": "pycryptodome",
+          "sha256": "c8987bd3307a39bc03df5c8e0e3d8be0c4c3518b7f044b0f4c15d1aa78f52575",
+          "size": 2268954,
+          "url": "https://files.pythonhosted.org/packages/5f/e9/a09476d436d0ff1402ac3867d933c61805ec2326c6ea557aeeac3825604e/pycryptodome-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "version": "3.23.0"
+        },
+        {
+          "filename": "pycryptodomex-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "package": "pycryptodomex",
+          "sha256": "f489c4765093fb60e2edafdf223397bc716491b2b69fe74367b70d6999257a5c",
+          "size": 2272578,
+          "url": "https://files.pythonhosted.org/packages/c8/a9/8862616a85cf450d2822dbd4fff1fcaba90877907a6ff5bc2672cafe42f8/pycryptodomex-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "version": "3.23.0"
+        },
+        {
+          "filename": "libusb_package-1.0.30.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+          "package": "libusb-package",
+          "sha256": "f502ad5a0527b8c0431de817662325c88a1bba2cc334173665b04ad168d7b6d3",
+          "size": 76159,
+          "url": "https://files.pythonhosted.org/packages/6f/e1/a7c83535749332825f02d6693868f8ee9ae99c4104e60a483773bb652c0e/libusb_package-1.0.30.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+          "version": "1.0.30.0"
+        },
+        {
+          "filename": "importlib_resources-7.1.0-py3-none-any.whl",
+          "package": "importlib-resources",
+          "sha256": "1bd7b48b4088eddb2cd16382150bb515af0bd2c70128194392725f82ad2c96a1",
+          "size": 37232,
+          "url": "https://files.pythonhosted.org/packages/8a/db/55a262f3606bebcae07cc14095338471ad7c0bbcaa37707e6f0ee49725b7/importlib_resources-7.1.0-py3-none-any.whl",
+          "version": "7.1.0"
+        }
+      ]
+    },
+    "macos-aarch64": {
+      "python": {
+        "filename": "cpython-3.12.14+20260901-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "81a359f1cfadd4da11766534c5913791cea55f26e1bb902cacd2a531bb1e4b2b",
+        "size": 24981445,
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-aarch64-apple-darwin-install_only_stripped.tar.gz"
+      },
+      "python_executable": "python/bin/python3.12",
+      "site_packages": "python/lib/python3.12/site-packages",
+      "wheels": [
+        {
+          "filename": "pyusb-1.3.1-py3-none-any.whl",
+          "package": "pyusb",
+          "sha256": "bf9b754557af4717fe80c2b07cc2b923a9151f5c08d17bdb5345dac09d6a0430",
+          "size": 58465,
+          "url": "https://files.pythonhosted.org/packages/28/b8/27e6312e86408a44fe16bd28ee12dd98608b39f7e7e57884a24e8f29b573/pyusb-1.3.1-py3-none-any.whl",
+          "version": "1.3.1"
+        },
+        {
+          "filename": "pyserial-3.5-py2.py3-none-any.whl",
+          "package": "pyserial",
+          "sha256": "c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0",
+          "size": 90585,
+          "url": "https://files.pythonhosted.org/packages/07/bc/587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl",
+          "version": "3.5"
+        },
+        {
+          "filename": "colorama-0.4.6-py2.py3-none-any.whl",
+          "package": "colorama",
+          "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+          "size": 25335,
+          "url": "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl",
+          "version": "0.4.6"
+        },
+        {
+          "filename": "pycryptodome-3.23.0-cp37-abi3-macosx_10_9_universal2.whl",
+          "package": "pycryptodome",
+          "sha256": "187058ab80b3281b1de11c2e6842a357a1f71b42cb1e15bce373f3d238135c27",
+          "size": 2495627,
+          "url": "https://files.pythonhosted.org/packages/db/6c/a1f71542c969912bb0e106f64f60a56cc1f0fabecf9396f45accbe63fa68/pycryptodome-3.23.0-cp37-abi3-macosx_10_9_universal2.whl",
+          "version": "3.23.0"
+        },
+        {
+          "filename": "pycryptodomex-3.23.0-cp37-abi3-macosx_10_9_universal2.whl",
+          "package": "pycryptodomex",
+          "sha256": "06698f957fe1ab229a99ba2defeeae1c09af185baa909a31a5d1f9d42b1aaed6",
+          "size": 2499240,
+          "url": "https://files.pythonhosted.org/packages/dd/9c/1a8f35daa39784ed8adf93a694e7e5dc15c23c741bbda06e1d45f8979e9e/pycryptodomex-3.23.0-cp37-abi3-macosx_10_9_universal2.whl",
+          "version": "3.23.0"
+        },
+        {
+          "filename": "libusb_package-1.0.30.0-py3-none-macosx_11_0_arm64.whl",
+          "package": "libusb-package",
+          "sha256": "4ad25f8d254bbbdd234446d5580b24d62d59bb0e690d8090457dac347f044437",
+          "size": 65700,
+          "url": "https://files.pythonhosted.org/packages/52/6f/26de4e9f858ab50e87931f0be268f3c1bbfce33e8584add60da857632142/libusb_package-1.0.30.0-py3-none-macosx_11_0_arm64.whl",
+          "version": "1.0.30.0"
+        },
+        {
+          "filename": "importlib_resources-7.1.0-py3-none-any.whl",
+          "package": "importlib-resources",
+          "sha256": "1bd7b48b4088eddb2cd16382150bb515af0bd2c70128194392725f82ad2c96a1",
+          "size": 37232,
+          "url": "https://files.pythonhosted.org/packages/8a/db/55a262f3606bebcae07cc14095338471ad7c0bbcaa37707e6f0ee49725b7/importlib_resources-7.1.0-py3-none-any.whl",
+          "version": "7.1.0"
+        }
+      ]
+    },
+    "macos-x86_64": {
+      "python": {
+        "filename": "cpython-3.12.14+20260901-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "65b195c9cedc1fef6767f044f9822069adbd1bd9204d424ece4628776fdc04bb",
+        "size": 24686153,
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-x86_64-apple-darwin-install_only_stripped.tar.gz"
+      },
+      "python_executable": "python/bin/python3.12",
+      "site_packages": "python/lib/python3.12/site-packages",
+      "wheels": [
+        {
+          "filename": "pyusb-1.3.1-py3-none-any.whl",
+          "package": "pyusb",
+          "sha256": "bf9b754557af4717fe80c2b07cc2b923a9151f5c08d17bdb5345dac09d6a0430",
+          "size": 58465,
+          "url": "https://files.pythonhosted.org/packages/28/b8/27e6312e86408a44fe16bd28ee12dd98608b39f7e7e57884a24e8f29b573/pyusb-1.3.1-py3-none-any.whl",
+          "version": "1.3.1"
+        },
+        {
+          "filename": "pyserial-3.5-py2.py3-none-any.whl",
+          "package": "pyserial",
+          "sha256": "c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0",
+          "size": 90585,
+          "url": "https://files.pythonhosted.org/packages/07/bc/587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl",
+          "version": "3.5"
+        },
+        {
+          "filename": "colorama-0.4.6-py2.py3-none-any.whl",
+          "package": "colorama",
+          "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+          "size": 25335,
+          "url": "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl",
+          "version": "0.4.6"
+        },
+        {
+          "filename": "pycryptodome-3.23.0-cp37-abi3-macosx_10_9_x86_64.whl",
+          "package": "pycryptodome",
+          "sha256": "cfb5cd445280c5b0a4e6187a7ce8de5a07b5f3f897f235caa11f1f435f182843",
+          "size": 1640362,
+          "url": "https://files.pythonhosted.org/packages/6e/4e/a066527e079fc5002390c8acdd3aca431e6ea0a50ffd7201551175b47323/pycryptodome-3.23.0-cp37-abi3-macosx_10_9_x86_64.whl",
+          "version": "3.23.0"
+        },
+        {
+          "filename": "pycryptodomex-3.23.0-cp37-abi3-macosx_10_9_x86_64.whl",
+          "package": "pycryptodomex",
+          "sha256": "b2c2537863eccef2d41061e82a881dcabb04944c5c06c5aa7110b577cc487545",
+          "size": 1644042,
+          "url": "https://files.pythonhosted.org/packages/7a/62/f5221a191a97157d240cf6643747558759126c76ee92f29a3f4aee3197a5/pycryptodomex-3.23.0-cp37-abi3-macosx_10_9_x86_64.whl",
+          "version": "3.23.0"
+        },
+        {
+          "filename": "libusb_package-1.0.30.0-py3-none-macosx_10_9_x86_64.whl",
+          "package": "libusb-package",
+          "sha256": "2b98784bac3bedda7e95bb5039dd0eded84b02f36110e4d5d607375366c61090",
+          "size": 69516,
+          "url": "https://files.pythonhosted.org/packages/42/a8/8b3d5dae7340880d556f9f866874b9674b2e3a22fee1e2b96f1ab0feae36/libusb_package-1.0.30.0-py3-none-macosx_10_9_x86_64.whl",
+          "version": "1.0.30.0"
+        },
+        {
+          "filename": "importlib_resources-7.1.0-py3-none-any.whl",
+          "package": "importlib-resources",
+          "sha256": "1bd7b48b4088eddb2cd16382150bb515af0bd2c70128194392725f82ad2c96a1",
+          "size": 37232,
+          "url": "https://files.pythonhosted.org/packages/8a/db/55a262f3606bebcae07cc14095338471ad7c0bbcaa37707e6f0ee49725b7/importlib_resources-7.1.0-py3-none-any.whl",
+          "version": "7.1.0"
+        }
+      ]
+    },
+    "windows-x86_64": {
+      "python": {
+        "filename": "cpython-3.12.14+20260901-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "sha256": "7c45c9622400d578709a9b2cddbe8124cc21d382409d9f13406d706d28e31b14",
+        "size": 21980728,
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+      },
+      "python_executable": "python/python.exe",
+      "site_packages": "python/Lib/site-packages",
+      "wheels": [
+        {
+          "filename": "pyusb-1.3.1-py3-none-any.whl",
+          "package": "pyusb",
+          "sha256": "bf9b754557af4717fe80c2b07cc2b923a9151f5c08d17bdb5345dac09d6a0430",
+          "size": 58465,
+          "url": "https://files.pythonhosted.org/packages/28/b8/27e6312e86408a44fe16bd28ee12dd98608b39f7e7e57884a24e8f29b573/pyusb-1.3.1-py3-none-any.whl",
+          "version": "1.3.1"
+        },
+        {
+          "filename": "pyserial-3.5-py2.py3-none-any.whl",
+          "package": "pyserial",
+          "sha256": "c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0",
+          "size": 90585,
+          "url": "https://files.pythonhosted.org/packages/07/bc/587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl",
+          "version": "3.5"
+        },
+        {
+          "filename": "colorama-0.4.6-py2.py3-none-any.whl",
+          "package": "colorama",
+          "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+          "size": 25335,
+          "url": "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl",
+          "version": "0.4.6"
+        },
+        {
+          "filename": "pycryptodome-3.23.0-cp37-abi3-win_amd64.whl",
+          "package": "pycryptodome",
+          "sha256": "c75b52aacc6c0c260f204cbdd834f76edc9fb0d8e0da9fbf8352ef58202564e2",
+          "size": 1799636,
+          "url": "https://files.pythonhosted.org/packages/54/2f/e97a1b8294db0daaa87012c24a7bb714147c7ade7656973fd6c736b484ff/pycryptodome-3.23.0-cp37-abi3-win_amd64.whl",
+          "version": "3.23.0"
+        },
+        {
+          "filename": "pycryptodomex-3.23.0-cp37-abi3-win_amd64.whl",
+          "package": "pycryptodomex",
+          "sha256": "52e5ca58c3a0b0bd5e100a9fbc8015059b05cffc6c66ce9d98b4b45e023443b9",
+          "size": 1803124,
+          "url": "https://files.pythonhosted.org/packages/69/96/11f36f71a865dd6df03716d33bd07a67e9d20f6b8d39820470b766af323c/pycryptodomex-3.23.0-cp37-abi3-win_amd64.whl",
+          "version": "3.23.0"
+        },
+        {
+          "filename": "libusb_package-1.0.30.0-py3-none-win_amd64.whl",
+          "package": "libusb-package",
+          "sha256": "90808da724c8939a333d931d0c7226372ca5fefd98e2f2f3ef79fd918aa37522",
+          "size": 90711,
+          "url": "https://files.pythonhosted.org/packages/60/4a/ff49bd77f33af05ca26fee29d601beb1e19ca791bb86efece82a3833885c/libusb_package-1.0.30.0-py3-none-win_amd64.whl",
+          "version": "1.0.30.0"
+        },
+        {
+          "filename": "importlib_resources-7.1.0-py3-none-any.whl",
+          "package": "importlib-resources",
+          "sha256": "1bd7b48b4088eddb2cd16382150bb515af0bd2c70128194392725f82ad2c96a1",
+          "size": 37232,
+          "url": "https://files.pythonhosted.org/packages/8a/db/55a262f3606bebcae07cc14095338471ad7c0bbcaa37707e6f0ee49725b7/importlib_resources-7.1.0-py3-none-any.whl",
+          "version": "7.1.0"
+        }
+      ]
+    }
+  },
+  "python_release": "20260901",
+  "python_version": "3.12.14",
+  "schema": 1
+}

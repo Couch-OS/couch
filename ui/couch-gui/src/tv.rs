@@ -7,6 +7,8 @@ mod apple;
 mod infrared;
 #[path = "tv_media.rs"]
 mod media;
+#[path = "tv_sonos.rs"]
+mod sonos;
 use crate::{home, App, TvChoice};
 use couch_control::WebOs as Client;
 use couch_webos::{Button, Playback, Settings};
@@ -459,6 +461,14 @@ fn worker(rx: mpsc::Receiver<Work>, tx: mpsc::SyncSender<Event>, active: Arc<Ato
                     }
                 }
             }
+            if w.connection.starts_with("sonos:") {
+                match sonos::run(&w,&active) {
+                    Ok(Some(event)) => { let _=tx.try_send(event); },
+                    Ok(None) => {},
+                    Err(error) => { let _=tx.try_send(Event{generation,details:None,status:Err(error)}); },
+                }
+                continue;
+            }
             if w.connection.starts_with("ir:") {
                 let result = infrared::run(&w, &active);
                 match result {
@@ -741,6 +751,9 @@ fn resolve_target(
     {
         return Ok((format!("ir:{id}"), Some(id.into())));
     }
+    if matches!(integration,Some(couch_model::Integration::Sonos{..})) {
+        return Ok((format!("sonos:{id}"),Some(id.into())));
+    }
     let provider = match integration {
         Some(couch_model::Integration::AndroidTv) => couch_model::Provider::AndroidTv,
         Some(couch_model::Integration::AppleTv) => couch_model::Provider::AppleTv,
@@ -851,7 +864,10 @@ impl Controller {
             app.set_tv_source("Checking…".into());
             app.set_tv_sound("Checking…".into());
             app.set_tv_picture("Checking…".into());
-            app.set_tv_status("Checking TV status…".into());
+            app.set_tv_status(if app.get_tv_sonos() {"Checking Sonos status…"} else {"Checking TV status…"}.into());
+            if app.get_tv_sonos() {
+                let _=self.tx.try_send(Work{connection:self.connection.clone(),device:self.device.clone(),generation:self.generation,action:Command::Retry,at:Instant::now(),repeat:false,config:crate::connections::config()});
+            }
         }
         let inputs = std::mem::take(&mut *self.input.borrow_mut());
         for (action, repeat, config) in inputs {
@@ -886,12 +902,13 @@ impl Controller {
                     c.connection(&couch_model::Id::new(connection))
                         .is_some_and(|c| c.provider == couch_model::Provider::AppleTv)
                 });
+                app.set_tv_sonos(connection.starts_with("sonos:"));
                 app.set_tv_ir(connection.starts_with("ir:"));
                 app.set_tv_android(android);
                 app.set_tv_apple(apple);
                 self.generation += 1;
                 self.active.store(self.generation, Ordering::SeqCst);
-                if android {
+                if android || apple {
                     self.media.open(app, self.generation, &key);
                 } else {
                     self.media.clear(app);
@@ -914,7 +931,7 @@ impl Controller {
                     if app.get_tv_ir() {
                         "Infrared · No device feedback"
                     } else {
-                        "Connecting to TV…"
+                        if app.get_tv_sonos() {"Connecting to Sonos…"} else {"Connecting to TV…"}
                     }
                     .into(),
                 );
@@ -934,6 +951,7 @@ impl Controller {
                 continue;
             }
             if ["inputs", "apps", "picture", "sound", "commands"].contains(&action) {
+                if app.get_tv_sonos() { app.set_tv_error("Sonos has no TV inputs or apps".into()); continue; }
                 if app.get_tv_ir() && action != "commands" {
                     app.set_tv_error("Infrared devices do not report apps or settings".into());
                     continue;

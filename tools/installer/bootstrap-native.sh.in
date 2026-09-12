@@ -1,0 +1,42 @@
+#!/bin/sh
+# Generated for one immutable release. All three inputs are pinned below.
+set -eu
+version='@VERSION@'
+case "$(uname -s):$(uname -m)" in
+@PLATFORMS@
+    *) echo 'This release supports Linux x64 and Intel/Apple Silicon Macs.' >&2; exit 2 ;;
+esac
+command -v curl >/dev/null 2>&1 || { echo 'curl is required.' >&2; exit 2; }
+if command -v sha256sum >/dev/null 2>&1; then
+    checksum() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+    checksum() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+    echo 'A SHA-256 utility (sha256sum or shasum) is required.' >&2; exit 2
+fi
+# curl | sh consumes stdin; prompts read the controlling terminal.
+if ! { exec 3</dev/tty; } 2>/dev/null; then
+    echo 'Run this command in an interactive terminal.' >&2; exit 2
+fi
+umask 077
+installer_work=$(mktemp -d "${TMPDIR:-/tmp}/couch-installer.XXXXXXXX")
+trap 'rm -rf "$installer_work"' 0
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+base="https://github.com/dangerouslaser/couch/releases/download/$version"
+download() {
+    name=$1 expected_size=$2 expected_hash=$3 destination=$4
+    curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        --connect-timeout 15 --max-time 300 --max-filesize "$expected_size" \
+        --output "$destination" "$base/$name"
+    [ "$(wc -c < "$destination")" -eq "$expected_size" ] && \
+        [ "$(checksum "$destination")" = "$expected_hash" ] || {
+        echo 'Installer checksum or size mismatch; nothing will be executed.' >&2; exit 2
+    }
+}
+download "$host_file" "$host_size" "$host_hash" "$installer_work/host"
+download "$tui_file" "$tui_size" "$tui_hash" "$installer_work/tui"
+download 'installer.json' '@CONFIG_SIZE@' '@CONFIG_HASH@' "$installer_work/installer.json"
+chmod 700 "$installer_work/host" "$installer_work/tui"
+"$installer_work/tui" --native-backend "$installer_work/host" \
+    --config "$installer_work/installer.json" <&3

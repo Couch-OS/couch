@@ -349,7 +349,7 @@ gate, path traversal and the asset fingerprinting.
 
 The binary is over a megabyte, so `tools/push.py` - 512 bytes a line over the
 USB serial shell - is the wrong tool. Copy it over ssh, which means the device
-is already on WiFi with sshd running (`stage2/sshd.sh` only starts it once a key
+is already on WiFi with sshd running (`couch-system` only starts it once a key
 or password has been enrolled through the setup portal).
 
 `sshd` runs inside the Alpine chroot, so `/opt/couch` in an ssh session is the
@@ -596,3 +596,5 @@ mobile layout and room activity ownership with an isolated local daemon.
 See [Connections](connections.md) for multiple bridges/servers/TVs and private Kodi
 credentials, and [Remote settings](remote-settings.md) for timezone, clock format
 and the docked clock display.
+
+Runtime update channels and publishing: [runtime-updates.md](runtime-updates.md).

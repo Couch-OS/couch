@@ -1,30 +1,5 @@
 #!/bin/sh
-# Networks for the portal to offer.
-#
-# By default this serves the list portal.sh cached just before the radio went
-# into AP mode. A live rescan is also possible: wlan0 lives on phy0 and the
-# setup AP on phy1, so the station interface can still scan while the AP is up.
-# It stays opt-in (?live=1) because an off-channel scan briefly interrupts the
-# AP - which would stall the very page that asked for it.
-echo "Content-Type: application/json"
-echo "Cache-Control: no-store"
-echo
-
-case "$QUERY_STRING" in
-*live=1*)
-    # portal.sh stops the station supplicant before handing the radio to
-    # hostapd, so bring one back for the scan. wlan0 is on phy0 and the AP on
-    # phy1, so this does not disturb the interface serving this request.
-    pidof wpa_supplicant >/dev/null ||
-        wpa_supplicant -i wlan0 -Dnl80211 -c /tmp/scan.conf -B >/dev/null 2>&1
-    ip link set wlan0 up 2>/dev/null
-    wpa_cli -p /tmp/wpa -i wlan0 scan >/dev/null 2>&1
-    sleep 4
-    if wpa_cli -p /tmp/wpa -i wlan0 scan_results >/tmp/scan.new 2>/dev/null &&
-       [ -s /tmp/scan.new ]; then
-        mv /tmp/scan.new /tmp/scan.raw
-        sh /opt/couch/scanjson.sh < /tmp/scan.raw > /tmp/scan.json 2>/dev/null
-    fi
-    ;;
-esac
-cat /tmp/scan.json 2>/dev/null || echo "[]"
+# HTTP adapter only; privileged policy lives in the local Rust service.
+SYSTEM=/opt/couch/couch-system
+[ -x /opt/couch/runtime/current/couch-system ] && SYSTEM=/opt/couch/runtime/current/couch-system
+exec "$SYSTEM" cgi

@@ -8,7 +8,7 @@ pub struct Appearance {
     pub accent: String,
 }
 fn default_accent() -> String {
-    "#E8703A".into()
+    "#FFFFFF".into()
 }
 impl Default for Appearance {
     fn default() -> Self {
@@ -48,8 +48,12 @@ mod tests {
         }
     }
     #[test]
-    fn old_config_keeps_its_accent() {
+    fn missing_appearance_uses_white_and_explicit_colors_are_preserved() {
         let c: crate::Config = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
-        assert_eq!(c.appearance.rgb(), Some([232, 112, 58]));
+        assert_eq!(c.appearance.rgb(), Some([255, 255, 255]));
+        let saved: crate::Config =
+            serde_json::from_str(r##"{"schema_version":1,"appearance":{"accent":"#E8703A"}}"##)
+                .unwrap();
+        assert_eq!(saved.appearance.rgb(), Some([232, 112, 58]));
     }
 }

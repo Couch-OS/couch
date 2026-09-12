@@ -176,6 +176,7 @@ fn Shell() -> impl IntoView {
         </header>
 
         <main>
+            {move || (app.paired.get() == Some(true)).then(|| screens::updates::notification(app))}
             // Inside main rather than over it: a fixed banner covered the
             // heading of whatever screen raised the error, which is the one
             // thing on the page that says what the message is about. It is
@@ -203,6 +204,7 @@ fn Shell() -> impl IntoView {
                 (Route::Rooms, "Rooms & devices"),
                 (Route::Connections, "Connections"),
                 (Route::Settings, "Remote settings"),
+                (Route::Updates, "Updates"),
                 (Route::Areas, "Areas"),
                 (Route::Activities, "Activities"),
             ]

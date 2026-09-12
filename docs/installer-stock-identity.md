@@ -62,11 +62,9 @@ profile and target pins plus `--allow-private-flash --stock-boot-confirmed`,
 Use `--check-only` first. `--boot-after-capture` remains explicit and only runs
 after every verification succeeds. No resume or retry mode exists.
 
-For the currently reviewed private original recovery, the exact full-partition
-size is 16,777,216 bytes and SHA-256 is
-`dd925ba4b671ac9d9539b4de0c23bc4e8a03bfa13c81c6278418cdcf49b4ae8d`.
-Do not use the misleadingly named `android-p9-BACKUP.img`: that is a stock boot
-image, not the original recovery.
+Use the original recovery size and SHA-256 from the independently reviewed
+private manifest for this device. Filenames alone do not establish partition
+identity; never substitute a stock boot image for recovery.
 
 The command verifies trusted CID/layout, captures and independently rereads all
 five identity partitions, syncs the new backup directory, and checks existing

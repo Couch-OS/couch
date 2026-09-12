@@ -1,7 +1,5 @@
 //! What the UI needs to know about the device it is running on.
 
-use std::process::Command;
-
 /// Only called after a real GUI frame, then from the functioning main loop.
 /// Atomic replacement keeps init from reading half a heartbeat.
 pub fn report_gui_health() -> std::io::Result<()> {
@@ -84,7 +82,7 @@ pub fn setup_ssid() -> String {
 }
 
 /// The portal asks for a physical button press before granting SSH access, and
-/// confirm.sh has no way to say so on the panel - its output goes to a log.
+/// couch-system has no way to say so on the panel - its output goes to a log.
 pub enum Approval {
     Idle,
     Waiting,
@@ -129,13 +127,14 @@ pub fn pairing_pin() -> Option<(String, i32)> {
 }
 
 fn read_trimmed(path: &str) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 /// The wpa_supplicant control socket stage2 opens, and the tools that talk to
 /// it. Absolute, because couch-gui's PATH at boot is not guaranteed to carry
 /// /sbin.
-const SSHD: &str = "/usr/sbin/sshd";
 
 // --- user settings ----------------------------------------------------------
 //
@@ -158,7 +157,7 @@ pub struct UiSettings {
     pub dim_index: i32,
     pub off_index: i32,
     /// Whether SSH should be running. The preference, persisted so a reboot
-    /// keeps it; sshd.sh reads it at boot. Only meaningful when a key or
+    /// keeps it; couch-system reads it at boot. Only meaningful when a key or
     /// password is enrolled - see ssh_available.
     pub ssh: bool,
 }
@@ -168,8 +167,13 @@ impl Default for UiSettings {
         // 100% bright, dim after 30s, off after 2m - the timings that were
         // hard-coded before the menu existed.
         // SSH default follows enrolment: if a key is enrolled the shipped
-        // sshd.sh already starts it, so the stored default matches.
-        UiSettings { brightness: 100, dim_index: 1, off_index: 3, ssh: ssh_available() }
+        // couch-system already starts it, so the stored default matches.
+        UiSettings {
+            brightness: 100,
+            dim_index: 1,
+            off_index: 3,
+            ssh: ssh_available(),
+        }
     }
 }
 
@@ -177,7 +181,9 @@ pub fn load_settings() -> UiSettings {
     let mut s = UiSettings::default();
     if let Ok(text) = std::fs::read_to_string(SETTINGS_PATH) {
         for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else { continue };
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
             let (k, v) = (k.trim(), v.trim());
             match k {
                 "brightness" => {
@@ -206,7 +212,10 @@ pub fn load_settings() -> UiSettings {
 pub fn save_settings(s: &UiSettings) {
     let body = format!(
         "brightness={}\ndim={}\noff={}\nssh={}\n",
-        s.brightness, s.dim_index, s.off_index, if s.ssh { 1 } else { 0 }
+        s.brightness,
+        s.dim_index,
+        s.off_index,
+        if s.ssh { 1 } else { 0 }
     );
     let tmp = format!("{SETTINGS_PATH}.tmp");
     if std::fs::write(&tmp, body).is_ok() {
@@ -244,20 +253,10 @@ pub fn ssh_running() -> bool {
 /// Whether anyone is enrolled to use SSH: a key, or a root password. Without
 /// one, sshd would listen for nobody, so the toggle offers nothing to turn on.
 pub fn ssh_available() -> bool {
-    let has_key = std::fs::read_to_string("/root/.ssh/authorized_keys")
-        .map(|s| s.lines().any(|l| !l.trim().is_empty()))
-        .unwrap_or(false);
-    let has_pw = std::fs::read_to_string("/etc/shadow")
-        .map(|s| {
-            s.lines()
-                .filter(|l| l.starts_with("root:"))
-                .any(|l| {
-                    let f = l.split(':').nth(1).unwrap_or("");
-                    !f.is_empty() && f != "!" && f != "*" && f != "!!"
-                })
-        })
-        .unwrap_or(false);
-    has_key || has_pw
+    matches!(
+        couch_system::client::call(couch_system::protocol::Request::SshAvailable),
+        Ok(couch_system::protocol::Reply::Available(true))
+    )
 }
 
 // --- SSH control ------------------------------------------------------------
@@ -270,31 +269,10 @@ pub fn ssh_available() -> bool {
 /// Start sshd. Generates host keys on first use (never baked into the image,
 /// or every device would share them). Returns whether sshd is listening after.
 pub fn ssh_start() -> bool {
-    if !ssh_available() {
-        return false;
-    }
-    if !std::path::Path::new("/etc/ssh/ssh_host_ed25519_key").exists() {
-        let _ = Command::new("/usr/bin/ssh-keygen").arg("-A").output();
-    }
-    let _ = Command::new(SSHD).output();
-    ssh_running()
+    couch_system::client::action(couch_system::protocol::Request::Ssh { enabled: true }).is_ok()
 }
 
 /// Stop sshd. Returns whether it is stopped after.
 pub fn ssh_stop() -> bool {
-    // pkill is not guaranteed present; kill by pid from /proc, the same scan
-    // ssh_running uses.
-    if let Ok(dir) = std::fs::read_dir("/proc") {
-        for e in dir.filter_map(|e| e.ok()) {
-            let is_sshd = std::fs::read_to_string(e.path().join("comm"))
-                .map(|c| c.trim() == "sshd")
-                .unwrap_or(false);
-            if is_sshd {
-                if let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) {
-                    unsafe { libc::kill(pid, libc::SIGTERM) };
-                }
-            }
-        }
-    }
-    !ssh_running()
+    couch_system::client::action(couch_system::protocol::Request::Ssh { enabled: false }).is_ok()
 }

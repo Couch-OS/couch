@@ -1,5 +1,10 @@
 # Read-only RAM Linux USB benchmark prototype
 
+The default binary remains the read-only probe described below. The explicit
+`private-install` build adds the private installer protocol at the end of this
+document; it must be packaged as `private-ram-wifi-installer`, not as a read-only
+probe, and the bootstrap requires `--allow-private-wifi-install`.
+
 This is an offline-built throughput experiment, not an installer or an approved
 boot image. No command writes storage. No host helper resets USB, changes its
 configuration, detaches kernel drivers, flashes, or boots the device.
@@ -127,3 +132,130 @@ throughput measurements.
 
 Official TLS API references: [rustls configuration](https://docs.rs/rustls/latest/rustls/struct.ConfigBuilder.html)
 and [ring provider](https://docs.rs/rustls/latest/rustls/crypto/ring/index.html).
+
+## Private installer extension
+
+Only the feature-enabled binary accepts these extra CBP1 commands:
+
+| Operation | Transport | Argument | Meaning |
+| --- | --- | --- | --- |
+| 6 | USB only | 1–512 bytes | JSON `plan_sha256` and random 32-byte hex `nonce`; set once per boot |
+| 10 | Authenticated TLS only | 0 | Consume one install attempt and enter the transaction protocol |
+
+Operation 6 returns the ordinary empty CBR1 acknowledgment. Operation 10 switches
+directly to length-prefixed JSON: little-endian u32 length followed by 1–1,048,576
+UTF-8 bytes. The host sends exact canonical plan bytes whose SHA-256 must match
+the prior physical USB commitment. The plan carries full CID/GPT identity,
+calibration hashes, bootstrap/original-boot hashes, selected manifest hash, and
+exact image sizes/full hashes/1 MiB chunk hashes. No paths or caller-selected
+block offsets are accepted as commands.
+
+The device reports its checked binding, requests acknowledgment of the durable
+original-boot backup, then streams all remaining original target and identity
+partitions. Each `backup` JSON event names a fixed target and exact size; binary
+chunks follow. A chunk header is three little-endian u32 fields: raw length,
+wire length, and encoding (0 raw, 1 zlib). Both lengths are bounded by 1 MiB;
+expanded length must equal the remaining expected chunk length, and trailing
+compressed data is rejected. Compression never omits original bytes or skips
+bytes within the transmitted image. Compact userdata excludes the unused partition tail. The device sends `checking_backup` and then `backup_verified` with
+a new O_DIRECT full readback hash. The host checks its own saved file and fsyncs
+the journal before replying `{"ack":"backup_verified","target":...,"sha256":...}`.
+Original boot is acknowledged against the USB bootstrap receipt, so the
+temporary stage never overwrites the saved Android original.
+
+After `backups_complete` is durably acknowledged, the device runs the shared
+transaction policy in recovery/userdata/logo/odmdtbo/boot order, omitting absent
+optional targets. `writing` is journaled and acknowledged before the host sends
+image chunks; `synced` follows writer fsync and close; `verified` follows full
+independent O_DIRECT readback of exactly the transmitted image. These acknowledgments have the same shape with
+an empty sha256. The `complete` phase does not yet certify final identity;
+only the subsequent `installed` event lets the host set its complete flag.
+The host then sends `{"action":"reboot"}` or `{"action":"leave"}`. Reboot is
+available only after all checks; it is not proof that the normal OS started.
+
+The host releases its USB interface after provisioning and before the long TLS
+transaction. TLS read waits allow up to 900 seconds for full local eMMC hashing;
+write waits stay bounded. Any error consumes the attempt, closes an open writer,
+and prevents automatic reconnect/resume. Retain the host journal and originals.
+Tests exercise both protocol sides against fixtures, including corrupted chunks,
+wrong order, missing durable acknowledgments and failed independent readback.
+Physical radio bring-up and complete stock-to-Couch acceptance remain separate.
+
+
+### Compact userdata, progress and backup selection
+
+A userdata image may be smaller than its GPT partition, with positive 4096-byte
+alignment. All other images must still cover their exact partition. The host
+personalizes a private regular ext4 image, checks it, shrinks it with `resize2fs -M`,
+and checks both its superblock geometry and legacy feature bits before hashing.
+The device writes only that prefix and independently reads/hashes exactly those
+bytes. It does not zero or read back the unused tail. After `verified`, compact
+userdata adds durable `expanding` and `expanded` phases. The fixed backend checks
+an unmounted exclusive userdata node, runs packaged `e2fsck -fn`, grows with
+`resize2fs` to the independently checked GPT capacity, and checks the resulting
+superblock and filesystem. Growth changes filesystem metadata; the image hash
+certifies the pre-growth contents, while post-growth filesystem checks certify
+expansion. Any failure prevents the final boot write. No partition table edit,
+discard or generic device-path command is exposed.
+
+Independent backup and write readbacks emit `verify_progress` JSON with exactly
+`event`, `phase` (`backup` or `write`), `target`, `done` and `total`. Counters start
+at zero and advance once per read/hash chunk through the full expected byte count.
+These events never replace the final checked digest/verified phase or require
+ACKs. The host rejects mismatched targets, totals, regression or early completion.
+Legacy pinned services without progress frames are still understood. Host file
+hashes also produce measured TUI counters.
+
+The plan-bound boolean `skip_userdata_backup` defaults to false. YOLO sets it
+true and omits only Android userdata backup; all other originals/calibration and
+all image verification remain mandatory. It never changes image write sizes.
+
+An explicit `--wifi-retry-from` flow accepts an interrupted run only after complete
+full original backups are rehashed and no final boot write was recorded. It binds
+`reused_backups`, an exact target/calibration hash inventory, into the new USB plan.
+The service checks its inventory and calibration hashes, omits retransmission of
+originals, and still requires the durable `backups_complete` ACK before writing.
+The host makes and verifies new sparse/reflink copies of the saved originals;
+it never backs up the partially overwritten userdata as Android. This is an
+operator-started new boot and transaction, not automatic in-session retry.
+
+## Remote Wi-Fi discovery
+
+USB status (opcode 5) advertises `"scan": true` when opcode 7, length zero, is
+available. Hosts must check this capability before using it: older stages reject
+unknown operations and must retain manual SSID entry. Scan is USB-only and is
+unavailable once credentials have been provisioned; authenticated TLS does not
+expose the operation.
+
+The normal CBR1 response contains at most 16 KiB of JSON:
+`{"status":"ok","networks":[{"ssid_hex":"6578616d706c65","security":"wpa2","dbm":-45}],"truncated":false}`.
+Security values are `wpa2`, `open`, `enterprise`, `wpa3`, `wep`, and `unsupported`;
+only the first two can be selected for provisioning. Results preserve SSID bytes,
+deduplicate by bytes/security, and order by strongest signal. Hidden empty SSIDs
+are omitted. A completed scan failure returns `status: "unavailable"` and an empty
+list, allowing rescan/manual entry. Invalid, incomplete or timed-out USB frames
+stop the host session; they must not be treated as a clean fallback response.
+
+The stage uses [wpa_supplicant's control interface](https://w1.fi/wpa_supplicant/devel/ctrl_iface_page.html),
+with separate command/event sockets, a 12-second absolute scan deadline, bounded
+datagrams and BSS enumeration to avoid truncated SCAN_RESULTS tables. No new
+external CLI is packaged: the existing supplicant provides the control socket.
+
+### Optional stage-side network configuration
+
+A private installer advertises `stage_network_config: true` in USB Wi-Fi status.
+A future native host may bind `network: {"ssid_hex": "...", "psk_hex": "..."}`
+into its TLS install plan. Omit `psk_hex` for an open network. SSIDs contain
+1–32 bytes encoded as hex; derived WPA PSKs contain exactly 32 bytes encoded as
+hex. The stage rejects malformed values and full-size restore images before
+opening the installation disk. Existing hosts omit `network` and retain their
+previous image-personalization behavior.
+
+For compact userdata, the original image hash is independently read back first.
+After expansion, the stage writes `/opt/couch/networks.conf` using packaged
+`debugfs` against the guarded, unmounted partition. It checks the exact saved
+bytes and regular-file mode 0600, syncs the block device and reruns read-only
+`e2fsck`. Failure prevents the `expanded` acknowledgement and final boot write.
+Secrets use root-only temporary RAM files, never process arguments; commands
+have fixed paths and deadlines. This removes filesystem-tool dependencies from
+the eventual native host path; it does not itself provide native USB orchestration.

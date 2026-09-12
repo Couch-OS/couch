@@ -2,7 +2,7 @@
 
 `tools/installer/linux_stage/storage` is an independent library workspace. It is
 **not linked into the RAM probe** and contains **no production block writer**.
-Its tests use private regular files on Ollie; nothing here authorizes flashing.
+Its tests use temporary regular files on Linux; nothing here authorizes flashing.
 
 ## API and transaction phases
 
@@ -52,10 +52,10 @@ boot checks and a physical recovery strategy remain separate requirements.
 
 ## Validation
 
-On Ollie, run with `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0
-CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked` in the storage workspace.
-Eight tests passed using regular files on an **ext4** filesystem, including real
-aligned `O_DIRECT` reads after close, post-close corruption detection, rejection
-of buffered descriptors, mounted/CID mismatch, bad chunks, truncated/extra
-streams, journal failure and refusal to retry. This validates the Linux helper
-on Ollie; HA100 kernel/eMMC direct I/O and real block integration remain untested.
+Run `cargo test --locked` in the storage workspace on Linux with an ext4
+scratch filesystem. The tests exercise aligned `O_DIRECT` reads after close,
+post-close corruption detection, rejection of buffered descriptors, mounted/CID
+mismatch, bad chunks, truncated/extra streams, journal failure and refusal to
+retry. Non-Linux hosts can compile the policy crate, but its Linux direct-I/O
+tests are gated out; a zero-test host run does not validate readback behavior.
+HA100 kernel/eMMC direct I/O and real block integration require physical testing.

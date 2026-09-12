@@ -1,0 +1,38 @@
+name: Native installer frontend
+on:
+  pull_request:
+    paths:
+      - 'tools/installer/host/**'
+      - 'tools/installer/tui/**'
+      - '.github/workflows/installer-native-frontend.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ipc:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Build native host and test terminal
+        shell: python
+        run: |
+          import os, pathlib, subprocess
+          host = pathlib.Path('tools/installer/host')
+          tui = pathlib.Path('tools/installer/tui')
+          for workspace in (host, tui):
+              subprocess.run(['cargo', 'fmt', '--check'], cwd=workspace, check=True)
+              subprocess.run(['cargo', 'test', '--locked'], cwd=workspace, check=True)
+          subprocess.run(['cargo', 'build', '--locked'], cwd=host, check=True)
+          suffix = '.exe' if os.name == 'nt' else ''
+          os.environ['COUCH_NATIVE_HOST_TEST'] = str((host / 'target/debug' / ('couch-installer-host' + suffix)).resolve())
+          subprocess.run(['cargo', 'test', '--locked', '--', '--ignored', '--exact',
+                          'tests::native_private_channel_roundtrip_and_cancel'],
+                         cwd=tui, check=True, timeout=120)

@@ -1,8 +1,9 @@
 //! Native Rust Apple TV Companion client. PIN pairing, authenticated encrypted
 //! sessions and physical remote commands; no Python helper or Apple ID required.
 //! Experimental until exercised with a physical Apple TV. Modern now-playing
-//! metadata uses a separate AirPlay 2/MRP channel and is not implemented here.
+//! metadata uses the separately paired AirPlay 2/MRP `metadata` client.
 mod crypto;
+pub mod metadata;
 pub mod opack;
 use crypto::{field, sequence, tlv, untlv};
 use opack::Value;

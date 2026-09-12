@@ -1,0 +1,11 @@
+[package]
+name = "couch-system"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+couch-updates = { path = "../couch-updates" }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

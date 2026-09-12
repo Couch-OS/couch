@@ -35,7 +35,7 @@ redraws at most once per second, only on changes. Frame writes follow the proven
 
 ## Build and offline preview
 
-Build real device artifacts on Ollie. Generate `display_assets.h` using Python
+Build real device artifacts on a Linux ARM cross-build host. Generate `display_assets.h` using Python
 with Pillow 11.3.0, fonttools 4.60.1 and brotli 1.1.0:
 
 ```sh

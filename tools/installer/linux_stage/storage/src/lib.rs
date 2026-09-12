@@ -1,6 +1,6 @@
-//! Offline transaction policy. No production block writer or network handler.
+//! Transaction policy, shared with the explicitly enabled private Wi-Fi service.
 //! A real backend must independently obtain CID/GPT/mount state; caller assertions
-//! are insufficient. The RAM probe does not depend on this crate.
+//! are insufficient. The default read-only RAM probe does not depend on this crate.
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read};
@@ -115,7 +115,9 @@ impl Plan {
                 .get(target.name())
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing target"))?;
             require(
-                image.size == region.size
+                (image.size == region.size
+                    || (*target == Target::Userdata && image.size < region.size))
+                    && image.size > 0
                     && image.size <= 8 * 1024 * 1024 * 1024
                     && image.size % ALIGNMENT == 0,
                 "image size or direct I/O alignment mismatch",
@@ -144,16 +146,21 @@ pub enum Phase {
     Writing(Target),
     Synced(Target),
     Verified(Target),
+    Expanding(Target),
+    Expanded(Target),
     Complete,
 }
 /// Return success only after the computer has durably recorded and acknowledged
 /// this phase. A device RAM record alone is not an installation journal.
 pub trait Journal {
     fn acknowledge(&mut self, phase: Phase) -> Result<()>;
+    fn verification_progress(&mut self, _target: Target, _done: u64, _total: u64) -> Result<()> {
+        Ok(())
+    }
 }
 /// No paths or caller offsets appear at the transport boundary. Integration must
 /// enforce an exclusive unmounted device, validate descriptor major/minor and GPT,
-/// and independently preserve calibration. No production implementation exists.
+/// and independently preserve calibration. The private backend lives in probe/src/install/block.rs.
 pub trait Storage {
     fn observe(&mut self) -> Result<Observation>;
     fn begin(&mut self, target: Target) -> Result<()>;
@@ -162,6 +169,24 @@ pub trait Storage {
     fn sync_close(&mut self) -> Result<()>;
     /// Open a new O_RDONLY|O_DIRECT descriptor, hash exact full target, no fallback.
     fn direct_hash(&mut self, target: Target, size: u64) -> Result<Hash>;
+    fn direct_hash_progress(
+        &mut self,
+        target: Target,
+        size: u64,
+        progress: &mut dyn FnMut(u64, u64) -> Result<()>,
+    ) -> Result<Hash> {
+        progress(0, size)?;
+        let result = self.direct_hash(target, size)?;
+        progress(size, size)?;
+        Ok(result)
+    }
+    /// Grow only a verified compact userdata filesystem; unsupported backends fail closed.
+    fn expand_userdata(&mut self, _image_size: u64, _partition_size: u64) -> Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "filesystem expansion unavailable",
+        ))
+    }
     /// Close any open writer after failure; never retry or claim completion.
     fn abort(&mut self);
 }
@@ -227,10 +252,21 @@ impl Transaction {
                 journal.acknowledge(Phase::Synced(target))?;
                 plan.check(storage.observe()?)?;
                 require(
-                    storage.direct_hash(target, image.size)? == image.sha256,
+                    storage.direct_hash_progress(target, image.size, &mut |done, total| {
+                        journal.verification_progress(target, done, total)
+                    })? == image.sha256,
                     "independent direct readback mismatch",
                 )?;
                 journal.acknowledge(Phase::Verified(target))?;
+                let capacity = plan.identity.partitions[target.name()].size;
+                if image.size < capacity {
+                    require(target == Target::Userdata, "compact non-userdata image")?;
+                    plan.check(storage.observe()?)?;
+                    journal.acknowledge(Phase::Expanding(target))?;
+                    storage.expand_userdata(image.size, capacity)?;
+                    plan.check(storage.observe()?)?;
+                    journal.acknowledge(Phase::Expanded(target))?;
+                }
             }
             plan.check(storage.observe()?)?;
             journal.acknowledge(Phase::Complete)

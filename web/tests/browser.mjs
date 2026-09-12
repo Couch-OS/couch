@@ -71,7 +71,7 @@ try {
   await navigate('Areas');
   const appearance=page.locator('.appearance');
   await appearance.getByRole('button',{name:'Purple accent',exact:true}).click();
-  assert.equal((await config()).appearance.accent,'#E8703A');
+  assert.equal((await config()).appearance.accent,'#FFFFFF');
   await saved(()=>appearance.getByRole('button',{name:'Save appearance',exact:true}).click());
   assert.equal((await config()).appearance.accent,'#B794F4');
   await appearance.getByLabel('Hex color',{exact:true}).fill('invalid');

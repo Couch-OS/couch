@@ -102,7 +102,7 @@ export component Setup inherits Rectangle {
     }
 
     // The portal demands a physical button press before granting SSH access,
-    // and confirm.sh has no way to say so on the panel - its output goes to a
+    // and couch-system has no way to say so on the panel - its output goes to a
     // log, and this screen owns the display.
     if root.approval != 0: Rectangle {
         x: 24px;

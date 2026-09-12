@@ -1,0 +1,55 @@
+# Generated for one immutable release; compatible with Windows PowerShell 5.1+.
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {
+    throw 'This release requires Windows x64.'
+}
+Add-Type -AssemblyName System.Net.Http
+$version = '@VERSION@'
+$base = "https://github.com/dangerouslaser/couch/releases/download/$version"
+$installerWork = Join-Path ([IO.Path]::GetTempPath()) ('couch-installer-' + [Guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($installerWork) | Out-Null
+$handler = [Net.Http.HttpClientHandler]::new()
+$handler.AllowAutoRedirect = $true
+$handler.MaxAutomaticRedirections = 5
+$client = [Net.Http.HttpClient]::new($handler)
+$client.Timeout = [TimeSpan]::FromSeconds(300)
+function Get-PinnedFile([string]$Name, [long]$Size, [string]$Hash, [string]$Destination) {
+    $cancel = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(300))
+    $response = $null; $inputStream = $null; $outputStream = $null
+    try {
+        $response = $client.GetAsync("$base/$Name", [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cancel.Token).GetAwaiter().GetResult()
+        $response.EnsureSuccessStatusCode() | Out-Null
+        if ($response.RequestMessage.RequestUri.Scheme -ne 'https') { throw 'Dependency redirected away from HTTPS.' }
+        if ($response.Content.Headers.ContentLength -and $response.Content.Headers.ContentLength -ne $Size) { throw 'Installer size mismatch.' }
+        $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $outputStream = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $buffer = New-Object byte[] 65536
+        [long]$count = 0
+        while (($read = $inputStream.ReadAsync($buffer, 0, $buffer.Length, $cancel.Token).GetAwaiter().GetResult()) -gt 0) {
+            $count += $read
+            if ($count -gt $Size) { throw 'Installer download exceeds pinned size.' }
+            $outputStream.Write($buffer, 0, $read)
+        }
+        $outputStream.Flush($true)
+        $outputStream.Dispose(); $outputStream = $null
+        if ($count -ne $Size -or (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Hash) {
+            throw 'Installer checksum or size mismatch; nothing will be executed.'
+        }
+    } finally {
+        if ($outputStream) { $outputStream.Dispose() }
+        if ($inputStream) { $inputStream.Dispose() }
+        if ($response) { $response.Dispose() }
+        $cancel.Dispose()
+    }
+}
+try {
+    Get-PinnedFile '@HOST_FILE@' @HOST_SIZE@ '@HOST_HASH@' (Join-Path $installerWork 'host.exe')
+    Get-PinnedFile '@TUI_FILE@' @TUI_SIZE@ '@TUI_HASH@' (Join-Path $installerWork 'tui.exe')
+    Get-PinnedFile 'installer.json' @CONFIG_SIZE@ '@CONFIG_HASH@' (Join-Path $installerWork 'installer.json')
+    & (Join-Path $installerWork 'tui.exe') --native-backend (Join-Path $installerWork 'host.exe') --config (Join-Path $installerWork 'installer.json')
+    if ($LASTEXITCODE -ne 0) { throw "Installer exited with code $LASTEXITCODE. Preserve its saved originals and log." }
+} finally {
+    $client.Dispose(); $handler.Dispose()
+    Remove-Item -LiteralPath $installerWork -Recurse -Force
+}

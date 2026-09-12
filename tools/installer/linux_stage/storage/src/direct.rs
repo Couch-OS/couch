@@ -13,6 +13,14 @@ impl Drop for Aligned {
 }
 
 pub fn hash(file: &File, size: u64) -> Result<Hash> {
+    hash_with_progress(file, size, &mut |_, _| Ok(()))
+}
+
+pub fn hash_with_progress(
+    file: &File,
+    size: u64,
+    progress: &mut dyn FnMut(u64, u64) -> Result<()>,
+) -> Result<Hash> {
     let metadata = file.metadata()?;
     require(
         metadata.is_file() || metadata.file_type().is_block_device(),
@@ -42,6 +50,7 @@ pub fn hash(file: &File, size: u64) -> Result<Hash> {
     let memory = Aligned(pointer);
     let mut digest = Sha256::new();
     let mut offset = 0;
+    progress(0, size)?;
     while offset < size {
         let count = (size - offset).min(CHUNK as u64) as usize;
         let read = unsafe { libc::pread(fd, memory.0, count, offset as libc::off_t) };
@@ -52,6 +61,7 @@ pub fn hash(file: &File, size: u64) -> Result<Hash> {
         let bytes = unsafe { std::slice::from_raw_parts(memory.0.cast::<u8>(), count) };
         digest.update(bytes);
         offset += count as u64;
+        progress(offset, size)?;
     }
     Ok(digest.finalize().into())
 }

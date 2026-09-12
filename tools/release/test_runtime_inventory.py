@@ -4,7 +4,7 @@ import struct
 import tempfile
 import unittest
 from clean_stage import StageError, artifact_destination
-from runtime_inventory import arm_static, cpio_files, embedded_web, VENDOR_REQUIRED
+from runtime_inventory import arm_static, cpio_files, embedded_web, VENDOR_REQUIRED, RUNTIME, audit
 
 
 def elf(kind=1, machine=40):
@@ -30,6 +30,46 @@ def cpio(items):
 
 
 class RuntimeInventoryTests(unittest.TestCase):
+    def test_coreelec_inventory_requires_static_binary_and_records_its_hash(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = 'opt/couch/couch-coreelec'
+            missing = audit(root)
+            self.assertTrue(any(item.startswith(destination + ':') for item in missing['blockers']))
+            source = root / RUNTIME['couch-coreelec']
+            source.parent.mkdir(parents=True)
+            source.write_bytes(elf())
+            included = audit(root)
+            artifact = next(item for item in included['artifacts'] if item['destination'] == destination)
+            self.assertEqual(artifact['sha256'], hashlib.sha256(elf()).hexdigest())
+            self.assertEqual(artifact['mode'], 0o755)
+            self.assertEqual(artifact_destination(destination), destination)
+            source.write_bytes(elf(3))
+            rejected = audit(root)
+            self.assertFalse(any(item['destination'] == destination for item in rejected['artifacts']))
+            self.assertTrue(any(item.startswith(destination + ':') for item in rejected['blockers']))
+
+    def test_sonos_inventory_requires_static_binary_and_records_its_hash(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = 'opt/couch/couch-sonos'
+            missing = audit(root)
+            self.assertTrue(any(item.startswith(destination + ':') for item in missing['blockers']))
+            source = root / RUNTIME['couch-sonos']
+            source.parent.mkdir(parents=True)
+            source.write_bytes(elf())
+            included = audit(root)
+            artifact = next(item for item in included['artifacts'] if item['destination'] == destination)
+            self.assertEqual(artifact['sha256'], hashlib.sha256(elf()).hexdigest())
+            self.assertEqual(artifact['mode'], 0o755)
+            self.assertEqual(artifact_destination(destination), destination)
+            source.write_bytes(elf(3))
+            rejected = audit(root)
+            self.assertFalse(any(item['destination'] == destination for item in rejected['artifacts']))
+            self.assertTrue(any(item.startswith(destination + ':') for item in rejected['blockers']))
+
     def test_runtime_executables_must_be_static_arm32(self):
         arm_static(elf())
         for data in (elf(2), elf(3), elf(machine=62), elf()[:70], b'not ELF'):

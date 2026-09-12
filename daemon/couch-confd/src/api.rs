@@ -21,11 +21,15 @@
 //! anybody's house.
 
 mod ha;
+mod protect;
 mod kodi;
 mod remote;
 mod hue;
 mod webos;
 mod streaming_tv;
+mod updates;
+mod coreelec;
+mod sonos;
 mod connections;
 mod denon;
 mod ir;
@@ -289,6 +293,9 @@ impl Api {
             let ids=self.with(|s|s.config().connections.iter().filter(|c|c.provider.kind()==provider).map(|c|c.id.to_string()).collect::<Vec<_>>());
             if ids.len()>1{return Reply::error(409,"Choose a specific connection");}
             if let Some(id)=ids.first(){let mut scoped=vec![id.as_str(),kind];scoped.extend_from_slice(&rest[1..]);return self.connection_route(&method,&scoped,&body,if_match);}
+        }
+        if rest.first() == Some(&"updates") {
+            return updates::route(&method, &rest[1..], &body);
         }
         if rest.first() == Some(&"ir") {
             let directory = self.with(|s| s.path().parent().unwrap_or_else(|| std::path::Path::new(".")).join("ir"));
@@ -572,7 +579,7 @@ impl Api {
                 "schema_version": SCHEMA_VERSION,
                 "icons": ALL_ICONS.iter().map(|i| i.name()).collect::<Vec<_>>(),
                 "device_kinds": ALL_DEVICE_KINDS.iter().map(|k| k.name()).collect::<Vec<_>>(),
-                "integrations": ["none", "kodi", "home-assistant", "hue", "web-os", "denon", "ir"],
+                "integrations": ["none", "kodi", "home-assistant", "hue", "web-os", "denon", "sonos", "ir"],
                 "activity_kinds": ["audio", "video"],
             }),
         )

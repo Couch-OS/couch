@@ -16,8 +16,8 @@ import re
 import tarfile
 
 REPO = Path(__file__).resolve().parents[2]
-BINARIES = frozenset(('couch-gui', 'couch-confd', 'couch-kodi', 'couch-webos',
-    'couch-hue', 'couch-ha', 'couch-denon', 'couch-ir', 'couch-voice', 'fbcon'))
+BINARIES = frozenset(('couch-gui', 'couch-confd', 'couch-system', 'couch-kodi', 'couch-webos',
+    'couch-coreelec', 'couch-sonos', 'couch-hue', 'couch-ha', 'couch-denon', 'couch-ir', 'couch-voice', 'fbcon'))
 LICENSE_FILES = frozenset(('Lato-OFL.txt', 'Inter-OFL.txt', 'Lucide-ISC.txt', 'IRDB-MIT.txt', 'IRDB-CC0.txt'))
 RECOVERY_CGI = frozenset(('save', 'setpw', 'scan', 'enroll'))
 GENERATED = {
@@ -69,7 +69,7 @@ def artifact_destination(name):
     require(name not in GENERATED and not secret_path(name), 'Private or generated artifact destination')
     path = PurePosixPath(name)
     allowed = (path.parent == PurePosixPath('opt/couch') and
-        (path.name in BINARIES or path.name.endswith('.sh')))
+        (path.name in BINARIES or path.name.endswith('.sh') or path.name in ('update-key.pub', 'build.json', 'couch-wmt-properties.so')))
     allowed |= path.parent == PurePosixPath('opt/couch/licenses') and path.name in LICENSE_FILES
     allowed |= path.parent == PurePosixPath('opt/couch/www/cgi-bin') and path.name in RECOVERY_CGI
     allowed |= name.startswith('opt/couch/www/') and path.suffix in ('.html', '.css', '.js', '.svg', '.png', '.woff2', '.wasm')
@@ -122,6 +122,13 @@ def build(spec, source_root=REPO):
         source = Path(source_root) / artifact['source']
         require(not Path(artifact['source']).is_absolute() and source.resolve().is_relative_to(Path(source_root).resolve()), 'Artifact source escapes checkout')
         content = checked_file(source, artifact['sha256'])
+        if name == 'opt/couch/update-key.pub':
+            require(re.fullmatch(rb'[0-9a-f]{64}\n?', content), 'Invalid public update trust key')
+        if name == 'opt/couch/build.json':
+            identity = json.loads(content)
+            require(isinstance(identity, dict) and isinstance(identity.get('version'), str)
+                    and re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', identity['version']),
+                    'Invalid runtime build identity')
         require(name not in entries, 'Artifact overwrites existing input')
         mode = artifact.get('mode', 0o755)
         require(mode in (0o644, 0o755), 'Unsupported artifact mode')

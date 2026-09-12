@@ -34,7 +34,7 @@ $BB chroot $A /bin/sh -c '
     wpa_cli -p /tmp/wpa -i wlan0 scan_results 2>/dev/null
 ' > /tmp/scan.raw 2>/dev/null
 
-$BB sh "$(dirname "$0")/scanjson.sh" < /tmp/scan.raw > /tmp/scan.json 2>/dev/null
+"$(dirname "$0")/couch-system" scan-json < /tmp/scan.raw > /tmp/scan.json 2>/dev/null
 echo "= cached $($BB grep -o "ssid" /tmp/scan.json | $BB wc -l) networks for the portal"
 
 # The radio cannot be a station and an AP at once.
@@ -56,7 +56,7 @@ echo "= $AP_IF up after ${i}s"
 # setup page is the worst part of provisioning a device like this, and it buys
 # nothing here: the only thing on the portal that grants lasting access is SSH
 # key enrolment, and that already requires a button press on the remote itself
-# (see confirm.sh). Radio range gets you the setup page, not the device.
+# (implemented by couch-system). Radio range gets you the setup page, not the device.
 
 cat > $A/tmp/hostapd.conf <<CONF
 interface=$AP_IF
@@ -71,8 +71,9 @@ CONF
 
 # busybox httpd serves the portal for any path via the 404 handler, so whatever
 # URL the connectivity check asks for lands on the setup page.
-WWW=$A/opt/couch/www
-$BB mkdir -p $WWW
+WWW=$A/tmp/couch-portal-www
+$BB mkdir -p "$WWW"
+$BB cp -R "$(dirname "$0")/www/." "$WWW/" || exit 1
 printf 'E404:/index.html\nI:index.html\n' > $WWW/httpd.conf
 
 # Captive-portal detection: each OS fetches a fixed URL over plain HTTP and
@@ -101,7 +102,7 @@ $BB chroot $A /sbin/ip link set $AP_IF up 2>/dev/null
 $BB chroot $A /sbin/ip addr flush dev $AP_IF 2>/dev/null
 $BB chroot $A /sbin/ip addr add $AP_IP/24 dev $AP_IF 2>/dev/null
 
-$BB chroot $A /usr/sbin/hostapd -B /tmp/hostapd.conf >/tmp/hostapd.log 2>&1
+$BB chroot $A /usr/sbin/hostapd -B /tmp/hostapd.conf >/tmp/hostapd.log 2>&1 || exit 1
 $BB sleep 2
 # Hand out leases and answer every name with our own address, which is what
 # makes the phone's connectivity check fail over into a captive-portal prompt.
@@ -119,7 +120,7 @@ no-hosts
 # so they never have to infer it from a hijacked probe.
 dhcp-option=114,http://$AP_IP/
 CONF
-$BB chroot $A /usr/sbin/dnsmasq -C /tmp/dnsmasq.conf >/tmp/dnsmasq2.log 2>&1
+$BB chroot $A /usr/sbin/dnsmasq -C /tmp/dnsmasq.conf >/tmp/dnsmasq2.log 2>&1 || exit 1
 # Alpine's busybox is built WITHOUT the httpd applet - it lives in the
 # busybox-extras package, which we do not ship - so "busybox httpd" there is a
 # silent no-op and the portal serves nothing. Ours has httpd, so run our static
@@ -131,8 +132,8 @@ $BB cp -f $BB $A/opt/couch/busybox 2>/dev/null
 $BB chmod 755 $A/opt/couch/busybox 2>/dev/null
 # Detach httpd's output: inheriting a console that can block (the USB serial
 # tty in particular) wedges the CGI handlers and takes the shell with them.
-$BB chroot $A /opt/couch/busybox httpd -p 80 -h /opt/couch/www \
-    -c /opt/couch/www/httpd.conf >/dev/null 2>&1
+$BB chroot $A /opt/couch/busybox httpd -p 80 -h /tmp/couch-portal-www \
+    -c /tmp/couch-portal-www/httpd.conf >/dev/null 2>&1 || exit 1
 
 # Report what is actually listening, not what we think we started: every one of
 # these three has failed silently at some point.

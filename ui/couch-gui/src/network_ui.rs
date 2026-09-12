@@ -11,6 +11,7 @@ enum Step {
     Welcome,
     Recovery,
     Handoff,
+    Hotspot,
     Scan,
     List,
     Ssid,
@@ -236,7 +237,7 @@ impl Controller {
                     self.buttons(app, "Recovery hotspot", "This disconnects Wi-Fi and opens Couch-Setup for browser-based recovery. Restart the remote to return to normal Wi-Fi.", &["Start hotspot", "Cancel"]);
                 }
                 Input::Back => match self.step {
-                    Step::Closed | Step::Cancelling | Step::Saving => {}
+                    Step::Closed | Step::Cancelling | Step::Saving | Step::Hotspot => {}
                     Step::Tested | Step::Testing | Step::Scan => self.cancel(app),
                     Step::Ssid | Step::Password | Step::Review => {
                         self.list(app, "Select a network or enter one manually.")
@@ -271,18 +272,14 @@ impl Controller {
                         },
                         Step::Recovery => {
                             if i == 0 {
-                                match std::fs::write("/tmp/couch.ap-request", "start") {
-                                    Ok(()) => {
-                                        self.onboarding = false;
-                                        self.close(app);
-                                    }
-                                    Err(_) => self.buttons(
-                                        app,
-                                        "Could not start hotspot",
-                                        "Try again or restart the remote.",
-                                        &["Retry", "Cancel"],
-                                    ),
-                                }
+                                self.worker.send(Request::Hotspot);
+                                self.step = Step::Hotspot;
+                                self.buttons(
+                                    app,
+                                    "Starting recovery hotspot",
+                                    "Preparing Couch-Setup…",
+                                    &[],
+                                );
                             } else {
                                 self.close(app);
                             }
@@ -354,6 +351,14 @@ impl Controller {
                 continue;
             }
             match event {
+                Event::Hotspot(Ok(())) => {
+                    self.onboarding = false;
+                    self.close(app);
+                }
+                Event::Hotspot(Err(error)) => {
+                    self.step = Step::Recovery;
+                    self.buttons(app, "Could not start hotspot", &error, &["Retry", "Cancel"]);
+                }
                 Event::Scanned(Ok(networks)) => {
                     self.networks = networks;
                     self.list(app, "Choose a network or enter one that is not shown.");
@@ -366,7 +371,6 @@ impl Controller {
                 }
                 Event::Tested(Err(e)) => self.review(app, &e),
                 Event::Saved(Ok(())) => {
-                    let _ = std::fs::write("/tmp/couch.network-ready", "");
                     if self.onboarding {
                         self.handoff(app);
                         continue;

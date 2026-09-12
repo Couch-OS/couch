@@ -11,20 +11,10 @@ mkdir -p build
     python3 tools/bootimg.py unpack "$BACKUP_DIR/boot.img" build
 }
 
-[ -f build/busybox-armv7l ] || {
-    echo "fetching static armv7 busybox..."
-    curl -sL -o build/busybox-armv7l \
-      https://busybox.net/downloads/binaries/1.31.0-defconfig-multiarch-musl/busybox-armv7l
-}
+python3 tools/build-busybox.py verify "${BUSYBOX_BUILD_DIR:-build/busybox-source}" --install build/busybox-armv7l
 
 # On-screen console. This kernel has no CONFIG_VT, so without this a boot is silent.
-NDK="${NDK:-$HOME/Library/Android/sdk/ndk/29.0.14206865}"
-CC="$NDK/toolchains/llvm/prebuilt/darwin-x86_64/bin/armv7a-linux-androideabi21-clang"
-if [ ! -f build/fbcon ] && [ -x "$CC" ]; then
-    echo "building fbcon..."
-    "$CC" -static -Os -o build/fbcon src/fbcon.c
-    "$NDK/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-strip" build/fbcon
-fi
+tools/build-fbcon.sh
 
 rm -rf build/tree
 mkdir -p build/tree/extra

@@ -12,6 +12,8 @@ pub struct Connection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Provider {
+    CoreElec { host: String, port: u16 },
+    Sonos { host: String },
     Kodi { host: String, port: u16 },
     Denon { host: String, port: u16 },
     HomeAssistant,
@@ -19,30 +21,37 @@ pub enum Provider {
     WebOs,
     AndroidTv,
     AppleTv,
+    UnifiProtect,
     Ir,
 }
 impl Provider {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Kodi { .. } => "kodi",
+            Self::CoreElec { .. } => "core-elec",
+            Self::Sonos { .. } => "sonos",
             Self::Denon { .. } => "denon",
             Self::HomeAssistant => "home-assistant",
             Self::Hue => "hue",
             Self::WebOs => "web-os",
             Self::AndroidTv => "android-tv",
             Self::AppleTv => "apple-tv",
+            Self::UnifiProtect => "unifi-protect",
             Self::Ir => "ir",
         }
     }
     pub fn label(&self) -> &'static str {
         match self {
             Self::Kodi { .. } => "Kodi",
+            Self::CoreElec { .. } => "CoreELEC",
+            Self::Sonos { .. } => "Sonos",
             Self::Denon { .. } => "Denon AVR",
             Self::HomeAssistant => "Home Assistant",
             Self::Hue => "Philips Hue",
             Self::WebOs => "LG webOS",
             Self::AndroidTv => "Android / Google TV",
             Self::AppleTv => "Apple TV",
+            Self::UnifiProtect => "UniFi Protect",
             Self::Ir => "Infrared",
         }
     }
@@ -70,7 +79,8 @@ impl Config {
             return Some(integration.clone());
         };
         Some(match &self.connection(connection_id)?.provider {
-            Provider::Kodi { host, port } => Integration::Kodi {
+            Provider::Sonos { host } => Integration::Sonos { host: host.clone() },
+            Provider::Kodi { host, port } | Provider::CoreElec { host, port } => Integration::Kodi {
                 host: host.clone(),
                 port: *port,
             },
@@ -84,6 +94,7 @@ impl Config {
             Provider::WebOs => Integration::WebOs,
             Provider::AndroidTv => Integration::AndroidTv,
             Provider::AppleTv => Integration::AppleTv,
+            Provider::UnifiProtect => Integration::UnifiProtect { camera_id: alloc::format!("{connection_id}/{resource_id}") },
             Provider::Ir => Integration::Ir {
                 codeset: resource_id.clone(),
             },
@@ -210,6 +221,50 @@ mod tests {
         c.connections.push(Connection{id:"another-ir".into(),name:"Duplicate blaster".into(),provider:Provider::Ir});assert!(c.validate().is_err());
     }
     #[test]
+    fn coreelec_reuses_kodi_and_sonos_capabilities_are_bounded() {
+        let mut c = Config::default();
+        c.connections.push(Connection {
+            id: "ce".into(),
+            name: "CoreELEC".into(),
+            provider: Provider::CoreElec {
+                host: "192.0.2.1".into(),
+                port: 9090,
+            },
+        });
+        c.connections.push(Connection {
+            id: "speaker".into(),
+            name: "Sonos".into(),
+            provider: Provider::Sonos {
+                host: "192.0.2.2".into(),
+            },
+        });
+        let ce = c
+            .resolve_integration(&Integration::Connection {
+                connection_id: "ce".into(),
+                resource_id: String::new(),
+            })
+            .unwrap();
+        assert!(matches!(ce, Integration::Kodi { port: 9090, .. }));
+        assert!(crate::commands::Function::Ok.supports(&ce));
+        let sonos = c
+            .resolve_integration(&Integration::Connection {
+                connection_id: "speaker".into(),
+                resource_id: String::new(),
+            })
+            .unwrap();
+        assert!(crate::commands::Function::Play.supports(&sonos));
+        assert!(crate::commands::Function::VolumeUp.supports(&sonos));
+        assert!(!crate::commands::Function::PowerOff.supports(&sonos));
+        assert!(!crate::commands::Function::Ok.supports(&sonos));
+        assert!(c.validate().is_ok());
+        let bytes = serde_json::to_string(&c).unwrap();
+        assert_eq!(serde_json::from_str::<Config>(&bytes).unwrap(), c);
+        c.connections[1].provider = Provider::Sonos {
+            host: "speaker.local".into(),
+        };
+        assert!(c.validate().is_err());
+    }
+    #[test]
     fn old_config_remains_readable_without_connections() {
         let c: Config = serde_json::from_str(r#"{"schema_version":1,"rooms":[]}"#).unwrap();
         assert!(c.connections.is_empty());
@@ -243,5 +298,23 @@ mod tests {
         );
         assert!(!crate::commands::Function::Mute.supports(&Integration::AppleTv));
         assert!(crate::commands::Function::Mute.supports(&Integration::AndroidTv));
+    }
+}
+
+#[cfg(test)]
+mod protect_tests {
+    use super::*;
+    use crate::{Device,DeviceKind,Room};
+    use alloc::vec;
+    #[test]
+    fn protect_camera_resources_validate_and_resolve_without_credentials(){
+        let mut config=Config::default();
+        config.connections.push(Connection{id:"protect".into(),name:"Cameras".into(),provider:Provider::UnifiProtect});
+        config.rooms.push(Room{id:"entry".into(),name:"Entry".into(),icon:None,devices:vec![Device::new("front".into(),"Front door",DeviceKind::Camera).with_integration(Integration::Connection{connection_id:"protect".into(),resource_id:"camera-123".into()})]});
+        assert!(config.validate().is_ok());
+        assert_eq!(config.resolve_integration(&config.rooms[0].devices[0].integration),Some(Integration::UnifiProtect{camera_id:"protect/camera-123".into()}));
+        config.rooms[0].devices[0].kind=DeviceKind::Light;assert!(config.validate().is_err());
+        config.rooms[0].devices[0].kind=DeviceKind::Camera;
+        config.rooms[0].devices[0].integration=Integration::Connection{connection_id:"protect".into(),resource_id:"../other".into()};assert!(config.validate().is_err());
     }
 }

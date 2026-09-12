@@ -30,3 +30,10 @@ splash appears on the next boot; this does not change the running Slint UI.
 Validation: generated-image round trip checked all unchanged streams and
 new frame pixels; physical device partition readback matched the uploaded
 image on 2026-09-09. Physical boot appearance still needs visual confirmation.
+
+The early Linux framebuffer splash now uses this same wordmark. Regenerate
+`src/logo.h` with `python3 tools/mklogo.py`, rebuild `fbcon`, and repack both boot
+and recovery ramdisks. Updating the logo partition alone does not update the
+framebuffer executable embedded in the ramdisks.
+
+Both image builders call `tools/build-fbcon.sh`, which rebuilds when the renderer, logo header or font header changes. A failed compiler/strip step preserves the previous binary and stops packaging. Set `NDK` to the host Android NDK on Linux or macOS.

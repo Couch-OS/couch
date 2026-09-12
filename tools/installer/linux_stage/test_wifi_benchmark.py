@@ -5,9 +5,44 @@ import threading
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+import wifi_benchmark as wifi
 from wifi_benchmark import credentials, ephemeral_identity, TlsEndpoint
 
 class WifiTests(unittest.TestCase):
+    def test_failed_hardware_never_requests_credentials(self):
+        from contextlib import contextmanager
+        @contextmanager
+        def probe(args):
+            yield None, None
+        with patch.object(wifi, 'usb_probe', probe), \
+                patch.object(wifi, 'wifi_status', return_value={'status': 'failed', 'error': 'loader-exit'}), \
+                patch('builtins.input') as ssid, patch.object(wifi.getpass, 'getpass') as password, \
+                patch.object(wifi, 'provision') as provision, patch('sys.stdout', io.StringIO()):
+            with self.assertRaisesRegex(ValueError, 'loader exited'):
+                wifi.main(['--bus', '1', '--ports', '1', '--vid', '0xe8d', '--pid', '0x201c'])
+            ssid.assert_not_called()
+            password.assert_not_called()
+            provision.assert_not_called()
+
+    def test_existing_provisioning_is_not_overwritten(self):
+        with patch.object(wifi, 'wifi_status', return_value={'status': 'ready', 'provisioned': True}):
+            with self.assertRaisesRegex(ValueError, 'already received credentials'):
+                wifi.wait_ready(None, None)
+
+    def test_failed_status_with_stale_ip_never_returns_connection_success(self):
+        class Output:
+            def write(self, data, **kwargs): return len(data)
+        with patch.object(wifi, 'response'), patch.object(wifi, 'wifi_status',
+                return_value={'status': 'failed', 'ip': '192.0.2.1', 'error': 'supplicant-exit'}):
+            with self.assertRaisesRegex(ValueError, 'authentication process stopped'):
+                wifi.provision(Output(), None, {})
+
+    def test_untrusted_diagnostic_text_is_not_echoed(self):
+        with self.assertRaises(ValueError) as error:
+            wifi.check_failure({'status': 'failed', 'error': 'private-network-secret'})
+        self.assertNotIn('private-network-secret', str(error.exception))
+
     def test_known_wpa2_psk_vector_and_bounds(self):
         self.assertEqual(credentials('IEEE','password')['psk_hex'],
             'f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e')

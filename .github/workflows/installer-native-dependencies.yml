@@ -1,0 +1,46 @@
+name: Native installer dependency bootstrap
+on:
+  pull_request:
+    paths:
+      - 'tools/installer/host/**'
+      - 'tools/installer/mtk_source_inventory.json'
+      - 'tools/release/mtk_dependencies.json'
+      - 'tools/release/host_dependencies.json'
+      - '.github/workflows/installer-native-dependencies.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bootstrap:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, macos-15-intel, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check native dependency preparation
+        working-directory: tools/installer/host
+        run: |
+          cargo fmt --check
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo build --release --locked
+      - name: Bootstrap without Python or Git on PATH and smoke verified executables
+        shell: python
+        run: |
+          import os, pathlib, subprocess
+          executable = pathlib.Path('tools/installer/host/target/release') / ('couch-installer-host.exe' if os.name == 'nt' else 'couch-installer-host')
+          parent = pathlib.Path(os.environ['RUNNER_TEMP']) / 'couch-native-dependency-check'
+          environment = os.environ.copy()
+          environment['PATH'] = ''
+          for name in list(environment):
+              if name.startswith('PYTHON') or name in ('LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH'):
+                  del environment[name]
+          subprocess.run([str(executable.resolve()), '--dependency-smoke', str(parent)], env=environment, check=True, timeout=600)
+          # The approved DA is an owner-local cache/input only. Upload no archives,
+          # dependencies, DA files or private directories from this test.

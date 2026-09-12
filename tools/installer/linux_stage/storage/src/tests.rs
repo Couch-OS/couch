@@ -296,3 +296,29 @@ fn plan_rejects_overlapping_layout_and_inconsistent_chunk_inventory() {
     images.get_mut(&Target::Recovery).unwrap().chunks.pop();
     assert!(Plan::new(plan.identity, images).is_err());
 }
+
+#[test]
+fn compact_images_are_limited_to_nonempty_aligned_userdata() {
+    let (plan, _, _, _) = setup();
+    let image = plan.images[&Target::Boot].clone();
+    let mut identity = plan.identity.clone();
+    identity.partitions.insert(
+        "userdata".into(),
+        Region {
+            offset: 16 * 1024 * 1024,
+            size: 65536,
+        },
+    );
+    identity.capacity = 32 * 1024 * 1024;
+    for size in [0, 4095, 65537, 131072] {
+        let mut bad = image.clone();
+        bad.size = size;
+        assert!(Plan::new(identity.clone(), [(Target::Userdata, bad)].into()).is_err());
+    }
+    let mut small = image.clone();
+    small.size = 4096;
+    small.chunks.truncate(1);
+    assert!(Plan::new(identity.clone(), [(Target::Userdata, small.clone())].into()).is_ok());
+    identity.partitions.get_mut("boot").unwrap().size += 4096;
+    assert!(Plan::new(identity, [(Target::Boot, small)].into()).is_err());
+}

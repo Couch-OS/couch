@@ -16,12 +16,15 @@ from kernel_provenance import boot_kernel, PIN
 from clean_stage import REPO, archive_name, build, require, secret_path
 
 RUNTIME = {
+    'couch-coreelec': 'clients/target/armv7-unknown-linux-musleabihf/release/couch-coreelec',
+    'couch-sonos': 'clients/target/armv7-unknown-linux-musleabihf/release/couch-sonos',
     'couch-gui': 'ui/target/armv7-unknown-linux-musleabihf/release/couch-gui',
+    'couch-system': 'daemon/target/armv7-unknown-linux-musleabihf/release/couch-system',
     'couch-confd': 'daemon/target/armv7-unknown-linux-musleabihf/release/couch-confd',
     'fbcon': 'build/fbcon',
 }
-SCRIPTS = ('stage2.sh', 'confd.sh', 'setup-mode.sh', 'portal.sh', 'setup-watch.sh',
-           'wifi-conf.sh', 'sshd.sh', 'confirm.sh', 'scanjson.sh', 'join.sh')
+SCRIPTS = ('stage2.sh', 'runtime-boot.sh', 'hardware-init.sh', 'gui-start.sh', 'confd.sh', 'setup-mode.sh', 'portal.sh', 'system.sh',
+           'wifi-conf.sh', 'station.sh')
 CGI = ('save', 'setpw', 'scan', 'enroll')
 LICENSES = {'Lato-OFL.txt': 'tools/release/licenses/Lato-OFL.txt',
             'Inter-OFL.txt': 'assets/inter/LICENSE.txt', 'Lucide-ISC.txt': 'assets/lucide/LICENSE',
@@ -154,6 +157,7 @@ def audit(root=REPO, vendor=None, boot='build/couch-board-init-fixed.img', recov
             blockers.append(f'{destination}: {error}')
     for name, source in RUNTIME.items():
         binaries[name] = add(source, 'opt/couch/' + name, 0o755, True)
+    add('build/couch-wmt-properties.so', 'opt/couch/couch-wmt-properties.so', 0o755)
     for name in SCRIPTS:
         add('stage2/' + name, 'opt/couch/' + name, 0o755)
     add('stage2/www/index.html', 'opt/couch/www/index.html', 0o644)
@@ -248,7 +252,7 @@ def main():
     result['tracked_payload_worktree_clean'] = not diff
     result['tracked_payload_diff_sha256'] = sha(diff)
     result['cargo'] = {}
-    for workspace in ('ui', 'daemon'):
+    for workspace in ('ui', 'daemon', 'clients'):
         try:
             result['cargo'][workspace] = cargo_inventory(REPO, workspace)
         except (subprocess.CalledProcessError, OSError, ValueError):

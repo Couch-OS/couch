@@ -168,6 +168,7 @@ impl core::fmt::Display for DeviceKind {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(tag = "via", rename_all = "kebab-case")]
 pub enum Integration {
+    Sonos { host: String },
     Denon { host: String, port: u16 },
     /// Configured but not wired to anything: the device exists so it can be
     /// counted and named, which is what the hub's room rows show.
@@ -185,6 +186,7 @@ pub enum Integration {
     WebOs,
     AndroidTv,
     AppleTv,
+    UnifiProtect { camera_id: String },
     HomeAssistant {
         entity_id: String,
     },
@@ -210,9 +212,11 @@ impl Integration {
             Integration::WebOs => "web-os",
             Integration::AndroidTv => "android-tv",
             Integration::AppleTv => "apple-tv",
+            Integration::UnifiProtect { .. } => "unifi-protect",
             Integration::HomeAssistant { .. } => "home-assistant",
             Integration::Ir { .. } => "ir",
             Integration::Denon { .. } => "denon",
+            Integration::Sonos { .. } => "sonos",
         }
     }
 }

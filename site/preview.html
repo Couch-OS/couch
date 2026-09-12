@@ -57,7 +57,7 @@ try {
   canvas.addEventListener('pointerup',event=>{
     if(!touchStart)return;
     const start=touchStart,end=point(event);touchStart=null;
-    if(start.state.player || start.state.chooser)return;
+    if(start.state.player || start.state.chooser || start.state.tv || start.state.thermostat)return;
     if(Math.abs(end.y-start.y)>28){remote_button(end.y<start.y?'down':'up');return;}
     if(Math.hypot(end.x-start.x,end.y-start.y)>12 || end.x<20 || end.x>460)return;
     const inRoom=start.state.room!==null;

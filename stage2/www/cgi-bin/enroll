@@ -1,40 +1,5 @@
 #!/bin/sh
-# Enrol an SSH public key.
-#
-# The setup AP is open, so joining it proves nothing about who is asking. The
-# button press below is therefore the ONLY thing standing between a request and
-# permanent root on this device - it must never become optional.
-echo "Content-Type: text/plain"
-echo "Cache-Control: no-store"
-echo
-
-[ "$REQUEST_METHOD" = POST ] || { echo "ERR method"; exit 0; }
-BODY=$(head -c "${CONTENT_LENGTH:-0}")
-KEY=$(echo "$BODY" | tr '&' '\n' | grep '^key=' | head -1 | cut -d= -f2- \
-      | sed 's/+/ /g; s/%\(..\)/\\x\1/g' | xargs -0 printf '%b' 2>/dev/null)
-
-case "$KEY" in
-    ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-*\ *) ;;
-    *) echo "ERR that does not look like an SSH public key"; exit 0 ;;
-esac
-case "$KEY" in *PRIVATE*) echo "ERR that is a private key - paste the .pub"; exit 0 ;; esac
-
-echo "$KEY" > /tmp/pending.key
-: > /tmp/press.request          # stage2 watches this and prompts on screen
-n=0
-while [ $n -lt 30 ]; do
-    [ -f /tmp/press.ok ] && break
-    sleep 1; n=$((n + 1))
-done
-
-if [ -f /tmp/press.ok ]; then
-    rm -f /tmp/press.ok /tmp/press.request
-    mkdir -p /root/.ssh; chmod 700 /root/.ssh
-    grep -qxF "$KEY" /root/.ssh/authorized_keys 2>/dev/null || cat /tmp/pending.key >> /root/.ssh/authorized_keys
-    chmod 600 /root/.ssh/authorized_keys
-    rm -f /tmp/pending.key
-    echo "OK Key enrolled. SSH as root once the remote is on your network."
-else
-    rm -f /tmp/press.request /tmp/pending.key
-    echo "ERR no button press on the remote - not enrolled"
-fi
+# HTTP adapter only; privileged policy lives in the local Rust service.
+SYSTEM=/opt/couch/couch-system
+[ -x /opt/couch/runtime/current/couch-system ] && SYSTEM=/opt/couch/runtime/current/couch-system
+exec "$SYSTEM" cgi

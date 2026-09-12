@@ -1,0 +1,31 @@
+[package]
+name = "couch-installer-host"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+brotli = "8"
+ext4-view = { version = "=0.9.3", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+zeroize = "1"
+tar = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_SystemServices"] }
+
+[dev-dependencies]
+rcgen = "0.14"

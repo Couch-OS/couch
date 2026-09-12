@@ -1,41 +1,5 @@
 #!/bin/sh
-# Accept a network and join it. Credentials are written to the persistent config
-# on the Alpine partition so they survive reboots, unlike /tmp.
-echo "Content-Type: text/plain"
-echo "Cache-Control: no-store"
-echo
-
-[ "$REQUEST_METHOD" = POST ] || { echo "ERR method"; exit 0; }
-BODY=$(head -c "${CONTENT_LENGTH:-0}")
-
-# Minimal form decoding; values arrive percent-encoded from the browser.
-field() {
-    echo "$BODY" | tr '&' '\n' | grep "^$1=" | head -1 | cut -d= -f2- \
-      | sed 's/+/ /g; s/%\(..\)/\\x\1/g' | xargs -0 printf '%b' 2>/dev/null
-}
-SSID=$(field ssid)
-PSK=$(field psk)
-[ -n "$SSID" ] || { echo "ERR no network chosen"; exit 0; }
-
-SAVED=/opt/couch/networks.conf
-touch $SAVED; chmod 600 $SAVED
-# Replace any previous entry for this network rather than accumulating them.
-awk -v s="$SSID" '
-    $0 ~ "^# net " s "$" { skip = 1; next }
-    skip && /^}/ { skip = 0; next }
-    !skip { print }
-' $SAVED > $SAVED.tmp 2>/dev/null || : > $SAVED.tmp
-{
-    cat $SAVED.tmp
-    echo "# net $SSID"
-    echo "network={"
-    echo "  ssid=\"$SSID\""
-    if [ -n "$PSK" ]; then echo "  psk=\"$PSK\""; else echo "  key_mgmt=NONE"; fi
-    echo "}"
-} > $SAVED
-rm -f $SAVED.tmp
-
-echo "OK Saved. The remote is joining \"$SSID\" and this setup network will disappear."
-# Hand back to stage2 asynchronously so this response reaches the browser first:
-# switching the radio out of AP mode tears down the connection we replied over.
-( sleep 2; /opt/couch/join.sh "$SSID" >/tmp/join.log 2>&1 ) &
+# HTTP adapter only; privileged policy lives in the local Rust service.
+SYSTEM=/opt/couch/couch-system
+[ -x /opt/couch/runtime/current/couch-system ] && SYSTEM=/opt/couch/runtime/current/couch-system
+exec "$SYSTEM" cgi

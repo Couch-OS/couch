@@ -434,7 +434,7 @@ impl Controller {
             if let Some((_, device)) = config.devices().find(|(_, d)| Some(&d.id) == source) {
                 if matches!(
                     config.resolve_integration(&device.integration),
-                    Some(Integration::WebOs | Integration::AndroidTv | Integration::AppleTv)
+                    Some(Integration::WebOs | Integration::AndroidTv | Integration::AppleTv | Integration::Sonos {..})
                 ) {
                     self.generation += 1;
                     self.active_generation

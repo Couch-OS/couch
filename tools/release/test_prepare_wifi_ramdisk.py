@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tarfile
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,57 @@ import prepare_wifi_ramdisk as wifi
 
 
 class WifiRamdiskTests(unittest.TestCase):
+    def test_loader_android_exit_requires_detected_transport(self):
+        for detected in (False, True):
+            with self.subTest(detected=detected), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / 'tmp').mkdir()
+                (root / 'dev').mkdir()
+                devices = root / 'devices'
+                devices.write_text('154 mtk_wcn_detect\n153 mtk_wmt_WIFI_chrdev\n' +
+                                   ('190 mtk_stp_wmt\n' if detected else ''))
+                busybox = root / 'busybox'
+                busybox.write_text('#!/bin/sh\ncase "$1" in mknod) exit 0;; *) exec "$@";; esac\n')
+                busybox.chmod(0o700)
+                loader = root / 'loader'
+                loader.write_text('#!/bin/sh\nexit 255\n')
+                loader.chmod(0o700)
+                script = (wifi.REPO / 'tools/installer/wifi-stage/wifi-init').read_text()
+                script = script.split('step transport\n')[0]
+                script = script.replace('/tmp/', str(root / 'tmp') + '/')
+                script = script.replace('/dev/', str(root / 'dev') + '/')
+                script = script.replace('/proc/devices', str(devices))
+                script = script.replace('/vendor/bin/wmt_loader', str(loader))
+                script = script.replace('BB=/bin/busybox', 'BB=' + str(busybox))
+                result = subprocess.run(['sh'], input=script, text=True, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 0 if detected else 1)
+                log = (root / 'tmp/probe.log').read_text()
+                self.assertIn('WiFi loader exit: 255', log)
+                if not detected:
+                    self.assertEqual((root / 'tmp/couch-wifi.error').read_text(), 'loader-exit\n')
+                else:
+                    self.assertIn('transport registered despite Android exit status', log)
+                    self.assertFalse((root / 'tmp/couch-wifi.error').exists())
+
+    def test_missing_radio_device_reports_failure_before_credentials(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'tmp').mkdir()
+            (root / 'dev').mkdir()
+            busybox = root / 'busybox'
+            busybox.write_text('#!/bin/sh\ncase "$1" in mknod|awk) exit 0;; *) exit 7;; esac\n')
+            busybox.chmod(0o700)
+            script = (wifi.REPO / 'tools/installer/wifi-stage/wifi-init').read_text()
+            script = script.replace('/tmp/', str(root / 'tmp') + '/')
+            script = script.replace('/dev/', str(root / 'dev') + '/')
+            script = script.replace('BB=/bin/busybox', 'BB=' + str(busybox))
+            result = subprocess.run(['sh'], input=script, text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual((root / 'tmp/couch-wifi.status').read_text(), 'failed\n')
+            self.assertEqual((root / 'tmp/couch-wifi.error').read_text(), 'detect-node\n')
+            self.assertIn('WiFi failed: detect-node', (root / 'tmp/probe.log').read_text())
+            self.assertFalse((root / 'tmp/couch-wpa_supplicant.conf').exists())
+
     def test_no_storage_nodes_except_readonly_recovery(self):
         raw = wifi.ramdisk({'init': b'init', 'bin/busybox': b'bb'})
         self.assertEqual(wifi.cpio_files(raw)['etc/firmware'], b'/vendor/firmware')

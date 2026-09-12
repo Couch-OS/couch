@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "component": "android-platform-tools",
+  "version": "37.0.1",
+  "source_url": "https://developer.android.com/tools/releases/platform-tools",
+  "mtk_revision": "60e07f3b343a4469389f15967626d63e049968d4",
+  "platforms": {
+    "linux-x86_64": {
+      "url": "https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip",
+      "size": 9054187,
+      "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
+      "adb": "platform-tools/adb",
+      "files": {
+        "platform-tools/adb": {
+          "size": 10642368,
+          "sha256": "a902be8f45c6c62e76c9efaf6947a0fa747c9cabd89a2ac8e0d16ecb30b3ed01"
+        },
+        "platform-tools/lib64/libc++.so": {
+          "size": 1533896,
+          "sha256": "6cb165d671ced6a719b153b72e5d1b0a9cfd488badccc92d0aee55eda294f8ff"
+        },
+        "platform-tools/NOTICE.txt": {
+          "size": 1175837,
+          "sha256": "c29da8f704720fa1d3d802b834b86d9c023f20ae2596a8f2a4e17ed5490b17ae"
+        },
+        "platform-tools/source.properties": {
+          "size": 38,
+          "sha256": "2dccd788c0234d8cf7f7457377e57f57527a86a629c6ed54feb8af0f549dac38"
+        }
+      }
+    },
+    "macos-universal": {
+      "url": "https://dl.google.com/android/repository/platform-tools_r37.0.1-darwin.zip",
+      "size": 16110554,
+      "sha256": "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d",
+      "adb": "platform-tools/adb",
+      "files": {
+        "platform-tools/adb": {
+          "size": 18844128,
+          "sha256": "1811e253b21b12cbfda7201ebaf86c10e7ddcb5c606a7a81f7c82b4c429c2d3b"
+        },
+        "platform-tools/lib64/libc++.dylib": {
+          "size": 2662912,
+          "sha256": "861dfb2d769b81267c118cb061aab1b2637686363a2ecf162411774fa6a37faf"
+        },
+        "platform-tools/NOTICE.txt": {
+          "size": 1152421,
+          "sha256": "356cc66516060e4da6bdc53e6f0bbb8e8101673f326b73c68d535eddd04dd7b1"
+        },
+        "platform-tools/source.properties": {
+          "size": 38,
+          "sha256": "2dccd788c0234d8cf7f7457377e57f57527a86a629c6ed54feb8af0f549dac38"
+        }
+      }
+    },
+    "windows-x86_64": {
+      "url": "https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip",
+      "size": 8044989,
+      "sha256": "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99",
+      "adb": "platform-tools/adb.exe",
+      "files": {
+        "platform-tools/adb.exe": {
+          "size": 8273560,
+          "sha256": "b4a6b455702684652cccf7b46258b29e653538904359a58fd4931cf3ef286b3f"
+        },
+        "platform-tools/AdbWinApi.dll": {
+          "size": 108184,
+          "sha256": "c1d653030b4bde65d3e07e4d0b0979e17be56df1436cdd15528630f27808050d"
+        },
+        "platform-tools/AdbWinUsbApi.dll": {
+          "size": 73368,
+          "sha256": "0710e894d9b40f71a670c13c694079d564c92c1279da382cfe4850983aaebe1b"
+        },
+        "platform-tools/libwinpthread-1.dll": {
+          "size": 243016,
+          "sha256": "f2044c755e39efc5d47f47c5a942178dd6d79dc8945bb182dc8753d10e2a4269"
+        },
+        "platform-tools/NOTICE.txt": {
+          "size": 1154131,
+          "sha256": "38ec8c6f5b7799c223ffeab1f9e81c2d5fc67b5e56d6424f649630ca1ee1a811"
+        },
+        "platform-tools/source.properties": {
+          "size": 38,
+          "sha256": "2dccd788c0234d8cf7f7457377e57f57527a86a629c6ed54feb8af0f549dac38"
+        }
+      }
+    }
+  }
+}

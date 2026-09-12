@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "model": "sanytron-ha100",
+  "id": "ha100-alpine321-ffmpeg612-runtimeboot2",
+  "package_closure_sha256": "1804ab4bf74c9b0cd38fc6f0aeb589db2beedca0334b67ade1b853965d78f4df",
+  "runtime_boot_sha256": "363caff5c1b24209255e43d7f8a68f11f83af54f022b1ba4f028cf5ecfa2fa6f"
+}

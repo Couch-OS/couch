@@ -30,7 +30,7 @@ python3 tools/release/clean_stage.py build/release-staging-input.json build/clea
 python3 -m unittest discover -s tools/release -v
 ```
 
-The output directory must be new. Private-key paths, saved networks, private Couch configuration, password hashes, path traversal, special devices, and files below archive symlinks are rejected. The base BusyBox must be ARM32 ELF. The archive gets a minimal empty Couch configuration, hostname, and key-only SSH settings; root has no usable password. Existing enrollment-gated `stage2/sshd.sh` generates host keys on first authorized use. No keys or enrollment are created by staging.
+The output directory must be new. Private-key paths, saved networks, private Couch configuration, password hashes, path traversal, special devices, and files below archive symlinks are rejected. The base BusyBox must be ARM32 ELF. The archive gets a minimal empty Couch configuration, hostname, and key-only SSH settings; root has no usable password. Existing enrollment-gated `couch-system` generates host keys on first authorized use. No keys or enrollment are created by staging.
 
 Archive ownership and timestamps are normalized. Absolute symlinks are retained as image-root links because Alpine uses them extensively; no host extraction occurs. Downstream image assembly must likewise avoid following links outside the image. Fixed Python/zlib and input artifacts are needed for reproducibility across build hosts. Filename/content checks reduce accidental secret inclusion; they cannot prove arbitrary supplied binaries contain no embedded private data.
 

@@ -4,7 +4,7 @@
 # nobody needs yet and costs a synchronised bump on every shared change.
 [workspace]
 resolver = "2"
-members = ["couch-kodi", "couch-voice", "couch-ir", "couch-ha", "couch-hue", "couch-webos", "couch-denon", "couch-control", "couch-androidtv", "couch-appletv"]
+members = ["couch-kodi", "couch-voice", "couch-ir", "couch-ha", "couch-hue", "couch-webos", "couch-denon", "couch-control", "couch-androidtv", "couch-appletv", "couch-sonos", "couch-coreelec", "couch-unifi-protect"]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,0 +1,410 @@
+{
+  "archive_sha256": "b130635ab22b293e74f9325fa28591f9a12bf8575c61debe7f267d3a015c0045",
+  "files": {
+    "LICENSE": {
+      "sha256": "f8ab5d5accbd682b0b87a8711353a64939edeca847960162250c5ba0cddc4926",
+      "size": 35134
+    },
+    "README.md": {
+      "sha256": "a104073617df047bc68a930c6f38c391a23f1c26a61c51c2b65552ed5869eda0",
+      "size": 2091
+    },
+    "mtkclient/Library/Auth/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/Auth/sla.py": {
+      "sha256": "f73dc399b7eaca0597298e9b59433b98496edcfec07302fa44c01cbca7be1565",
+      "size": 1011
+    },
+    "mtkclient/Library/Auth/sla_keys.py": {
+      "sha256": "be7ab831dcd982da00f238bd3a8248f1cab92eb5a3231e6b7ad1c33ec6a180ba",
+      "size": 83157
+    },
+    "mtkclient/Library/Connection/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/Connection/devicehandler.py": {
+      "sha256": "cc37749b17a5ba7377ad8fdb81e01567baf3f61ac3ce1f5f4c5b6e1cbb2fef92",
+      "size": 4951
+    },
+    "mtkclient/Library/Connection/seriallib.py": {
+      "sha256": "1b89fcc3589c65ac27b714e09c13b06ddbfc078739c669addfd27802e7ded4a5",
+      "size": 10237
+    },
+    "mtkclient/Library/Connection/usblib.py": {
+      "sha256": "859a11d8d68b15261a4eff0832ecb6dbb913f240c6aca56426cabdc5aa168b2e",
+      "size": 31749
+    },
+    "mtkclient/Library/Connection/usbscsi.py": {
+      "sha256": "9860858dcf0bda0cf1620e5d5b05535d59adcf7c88febd2afab641dd943643a2",
+      "size": 1990
+    },
+    "mtkclient/Library/DA/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/DA/daconfig.py": {
+      "sha256": "bb40fdd4661cbf45da209d1266c01ba4731a1f88bfb9111071c96b1bf66dd8d5",
+      "size": 8921
+    },
+    "mtkclient/Library/DA/legacy/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/DA/legacy/dalegacy_flash_param.py": {
+      "sha256": "3630acbbb97f8ed6f834e46e230024e97fb58cb6dd0d432bc9e3bdf2f5f85d16",
+      "size": 8625
+    },
+    "mtkclient/Library/DA/legacy/dalegacy_iot_flash_param.py": {
+      "sha256": "56d3a2d0c014434720b38a4e7157ce57350bcd14e891bc05984366a3f523e84b",
+      "size": 9089
+    },
+    "mtkclient/Library/DA/legacy/dalegacy_lib.py": {
+      "sha256": "68b469d954f2627baa2d2d5f40904f777f85cbb1831664b462898d1ec623068b",
+      "size": 59585
+    },
+    "mtkclient/Library/DA/legacy/dalegacy_param.py": {
+      "sha256": "1e35c6552ca4158339888d064a90426ad43feab3cfa7f3000faed3c559e9d131",
+      "size": 4669
+    },
+    "mtkclient/Library/DA/legacy/extension/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/DA/legacy/extension/legacy.py": {
+      "sha256": "bd9104051bea173b865ab83b14b12ade042bd8cd2d6d853d0f7fe38fa15c9819",
+      "size": 22383
+    },
+    "mtkclient/Library/DA/mtk_da_handler.py": {
+      "sha256": "5af1aac6f0088db708487045827d02374713be173502de8dfd08929a6ece70e1",
+      "size": 76850
+    },
+    "mtkclient/Library/DA/mtk_daloader.py": {
+      "sha256": "79b80aea02831c9891e3a491613f6ce023f9a6d2ed13ead407d7d75b4bbcb713",
+      "size": 24484
+    },
+    "mtkclient/Library/DA/storage.py": {
+      "sha256": "fb0a1475675c4d0452329a43f0db36d5cda8bbaecf11c981a5b70f5a7fcfaab2",
+      "size": 13465
+    },
+    "mtkclient/Library/DA/xflash/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/DA/xflash/extension/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/DA/xflash/extension/xflash.py": {
+      "sha256": "e658e722358f71b43ba28499e4c46aa4ae2908d781adbb19869e6b6ebdf71554",
+      "size": 48959
+    },
+    "mtkclient/Library/DA/xflash/xflash_flash_param.py": {
+      "sha256": "61ca73349d5c33550fd687e47b9cdbdd81eeafcc9685333de54fd59412660a7b",
+      "size": 510
+    },
+    "mtkclient/Library/DA/xflash/xflash_lib.py": {
+      "sha256": "41af26a1582fb5112c33d1b4adfb5e48b6534cd4a6bd3c484a7b45ebfc58c76d",
+      "size": 54090
+    },
+    "mtkclient/Library/DA/xflash/xflash_param.py": {
+      "sha256": "df6a9bfe087d0f6f3f3bee071a6aac659a44e3de3c7979bf53a0f1cee77bfa29",
+      "size": 2275
+    },
+    "mtkclient/Library/DA/xmlflash/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/DA/xmlflash/extension/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/DA/xmlflash/extension/v6.py": {
+      "sha256": "85d91b1659edf00ce644d1406273f8b33cebad8cedcc8ac6341a500e8875f034",
+      "size": 73328
+    },
+    "mtkclient/Library/DA/xmlflash/xml_cmd.py": {
+      "sha256": "734699a8f0dd6b95279d33510363d52d731ed45617e8324364d36205c788915b",
+      "size": 23257
+    },
+    "mtkclient/Library/DA/xmlflash/xml_lib.py": {
+      "sha256": "de0bb70c31754e3a96dbb9777446379052b07ce44b95b1b352a53900b44aae83",
+      "size": 46811
+    },
+    "mtkclient/Library/DA/xmlflash/xml_param.py": {
+      "sha256": "5e308e0db78f8eb4a9663de7e0a77925d4b57649bac7b76843ab1847f2b6000e",
+      "size": 617
+    },
+    "mtkclient/Library/Exploit/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/Exploit/amonet.py": {
+      "sha256": "f2a29d71020a6cfa89b5ee9c1461dc4bb21a705cc78321e45042e94869264a32",
+      "size": 4381
+    },
+    "mtkclient/Library/Exploit/carbonara.py": {
+      "sha256": "66f26449702abfca779a48a24ef0fd13f1f0dfb10445f902f92ed8c61e1aa50c",
+      "size": 4896
+    },
+    "mtkclient/Library/Exploit/exptools/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/Exploit/exptools/aarch_tools.py": {
+      "sha256": "b233481d3b7861383f0eb9d41468a0653aa06f613bd0ee1c3b3a427fe09ca125",
+      "size": 11144
+    },
+    "mtkclient/Library/Exploit/exptools/arch.py": {
+      "sha256": "a9cee08724757634825dc48bb0c10f0b035a0d2e83272d4b0eeb4e50692ed36b",
+      "size": 3803
+    },
+    "mtkclient/Library/Exploit/exptools/arm_tools.py": {
+      "sha256": "207356cf9a575e008609bd24979cfb8b0fae487a8a004e0c06c90f9cc14f23d2",
+      "size": 16482
+    },
+    "mtkclient/Library/Exploit/hashimoto.py": {
+      "sha256": "0be4b3d93db008cb7f39b59a290c5bc4d5801ffb0481fefbe97cadf29e8bcfcf",
+      "size": 3562
+    },
+    "mtkclient/Library/Exploit/heapbait.py": {
+      "sha256": "8e73361cf481d343a1c22c8ce06733d7eb2ae74c08c9da76f41990c44ebaeeca",
+      "size": 36779
+    },
+    "mtkclient/Library/Exploit/kamakiri.py": {
+      "sha256": "1fdffb0e9469b702070390490ccbcb6643320ea01a397ae2961386af9059498b",
+      "size": 6703
+    },
+    "mtkclient/Library/Exploit/kamakiri2.py": {
+      "sha256": "b5d0031c713a18d34b25eb1c6d63d470597e128a00ec85d56f74fbb3322b4693",
+      "size": 11312
+    },
+    "mtkclient/Library/Exploit/kamakiripl.py": {
+      "sha256": "65da52a700754a6cdb76391d39e3aa3391bd7a959fa577d50d3c268b98a020a6",
+      "size": 4613
+    },
+    "mtkclient/Library/Filesystem/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/Filesystem/mtkdafs.py": {
+      "sha256": "eaf750718ceeb5ae695d6c6fdae2a024ba2031080c2f8de614dc8c534e17c981",
+      "size": 3425
+    },
+    "mtkclient/Library/Hardware/__init__.py": {
+      "sha256": "ce758f7a0ba5a8dca23f1b029d80153fa55e16466bac65348b7e3f4c9688b357",
+      "size": 3370
+    },
+    "mtkclient/Library/Hardware/cqdma.py": {
+      "sha256": "d978579ff17b7221206c575edc86bbfb8b0aefb5c9d8255e840203b30ff3fb67",
+      "size": 4450
+    },
+    "mtkclient/Library/Hardware/hwcrypto.py": {
+      "sha256": "95c01ba2e24217dbc057efdb2cf8e01e6acbaf0e3102b0c78ebd8407cee00793",
+      "size": 8349
+    },
+    "mtkclient/Library/Hardware/hwcrypto_dxcc.py": {
+      "sha256": "9edf449ccf2c2c2b261374f5bdf4559cb92b902ea2bb4a084591e288b2fc4026",
+      "size": 64648
+    },
+    "mtkclient/Library/Hardware/hwcrypto_gcpu.py": {
+      "sha256": "13e1aa990a5cf6723345271f234cc76da8789be23b75e91081a33bf8fdb2eb32",
+      "size": 27796
+    },
+    "mtkclient/Library/Hardware/hwcrypto_sej.py": {
+      "sha256": "4e3bd5c20a106ca2525b02e3f974a34e5cb1a4b0f0abc00f599710f6cece7f90",
+      "size": 42236
+    },
+    "mtkclient/Library/Hardware/hwcrypto_ssr.py": {
+      "sha256": "ae30e17e05a7d775d27d1c09b470f5c58041c019d4e81ebff9a3afcc5c4de02d",
+      "size": 56915
+    },
+    "mtkclient/Library/Hardware/seccfg.py": {
+      "sha256": "1bbe49f9fd05cc1788f5b38d523d0c062f8199d2a2ec3b7ca1a0882892e755ab",
+      "size": 17801
+    },
+    "mtkclient/Library/Partitions/__init__.py": {
+      "sha256": "858e9ea05c6504c45cf0af5d50a64a9ee13af002e54a614c87eb936ebfb9dc1b",
+      "size": 6354
+    },
+    "mtkclient/Library/Partitions/bpi.py": {
+      "sha256": "815f1e8d97873b67cac95fdc3bcb7b0baa66dc7461d7e629dac82dd883dc05ce",
+      "size": 3836
+    },
+    "mtkclient/Library/Partitions/gpt.py": {
+      "sha256": "dda999bf88177c25fb877883f2ff8a54b63ea0cad5e77ef87aab4183ad960271",
+      "size": 13402
+    },
+    "mtkclient/Library/Partitions/mbr.py": {
+      "sha256": "2be2dfd00d6f0f3f9d89bfaf446e68b3f93abb076e359dad86176942588387e1",
+      "size": 12779
+    },
+    "mtkclient/Library/Partitions/pmt.py": {
+      "sha256": "ce080d841d9e0d7d2c3b35eb1636740a499190b237c8bcd6b5e920dcfa97ade4",
+      "size": 5747
+    },
+    "mtkclient/Library/Port.py": {
+      "sha256": "a13955e1fddcc27be3a305eb56cae7268d5b9604c2e9c65389353004a612d1cc",
+      "size": 9339
+    },
+    "mtkclient/Library/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/Library/asmtools.py": {
+      "sha256": "617f5c0418939aab02c3df6098c1e466a29dfb5b47ee33664bd5fdf363f34423",
+      "size": 9787
+    },
+    "mtkclient/Library/cryptutils.py": {
+      "sha256": "2cc53b37fc5d615804311d92580cec3ca9f7b5698e9e27c3d07dd5d5a848adeb",
+      "size": 20261
+    },
+    "mtkclient/Library/ebr.py": {
+      "sha256": "2c6aa0ba4911bfb8415559cc8c6a929478bfb8e57bd598dfe8a52e84cacfb3f0",
+      "size": 1594
+    },
+    "mtkclient/Library/error.py": {
+      "sha256": "6605e76bc2fee98b46ef352b9da46fd5aac7431c4ab02e6ca1c84628d59bde41",
+      "size": 39518
+    },
+    "mtkclient/Library/exploit_handler.py": {
+      "sha256": "be53d0dfcf5e42c404c0eef664e25c6f8d523b9122ea07704d9f42d4f2c08564",
+      "size": 7117
+    },
+    "mtkclient/Library/gui_utils.py": {
+      "sha256": "6de2aa3bf9c37aae96181b0d912c04f658ff91969780b90d9709698d8a9a362e",
+      "size": 12001
+    },
+    "mtkclient/Library/meta.py": {
+      "sha256": "b10ae611ecba411ec1592e80366811bc66da26944a348a2e3e68e7f616c9d3fd",
+      "size": 9875
+    },
+    "mtkclient/Library/mtk_class.py": {
+      "sha256": "0bdbb0749bca9d865411e0e0ef42bed0e0d3bc709bf83f0f4057528485b7c604",
+      "size": 9329
+    },
+    "mtkclient/Library/mtk_crypto.py": {
+      "sha256": "045cd30a5629d8f512236d36ca94ebec2af9740aa8a1575655c3d70fd5532232",
+      "size": 31621
+    },
+    "mtkclient/Library/mtk_main.py": {
+      "sha256": "139c45d116a9b866c55c03a0d13cf64e2bc17054ff39a96cb0a9d877f58c0129",
+      "size": 34387
+    },
+    "mtkclient/Library/mtk_preloader.py": {
+      "sha256": "1406926985b8da25ebb2c3c3c355d83c1c92566289fe6e03bd8faa96d02d1c1f",
+      "size": 47053
+    },
+    "mtkclient/Library/partition.py": {
+      "sha256": "53536c41ed87c117d2b2f144460a55479fe02ddb7a756a1317e58b69d6eb98b9",
+      "size": 9462
+    },
+    "mtkclient/Library/pltools.py": {
+      "sha256": "1093ecbf986d73e60f7761a0c72fcf9aed6b385a56256cdc0dfc5a06925a7b1f",
+      "size": 8456
+    },
+    "mtkclient/Library/realtime.py": {
+      "sha256": "c61b074ca2f1d0ac0a2212c6688d1fd785e39040dd7cb31c60a168923e3d1400",
+      "size": 5145
+    },
+    "mtkclient/Library/settings.py": {
+      "sha256": "c62ce17400066823f6bee4958af8c916e1a4c4f456958a5541f8628bc5a3fbaa",
+      "size": 1718
+    },
+    "mtkclient/Library/thread_handling.py": {
+      "sha256": "dbd5112304917eea2b813d660cd0be7fbb4d84d4d2afaf430ace2616a465d22d",
+      "size": 657
+    },
+    "mtkclient/Library/utils.py": {
+      "sha256": "215ef06aef85f65c249b588537bbb757cc61fe583975567ce49fe01b443ed9e3",
+      "size": 17767
+    },
+    "mtkclient/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/config/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/config/brom_config.py": {
+      "sha256": "a8d94deac4fb3d485e7ed9fcc17aa9fca14f19307c1dea5daf429cf7a1e1de63",
+      "size": 97421
+    },
+    "mtkclient/config/devicedb.py": {
+      "sha256": "51ff1481696784c5eca04df1d4205d61241d144b27dd54c559aa311433965b74",
+      "size": 135
+    },
+    "mtkclient/config/mtk_config.py": {
+      "sha256": "9111889fb719d1989e1a10e7997994971d3d5381a813f689ae59cd4b0f872ddc",
+      "size": 9880
+    },
+    "mtkclient/config/payloads.py": {
+      "sha256": "0ddbe924cb9fe3f6a5361bc4dce9d7ddc37bea52fe153cf2ba8aa8484325e0c8",
+      "size": 637
+    },
+    "mtkclient/config/usb_ids.py": {
+      "sha256": "7dd6d63dc8fd82fb722f9bb4c01121ddced9a5130c152f6919f1815a60c945fb",
+      "size": 947
+    },
+    "mtkclient/gui/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    "mtkclient/gui/collapsible_splitter.py": {
+      "sha256": "fd21842bb12075322491a4c60577378f8951aa876b15509b922f1bb8f3ed7324",
+      "size": 2613
+    },
+    "mtkclient/gui/connect_info.py": {
+      "sha256": "f3b78f48d76e0618c672f1cf5f36a0e00c8de30ac9acc6903889215de30d792c",
+      "size": 274
+    },
+    "mtkclient/gui/connect_info_ui.py": {
+      "sha256": "54b57d3be591669e14bfee60206ca99df54d6b047722b36bd199efdbdf94421f",
+      "size": 7141
+    },
+    "mtkclient/gui/eraseFlashPartitions.py": {
+      "sha256": "cde9aacbe5f16f3e1dff087fa15b853a3047fb018802e8e55f75e6f95f6430af",
+      "size": 6938
+    },
+    "mtkclient/gui/main_gui.py": {
+      "sha256": "5a8fe4b3d7666671cb620f88ad415bf26ee4838039908655b9ccfb70f14ae69e",
+      "size": 39266
+    },
+    "mtkclient/gui/readFlashPartitions.py": {
+      "sha256": "65be385d52acc3a2cc81743df1e27a8d5b801e894273faac043ce58ec29a54f8",
+      "size": 8482
+    },
+    "mtkclient/gui/themes.py": {
+      "sha256": "a6816e42462f8e6368c8642c7cbbf4f5aa8a10370a36c33ff6ab2ada50429ea5",
+      "size": 6150
+    },
+    "mtkclient/gui/toolkit.py": {
+      "sha256": "45b620cbecbdc8276b67d997beba8eaf40f2f5e8fdf2717285594f8d2fe65cff",
+      "size": 5954
+    },
+    "mtkclient/gui/toolsMenu.py": {
+      "sha256": "91308ea133ad0ac8d12646984203fe6c5510cfd6dcd3977a0885762f7230f7dd",
+      "size": 4253
+    },
+    "mtkclient/gui/writeFlashPartitions.py": {
+      "sha256": "a234bdb995ce0dfae214819f062c024810399c1dc4b1bd0c2c2231ccf46dc50f",
+      "size": 8309
+    },
+    "pyproject.toml": {
+      "sha256": "6af14393b9e85263a486c8cd70067a442587f64e274cb85a00baa3ac69a43954",
+      "size": 1680
+    },
+    "requirements.txt": {
+      "sha256": "ce564c45392a3cccb84dc70694ad5e97b3dd1646f3a7907ab5ca8f5e6c3aa95e",
+      "size": 144
+    }
+  },
+  "kind": "couch-reviewed-mtk-source",
+  "loader_included": false,
+  "prebuilt_payloads_included": false,
+  "revision": "60e07f3b343a4469389f15967626d63e049968d4",
+  "schema": 1
+}

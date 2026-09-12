@@ -30,8 +30,13 @@ const base=process.env.SITE_URL||'http://127.0.0.1:8098/';
   await key('ok'); await wait({thermostat_modes:true});
   await key('down'); await key('down'); await key('ok');
   await wait({thermostat_mode:'Cool',thermostat_modes:false});
+  // BottomTray retains its input shield for the 200 ms exit animation.
+  // Logical state changes before the tray finishes moving; interact only once settled.
+  await page.waitForTimeout(250);
   await page.mouse.click(240,600); await wait({thermostat_modes:true});
+  await page.waitForTimeout(250);
   await page.mouse.click(240,120); await wait({thermostat_modes:false});
+  await page.waitForTimeout(250);
   await key('back'); await wait({thermostat:false,room:0});
   await page.evaluate(()=>window.couchDemo.documentation_screen('thermostat-range'));
   await wait({thermostat_range:true});

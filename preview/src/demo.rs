@@ -604,6 +604,7 @@ pub fn state_json() -> String {
     with(|d, a| {
         result=format!("{{\"room\":{},\"player\":{},\"panel\":{},\"paused\":{},\"chooser\":{},\"brightness\":{},\"level\":{},\"focus\":{},\"tv\":{},\"tv_panel\":{},\"android_tv\":{},\"apple_tv\":{},\"infrared\":{}}}",d.room.map(|r|r.to_string()).unwrap_or("null".into()),a.get_player_shown(),a.get_player_panel(),a.get_player_paused(),a.get_chooser_shown(),a.get_brightness_shown(),d.room.map(|r|d.levels[r][0]).unwrap_or(0),a.get_focus_row(),a.get_tv_shown(),a.get_tv_panel(),a.get_tv_android(),a.get_tv_apple(),a.get_tv_ir());
         result.pop();
+        result.push_str(&format!(",\"camera\":{}",a.get_camera_shown()));
         result.push_str(&format!(",\"thermostat\":{},\"thermostat_modes\":{},\"thermostat_target\":\"{}\",\"thermostat_mode\":\"{}\",\"thermostat_adjustable\":{},\"thermostat_range\":{}", a.get_thermostat_shown(), a.get_thermostat_modes_shown(), a.get_thermostat_target(), a.get_thermostat_mode(), a.get_thermostat_adjustable(), a.get_thermostat_range()));
         result.push_str(&format!(",\"media_active\":{},\"media_live\":{},\"media_has_duration\":{},\"media_has_art\":{},\"media_paused\":{}}}", a.get_tv_media_active(), a.get_tv_media_live(), a.get_tv_media_has_duration(), a.get_tv_media_has_art(), a.get_tv_media_state() == "Paused"));
     });
@@ -618,12 +619,22 @@ pub fn documentation_screen(name: &str) {
         with(|d, a| {
             d.timer.stop();
             d.clear(a);
+            a.set_camera_shown(false);
             a.set_thermostat_shown(false);
             a.set_thermostat_feedback_shown(false);
             a.set_thermostat_modes_shown(false);
             a.set_tv_shown(false);
             a.set_player_shown(false);
             match name.as_str() {
+                "protect-camera" => {
+                    let mut frame=slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(480,270);
+                    let colors=[[190,190,190],[190,190,0],[0,190,190],[0,190,0],[190,0,190],[190,0,0],[0,0,190],[20,20,20]];
+                    for (i,pixel) in frame.make_mut_slice().iter_mut().enumerate(){let c=colors[(i%480)/60];*pixel=slint::Rgb8Pixel::new(c[0],c[1],c[2]);}
+                    a.set_camera_image(slint::Image::from_rgb8(frame));
+                    a.set_camera_title("Camera preview fixture".into());
+                    a.set_camera_message("TEST PATTERN · No camera connection".into());
+                    a.set_camera_shown(true);a.invoke_focus_camera();
+                }
                 "thermostat-feedback" => {
                     d.open_room(a,0);
                     a.set_feedback_enabled(true);

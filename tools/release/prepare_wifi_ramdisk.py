@@ -31,13 +31,16 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def alpine_files(cache):
+def alpine_files(cache, filesystem=False):
     provenance = regular(cache / 'closure.json')
     manifest = json.loads(provenance)
     require(manifest['architecture'] == 'armv7' and manifest['kind'] == 'couch-offline-package-closure',
             'Expected inventoried ARMv7 APK closure')
     files, links = {}, {}
-    for package in PACKAGES:
+    packages = ('e2fsprogs', 'e2fsprogs-extra', 'e2fsprogs-libs', 'libblkid', 'libcom_err',
+                'libeconf', 'libgcc', 'libuuid', 'musl') if filesystem else PACKAGES
+    binaries = {'sbin/e2fsck', 'usr/sbin/resize2fs', 'usr/sbin/debugfs'} if filesystem else {'sbin/wpa_supplicant'}
+    for package in packages:
         candidates = [name for name in manifest['files'] if re.fullmatch(
             'packages/' + re.escape(package) + r'-[0-9][^/]*\.apk', name)]
         require(len(candidates) == 1, f'Ambiguous/missing package: {package}')
@@ -47,7 +50,7 @@ def alpine_files(cache):
         with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
             for item in archive:
                 name = item.name.removeprefix('./')
-                if not (name == 'sbin/wpa_supplicant' or
+                if not (name in binaries or
                         re.fullmatch(r'(usr/)?lib/[^/]+\.so(?:\.[0-9]+)*', name)):
                     continue
                 require(name not in files and name not in links, 'Duplicate runtime path')
@@ -69,7 +72,7 @@ def alpine_files(cache):
             target = links[target]
         require(target in files, 'Missing APK library target')
         files[name] = files[target]
-    require('sbin/wpa_supplicant' in files and 'lib/ld-musl-armhf.so.1' in files,
+    require(binaries <= files.keys() and 'lib/ld-musl-armhf.so.1' in files,
             'Missing supplicant or ARM musl loader')
     # Verify DT_NEEDED for every selected ELF without executing target code.
     dependencies = {}
@@ -82,7 +85,7 @@ def alpine_files(cache):
                                     check=True, timeout=20)
             needed = set(re.findall(r'Shared library: \[([^]]+)\]', result.stdout))
             dependencies[name] = needed
-    selected, pending = set(), ['sbin/wpa_supplicant', 'lib/ld-musl-armhf.so.1']
+    selected, pending = set(), [*binaries, 'lib/ld-musl-armhf.so.1']
     while pending:
         name = pending.pop()
         if name in selected:
@@ -153,16 +156,38 @@ def ramdisk(files):
     return bytes(output)
 
 
-def prepare(template, kernel_manifest, busybox, service, vendor_bundle, apk_cache, output):
+def prepare(template, kernel_manifest, busybox, service, vendor_bundle, apk_cache, output, installer=False, display=None, wmt_properties=None, filesystem_cache=None):
     require(not output.exists() and not output.resolve().is_relative_to(REPO), 'New private output required')
     original = regular(template)
     metadata, pin = json.loads(regular(kernel_manifest)), json.loads(regular(PIN))
     verify(original, metadata, pin)
     files, apk_hash = alpine_files(apk_cache)
+    fs_hash = None
+    if filesystem_cache is not None:
+        require(installer, 'Filesystem tools are installer-only')
+        fs_files, fs_hash = alpine_files(filesystem_cache, filesystem=True)
+        for name, data in fs_files.items():
+            require(name not in files or files[name] == data, 'Conflicting RAM runtime libraries')
+            files[name] = data
+    if installer:
+        require(filesystem_cache is not None, 'Installer requires offline filesystem expansion tools')
     files.update(vendor_files(vendor_bundle))
     bb, binary = regular(busybox), regular(service)
     arm_static(bb); arm_static(binary)
+    require((b'COUCH_PRIVATE_WIFI_INSTALLER_V1' in binary) == installer,
+            'Service binary capabilities differ from requested stage mode')
     files.update({'bin/busybox': bb, 'bin/couch-installer-probe': binary})
+    if wmt_properties is not None:
+        bridge = regular(wmt_properties)
+        require(bridge[:6] == b'\x7fELF\x01\x01' and bridge[18:20] == b'\x28\0',
+                'Expected ARM WMT property bridge')
+        files['lib/couch-wmt-properties.so'] = bridge
+    if installer:
+        files['etc/couch-installer-mode'] = b'private-install\n'
+    if display is not None:
+        pixels = regular(display)
+        arm_static(pixels)
+        files['bin/couch-installer-display'] = pixels
     for source, target in (('init', 'init'), ('wifi-init', 'bin/couch-wifi-init'), ('dhcp', 'bin/couch-dhcp')):
         files[target] = regular(REPO / 'tools/installer/wifi-stage' / source)
     raw = ramdisk(files)
@@ -180,15 +205,16 @@ def prepare(template, kernel_manifest, busybox, service, vendor_bundle, apk_cach
     ramdisk_size = struct.unpack_from('<I', image, 16)[0]
     start = page + ((kernel_size + page - 1) // page) * page
     require(gzip.decompress(image[start:start + ramdisk_size]) == raw, 'Packaged WiFi ramdisk mismatch')
-    result = {'schema': 1, 'kind': 'private-ram-wifi-stage', 'private_only': True,
+    result = {'schema': 1, 'kind': 'private-ram-wifi-installer' if installer else 'private-ram-wifi-stage', 'private_only': True,
               'installable': False, 'redistribution_authorized': False, 'physical_boot_verified': False,
               'wifi_verified': False, 'file': 'wifi-stage.img', 'size': len(image),
               'used_boot_bytes': unpacked_size, 'ramdisk_raw_bytes': len(raw),
               'ramdisk_compressed_bytes': len(compressed), 'sha256': sha(image),
               'payload_sha256': hashes, 'apk_inventory_sha256': apk_hash,
+              'filesystem_inventory_sha256': fs_hash,
               'files': {name: {'size': len(data), 'sha256': sha(data)} for name, data in sorted(files.items())},
               'credentials': 'USB provisioned into RAM only; not included',
-              'storage_operations': ['read-only recovery SHA-256'],
+              'storage_operations': ['USB-bound TLS backups', 'verified OS partition transaction'] if installer else ['read-only recovery SHA-256'],
               'pending': ['Physical WiFi association and TLS benchmark', 'Calibration/identity review',
                           'Separate installer transaction and write-service review']}
     output.mkdir(parents=True, mode=0o700)
@@ -201,6 +227,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('template', 'kernel-manifest', 'busybox', 'service', 'vendor-bundle', 'apk-cache', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--installer', action='store_true')
+    parser.add_argument('--display', type=Path)
+    parser.add_argument('--wmt-properties', type=Path)
+    parser.add_argument('--filesystem-cache', type=Path)
     args = parser.parse_args()
     result = prepare(**vars(args))
     print(f"Private WiFi stage: {result['used_boot_bytes']}/{LIMIT} boot bytes; not hardware validated")

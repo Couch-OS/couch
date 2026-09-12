@@ -28,6 +28,38 @@ class CleanStageTests(unittest.TestCase):
                 'alpine': {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
                            'version': '3.21.7', 'architecture': 'armv7'}, 'artifacts': []}
 
+    def test_sonos_is_packaged_at_the_runtime_path_with_pinned_content(self):
+        source = self.root / 'sonos'
+        source.write_bytes(b'static ARM fixture')
+        spec = self.fixture()
+        item = {'source': 'sonos', 'destination': 'opt/couch/couch-sonos',
+                'mode': 0o755, 'sha256': hashlib.sha256(source.read_bytes()).hexdigest()}
+        spec['artifacts'] = [item]
+        data, manifest = build(spec, self.root)
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            self.assertEqual(archive.extractfile(item['destination']).read(), source.read_bytes())
+            self.assertEqual(archive.getmember(item['destination']).mode, 0o755)
+        self.assertEqual(manifest['artifacts'][0]['sha256'], item['sha256'])
+        source.write_bytes(b'changed')
+        with self.assertRaisesRegex(StageError, 'checksum mismatch'):
+            build(spec, self.root)
+
+    def test_coreelec_is_packaged_at_the_runtime_path_with_pinned_content(self):
+        source = self.root / 'coreelec'
+        source.write_bytes(b'static ARM fixture')
+        spec = self.fixture()
+        item = {'source': 'coreelec', 'destination': 'opt/couch/couch-coreelec',
+                'mode': 0o755, 'sha256': hashlib.sha256(source.read_bytes()).hexdigest()}
+        spec['artifacts'] = [item]
+        data, manifest = build(spec, self.root)
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            self.assertEqual(archive.extractfile(item['destination']).read(), source.read_bytes())
+            self.assertEqual(archive.getmember(item['destination']).mode, 0o755)
+        self.assertEqual(manifest['artifacts'][0]['sha256'], item['sha256'])
+        source.write_bytes(b'changed')
+        with self.assertRaisesRegex(StageError, 'checksum mismatch'):
+            build(spec, self.root)
+
     def test_only_named_recovery_cgi_scripts_are_allowed(self):
         for name in ('save', 'setpw', 'scan', 'enroll'):
             self.assertEqual(artifact_destination('opt/couch/www/cgi-bin/' + name),

@@ -3,7 +3,7 @@
 # fastest way to lose that is to share a lockfile with something that does not.
 [workspace]
 resolver = "2"
-members = ["couch-confd"]
+members = ["couch-confd", "couch-system", "couch-updates"]
 
 [workspace.package]
 version = "0.1.0"

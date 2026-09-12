@@ -58,10 +58,12 @@ pub fn rooms(app: App, config: &Config) -> AnyView {
 
 pub fn connection_summary(integration: &Integration) -> String {
     match integration {
+        Integration::Sonos { host } => format!("Sonos · {host}"),
         Integration::Denon{host,port}=>format!("Denon AVR · {host}:{port}"),
         Integration::Connection { connection_id, .. } => format!("Connection · {connection_id}"),
         Integration::WebOs => "LG webOS TV".into(),
         Integration::AndroidTv => "Android / Google TV".into(),
+        Integration::UnifiProtect { .. } => "UniFi Protect".into(),
         Integration::AppleTv => "Apple TV".into(),
         Integration::None => "Not configured".into(),
         Integration::Kodi { host, port } => format!("Kodi · {host}:{port}"),

@@ -54,6 +54,37 @@ impl Api {
                 _ => Reply::error(405, "Use GET or PUT for app shortcuts"),
             };
         }
+        if let [id, "sonos", rest @ ..] = path {
+            let host = self.with(|s| match &s.config().connection(&Id::new(*id))?.provider {
+                Provider::Sonos { host } => Some(host.clone()),
+                _ => None,
+            });
+            return match host {
+                Some(host) => super::sonos::route(method, rest, body, &host),
+                None => Reply::error(404, "Sonos connection not found"),
+            };
+        }
+        if let [id, "coreelec", rest @ ..] = path {
+            let settings = self.with(|s| match &s.config().connection(&Id::new(*id))?.provider {
+                Provider::CoreElec { host, port } => Some((
+                    host.clone(),
+                    *port,
+                    s.path()
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("connections")
+                        .join(id)
+                        .join("coreelec-connection.json"),
+                )),
+                _ => None,
+            });
+            return match settings {
+                Some((host, port, file)) => {
+                    super::coreelec::route(method, rest, body, file, &host, port)
+                }
+                None => Reply::error(404, "CoreELEC connection not found"),
+            };
+        }
         if let [id, "denon", rest @ ..] = path {
             let settings = self.with(|s| match &s.config().connection(&Id::new(*id))?.provider {
                 Provider::Denon { host, port } => Some(couch_denon::Settings {
@@ -67,18 +98,19 @@ impl Api {
                 None => Reply::error(404, "Denon connection not found"),
             };
         }
-        if let [id, kind @ ("hue" | "ha" | "webos" | "kodi" | "androidtv" | "appletv"), rest @ ..] =
+        if let [id, kind @ ("protect" | "hue" | "ha" | "webos" | "kodi" | "androidtv" | "appletv"), rest @ ..] =
             path
         {
             let file = self.with(|s| {
                 let c = s.config().connection(&Id::new(*id))?;
                 let expected = match c.provider {
+                    Provider::UnifiProtect => "protect",
                     Provider::Hue => "hue",
                     Provider::HomeAssistant => "ha",
                     Provider::WebOs => "webos",
                     Provider::AndroidTv => "androidtv",
                     Provider::AppleTv => "appletv",
-                    Provider::Kodi { .. } => "kodi",
+                    Provider::Kodi { .. } | Provider::CoreElec { .. } => "kodi",
                     _ => return None,
                 };
                 if *kind != expected {
@@ -98,7 +130,9 @@ impl Api {
             };
             if *kind == "kodi" {
                 let host = self.with(|s| match &s.config().connection(&Id::new(*id))?.provider {
-                    Provider::Kodi { host, .. } => Some(host.clone()),
+                    Provider::Kodi { host, .. } | Provider::CoreElec { host, .. } => {
+                        Some(host.clone())
+                    }
                     _ => None,
                 });
                 let Some(host) = host else {
@@ -107,6 +141,7 @@ impl Api {
                 return super::kodi::route(method, rest, body, file, &host);
             }
             return match *kind {
+                "protect" => super::protect::route_at(method, rest, body, file),
                 "hue" => super::hue::route_at(method, rest, body, file),
                 "ha" => super::ha::route_at(method, rest, body, file),
                 "androidtv" | "appletv" => {

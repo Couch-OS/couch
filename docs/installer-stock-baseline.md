@@ -1,190 +1,67 @@
-# Preparing the original-Android installer baseline
+# Original Android baseline
 
-The final end-to-end test must start from working stock Android, not an existing
-Couch installation. The following is an offline preparation record, not flash
-authorization or an enabled installer manifest.
+An installer baseline binds one remote's storage identity, partition layout,
+calibration and saved originals. Keep it outside Git with the associated restore
+instructions. It is private device evidence, not part of a public installer.
 
-Private inputs are prepared on Ollie under
-`~/backups/couch-release-inputs/stock-baseline-20260910/`.
-`stock-restore-plan.json` records image paths, hashes, validation and unresolved
-checks. It is `installable: false` and includes no write transport.
+See [device recovery](device-recovery.md) for the partition map and recovery
+constraints, and [the installer guide](installer.md) for the supported flow.
 
-## Available original inputs
+## Fresh Android enrollment
 
-| Image | Bytes | SHA-256 |
-|---|---:|---|
-| Original boot | 16777216 | `68f6baf03d3df9cf42503b6c7e205cb630ab0cb0bf64d2d93e19e0f551ef0e15` |
-| Original Android recovery | 16777216 | `dd925ba4b671ac9d9539b4de0c23bc4e8a03bfa13c81c6278418cdcf49b4ae8d` |
-| Original odmdtbo | 16777216 | `13933a032fff5df271af7ce521a320c6a0653aa05a4ff652d35742eece37d760` |
-| Original system | 1283457024 | `39ed365ce914c6fccb2469ca03cfcb037b752bdcb87fcae1f102c882aa350ff8` |
-| Original vendor | 301989888 | `de47882c6c32d2b009c65b83217aec2ff2960e21a2b1ff03744f8f437da587a9` |
-| New empty stock-format userdata | 5905055744 | `378ec33f5d9a07c37d5e2230af7eea711b9e6af3e719d032b56fd8f92d2b3653` |
+Start with working Android, enable USB debugging and authorize the connected
+computer. Enrollment must bind the selected ADB serial to its physical USB port
+and canonical eMMC CID before following that same port into download mode.
 
-Boot/recovery/odmdtbo came from the original Mac backup. System/vendor remain
-in the adjacent private `original-android/` directory. The file named
-`android-p9-BACKUP.img` is identical to original **boot**, not original Android
-recovery; do not infer image identity from that filename.
+The model string and MT6580 chip identifier are insufficient model evidence.
+The enrollment implementation checks the pinned official boot/overlay images
+and fixed partition boundaries, then captures and independently verifies the
+remote's calibration and original boot, recovery and overlay images. The vendor
+Device ID and Wi-Fi/Bluetooth addresses are separate recorded identity; do not
+substitute Android ID or a serial number for the vendor Device ID.
 
-The official OTA contains no userdata or recovery image, and its full
-system/vendor hashes differ from these originals despite matching the 33
-runtime files Couch needs. Prefer a compatible original set rather than mixing
-firmware generations. **Do not run the OTA updater:** its script writes and
-switches both preloader banks and `lk`/`lk2`. No bootloader, calibration or BCB
-write is part of this preparation.
+Only a completed, verified enrollment journal is a usable baseline. Preserve
+partial captures for diagnosis, but never silently promote them or resume a
+failed write session from them. See [identity handling](installer-stock-identity.md).
 
-## Fresh userdata preparation
+## Preparing a restoration test
 
-No original Android userdata backup was found. The original vendor fstab mounts
-`/data` as **F2FS**, with `encryptable=.../metadata`; Couch's ext4 userdata cannot
-serve as an original Android filesystem.
+Use a compatible original image set from the same remote and firmware. The
+pinned official OTA does not include Android userdata or recovery. Its runtime
+files can provide owner-local installation inputs; that does not make its full
+images interchangeable with another Android release.
 
-The new empty image was formatted offline with `/system/bin/make_f2fs`
-**1.8.0 (2017-02-03)** extracted from the original system image, together with
-its original 13-file bionic/formatter/checker ELF closure. Formatter SHA-256:
-`31b59330aa8f705630a7ae56f0f6fb9bc3b00202c1ecfaacf9077dcf8ebfd8c0`.
-Checker SHA-256:
-`c646e4849c15fd55ccbc808090f1635f10ea4ee8f6a515af77595492b169716c`.
+Do not run the OTA updater script: it writes bootloader partitions outside the
+Couch installer policy. Never write `preloader_*` or `lk`.
 
-QEMU ARM ran these tools in a nonroot, network-disabled, capability-free
-container with a read-only root and original libraries. Only the private image
-directory was writable. Seccomp was disabled for the old bionic personality
-query; no host privileges, block devices or USB were passed through. Initial
-host-QEMU/filtered-container probes did not run the formatter successfully;
-their timed-out container was removed.
+Before restoration, read the current layout and compare the relevant partitions
+with the retained originals. Record exactly which partitions need replacement.
+Retain a working recovery path until Android boot and identity have been checked.
+After Android runs, capture a new baseline: Android can legitimately update
+NVRAM/nvdata, so old calibration hashes are not a substitute for current identity
+validation.
 
-Formatting used `-t 0 -l userdata <regular-file> 11533312`, disabling discard,
-with no sparse-output or extra feature switches. A 256 MiB fixture passed first.
-The full-size image then passed the original `fsck.f2fs`; its SHA-256 was
-unchanged across that check. The checker requires a writable file descriptor,
-so it ran against the disposable offline image, never a device partition.
-Fresh filesystem UUID/time fields are generated by the original formatter;
-this image's recorded hash identifies this artifact, not a reproducible build.
+The inspected stock Android fstab uses F2FS for userdata. A Couch ext4 image is
+not an Android userdata image. If original userdata is unavailable, preparing an
+empty compatible filesystem loses that Android data and needs an explicit
+restoration plan. Use the firmware's compatible formatter/checker on disposable
+regular files, and check the current encryption metadata before relying on an
+unencrypted image. Never repair an original backup in place.
 
-The original 40894464-byte metadata backup is entirely zero. That does not
-establish the **current** metadata state or authorize clearing it. Current
-metadata must be read and understood before relying on plaintext fresh data.
+## Consistent backups
 
-## Safest staged restoration
+A running, writable filesystem is not a consistent raw backup. Prefer the
+installer's unmounted download/staging environment. If using recovery, verify
+that the actual backing filesystem and all aliases are read-only and that no
+application or setup service can write to it; a recovery screen alone does not
+prove this.
 
-1. Finish and independently verify current Couch userdata and boot/recovery
-   backups. Retain the settings archive and working USB download/recovery path.
-2. Root reads current system, vendor, odmdtbo and metadata, comparing them to
-   the compatible original evidence. No additional agent should touch USB.
-3. If those inputs are compatible, the minimum initial replacement is original
-   **boot plus fresh userdata**, keeping the existing Couch recovery in p9.
-   Any system/vendor/odmdtbo restoration requires separate explicit review.
-4. Confirm stock Android boots and its screen, Wi-Fi and reported identity
-   work. Only then replace p9 with original Android recovery so the final
-   installer trial starts with both stock Android slots.
-5. Capture a **new post-stock baseline** before the Couch installer trial.
-   Stock Android may legitimately update its own NVRAM/nvdata. Preserve storage
-   identity and Device ID/MAC semantics; do not require old Couch-era hashes to
-   remain unchanged after Android has run.
+For a raw transfer, require the observed partition size and matching hashes
+before transfer, on the saved file, and after transfer. Keep binary data separate
+from logs, use private permissions, and preserve the verified original unchanged.
+Do not use lazy unmount or an indefinite filesystem freeze to bypass active
+writers. See [storage and backup policy](installer-storage-policy.md).
 
-Original init declares `flash_recovery`, but the original system image lacks
-`/bin/install-recovery.sh`, `/etc/install-recovery.sh` and `recovery-from-boot.p`.
-No automatic p9 replacement mechanism was found through that standard path;
-this observation applies only to the inspected original system image.
-
-Stock boot from the newly formatted userdata was subsequently validated as
-recorded below. The public trial must still discover/capture an original Android
-device through USB without SSH or a previously prepared Couch runtime baseline.
-Stock restoration alone does not complete that test or change public release gates.
-
-## Current-partition comparison before restoration
-
-Root's September 10 read-only runtime checks found current system and vendor
-**exactly match** the original full-image hashes above. Current metadata hash
-`f66a65a702b4ef31832f64bdacec9d34db012b8148845d88ef4b7248c4b76943`
-matches 40894464 zero bytes. These are current observations, not assumptions
-from the old backup.
-
-Current odmdtbo hash is
-`93fb7a17ed374b56006087945b1b2fb1c61845ad03554a953f29bec02a37c39f`.
-A complete verified 16 MiB capture differs from the original by **one byte** at
-offset 13339: `/fragment@22/__overlay__/debounce-delay-ms` changes **50 to 8**.
-The fragment targets `mt_gpio_kpd`, the physical matrix keypad. Every other byte,
-including headers and padding, matches. No panel, touch, IR or supply mapping
-changed. Commit `6f7f1c4` documents the original 50 ms rapid-tap problem and adds
-a property-aware DT patch tool, though it does not establish the particular
-shared-partition write's provenance.
-
-This is an intentional-looking input-latency adjustment, not an unexplained
-large overlay change. A strictly stock baseline should restore the original
-overlay after root review; retaining it would retain Couch's 8 ms debounce.
-The shared overlay affects both boot slots. Current system/vendor need no
-restoration based on their matching hashes.
-
-## Completed stock restoration and local verification
-
-The September 10 trial wrote the full fresh F2FS image, then stopped the slow DA
-readback at the operator's request. The interrupted journal remains incomplete;
-its `writing` state is not a verification receipt. The operator entered retained
-Couch recovery using **Back** during power-on, correcting the old Volume Up
-instructions.
-
-Recovery ran entirely from its ramdisk, with userdata unmounted. After flushing
-the partition's block buffers, BusyBox SHA-256 read all 5,905,055,744 bytes locally
-and matched `378ec33f...2b3653` exactly. Exit status was zero; uptime timestamps
-81.81–369.31 establish **287.5 seconds (19.6 MiB/s)**. This fresh-boot independent
-storage read avoided USB readback and was approximately 8.5 times the measured
-2.30 MiB/s DA read rate. It does not measure Wi-Fi throughput.
-
-Original boot and overlay were uploaded compressed into recovery RAM, expanded,
-size/hash checked, written to their checked partition nodes, flushed and hashed
-locally. Both matched the original hashes above. All five identity partitions
-still matched the pre-restoration baseline before Android ran. The existing
-`boot-recovery` request was cleared using the documented first-512-byte BCB
-operation; bootloaders and the rest of `para` were untouched.
-
-The operator observed original Android startup; Android independently reported
-`sys.boot_completed=1`, version **8.1.0**, and a mounted F2FS `/data`. Original
-Android recovery was then staged in `/dev` (RAM), written to p9, flushed and
-verified against `dd925ba4...49b4ae8d`. Both boot slots are now stock. This stock
-restoration used existing recovery/ADB access as laboratory preparation, not as
-a public installer prerequisite.
-
-A separate private local-verification record preserves these results alongside
-the interrupted DA journal. A fresh post-Android identity capture is still needed
-before bootstrapping the RAM installer; Android may update its own NVRAM.
-
-## Obtaining a stable complete Couch backup
-
-For the September 10 stock-baseline trial, the operator explicitly waived a
-complete Couch backup: the existing installation and configuration are disposable
-test data. The private stock-restore path may therefore replace userdata without
-saving it. Existing calibration/identity backups, exact target checks and full
-write readback remain required. This exception does not change the public
-installer's backup policy or claim that an incomplete Couch backup is restorable.
-
-A running GUI filesystem mounted read-write is not a stable raw snapshot.
-Recovery is a better starting point, but `recovery/init` also mounts userdata
-read-write and invokes stage2 networking. `COUCH_NO_UI=1` returns **before** the
-GUI, configuration daemon and setup watcher start. Normal station DHCP uses
-`-n -q` and exits after obtaining a lease. Confirm the actual process/mount state
-rather than assuming that the recovery screen alone means no writers exist.
-
-Preferred network-copy sequence, controlled by root through USB serial:
-
-1. Let recovery networking settle and retain the serial fallback. Check for
-   unexpected configuration/portal/application writers; do not blindly kill
-   networking or the SSH transport needed for the copy.
-2. Run `sync`, then remount the actual userdata ext4 filesystem read-only from
-   the initramfs namespace, for example
-   `/bin/busybox mount -o remount,ro /mnt/alpine`. Treat failure as a stop.
-   Inspect `/proc/mounts` and `/proc/self/mountinfo`: the backing filesystem
-   must be read-only, not merely one read-only bind mount. Check aliases too.
-3. Hash the block partition, stream its complete raw bytes through a non-PTY
-   SSH session into a new private file on Ollie, and hash it again. Require
-   source-before = destination = source-after, and the exact observed size.
-   Write logs separately from the binary stream and use restrictive permissions.
-4. Keep the verified original backup immutable. Offline filesystem checks should
-   not repair that evidence in place; use a separate copy for any journal replay
-   or repair assessment. Preserve boot/recovery and settings backups alongside it.
-
-Avoid a long filesystem freeze while ordinary GUI/supervisor processes continue:
-their writes can block and undermine the recovery path. Do not use lazy/forced
-unmount to obtain a misleading success. If clean read-only remount cannot be
-established, quiesce identified writers or return to the already validated DA
-backup path, where userdata is unmounted. These instructions were reviewed
-offline; this agent did not freeze, remount, reboot or access live USB.
+Local test receipts, machine paths, per-device hashes and session-specific backup
+exceptions belong in the ignored scratchpad or private backup directory. They do
+not change the public installer policy or establish validation for a later build.

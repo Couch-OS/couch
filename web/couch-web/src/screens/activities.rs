@@ -145,7 +145,7 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
 fn screen_editor(app: App, config: &Config, activity: &Activity) -> AnyView {
     let base = StoredValue::new(activity.clone());
     let options=config.devices().filter(|(_,d)|activity.setup.devices.contains(&d.id)).filter_map(|(_,d)|{
-        let screen=match config.resolve_integration(&d.integration) {Some(Integration::Kodi{..})=>"Kodi · artwork, playback and chapters",Some(Integration::WebOs)=>"LG TV · inputs, apps and playback",Some(Integration::AndroidTv)=>"Android TV · navigation and playback",Some(Integration::AppleTv)=>"Apple TV · apps and playback",_=>return None};
+        let screen=match config.resolve_integration(&d.integration) {Some(Integration::Sonos{..})=>"Sonos · group playback and speaker volume",Some(Integration::Kodi{..})=>"Kodi · artwork, playback and chapters",Some(Integration::WebOs)=>"LG TV · inputs, apps and playback",Some(Integration::AndroidTv)=>"Android TV · navigation and playback",Some(Integration::AppleTv)=>"Apple TV · apps and playback",_=>return None};
         let id=d.id.clone();let selected=activity.source.as_ref()==Some(&id) && !activity.setup.custom_screen;
         Some(view!{<label class="activity-screen-choice"><input type="radio" name="activity-screen" checked=selected disabled=move ||app.busy.get() on:change=move |_|{let mut a=base.get_value();a.source=Some(id.clone());a.setup.custom_screen=false;app.run(api::put(format!("/api/activities/{}",a.id),a));}/><span><strong>{d.name.clone()}</strong><small>{screen}</small></span></label>})
     }).collect_view();

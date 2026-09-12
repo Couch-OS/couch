@@ -2,8 +2,8 @@
 
 This is a private, read-only benchmark scaffold, not an installer. No physical
 boot, FunctionFS enumeration or throughput result is established by packaging it.
-It reuses the tested `ea122a39` kernel; kernel builds are unnecessary. Build real
-artifacts on Ollie and keep their boot template and outputs outside Git.
+It reuses the tested `ea122a39` kernel; kernel builds are unnecessary. Build ARM
+artifacts on a Linux build host and keep boot templates and outputs outside Git.
 
 ## Isolated runtime
 
@@ -29,13 +29,14 @@ configuration, rather than a stock hardcoded major. Init requests CPUs 1–3 onl
 as normal init does, and records available CPU online/governor/frequency values
 in RAM for interpreting benchmark results. It does not change CPU governors.
 
-The verified candidate BusyBox was checked under ARM QEMU on Ollie for `mount`,
-`mkdir`, `kill`, `sleep`, `cat` and `sha256sum`. No Android/vendor runtime files,
+Supply a static ARM BusyBox with `mount`, `mkdir`, `kill`, `sleep`, `cat`,
+`sha256sum`, `awk`, `rm` and `mknod`. Verify these applets with ARM QEMU before
+packaging; the builder checks ELF structure, not applet availability. No Android/vendor runtime files,
 WiFi credentials or device-specific properties are needed for this USB probe.
 
 ## Packaging
 
-On Ollie, with repository sources and private inputs available:
+On a Linux build host, with repository sources and private inputs available:
 
 ```sh
 python3 tools/release/prepare_probe_ramdisk.py \
@@ -63,12 +64,22 @@ sh -n tools/installer/probe/init
 Measure RAM bulk transfer separately from device-local recovery hashing. Neither
 test validates a future write protocol, image installation or power-loss recovery.
 
-## First private artifact (2026-09-10)
+## Recovery-shell RAM upload
 
-Ollie packaging completed with the actual static service, without accessing USB
-or the remote. The full 16 MiB image SHA-256 is
-`1a2cc44dbba4a96fb5d56320522033215cd22d12ca908f16a12c8f2acba53935`;
-the service SHA-256 is
-`94d1d1fd4db38b3185763684a22b22d861a4ce707d9184c3cc43d5d79dd1ef4b`.
-Kernel provenance and compressed-ramdisk roundtrip checks passed. These hashes
-identify a private test artifact; boot and throughput remain unverified.
+`tools/installer/serial_ram_upload.py` transfers a regular file of at most 64 MiB
+to a generated `/tmp/couch-upload-…` path in an already running recovery serial
+shell. This is separate from the probe’s output-only ACM diagnostics. The helper
+requires `/tmp` to be tmpfs, uses exclusive/no-clobber creation, handles short
+serial writes without duplicating data, and checks the received length and SHA-256.
+It does not execute the uploaded file, boot an image or write a partition.
+
+```sh
+python3 tools/installer/serial_ram_upload.py \
+  --port /dev/ttyACM0 --source /private/probe-payload --timeout 120
+```
+
+Choose the serial device explicitly and only when no other installer owns it.
+After an interrupted transfer, the receiver state is ambiguous: independently
+restart the recovery shell before sending another command or trying again.
+The helper sends no automatic retry or reset. PTY tests validate framing and
+checksum failure handling without contacting hardware.

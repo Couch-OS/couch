@@ -11,6 +11,10 @@ set -e
 cd "$(dirname "$0")/.."
 . tools/env.sh
 
+SYSTEM_BIN=daemon/target/armv7-unknown-linux-musleabihf/release/couch-system
+[ -f build/couch-wmt-properties.so ] || { echo "Run tools/build-wmt-properties.sh before provisioning."; exit 1; }
+[ -x "$SYSTEM_BIN" ] || { echo "Build couch-system for ARMv7 before provisioning."; exit 1; }
+
 ALPINE_VER=3.21
 ALPINE_REL=3.21.7
 MIRROR=https://dl-cdn.alpinelinux.org/alpine
@@ -83,6 +87,8 @@ $ADB shell "$BB chroot $MNT /bin/sh -c '
     fi'"
 
 echo "installing our payload ..."
+$ADB push build/couch-wmt-properties.so "$MNT/opt/couch/couch-wmt-properties.so" >/dev/null
+$ADB push "$SYSTEM_BIN" "$MNT/opt/couch/couch-system" >/dev/null
 for f in stage2/*.sh; do
     $ADB push "$f" "$MNT/opt/couch/$(basename "$f")" >/dev/null
 done

@@ -1,0 +1,61 @@
+name: Native installer host
+on:
+  pull_request:
+    paths:
+      - 'tools/installer/host/**'
+      - 'tools/release/ha100_official_runtime.json'
+      - '.github/workflows/installer-native-host.yml'
+  workflow_dispatch:
+    inputs:
+      verify_official_ota:
+        description: Download the pinned public official OTA and exercise native extraction
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check native host
+        working-directory: tools/installer/host
+        run: |
+          cargo fmt --check
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo build --release --locked
+      - name: Execute native official input preparation
+        if: github.event_name == 'workflow_dispatch' && inputs.verify_official_ota
+        shell: python
+        run: |
+          import hashlib, json, os, pathlib, subprocess, urllib.request
+          pin = json.loads(pathlib.Path('tools/release/ha100_official_runtime.json').read_text())
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'couch-official-input-check'
+          root.mkdir()
+          archive = root / 'official.zip'
+          digest, count = hashlib.sha256(), 0
+          request = urllib.request.Request(pin['url'], headers={'User-Agent': 'couch-native-input-validation'})
+          with urllib.request.urlopen(request, timeout=30) as response, archive.open('xb') as target:
+              while block := response.read(1024 * 1024):
+                  count += len(block)
+                  if count > pin['size']:
+                      raise RuntimeError('Official download exceeds pinned size')
+                  digest.update(block)
+                  target.write(block)
+          assert count == pin['size'] and digest.hexdigest() == pin['sha256'], 'Official archive pin mismatch'
+          suffix = '.exe' if os.name == 'nt' else ''
+          executable = pathlib.Path('tools/installer/host/target/release') / ('couch-installer-host' + suffix)
+          subprocess.run([str(executable.resolve()), 'prepare-official', str(archive), str(root / 'inputs')], check=True, timeout=600)
+          result = json.loads((root / 'inputs/vendor/vendor-provenance.json').read_text())
+          assert len(result['files']) == 33 and result['installable'] is False
+          print('Native owner-side extraction verified: 33 files; no device access.')
+          # No OTA, vendor input, private directory or output is uploaded.

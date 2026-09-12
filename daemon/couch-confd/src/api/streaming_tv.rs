@@ -1,5 +1,7 @@
 //! Experimental Android/Apple TV pairing. Private material never enters HTTP
 //! responses or exported configuration. A short-lived socket spans PIN entry.
+#[path = "airplay.rs"]
+mod airplay;
 use super::Reply;
 use couch_control::{StreamingConnection, StreamingTv};
 use serde::Deserialize;
@@ -14,6 +16,10 @@ use std::{
     time::{Duration, Instant},
 };
 enum Pair {
+    AirPlay(
+        couch_appletv::metadata::Pairing,
+        couch_appletv::metadata::Settings,
+    ),
     Android(couch_androidtv::Pairing, couch_androidtv::Settings),
     Apple(couch_appletv::Pairing, couch_appletv::Settings),
 }
@@ -72,11 +78,13 @@ fn response(connection: &StreamingConnection) -> Reply {
     )
 }
 fn discover(apple: bool) -> Reply {
-    let service = if apple {
+    discover_service(if apple {
         couch_appletv::MDNS_SERVICE
     } else {
         couch_androidtv::MDNS_SERVICE
-    };
+    })
+}
+fn discover_service(service: &str) -> Reply {
     let Ok(daemon) = mdns_sd::ServiceDaemon::new() else {
         return Reply::error(
             503,
@@ -122,6 +130,14 @@ fn discover(apple: bool) -> Reply {
     result
 }
 pub(super) fn route(method: &str, path: &[&str], body: &[u8], file: PathBuf, apple: bool) -> Reply {
+    if apple && path.first() == Some(&"metadata") {
+        return airplay::route(
+            method,
+            &path[1..],
+            body,
+            file.with_file_name("appletv-metadata-connection.json"),
+        );
+    }
     if method == "GET" && path == ["discover"] {
         return discover(apple);
     }
@@ -252,7 +268,7 @@ pub(super) fn route(method: &str, path: &[&str], body: &[u8], file: PathBuf, app
                     credentials,
                 })
                 .map_err(|e| e.to_string()),
-            None => return Reply::error(409, "Pairing is not ready"),
+            None | Some(Pair::AirPlay(..)) => return Reply::error(409, "Pairing is not ready"),
         };
         let connection = match result {
             Ok(c) => c,

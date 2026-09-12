@@ -21,3 +21,12 @@ __pycache__/
 site/wasm/
 # Generated from the current production Slint WASM by the Pages workflow.
 site/usage/screenshots/
+
+# Private session notes and disposable review plans.
+/scratchpad/
+
+# Local Codex instructions, configuration, skills and session artifacts.
+[Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]
+[Aa][Gg][Ee][Nn][Tt][Ss].[Oo][Vv][Ee][Rr][Rr][Ii][Dd][Ee].[Mm][Dd]
+.codex/
+.agents/

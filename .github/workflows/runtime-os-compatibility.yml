@@ -1,0 +1,25 @@
+name: Runtime OS compatibility
+on:
+  pull_request:
+    paths:
+      - 'daemon/couch-updates/**'
+      - 'daemon/Cargo.lock'
+      - 'tools/release/**'
+      - 'tools/tests/test_runtime_update_boot.py'
+      - 'stage2/runtime-boot.sh'
+      - '.github/workflows/runtime-os-compatibility.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --manifest-path daemon/Cargo.toml -p couch-updates --check
+      - run: cargo test --manifest-path daemon/Cargo.toml -p couch-updates --locked
+      - run: cargo clippy --manifest-path daemon/Cargo.toml -p couch-updates --all-targets --locked -- -D warnings
+      - run: python3 -m unittest discover -s tools/release -p 'test_*.py'
+      - run: python3 tools/tests/test_runtime_update_boot.py

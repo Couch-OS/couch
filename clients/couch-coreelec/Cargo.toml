@@ -1,0 +1,11 @@
+[package]
+name = "couch-coreelec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CoreELEC Kodi control and explicitly configured OS management"
+
+[dependencies]
+couch-kodi = { path = "../couch-kodi" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

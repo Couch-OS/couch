@@ -93,6 +93,19 @@ impl Button {
 /// Deliberately finite: never accept arbitrary RPC or shell commands in mappings.
 pub fn functions(integration: &Integration) -> &'static [(&'static str, &'static str)] {
     match integration {
+        Integration::Sonos { .. } => &[
+            ("play", "Play"),
+            ("pause", "Pause"),
+            ("play-pause", "Play / pause"),
+            ("stop", "Stop"),
+            ("next", "Next"),
+            ("previous", "Previous"),
+            ("volume-up", "Volume up"),
+            ("volume-down", "Volume down"),
+            ("mute", "Mute"),
+            ("mute-on", "Mute on"),
+            ("mute-off", "Mute off"),
+        ],
         Integration::Kodi { .. } => &[
             ("up", "Up"),
             ("down", "Down"),

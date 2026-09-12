@@ -14,6 +14,7 @@ import tempfile
 from clean_stage import (GENERATED, StageError, archive_name, build, checksum,
                          require, secret_path)
 from package_closure import verify
+from os_baseline import seed as seed_os_baseline
 
 
 def normalize(data, epoch, private_files=None):
@@ -103,8 +104,10 @@ def prepare(spec, closure, output):
                         '--mount', f'type=bind,src={output.resolve()},dst=/out',
                         image, 'sh', '/assemble.sh'], check=True)
     raw = output / 'package-rootfs.raw.tar.gz'
-    archive, count = normalize(raw.read_bytes(), spec['source_date_epoch'])
+    seeded, baseline = seed_os_baseline(raw.read_bytes(), checksum((closure / 'closure.json').read_bytes()))
+    archive, count = normalize(seeded, spec['source_date_epoch'])
     result = {**staging, 'kind': 'couch-packaged-staging', 'installable': False,
+              'os_baseline': baseline,
               'package_closure_sha256': checksum((closure / 'closure.json').read_bytes()),
               'packages': manifest['packages'], 'builder_image': image,
               'package_scripts': 'executed under existing ARM binfmt in isolated container',

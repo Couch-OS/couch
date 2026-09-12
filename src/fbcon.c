@@ -108,7 +108,7 @@ static void flip(void)
     if (b >= 0) { write(b, "255\n", 4); close(b); }
 }
 
-/* The same artwork couch-gui shows, drawn from an alpha bitmap so it can be
+/* The canonical Couch boot wordmark, drawn from an alpha bitmap so it can be
  * composited over the background at any brightness. Centred, because there is
  * nothing else on the screen to align to. */
 static void draw_logo(unsigned int bg)

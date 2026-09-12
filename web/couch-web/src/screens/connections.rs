@@ -9,12 +9,15 @@ pub fn screen(app: App, config: &Config) -> AnyView {
     let no_connections = existing.is_empty();
     let available: Vec<_> = [
         ("kodi", "Kodi"),
+        ("core-elec", "CoreELEC"),
+        ("sonos", "Sonos"),
         ("home-assistant", "Home Assistant"),
         ("hue", "Philips Hue"),
         ("web-os", "LG webOS TV"),
         ("android-tv", "Android / Google TV · experimental"),
         ("apple-tv", "Apple TV · experimental"),
         ("denon", "Denon AVR"),
+        ("unifi-protect", "UniFi Protect"),
     ]
     .into_iter()
 
@@ -28,7 +31,7 @@ pub fn screen(app: App, config: &Config) -> AnyView {
         <div class="destination-grid">{existing.into_iter().map(|c|saved(app,c)).collect_view()}</div>
         <section class="creation"><h2>"Add a connection"</h2>
         <label class="field">"Connection type"<select aria-label="Connection type" prop:value=move || choice.get() on:change=move |e|choice.set(event_target_value(&e))><option value="">"Choose a type"</option>{available.into_iter().map(|(kind,label)|view!{<option value=kind>{label}</option>}).collect_view()}</select></label>
-        {move || match choice.get().as_str(){"denon"=>denon_form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"hue"=>create_named(app,Provider::Hue),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}
+        {move || match choice.get().as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"denon"=>denon_form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"hue"=>create_named(app,Provider::Hue),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}
         </section>
     }.into_any()
 }
@@ -38,16 +41,19 @@ fn saved(app: App, c: Connection) -> AnyView {
     let id = c.id.clone();
     let usage=app.config.get_untracked().map(|cfg|cfg.devices().filter(|(_,d)|matches!(&d.integration,couch_model::Integration::Connection{connection_id,..} if connection_id==&id)).count()).unwrap_or(0);
     let edit = match c.provider {
+        Provider::Sonos { .. } => view!{{super::sonos::form(app,Some(c.clone()))}{super::sonos::controls(app,c.id.to_string())}}.into_any(),
+        Provider::CoreElec { .. } => view!{{super::coreelec::form(app,Some(c.clone()))}{super::kodi::setup(app,&c)}{super::coreelec::setup(app,&c)}}.into_any(),
         Provider::Kodi { .. } => view!{ {local_form(app, Some(c.clone()), false)} {super::kodi::setup(app, &c)} }.into_any(),
         Provider::Denon { .. } => view!{{denon_form(app, Some(c.clone()))}{denon_controls(app,c.id.to_string())}}.into_any(),
         Provider::Ir => local_form(app, Some(c.clone()), true),
+        Provider::UnifiProtect => super::protect::setup(app, &c),
         Provider::HomeAssistant => super::home_assistant::setup(app, &c),
         Provider::Hue => super::hue::setup(app, &c),
         Provider::WebOs => super::webos::setup(app, &c),
         Provider::AndroidTv | Provider::AppleTv => super::streaming_tv::setup(app, &c),
     };
     view!{<section class="card saved-connection"><h2>{title}</h2><p>{format!("{label} · {usage} assigned devices")}</p>
-        <p class="dim">{match &c.provider{Provider::Kodi{host,port}=>format!("{host}:{port} · Saved address"),Provider::Ir=>"Built-in transmitter · Codes are configured per device".into(),_=>"Credentials are kept privately on the remote".into()}}</p>
+        <p class="dim">{match &c.provider{Provider::Sonos{host}=>format!("{host} · Local Sonos control"),Provider::Kodi{host,port}|Provider::CoreElec{host,port}=>format!("{host}:{port} · Saved address"),Provider::Ir=>"Built-in transmitter · Codes are configured per device".into(),_=>"Credentials are kept privately on the remote".into()}}</p>
         <details open=usage==0><summary>"Connection settings"</summary>{edit}</details>
         <p class="dim">"Removing a connection requires removing its assigned devices first. Bridge credentials are retained for reconnecting."</p>
         {ui::danger_button("Remove connection",move ||app.run(api::delete(format!("/api/connections/{id}"))))}

@@ -77,7 +77,7 @@ class CoreAdapter:
 
 class PhaseProgress:
     """Render only measured per-partition counters; never imply total-run progress."""
-    PATTERN = re.compile(r"^(Backup|Hash readback|Write|Verify image): ([a-zA-Z0-9_]+) (\d+)/(\d+) bytes \(\d+%\)$")
+    PATTERN = re.compile(r"^(Backup|Hash readback|Write|Verify image|Verify backup|Verify installed|Verify host backup): ([a-zA-Z0-9_]+) (\d+)/(\d+) bytes \(\d+%\)$")
 
     def __init__(self, output, clock=time.monotonic):
         self.output, self.clock = output, clock
@@ -342,6 +342,9 @@ class Terminal:
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument('--private-trial', type=Path, help='Developer-only private trial configuration (0600); public installation stays disabled')
+    result.add_argument('--wifi-restore-from', type=Path, help='Restore saved original Android partitions over Wi-Fi')
+    result.add_argument('--wifi-retry-from', type=Path, help='Explicit restart using a prior full Android backup run')
+    result.add_argument('--wifi-trial', type=Path, help='Private Android-to-Wi-Fi installer package configuration')
     result.add_argument('--simulation', action='store_true', help='Explicitly use regular-file simulated device')
     result.add_argument('--manifest', type=Path)
     result.add_argument('--device-dir', type=Path)
@@ -354,6 +357,15 @@ def parser():
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.wifi_restore_from and args.wifi_retry_from:
+        print('Choose either Android restore or installer restart.', file=sys.stderr)
+        return 2
+    if (args.wifi_retry_from or args.wifi_restore_from) and not args.wifi_trial:
+        print('Wi-Fi restore/restart requires --wifi-trial.', file=sys.stderr)
+        return 2
+    if args.wifi_trial and (args.private_trial or args.simulation or args.manifest or args.device_dir or args.identity or args.backup_dir or args.resume):
+        print('Use --wifi-trial alone for the private Wi-Fi flow.',file=sys.stderr)
+        return 2
     if args.private_trial and (args.simulation or args.manifest or args.device_dir or args.identity or args.backup_dir or args.resume):
         print("Use the private configuration file for all private-trial options; do not mix simulation options.", file=sys.stderr)
         return 2
@@ -368,6 +380,16 @@ def main(argv=None):
             reader = opened
         if not sys.stdout.isatty():
             raise OSError("Interactive output needs a terminal")
+        if args.wifi_trial:
+            binary = Path(__file__).resolve().parents[2] / 'bin/couch-installer-tui'
+            if not binary.is_file():
+                binary = Path(__file__).with_name('tui') / 'target/release/couch-installer-tui'
+            core.require(binary.is_file(), 'Build the Ratatui interface with cargo build --release --locked in tools/installer/tui, or use the curl package.')
+            command = [str(binary), '--python', sys.executable, '--backend', str(Path(__file__).with_name('ratatui_backend.py')),
+                       '--config', str(args.wifi_trial)]
+            for flag, value in (('--wifi-retry-from', args.wifi_retry_from), ('--wifi-restore-from', args.wifi_restore_from)):
+                if value is not None: command.extend((flag, str(value)))
+            return subprocess.run(command, stdin=reader).returncode
         try:
             adapter = PrivateAdapter(args.private_trial) if args.private_trial else CoreAdapter(args)
         except OSError as error:
