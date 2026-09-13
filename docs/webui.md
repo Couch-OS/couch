@@ -397,7 +397,10 @@ an `_http._tcp` service under that host name over mDNS (the `mdns-sd` crate the
 streaming-TV discovery already uses), which makes it answer A/AAAA queries for
 the name, and it listens on port 80 as well as 8090 so the URL needs no port.
 Both happen only for a wildcard bind (`0.0.0.0:8090`, the device's default); a
-daemon on `127.0.0.1` never claims the name. Neither is fatal: if port 80 is
+daemon on `127.0.0.1` never claims the name. The responder's wake-up socket
+binds to 127.0.0.1, so the loopback interface must be up: `stage2.sh` raises
+it at boot (before #129 nothing did, and `local_name.error` in `/api/health`
+read "failed to create signal_sock for daemon: Address not available"). Neither is fatal: if port 80 is
 taken or multicast is down, `http://<address>:8090` still works, and the
 remote's Settings → Network panel shows both.
 

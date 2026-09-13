@@ -7,6 +7,11 @@ fi
 # The kernel's name, for the DHCP lease and logs; couch.local itself is
 # answered by the config daemon over mDNS, which needs no hostname.
 /bin/busybox hostname couch 2>/dev/null
+# Loopback. Nothing before this ever raised it, and Linux does not do so by
+# itself, so 127.0.0.1 did not exist on the remote: the mDNS responder's
+# wake-up socket (and any other loopback bind) failed with "Address not
+# available", which is why couch.local and TV discovery never answered.
+/bin/busybox ifconfig lo 127.0.0.1 netmask 255.0.0.0 up 2>/dev/null
 . "$BASE_DIR/hardware-init.sh"
 
 # The system service is independent of the GUI and remains available in recovery.
