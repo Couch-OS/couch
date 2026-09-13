@@ -28,6 +28,19 @@ timeout. A failed or interrupted candidate
 boot returns to the previous slot (or the base runtime). The recovery boot always
 uses the base runtime. On this device's BusyBox, rollback removes the current
 symlink before replacing it; interruption in that interval selects the base.
+
+The rollback also clears the bootloader control block before it reboots. Init
+arms `boot-recovery` there at every boot and clears it only after watching a
+healthy GUI, which begins 90 seconds in, so when this gate gives up at 90 seconds
+the flag is still armed and the reboot would otherwise land in recovery rather
+than in the runtime just selected. The next boot arms the flag again before its
+own checks, so a previous runtime that is itself broken is still caught. Images
+built before this change (release .115 and earlier) have the older bootstrap:
+their rollback still switches the slot correctly but the reboot enters recovery,
+and [leaving recovery](device-recovery.md#leaving-recovery-after-a-rejected-runtime-candidate)
+takes one command on the recovery serial shell. `runtime-boot.sh` is the stable
+bootstrap and is not carried by runtime updates, so the fix ships only with a new
+full OS image.
 An interrupted pointer preparation can be retried after boot clears its pending
 journal; the updater reclaims only its stale temporary symlink.
 Completed slots are retained; automatic slot garbage collection is not yet
@@ -74,10 +87,18 @@ never access device partitions. They cover healthy acceptance, failed or hung
 health checks, intermittent heartbeats, interrupted activation and rollback to
 the base or previous runtime.
 
-Physical acceptance still requires installing a signed candidate through the
-paired web UI, observing GUI/system health acceptance, and intentionally failing
-a candidate health check to verify reboot into the previous runtime. Repeat with
-an interrupted candidate boot and confirm recovery still selects the base runtime.
+Physical acceptance on the development HA100, 2026-09-13, on the .24 full OS
+image: the signed .115 runtime installed through the paired web UI and passed
+health acceptance (rebooted 07:30:35, serving again 07:32:49). A deliberately
+failing candidate (.116, whose `gui-start.sh` never started the GUI, published
+for the test and then deleted) was downloaded, verified and activated; the gate
+rejected it 75 seconds into its boot and rolled the slot back to .115, but the
+remote came up in recovery because the recovery flag was still armed, which is
+the interaction the paragraph above describes and the current bootstrap fixes.
+The slot state in recovery was exactly as designed (`current` on .115, journal
+cleared, the rejected slot retained). Still outstanding: a rejected candidate
+returning directly to the previous runtime on an image carrying the fixed
+bootstrap, and an interrupted candidate boot confirming recovery selects base.
 
 Update acceptance requires advancing GUI heartbeats from the same process; a recently frozen GUI or repeated process restarts cannot satisfy the boot-health gate.
 
