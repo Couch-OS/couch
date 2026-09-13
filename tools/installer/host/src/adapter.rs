@@ -537,10 +537,10 @@ _ => panic!()
     fn privilege_is_inert_elsewhere_and_explains_itself_on_macos() {
         match Privilege::acquire() {
             Ok(_) => {}
-            Err(error) => {
-                assert!(cfg!(target_os = "macos"), "{error}");
+            Err(error) if cfg!(target_os = "macos") => {
                 assert!(error.to_string().contains("sudo -v"), "{error}");
             }
+            Err(error) => panic!("privilege must be inert off macOS: {error}"),
         }
     }
     #[test]
