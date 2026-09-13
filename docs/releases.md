@@ -1,5 +1,8 @@
 # Clean release staging
 
+For how work reaches a release at all (the `dev` and `main` branches and the
+Stable, Alpha and Dev channels), see [development flow](development-flow.md).
+
 `tools/release/clean_stage.py` assembles a deterministic **noninstallable** rootfs staging archive. It takes a hash-pinned clean Alpine ARMv7 minirootfs and an explicit list of Couch artifacts. It never copies a running remote's rootfs, extracts archive links onto the host, or includes vendor files automatically.
 
 The independent staging manifest is not an installer release manifest. It records source commit, input hashes, normalized timestamps, selected artifacts, and output hash. `installable` stays false: offline packages, reviewed vendor inputs, partition images, release signatures, and hardware recovery validation remain required.

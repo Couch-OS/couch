@@ -1,8 +1,14 @@
 # Runtime updates
 
 The web UI's **Updates** page checks the project's GitHub releases for signed
-HA100 application bundles. Stable ignores prereleases; Alpha accepts `alpha.*`
-prereleases and stable versions. Checks are triggered by opening the paired web
+HA100 application bundles. Three channels: **Stable** ignores prereleases;
+**Alpha** accepts `alpha.*` prereleases and stable versions, but not dev builds;
+**Dev** accepts everything Alpha does plus builds cut from the `dev` branch,
+whose tags carry a trailing `.dev` identifier (`v0.1.0-alpha.20260914.7.dev`).
+A dev tag keeps the `alpha.<date>.<n>` core of the alpha it follows, so all
+three streams sort in one order and a remote on Dev also picks up the next
+promoted alpha. See [development flow](development-flow.md) for how the
+branches and channels fit. Checks are triggered by opening the paired web
 UI and limited to once per six hours during a service session. Downloads and
 installation always require the user's choice.
 
