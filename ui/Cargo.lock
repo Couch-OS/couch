@@ -1036,6 +1036,7 @@ dependencies = [
  "couch-system",
  "couch-tizen",
  "couch-unifi-protect",
+ "couch-updates",
  "couch-voice",
  "couch-webos",
  "image",

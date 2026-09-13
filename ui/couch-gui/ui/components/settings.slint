@@ -77,6 +77,14 @@ export component Settings inherits Rectangle {
     // SSH.
     in property <bool> ssh-on;
     in property <bool> ssh-available;          // a key or password is enrolled
+    // Updates. The host mirrors the system service's status here.
+    in property <string> update-installed;
+    in property <string> update-channel;       // "Stable" / "Alpha"
+    in property <string> update-summary;       // the value on the check row
+    in property <bool> update-can-install;
+    in property <bool> update-ready;
+    in property <bool> update-armed;           // one OK given, waiting for the second
+    in property <string> update-message;
 
     callback brightness-changed(int);
     callback dim-changed(int);
@@ -84,6 +92,10 @@ export component Settings inherits Rectangle {
     callback change-wifi();
     callback recovery-wifi();
     callback toggle-ssh();
+    callback update-check();
+    callback update-install();
+    callback update-restart();
+    callback update-channel-step(int);
     // Enter panel N, or leave the current tier - the host performs these as
     // slides (like the hub's page changes), so it owns the panel and this only
     // asks. leave() climbs to the root, or closes settings from the root.
@@ -92,30 +104,37 @@ export component Settings inherits Rectangle {
 
     public function take-focus() { fs.focus(); }
 
-    // 0 root, 1 display, 2 wifi, 3 ssh. Set by the host so the change can be
-    // slid to; the cursor resets whenever it moves.
+    // 0 root, 1 display, 2 wifi, 3 ssh, 4 updates. Set by the host so the
+    // change can be slid to; the cursor resets whenever it moves.
     in property <int> panel: 0;
     property <int> sel: 0;
     changed panel => { root.sel = 0; }
     property <length> row-h: 72px;
     property <length> gap: 10px;
     property <length> pitch: root.row-h + root.gap;
-    property <[string]> sections: ["Display", "Wi-Fi", "SSH"];
+    property <[string]> sections: ["Display", "Wi-Fi", "SSH", "Updates"];
 
     // Rows per panel, for wrapping the cursor.
     function row-count() -> int {
         if (root.panel == 0) { return root.sections.length; }
         if (root.panel == 1) { return 3; }   // brightness, dim, off
         if (root.panel == 2) { return 2; }   // change network
+        if (root.panel == 4) {               // installed, channel, check, then what applies
+            return 3 + (root.update-can-install ? 1 : 0) + (root.update-ready ? 1 : 0);
+        }
         return 1;                            // ssh toggle
     }
 
     // True where left/right change a value rather than doing nothing.
     function row-has-stepper() -> bool {
-        return root.panel == 1;   // every Display row steps
+        return root.panel == 1 || (root.panel == 4 && root.sel == 1);
     }
 
     function step(delta: int) {
+        if (root.panel == 4) {
+            if (root.sel == 1) { root.update-channel-step(delta); }
+            return;
+        }
         if (root.panel != 1) { return; }
         if (root.sel == 0) {
             root.brightness = Math.max(10, Math.min(100, root.brightness + delta * 10));
@@ -138,6 +157,12 @@ export component Settings inherits Rectangle {
             return;
         }
         if (root.panel == 3) { root.toggle-ssh(); return; }
+        if (root.panel == 4) {
+            if (root.sel == 2) { root.update-check(); }
+            else if (root.sel == 3) { if (root.update-can-install) { root.update-install(); } else { root.update-restart(); } }
+            else if (root.sel == 4) { root.update-restart(); }
+            return;
+        }
         // Display rows have no OK action; left/right do the work.
     }
 
@@ -176,7 +201,8 @@ export component Settings inherits Rectangle {
         Text {
             text: root.panel == 0 ? "SETTINGS"
                 : root.panel == 1 ? "DISPLAY"
-                : root.panel == 2 ? "WI-FI" : "SSH";
+                : root.panel == 2 ? "WI-FI"
+                : root.panel == 3 ? "SSH" : "UPDATES";
             font-size: 15px;
             letter-spacing: 0.14 * 15px;
             color: Theme.text-quaternary;
@@ -243,6 +269,26 @@ export component Settings inherits Rectangle {
                 }
             }
 
+            // Updates: what is installed, the channel, a check, and then the
+            // step that applies (download, or the two-press restart), with the
+            // service's own message underneath.
+            if root.panel == 4: VerticalLayout {
+                spacing: root.gap;
+                SettingsRow { title: "Installed"; value: root.update-installed; stepper: false; }
+                SettingsRow { title: "Channel"; value: root.update-channel; }
+                SettingsRow { title: "Check for updates"; value: root.update-summary; stepper: false; }
+                if root.update-can-install: SettingsRow { title: "Download & verify"; value: ">"; stepper: false; }
+                if root.update-ready: SettingsRow { title: "Install & restart"; value: root.update-armed ? "OK again" : ">"; stepper: false; }
+                Text {
+                    text: root.update-message;
+                    font-size: 15px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                    height: 96px;
+                    vertical-alignment: top;
+                }
+            }
+
             // The focus ring. Its row differs between panels: on Wi-Fi the
             // cursor sits on the "Change network" row (index 1 of two), so the
             // ring is offset by one there.
@@ -268,6 +314,7 @@ export component Settings inherits Rectangle {
         Text {
             text: root.panel == 1 ? "Left / right to change  ·  Back to return"
                 : root.panel == 0 ? "OK to open  ·  Back to close"
+                : root.panel == 4 ? "OK to run  ·  Left / right for channel  ·  Back to return"
                 : "OK to change  ·  Back to return";
             font-size: 14px;
             color: Theme.text-quaternary;

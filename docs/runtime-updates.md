@@ -4,7 +4,17 @@ The web UI's **Updates** page checks the project's GitHub releases for signed
 HA100 application bundles. Stable ignores prereleases; Alpha accepts `alpha.*`
 prereleases and stable versions. Checks are triggered by opening the paired web
 UI and limited to once per six hours during a service session. Downloads and
-installation always require the user's choice. There is no remote GUI indicator.
+installation always require the user's choice.
+
+The same operations are available on the remote itself under **Settings →
+Updates** (hold Menu on the home screen): the installed build, the channel
+(left/right switches Stable and Alpha), **Check for updates** with a one-glance
+value (up to date, a version available, checking, downloading, ready, failed),
+**Download & verify** once a version is offered, and **Install & restart** once
+the candidate is staged, which needs OK twice within six seconds. The GUI talks
+to the root system service over the same control socket the web UI's daemon
+uses, on a worker thread, and re-reads the status every two seconds while the
+section is open. Nothing is downloaded or installed without a press.
 
 This first updater replaces Couch applications, Sonos CLI, services, and their
 runtime scripts, including the CoreELEC client. It does not upgrade Alpine, the kernel, boot/recovery images,
