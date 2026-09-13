@@ -93,11 +93,17 @@ cp "$FIXTURE_ASSETS/${url##*/}" "$destination"
 if [ "${FIXTURE_CORRUPT:-}" = yes ]; then printf x >> "$destination"; fi
 ''')
         curl.chmod(0o700)
+        # macOS authenticates the MediaTek worker up front; record it, never prompt.
+        sudo = fake / 'sudo'
+        sudo.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$FIXTURE_SUDO_LOG"\nexit 0\n')
+        sudo.chmod(0o700)
+        sudo_log = self.root / 'sudo.log'
         for corrupt in (False, True):
             pid, terminal = pty.fork()
             if pid == 0:
                 env = dict(os.environ, PATH=str(fake) + os.pathsep + os.environ['PATH'],
-                           FIXTURE_ASSETS=str(self.assets), FIXTURE_CORRUPT='yes' if corrupt else 'no')
+                           FIXTURE_ASSETS=str(self.assets), FIXTURE_CORRUPT='yes' if corrupt else 'no',
+                           FIXTURE_SUDO_LOG=str(sudo_log))
                 os.execve('/bin/sh', ['sh', str(self.output / 'install.sh')], env)
             data = bytearray()
             try:
@@ -114,6 +120,10 @@ if [ "${FIXTURE_CORRUPT:-}" = yes ]; then printf x >> "$destination"; fi
             _, status = os.waitpid(pid, 0)
             self.assertEqual(os.waitstatus_to_exitcode(status), 2 if corrupt else 0)
             self.assertEqual(b'NATIVE-FRONTEND' in data, not corrupt)
+        if sys.platform == 'darwin':
+            self.assertEqual(sudo_log.read_text().split('\n')[0], '-v')
+        else:
+            self.assertFalse(sudo_log.exists())
 
 
 if __name__ == '__main__':

@@ -22,7 +22,6 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -313,6 +312,10 @@ fn install(
     local_payload: Option<&Path>,
 ) -> Result<()> {
     let _usb_lease = UsbLease::acquire(session)?;
+    // macOS: Apple's serial driver owns the preloader and only root can hand it
+    // to libusb. Hold that right now, before the long downloads, and refresh it
+    // until the worker has started. Everything else stays unprivileged.
+    let _privilege = adapter::Privilege::acquire()?;
     let dependencies = dependencies::prepare(
         session,
         dependencies::host_platform()?,
@@ -445,7 +448,7 @@ fn install(
     };
     dependencies.verify()?;
     let script = adapter::materialize(session)?;
-    let mut command = Command::new(&dependencies.python);
+    let mut command = adapter::mtk_worker(&dependencies.python);
     command
         .arg("-I")
         .arg("-B")

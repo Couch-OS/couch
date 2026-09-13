@@ -10,6 +10,7 @@ import errno
 import importlib.abc
 import importlib.util
 import logging
+import os
 from pathlib import Path
 import signal
 import struct
@@ -224,11 +225,14 @@ def configuration_after_permissions(dev, *, platform=sys.platform, now=time.mono
 
 class ExactUsbBackend:
     def __init__(self, checkout, *, preloader=None, preloader_sha256=None, usb=None, bindings=None, libusb_path=None,
-                 platform=sys.platform, callout=open_callout):
+                 platform=sys.platform, callout=open_callout, privileged=None):
         self.checkout = checkout
         self.platform = platform
         self.callout = callout
         self.tty = None
+        if privileged is None:
+            privileged = hasattr(os, "geteuid") and os.geteuid() == 0
+        self.privileged = bool(privileged)
         require((preloader is None) == (preloader_sha256 is None), "Provide both board preloader path and SHA-256")
         # Read-only board-data input. It is never passed to a partition writer
         # or used as the downloaded DA executable.
@@ -282,10 +286,13 @@ class ExactUsbBackend:
                 candidates.append((interface, incoming[0], outgoing[0]))
         require(len(candidates) == 1, "Expected one CDC data interface with bulk IN/OUT")
         self.interface, ep_in, ep_out = candidates[0]
-        if self.platform == "darwin":
+        if self.platform == "darwin" and not self.privileged:
             # Apple's CDC ACM driver owns the preloader's interfaces and only a
-            # privileged capture could detach it. Use the callout device the
-            # kernel created for this exact interface instead; libusb keeps
+            # privileged capture can detach it. Unprivileged, use the callout
+            # device the kernel created for this exact interface; it reads every
+            # partition correctly but could not complete a download-agent write
+            # on hardware, so the installer runs this worker as root and takes
+            # the libusb path below, the one validated on Linux. libusb keeps
             # serving descriptors and enumeration for the same device object.
             self.tty = self.callout(expected, self.interface.bInterfaceNumber, self.usb)
         if self.tty is not None:

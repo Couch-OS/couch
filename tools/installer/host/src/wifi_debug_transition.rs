@@ -13,7 +13,6 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
 
@@ -352,7 +351,8 @@ pub fn run(
         script,
     } = environment;
     config.validate()?;
-    let mut command = Command::new(python);
+    let _privilege = crate::adapter::Privilege::acquire()?;
+    let mut command = crate::adapter::mtk_worker(python);
     command
         .args(["-I", "-B"])
         .arg(dependencies::python_path(script)?)
@@ -437,7 +437,8 @@ pub fn validate_receipt(
     ports: &[u8],
 ) -> Result<()> {
     config.validate()?;
-    let mut command = Command::new(python);
+    let _privilege = crate::adapter::Privilege::acquire()?;
+    let mut command = crate::adapter::mtk_worker(python);
     command
         .args(["-I", "-B"])
         .arg(dependencies::python_path(script)?)
@@ -465,6 +466,7 @@ pub fn validate_receipt(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::process::Command;
     #[test]
     fn transition_configuration_requires_explicit_pins_and_absolute_paths() {
         let valid = json!({"source":"/retained", "temporary_boot_sha256":"a".repeat(64),

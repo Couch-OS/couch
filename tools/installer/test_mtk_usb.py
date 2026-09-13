@@ -108,9 +108,18 @@ class UsbBackendTests(unittest.TestCase):
 
     def darwin_backend(self, callout):
         backend = ExactUsbBackend("unused-test-checkout", usb=self.usb, bindings=(self.config, self.mtk),
-                                  platform="darwin", callout=callout)
+                                  platform="darwin", callout=callout, privileged=False)
         self.addCleanup(backend.close)
         return backend
+
+    def test_macos_as_root_claims_through_libusb_like_linux(self):
+        backend = ExactUsbBackend("unused-test-checkout", usb=self.usb, bindings=(self.config, self.mtk),
+                                  platform="darwin", privileged=True,
+                                  callout=lambda *args: self.fail("registry consulted while privileged"))
+        self.addCleanup(backend.close)
+        backend.claim(descriptor(self.dev))
+        self.assertIsNone(backend.tty)
+        self.assertEqual(self.events, [("detach", 0), ("claim", 0), ("detach", 1), ("claim", 1)])
 
     def test_macos_uses_the_kernel_serial_port_without_detaching_or_claiming(self):
         resolved, closed = [], []

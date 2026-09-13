@@ -12,6 +12,13 @@ reviewed mtkclient revision expects.
 Nothing here rediscovers devices. A candidate is resolved once, by USB bus,
 address, vendor and product, to the callout device that hangs off the exact
 CDC data interface number the descriptor walk selected.
+
+Status after hardware runs on 2026-09-12/13: this transport reads every
+partition correctly, but a download-agent write of more than a few kilobytes
+was never reliably acknowledged through it, and the driver's behaviour on the
+wire cannot be observed without root. The installer therefore runs its
+MediaTek worker as root on macOS and uses libusb, the path validated on Linux.
+This module remains for unprivileged read-only attachment.
 """
 import errno
 import os
