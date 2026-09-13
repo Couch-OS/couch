@@ -751,7 +751,6 @@ fn group_sources_load_through_the_coordinator_group() {
     for _ in 0..3 {
         replies.push((200, groups(PLAYER, "PLAYBACK_STATE_IDLE")));
         replies.push(ok());
-        replies.push(ok());
     }
     let (base, thread) = server(replies);
     let client = connect(&base);
@@ -763,19 +762,15 @@ fn group_sources_load_through_the_coordinator_group() {
         .unwrap();
     client.select_source(&SourceId::LineIn).unwrap();
     let requests = thread.join().unwrap();
-    // Each load is topology, the load itself, then an explicit play.
-    let writes: Vec<(String, serde_json::Value)> = [2, 5, 8]
+    // Each load is one topology read and one write; `playOnCompletion`
+    // starts playback, so nothing follows the write.
+    assert_eq!(requests.len(), 7);
+    let writes: Vec<(String, serde_json::Value)> = [2, 4, 6]
         .iter()
         .map(|&i| {
             assert_eq!(requests[i - 1].url, "/api/v1/households/local/groups");
             assert_eq!(requests[i].method, "POST");
             assert_eq!(requests[i].content_type, "application/json");
-            assert_eq!(requests[i + 1].method, "POST");
-            assert_eq!(
-                requests[i + 1].url,
-                "/api/v1/groups/RINCON_TEST:1/playback/play"
-            );
-            assert_eq!(requests[i + 1].body, "{}");
             (
                 requests[i].url.clone(),
                 serde_json::from_str(&requests[i].body).unwrap(),

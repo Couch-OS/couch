@@ -122,14 +122,14 @@ Choosing one loads it with `playOnCompletion`: `POST /groups/ID/favorites`,
 `POST /groups/ID/playlists`, `POST /groups/ID/playback/lineIn` (with this
 player's `deviceId`), or `POST /players/ID/homeTheater` for TV, which is the
 player's own and needs no topology. Group loads are refused on a member and
-checked for freshness after the topology read, like playback, and are followed
-by an explicit `play`: on firmware 97.1 a playlist loaded with
-`playOnCompletion` into an idle group stayed idle until one was sent. On the
-bench household (2026-09-13) every Apple Music favourite was refused by the
-player with `ERROR_PLAYBACK_NO_CONTENT` ("No tracks added to queue") whatever
-the load options, while Sonos playlists of the same Apple Music tracks loaded
-and played; the remote shows that refusal as "Sonos found nothing to play
-there" rather than retrying. The CLI exposes
+checked for freshness after the topology read, like playback. Bench note
+(Sonos One SL, firmware 97.1, 2026-09-13): a Sonos playlist load is accepted
+and starts playing by itself, but on that household every Apple Music track
+buffered, was skipped, and the group fell back to idle, and every Apple Music
+favourite was refused outright with `ERROR_PLAYBACK_NO_CONTENT` ("No tracks
+added to queue") whatever the load options. That is the service's content
+failing to stream on that player, not the request shape; the remote shows the
+refusal as "Sonos found nothing to play there" and never retries a load. The CLI exposes
 the same two calls as `sources` and `source tv|line-in|favorite:ID|playlist:ID`.
 
 The remote’s speaker card opens Sonos playback, volume, mute and refresh controls.

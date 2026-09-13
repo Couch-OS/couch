@@ -746,12 +746,8 @@ impl Client {
         self.request(
             &format!("/groups/{}/{path}", group.id),
             Some(&body.to_string()),
-        )?;
-        // `playOnCompletion` was observed to leave an idle group idle after a
-        // playlist load (firmware 97.1); an explicit play afterwards is what
-        // starts it, and is harmless on a group already playing.
-        self.request(&format!("/groups/{}/playback/play", group.id), Some("{}"))
-            .map(|_| ())
+        )
+        .map(|_| ())
     }
     /// A reading missing either field is a failure, not a zero volume and an
     /// unmuted speaker: a mute toggle decides its write from `muted`, and
