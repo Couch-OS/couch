@@ -663,6 +663,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.set_toast("".into());
         app.set_volume_shown(false);
         app.set_thermostat_feedback_shown(false);
+        app.set_sonos_feedback_shown(false);
         // Hide even a card whose exit animation is still running.
         app.set_feedback_enabled(false);
     };
@@ -917,12 +918,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         light_controls.poll(&app);
         // Before the intent is performed below, so a source list opens its
         // chooser in this same iteration.
-        for feedback in sonos_room.poll(&app) {
-            match feedback {
-                room_sonos::Feedback::Toast(message, secs) => toast(message, secs),
-                room_sonos::Feedback::OpenChooser => ask(Intent::OpenChooser),
-            }
-        }
+        if sonos_room.poll(&app) { ask(Intent::OpenChooser); }
         if feedback_page(&app) != last_feedback_page {
             dismiss_feedback(&app, &mut scene_controls, &mut light_controls);
             last_feedback_page = feedback_page(&app);

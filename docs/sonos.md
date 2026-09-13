@@ -108,9 +108,12 @@ In a room on the remote, the physical keys drive a highlighted Sonos row
 without opening it: Volume Up/Down changes the player's volume (holding repeats,
 and a hold is sent as one bounded relative write), Mute toggles mute, Channel
 Up/Down skip to the next and previous track, and Menu opens a source picker.
-Each action reports through the existing toast: `Kitchen · Volume 26`,
-`Kitchen · Muted`, `Kitchen · Next track`, or the client's error. A group member
-is told which room controls its playback rather than being forwarded. The Sonos
+Each action reports through the large feedback card that brightness and scene
+changes use, with the speaker's name in bold: a volume shows its meter and
+level, mute shows "Muted"/"Unmuted", a skip shows "Next track"/"Previous
+track", a chosen source shows its name over "Playing on Kitchen", and an error
+shows the problem in bold with the speaker as its caption. A group member is
+told which room controls its playback rather than being forwarded. The Sonos
 worker keeps its connection to the last player between presses and reconnects
 on the next press after a transport failure.
 
