@@ -211,10 +211,10 @@ impl Controller {
                     if delta == 0 {
                         continue;
                     }
-                    let channel = match s.channel {
-                        Channel::Stable => Channel::Alpha,
-                        Channel::Alpha => Channel::Stable,
-                    };
+                    // Stable → Alpha → Dev, and back; left goes the other way.
+                    let order = [Channel::Stable, Channel::Alpha, Channel::Dev];
+                    let at = order.iter().position(|c| *c == s.channel).unwrap_or(0) as i32;
+                    let channel = order[(at + delta.signum()).rem_euclid(3) as usize];
                     self.send(Request::UpdateSettings {
                         channel,
                         automatic_checks: s.automatic_checks,
@@ -248,6 +248,7 @@ fn channel_label(channel: Channel) -> &'static str {
     match channel {
         Channel::Stable => "Stable",
         Channel::Alpha => "Alpha",
+        Channel::Dev => "Dev",
     }
 }
 /// The value shown on the "Check for updates" row: one glance at where things are.
@@ -393,5 +394,6 @@ mod tests {
         );
         assert_eq!(summary(&status("error", None), false), "Failed");
         assert_eq!(channel_label(Channel::Stable), "Stable");
+        assert_eq!(channel_label(Channel::Dev), "Dev");
     }
 }

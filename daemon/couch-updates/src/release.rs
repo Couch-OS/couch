@@ -9,6 +9,29 @@ const PREFIX: &str = "https://github.com/dangerouslaser/couch/releases/download/
 pub enum Channel {
     Stable,
     Alpha,
+    /// Builds from the `dev` branch: the alpha stream plus every tag carrying
+    /// a trailing `dev` identifier (`v0.1.0-alpha.20260914.7.dev`). For the
+    /// development remote, not for anyone else.
+    Dev,
+}
+/// Whether a release version belongs on a channel. Stable takes only finished
+/// versions. Alpha takes those and `alpha.` prereleases, but not dev builds.
+/// Dev takes everything Alpha does plus the dev builds, and because a dev tag
+/// keeps the `alpha.<date>.<n>` core, all of them sort in one order.
+pub(crate) fn accepts(channel: Channel, v: &semver::Version) -> bool {
+    let pre = v.pre.as_str();
+    if pre.is_empty() {
+        return true;
+    }
+    if !pre.starts_with("alpha.") {
+        return false;
+    }
+    let dev = pre.ends_with(".dev");
+    match channel {
+        Channel::Stable => false,
+        Channel::Alpha => !dev,
+        Channel::Dev => true,
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -146,9 +169,7 @@ pub(crate) fn discover(
         if current.as_ref().is_some_and(|c| v <= *c) {
             continue;
         }
-        if !v.pre.is_empty()
-            && (channel == Channel::Stable || !v.pre.as_str().starts_with("alpha."))
-        {
+        if !accepts(channel, &v) {
             continue;
         }
         if release["prerelease"].as_bool() != Some(!v.pre.is_empty()) {
@@ -259,5 +280,29 @@ mod tests {
         assert!(version("v1.10.0") > version("v1.9.9"));
         assert!(version("v1.2.0") > version("v1.2.0-alpha.9"));
         assert!(version("latest").is_none());
+        // A dev build sits just above the alpha it was cut after, and below
+        // the next alpha, so a remote on the dev channel follows promotions.
+        let alpha = version("v0.1.0-alpha.20260913.122").unwrap();
+        let dev = version("v0.1.0-alpha.20260913.122.dev").unwrap();
+        let next = version("v0.1.0-alpha.20260914.130").unwrap();
+        assert!(alpha < dev && dev < next);
+    }
+    #[test]
+    fn channels_take_what_they_should() {
+        let stable = version("v0.2.0").unwrap();
+        let alpha = version("v0.1.0-alpha.20260913.122").unwrap();
+        let dev = version("v0.1.0-alpha.20260913.122.dev").unwrap();
+        let other = version("v0.1.0-beta.1").unwrap();
+        for (channel, takes) in [
+            (Channel::Stable, [true, false, false, false]),
+            (Channel::Alpha, [true, true, false, false]),
+            (Channel::Dev, [true, true, true, false]),
+        ] {
+            assert_eq!(
+                [&stable, &alpha, &dev, &other].map(|v| accepts(channel, v)),
+                takes
+            );
+        }
+        assert_eq!(serde_json::to_string(&Channel::Dev).unwrap(), "\"dev\"");
     }
 }

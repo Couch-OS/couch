@@ -51,10 +51,10 @@ impl Updater {
             state: Arc::new(Mutex::new(State {
                 status: Status {
                     installed,
-                    channel: if config["channel"] == "alpha" {
-                        Channel::Alpha
-                    } else {
-                        Channel::Stable
+                    channel: match config["channel"].as_str() {
+                        Some("alpha") => Channel::Alpha,
+                        Some("dev") => Channel::Dev,
+                        _ => Channel::Stable,
                     },
                     available: None,
                     notes: String::new(),
