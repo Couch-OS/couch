@@ -27,6 +27,7 @@ mod activity;
 mod activity_runtime;
 mod activity_buttons;
 mod tv;
+mod room_sonos;
 mod thermostat;
 mod camera;
 mod connections;
@@ -222,6 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut activity_controls = activity::Controller::new(&app);
     let mut tv_controls = tv::Controller::new(&app);
     let mut thermostat_controls = thermostat::Controller::new(&app);
+    let mut sonos_room = room_sonos::Controller::install(&app);
     let mut activity_runtime = activity_runtime::Controller::new(&app);
     let scene_choices = Rc::new(RefCell::new(Vec::<couch_model::Id>::new()));
     app.set_area_dots(ModelRc::new(VecModel::from(vec![true; areas.len()])));
@@ -317,6 +319,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // that would be on every row and mean nothing.
                     active: false,
                     light: false,
+                    media: false,
                     power_known: false,
                     icon: slint::Image::default(),
                 })
@@ -349,6 +352,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         detail: "Press OK to activate".into(),
                         active: false,
                         light: false,
+                    media: false,
                         power_known: false,
                         icon: slint::Image::default(),
                     })
@@ -385,6 +389,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         detail: "Press OK to activate".into(),
                         active: false,
                         light: false,
+                    media: false,
                         power_known: false,
                         icon: slint::Image::default(),
                     })
@@ -409,6 +414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ask = ask.clone();
         let choices=scene_choices.clone(); let recall=scene_controls.opener();
         let areas=areas.clone();let current=current.clone();
+        let pick_source=sonos_room.chooser();
         app.on_chosen(move |index| {
             let Some(app) = weak.upgrade() else { return };
             let title = app
@@ -422,6 +428,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if app.get_chooser_title()=="ACTIVITIES" {
                 if let Some(id)=areas.borrow()[current.get()].activity_ids.get(index as usize){app.invoke_open_activity(id.as_str().into());}
             }
+            if app.get_chooser_title()==room_sonos::CHOOSER_TITLE && index>=0 { pick_source(index as usize); }
             println!("couch-gui: chose '{title}'");
             ask(Intent::CloseChooser);
         });
@@ -776,6 +783,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if press.menu == Some(true) && !app.get_pair_shown() {
                 if app.get_tv_shown() {app.invoke_tv_action("menu".into());}
                 else if app.get_player_shown() {app.invoke_player_action("Input.ContextMenu".into(),0.);}
+                // In a room, Menu on a highlighted Sonos row opens its source
+                // picker; on any other row it is left to the settings hold.
+                else if app.get_light_shown() && !app.get_chooser_shown() && !app.get_settings_shown() && !app.get_keyboard_shown() {sonos_room.menu();}
             }
             // Hold to talk. The key is not routed into the UI: it opens the
             // microphone and nothing else, so there is no screen on which it
@@ -795,8 +805,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     activity_controls.physical_input(press.repeat, || {
                         light_controls.physical_input(press.repeat, || {
                             thermostat_controls.physical_input(press.repeat, || {
-                                window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-                                window.dispatch_event(WindowEvent::KeyReleased { text });
+                                sonos_room.physical_input(press.repeat, || {
+                                    window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+                                    window.dispatch_event(WindowEvent::KeyReleased { text });
+                                });
                             });
                         });
                     });
@@ -903,6 +915,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             screen.snapshot();
         }
         light_controls.poll(&app);
+        // Before the intent is performed below, so a source list opens its
+        // chooser in this same iteration.
+        for feedback in sonos_room.poll(&app) {
+            match feedback {
+                room_sonos::Feedback::Toast(message, secs) => toast(message, secs),
+                room_sonos::Feedback::OpenChooser => ask(Intent::OpenChooser),
+            }
+        }
         if feedback_page(&app) != last_feedback_page {
             dismiss_feedback(&app, &mut scene_controls, &mut light_controls);
             last_feedback_page = feedback_page(&app);

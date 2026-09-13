@@ -104,6 +104,34 @@ Volume and mute still address the selected player. Use **Rooms & devices** to ad
 that connection as a speaker. An activity may use Sonos as its main screen or map
 individual playback/volume/mute buttons to it.
 
+In a room on the remote, the physical keys drive a highlighted Sonos row
+without opening it: Volume Up/Down changes the player's volume (holding repeats,
+and a hold is sent as one bounded relative write), Mute toggles mute, Channel
+Up/Down skip to the next and previous track, and Menu opens a source picker.
+Each action reports through the existing toast: `Kitchen · Volume 26`,
+`Kitchen · Muted`, `Kitchen · Next track`, or the client's error. A group member
+is told which room controls its playback rather than being forwarded. The Sonos
+worker keeps its connection to the last player between presses and reconnects
+on the next press after a transport failure.
+
+The source picker lists the player's own TV input (`HT_PLAYBACK`) and line-in
+(`LINE_IN`) when the hardware advertises them, then the household's favourites
+(`GET /households/local/favorites`) and Sonos playlists
+(`GET /households/local/playlists`) in the order the player returns them.
+Choosing one loads it with `playOnCompletion`: `POST /groups/ID/favorites`,
+`POST /groups/ID/playlists`, `POST /groups/ID/playback/lineIn` (with this
+player's `deviceId`), or `POST /players/ID/homeTheater` for TV, which is the
+player's own and needs no topology. Group loads are refused on a member and
+checked for freshness after the topology read, like playback. Bench note
+(Sonos One SL, firmware 97.1, 2026-09-13): a Sonos playlist load is accepted
+and starts playing by itself, but on that household every Apple Music track
+buffered, was skipped, and the group fell back to idle, and every Apple Music
+favourite was refused outright with `ERROR_PLAYBACK_NO_CONTENT` ("No tracks
+added to queue") whatever the load options. That is the service's content
+failing to stream on that player, not the request shape; the remote shows the
+refusal as "Sonos found nothing to play there" and never retries a load. The CLI exposes
+the same two calls as `sources` and `source tv|line-in|favorite:ID|playlist:ID`.
+
 The remote’s speaker card opens Sonos playback, volume, mute and refresh controls.
 Playback failures on group members name the coordinating room; there is no
 automatic forwarding. Status refreshes on open, after commands, and when the

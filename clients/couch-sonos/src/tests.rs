@@ -25,6 +25,36 @@ pub(crate) fn info() -> String {
     })
     .to_string()
 }
+/// The stock fixture with extra capabilities, for the source picker's gates.
+fn info_with(capabilities: &[&str]) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(&info()).unwrap();
+    value["device"]["capabilities"] = serde_json::json!(capabilities);
+    value.to_string()
+}
+fn favorites() -> String {
+    serde_json::json!({
+        "version": "RINCON_TEST:14",
+        "items": [
+            {"id": "4", "name": "Dreaming", "description": "By Marshmello", "service": {"name": "Apple Music"}},
+            {"id": "6", "name": "Made for Spatial Audio", "description": "Apple Music Playlist", "service": {"name": "Apple Music"}},
+            {"id": "9", "name": "Hotel Lobby", "description": "Apple Music", "service": {"name": "Apple Music"}},
+            {"id": "7", "name": "Radio", "description": "", "service": {"name": ""}},
+            {"id": "", "name": "Broken", "description": "no id", "service": {"name": "x"}},
+        ],
+    })
+    .to_string()
+}
+fn playlists() -> String {
+    serde_json::json!({
+        "version": "RINCON_TEST:6",
+        "playlists": [
+            {"id": "1", "name": "All Songs", "type": "playlist", "trackCount": 2760},
+            {"id": "0", "name": "One", "type": "playlist", "trackCount": 1},
+            {"id": "2", "name": "Unknown size", "type": "playlist"},
+        ],
+    })
+    .to_string()
+}
 pub(crate) fn groups(coordinator: &str, state: &str) -> String {
     serde_json::json!({
         "_objectType": "groups",
@@ -658,4 +688,158 @@ fn mdns_query_asks_for_the_sonos_service() {
     let mut looping = vec![0, 0, 0x84, 0, 0, 0, 0, 1, 0, 0, 0, 0];
     looping.extend_from_slice(&pointer(12));
     assert!(read_name(&looping, 12).is_none());
+}
+
+#[test]
+fn sources_list_the_players_inputs_then_favourites_then_playlists() {
+    let (base, thread) = server(vec![
+        (200, info_with(&["PLAYBACK", "HT_PLAYBACK", "LINE_IN"])),
+        (200, favorites()),
+        (200, playlists()),
+    ]);
+    let client = connect(&base);
+    let sources = client.sources().unwrap();
+    let rows: Vec<(String, String)> = sources
+        .iter()
+        .map(|s| (s.name.clone(), s.detail.clone()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("TV", "Living room & kitchen input"),
+            ("Line-in", "Living room & kitchen input"),
+            ("Dreaming", "By Marshmello · Apple Music"),
+            (
+                "Made for Spatial Audio",
+                "Apple Music Playlist · Apple Music"
+            ),
+            ("Hotel Lobby", "Apple Music"),
+            ("Radio", "Sonos favourite"),
+            ("All Songs", "Sonos playlist · 2760 tracks"),
+            ("One", "Sonos playlist · 1 track"),
+            ("Unknown size", "Sonos playlist"),
+        ]
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+    );
+    assert_eq!(sources[0].id, SourceId::HomeTheater);
+    assert_eq!(sources[1].id, SourceId::LineIn);
+    assert_eq!(sources[2].id, SourceId::Favorite("4".into()));
+    assert_eq!(sources[6].id, SourceId::Playlist("1".into()));
+    let requests = thread.join().unwrap();
+    assert_eq!(requests[1].url, "/api/v1/households/local/favorites");
+    assert_eq!(requests[2].url, "/api/v1/households/local/playlists");
+    assert!(requests.iter().all(|r| r.method == "GET" && r.key == KEY));
+}
+#[test]
+fn players_without_tv_or_line_in_do_not_offer_them() {
+    let (base, thread) = server(vec![(200, info()), (200, favorites()), (200, playlists())]);
+    let client = connect(&base);
+    let sources = client.sources().unwrap();
+    assert!(sources
+        .iter()
+        .all(|s| !matches!(s.id, SourceId::HomeTheater | SourceId::LineIn)));
+    assert_eq!(
+        client.select_source(&SourceId::HomeTheater),
+        Err(Error::Command)
+    );
+    assert_eq!(client.select_source(&SourceId::LineIn), Err(Error::Command));
+    thread.join().unwrap();
+}
+#[test]
+fn group_sources_load_through_the_coordinator_group() {
+    let mut replies = vec![(200, info_with(&["PLAYBACK", "LINE_IN"]))];
+    for _ in 0..3 {
+        replies.push((200, groups(PLAYER, "PLAYBACK_STATE_IDLE")));
+        replies.push(ok());
+    }
+    let (base, thread) = server(replies);
+    let client = connect(&base);
+    client
+        .select_source(&SourceId::Favorite("4".into()))
+        .unwrap();
+    client
+        .select_source(&SourceId::Playlist("1".into()))
+        .unwrap();
+    client.select_source(&SourceId::LineIn).unwrap();
+    let requests = thread.join().unwrap();
+    // Each load is one topology read and one write; `playOnCompletion`
+    // starts playback, so nothing follows the write.
+    assert_eq!(requests.len(), 7);
+    let writes: Vec<(String, serde_json::Value)> = [2, 4, 6]
+        .iter()
+        .map(|&i| {
+            assert_eq!(requests[i - 1].url, "/api/v1/households/local/groups");
+            assert_eq!(requests[i].method, "POST");
+            assert_eq!(requests[i].content_type, "application/json");
+            (
+                requests[i].url.clone(),
+                serde_json::from_str(&requests[i].body).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        writes,
+        [
+            (
+                "/api/v1/groups/RINCON_TEST:1/favorites".to_owned(),
+                serde_json::json!({"favoriteId": "4", "playOnCompletion": true})
+            ),
+            (
+                "/api/v1/groups/RINCON_TEST:1/playlists".to_owned(),
+                serde_json::json!({"playlistId": "1", "playOnCompletion": true})
+            ),
+            (
+                "/api/v1/groups/RINCON_TEST:1/playback/lineIn".to_owned(),
+                serde_json::json!({"deviceId": PLAYER, "playOnCompletion": true})
+            ),
+        ]
+    );
+}
+#[test]
+fn tv_source_is_the_players_own_and_reads_no_topology() {
+    let (base, thread) = server(vec![(200, info_with(&["PLAYBACK", "HT_PLAYBACK"])), ok()]);
+    let client = connect(&base);
+    client.select_source(&SourceId::HomeTheater).unwrap();
+    let requests = thread.join().unwrap();
+    // One write and nothing after it: home theatre starts itself.
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(
+        requests[1].url,
+        format!("/api/v1/players/{PLAYER}/homeTheater")
+    );
+    assert_eq!(requests[1].body, "{}");
+}
+#[test]
+fn group_member_source_selection_is_refused_before_any_write() {
+    let (base, thread) = server(vec![
+        (200, info()),
+        (200, groups(OTHER, "PLAYBACK_STATE_PLAYING")),
+    ]);
+    let client = connect(&base);
+    assert_eq!(
+        client.select_source(&SourceId::Favorite("4".into())),
+        Err(Error::NotCoordinator {
+            coordinator: "Sonos Arc".into()
+        })
+    );
+    thread.join().unwrap();
+}
+#[test]
+fn expired_source_selection_stops_after_topology_read() {
+    let (base, thread) = server(vec![
+        (200, info()),
+        (200, groups(PLAYER, "PLAYBACK_STATE_IDLE")),
+    ]);
+    let client = connect(&base);
+    let calls = std::cell::Cell::new(0);
+    let current = || {
+        calls.set(calls.get() + 1);
+        calls.get() == 1
+    };
+    assert_eq!(
+        client.select_source_if_current(&SourceId::Favorite("4".into()), &current),
+        Err(Error::Cancelled)
+    );
+    thread.join().unwrap();
 }

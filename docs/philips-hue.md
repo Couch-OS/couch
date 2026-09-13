@@ -169,8 +169,9 @@ Hue uses the same fresh cache and command connection as instant toggles, without
 a preflight GET when cached state is valid. Rapid presses replace the unsent
 target for that light, with at most one send per 100ms and one command in flight.
 Acknowledgements update the row; failed commands hide the meter and show an
-error. Non-light rows ignore volume keys; unavailable and non-dimmable lights
-reject brightness changes. Home Assistant lights use its existing service API.
+error. Non-light rows ignore volume keys, except a Sonos speaker, whose volume
+they set (see `sonos.md`); unavailable and non-dimmable lights reject
+brightness changes. Home Assistant lights use its existing service API.
 
 ## Live room and device icons
 
@@ -187,7 +188,8 @@ scroll position. Integrations without power feedback are treated as unknown.
 ## Room scene shortcuts and feedback
 
 In a room, Channel Up recalls the next assigned scene and Channel Down recalls
-the previous one, wrapping at either end. The first forward press starts with
+the previous one, wrapping at either end (with a Sonos speaker highlighted the
+same keys skip tracks instead). The first forward press starts with
 the first scene; the first backward press starts with the last. The cursor
 remembers scenes chosen on the remote, including selections from the scene
 picker. Rapid presses retain the latest unsent scene while a recall completes.

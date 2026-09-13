@@ -86,6 +86,7 @@ impl Controller {
                     detail: detail.into(),
                     active: false,
                     light: false,
+                    media: false,
                     power_known: false,
                     icon: slint::Image::default(),
                 })

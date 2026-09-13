@@ -97,6 +97,27 @@ pub enum Playback {
     Previous,
 }
 
+/// Something a group can be told to play from the remote's source picker.
+/// Favourite and playlist ids are the household's own, taken from its listing
+/// moments earlier; nothing here is typed in by a person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceId {
+    /// The player's own TV input (home theatre playback).
+    HomeTheater,
+    /// The player's own analogue line-in.
+    LineIn,
+    Favorite(String),
+    Playlist(String),
+}
+/// One row of the source picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub id: SourceId,
+    pub name: String,
+    /// Where it comes from ("Apple Music", "Sonos playlist · 12 tracks", "This player").
+    pub detail: String,
+}
+
 // Wire types. Fields are optional at the parser so a firmware that renames or
 // drops one is a refusal rather than a panic, and each field a decision depends
 // on is then checked for presence: a defaulted empty string, `0` or `false` is
@@ -143,6 +164,42 @@ struct Named {
     id: String,
     #[serde(default)]
     name: String,
+}
+#[derive(Deserialize, Default)]
+struct Service {
+    #[serde(default)]
+    name: String,
+}
+#[derive(Deserialize, Default)]
+struct Favorite {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    service: Service,
+}
+#[derive(Deserialize, Default)]
+struct Favorites {
+    #[serde(default)]
+    items: Vec<Favorite>,
+}
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct Playlist {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    track_count: Option<u32>,
+}
+#[derive(Deserialize, Default)]
+struct Playlists {
+    #[serde(default)]
+    playlists: Vec<Playlist>,
 }
 #[derive(Deserialize, Default)]
 struct Groups {
@@ -357,6 +414,9 @@ pub struct Client {
     agent: ureq::Agent,
     key: String,
     player: Player,
+    /// The player's advertised capabilities, which gate the source picker's
+    /// TV and line-in rows; never an authority for volume or playback.
+    capabilities: Vec<String>,
 }
 impl Client {
     pub fn connect(address: Ipv4Addr) -> Result<Self> {
@@ -400,6 +460,7 @@ impl Client {
                 name: String::new(),
                 model: String::new(),
             },
+            capabilities: Vec::new(),
         };
         let info: DiscoveryInfo = json(&client.request("/players/local/info", None)?)?;
         if info.object != "discoveryInfo"
@@ -423,11 +484,15 @@ impl Client {
                 name: info.device.name,
                 model,
             },
+            capabilities: info.device.capabilities,
             ..client
         })
     }
     pub fn player(&self) -> &Player {
         &self.player
+    }
+    fn capable(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|c| c == capability)
     }
     fn request(&self, path: &str, body: Option<&str>) -> Result<String> {
         let url = format!("{}{path}", self.base);
@@ -570,6 +635,119 @@ impl Client {
     }
     pub fn command(&self, command: &str) -> Result<()> {
         self.command_if_current(command, &|| true)
+    }
+    /// What the source picker offers for this player: its own TV and line-in
+    /// inputs when the hardware has them, then the household's favourites and
+    /// Sonos playlists in the order the player lists them. Two reads, no writes.
+    pub fn sources(&self) -> Result<Vec<Source>> {
+        let mut sources = Vec::new();
+        if self.capable("HT_PLAYBACK") {
+            sources.push(Source {
+                id: SourceId::HomeTheater,
+                name: "TV".into(),
+                detail: format!("{} input", self.player.name),
+            });
+        }
+        if self.capable("LINE_IN") {
+            sources.push(Source {
+                id: SourceId::LineIn,
+                name: "Line-in".into(),
+                detail: format!("{} input", self.player.name),
+            });
+        }
+        let favorites: Favorites = json(&self.request("/households/local/favorites", None)?)?;
+        for item in favorites.items {
+            if item.id.is_empty() || item.name.is_empty() {
+                continue;
+            }
+            let detail = match (item.description.is_empty(), item.service.name.is_empty()) {
+                (false, false) if item.description != item.service.name => {
+                    format!("{} · {}", item.description, item.service.name)
+                }
+                (false, _) => item.description,
+                (true, false) => item.service.name,
+                (true, true) => "Sonos favourite".into(),
+            };
+            sources.push(Source {
+                id: SourceId::Favorite(item.id),
+                name: item.name,
+                detail,
+            });
+        }
+        let playlists: Playlists = json(&self.request("/households/local/playlists", None)?)?;
+        for item in playlists.playlists {
+            if item.id.is_empty() || item.name.is_empty() {
+                continue;
+            }
+            sources.push(Source {
+                id: SourceId::Playlist(item.id),
+                name: item.name,
+                detail: match item.track_count {
+                    Some(1) => "Sonos playlist · 1 track".into(),
+                    Some(n) => format!("Sonos playlist · {n} tracks"),
+                    None => "Sonos playlist".into(),
+                },
+            });
+        }
+        Ok(sources)
+    }
+    pub fn select_source(&self, source: &SourceId) -> Result<()> {
+        self.select_source_if_current(source, &|| true)
+    }
+    /// Start playing a source. TV is the player's own and needs no topology;
+    /// everything else loads into the group, so like playback it is refused on
+    /// a member and checked for freshness after the topology read.
+    pub fn select_source_if_current(
+        &self,
+        source: &SourceId,
+        current: &dyn Fn() -> bool,
+    ) -> Result<()> {
+        if !current() {
+            return Err(Error::Cancelled);
+        }
+        if *source == SourceId::HomeTheater {
+            if !self.capable("HT_PLAYBACK") {
+                return Err(Error::Command);
+            }
+            return self
+                .request(
+                    &format!("/players/{}/homeTheater", self.player.uuid),
+                    Some("{}"),
+                )
+                .map(|_| ());
+        }
+        if *source == SourceId::LineIn && !self.capable("LINE_IN") {
+            return Err(Error::Command);
+        }
+        let group = self.membership()?;
+        if group.coordinator != self.player.uuid {
+            return Err(Error::NotCoordinator {
+                coordinator: group.coordinator_name,
+            });
+        }
+        if !current() {
+            return Err(Error::Cancelled);
+        }
+        let (path, body) = match source {
+            SourceId::LineIn => (
+                "playback/lineIn".to_owned(),
+                serde_json::json!({ "deviceId": self.player.uuid, "playOnCompletion": true }),
+            ),
+            SourceId::Favorite(id) => (
+                "favorites".to_owned(),
+                serde_json::json!({ "favoriteId": id, "playOnCompletion": true }),
+            ),
+            SourceId::Playlist(id) => (
+                "playlists".to_owned(),
+                serde_json::json!({ "playlistId": id, "playOnCompletion": true }),
+            ),
+            SourceId::HomeTheater => unreachable!("handled above"),
+        };
+        self.request(
+            &format!("/groups/{}/{path}", group.id),
+            Some(&body.to_string()),
+        )
+        .map(|_| ())
     }
     /// A reading missing either field is a failure, not a zero volume and an
     /// unmuted speaker: a mute toggle decides its write from `muted`, and
