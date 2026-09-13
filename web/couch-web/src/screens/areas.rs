@@ -62,11 +62,13 @@ pub fn list(app: App, config: &Config) -> AnyView {
         <p class="dim pad-x">
             "Each area is one remote screen, such as Whole home or Upstairs. Choose its rooms, activity strip and scene shortcuts. Use the arrows to set the left-to-right screen order."
         </p>
-        <ul class="rows">{rows}</ul>
-        {empty.then(|| ui::empty("No custom areas yet. Your rooms are available in All rooms."))}
-        {ui::add_row("Area name", "Create area", move |name| {
-            app.run(api::post("/api/areas", json!({ "name": name })))
-        })}
+        <section class="block">
+            <ul class="rows">{rows}</ul>
+            {empty.then(|| ui::empty("No custom areas yet. Your rooms are available in All rooms."))}
+            {ui::add_row("Area name", "Create area", move |name| {
+                app.run(api::post("/api/areas", json!({ "name": name })))
+            })}
+        </section>
     }
     .into_any()
 }
@@ -85,44 +87,50 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
             {name_and_icon(app, area)}
         </section>
 
-        <h2 class="section">"Activities"</h2>
-        <p class="dim pad-x">
-            "The strip across the top of this page, when one of them is running."
-        </p>
-        <ul class="rows">{activity_rows(app, config, area)}</ul>
-        {area.activities.is_empty().then(|| {
-            ui::empty("Nothing on the strip. This page will start at its rooms.")
-        })}
-        {attach_existing_activity(app, config, area)}
-        {new_activity(app, config, area)}
+        {ui::section(
+            "Activities",
+            Some("The strip across the top of this page, when one of them is running."),
+            view! {
+                <ul class="rows">{activity_rows(app, config, area)}</ul>
+                {area.activities.is_empty().then(|| {
+                    ui::empty("Nothing on the strip. This page will start at its rooms.")
+                })}
+                {attach_existing_activity(app, config, area)}
+                {new_activity(app, config, area)}
+            }
+            .into_any(),
+        )}
 
-        <h2 class="section">"Rooms"</h2>
-        <ul class="rows">{room_rows(app, config, area)}</ul>
-
-        {area.rooms.is_empty().then(|| ui::empty("No rooms on this screen. Add an existing room below, or create a new one."))}
-        {attach_existing_room(app, config, area)}
-        {
-            let for_new = id.clone();
-            ui::add_row("New room name", "Create & add room", move |name| {
-                app.run(api::post(
-                    format!("/api/areas/{for_new}/rooms"),
-                    json!({ "name": name }),
-                ))
-            })
+        {ui::section("Rooms", None, view! {
+            <ul class="rows">{room_rows(app, config, area)}</ul>
+            {area.rooms.is_empty().then(|| ui::empty("No rooms on this screen. Add an existing room below, or create a new one."))}
+            {attach_existing_room(app, config, area)}
+            {
+                let for_new = id.clone();
+                ui::add_row("New room name", "Create & add room", move |name| {
+                    app.run(api::post(
+                        format!("/api/areas/{for_new}/rooms"),
+                        json!({ "name": name }),
+                    ))
+                })
+            }
         }
+        .into_any())}
 
-        <h2 class="section">"Scenes"</h2>
-        <ul class="rows">{scene_rows(app, config, area)}</ul>
-        {attach_existing_scene(app, config, area)}
-        {
-            let for_new = id.clone();
-            ui::add_row("New scene name", "Create & add scene", move |name| {
-                app.run(api::post(
-                    format!("/api/areas/{for_new}/scenes"),
-                    json!({ "name": name }),
-                ))
-            })
+        {ui::section("Scenes", None, view! {
+            <ul class="rows">{scene_rows(app, config, area)}</ul>
+            {attach_existing_scene(app, config, area)}
+            {
+                let for_new = id.clone();
+                ui::add_row("New scene name", "Create & add scene", move |name| {
+                    app.run(api::post(
+                        format!("/api/areas/{for_new}/scenes"),
+                        json!({ "name": name }),
+                    ))
+                })
+            }
         }
+        .into_any())}
 
         {super::area_shortcuts::editor(app, config, area)}
 
