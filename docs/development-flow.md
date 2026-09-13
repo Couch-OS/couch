@@ -26,28 +26,31 @@ The updater's channel decides which GitHub releases a remote considers:
 | Alpha   | Stable plus `alpha.<date>.<n>` prereleases              | community testers |
 | Dev     | Alpha plus `alpha.<date>.<n>.dev` builds from `dev`     | the development remote |
 
-A dev build's tag keeps the `alpha.<date>.<n>` core of the alpha it was cut
-after and adds `.dev`, so semver puts it just above that alpha and just below
-the next one: a remote on Dev follows the dev builds and still picks up the next
-promotion. Alpha rejects any tag with the `.dev` identifier. The channel is
+A dev build's tag has the same `alpha.<date>.<n>` shape as an alpha with `.dev`
+appended, and takes the next `<n>` after whatever was published last, alpha or
+dev. A promotion then takes the `<n>` after the last dev build. Semver orders
+all of them by `<date>.<n>`, so a remote on Dev follows the dev builds and
+still picks up the next promotion, and Alpha rejects any tag carrying the `dev`
+identifier. The channel is
 chosen on the web UI's Updates page or under Settings → Updates on the remote.
 
 ## Cutting a dev build
 
 From the `dev` branch, the same runtime recipe as a release
 ([release-cutting notes](releases.md), and `docs/runtime-updates.md#publishing`)
-with a dev tag: `v0.1.0-alpha.<date>.<n>.dev`, where `<date>.<n>` is the last
-promoted alpha's. Publish as a prerelease with the runtime archive, its signed
-manifest and `SHA256SUMS`; corresponding source and long notes are for
-promotions. Dev prereleases are disposable: delete them once the work is
-promoted, the way a failed candidate is, so the release list stays readable.
+with a dev tag: `v0.1.0-alpha.<date>.<n>.dev`, where `<n>` is one more than
+the last published build of either kind. Publish as a prerelease with the
+runtime archive, its signed manifest and `SHA256SUMS`; corresponding source and
+long notes are for promotions. Dev prereleases are disposable: delete one as
+soon as the next dev build or a promotion supersedes it, the way a failed
+candidate is, so the release list stays readable.
 
 ## Promoting to `main`
 
 1. Open a pull request from `dev` to `main` titled for the batch, listing the
    feature pull requests it carries. Merge it with a merge commit.
-2. Tag the merge commit `v0.1.0-alpha.<date>.<n>` (a new `<n>`, larger than
-   the last) and publish the full prerelease: runtime archive and manifest,
+2. Tag the merge commit `v0.1.0-alpha.<date>.<n>` (the `<n>` after the last
+   dev build) and publish the full prerelease: runtime archive and manifest,
    corresponding source, `SHA256SUMS`, notes that name the changes since the
    previous promotion and what was validated on hardware.
 3. Delete the dev prereleases the promotion supersedes. Remotes on Dev move to

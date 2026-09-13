@@ -512,6 +512,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut network_setup = network_ui::Controller::install(&app);
     if std::env::var_os("COUCH_WIFI_SETUP").is_some() { app.invoke_setting_change_wifi(); }
     let toast_until: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+    // When the volume card raised by a mapped press goes away by itself.
+    let volume_until: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let toast = {
         let (weak, until) = (app.as_weak(), toast_until.clone());
         move |msg: String, secs: u64| {
@@ -664,6 +666,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         lights.clear_brightness(app);
         toast_until.set(None);
         app.set_toast("".into());
+        volume_until.set(None);
         app.set_volume_shown(false);
         app.set_thermostat_feedback_shown(false);
         app.set_sonos_feedback_shown(false);
@@ -909,6 +912,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             toast_until.set(None);
             app.set_toast("".into());
         }
+        if volume_until.get().is_some_and(|t| now_monotonic_us() >= t) {
+            volume_until.set(None);
+            app.set_volume_shown(false);
+        }
 
         network_setup.poll(&app);
         update_controls.poll(&app);
@@ -1102,7 +1109,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tv_controls.poll(&app);
         cameras.poll(&app, standby != Standby::Off);
         if let Some(message)=thermostat_controls.poll(&app){toast(message,2);}
-        if let Some(error)=button_controls.poll(&app) {toast(error,3);}
+        match button_controls.poll(&app) {
+            Some(activity_buttons::Feedback::Error(error)) => toast(error, 3),
+            Some(activity_buttons::Feedback::Volume(reading)) => {
+                // The same card the room list shows for a highlighted speaker.
+                app.set_volume_target(reading.target.as_str().into());
+                app.set_volume(reading.level.max(0));
+                app.set_volume_text(reading.text.as_str().into());
+                app.set_volume_meter(reading.level >= 0);
+                app.set_feedback_enabled(true);
+                app.set_volume_shown(true);
+                volume_until.set(Some(now_monotonic_us() + 1_500_000));
+            }
+            None => {}
+        }
         if !app.get_player_shown() && !app.get_tv_shown() {app.set_active_activity("".into());}
         if activity_navigation && was_activity != (app.get_player_shown(), app.get_tv_shown(), app.get_thermostat_shown()) {
             dismiss_feedback(&app, &mut scene_controls, &mut light_controls);

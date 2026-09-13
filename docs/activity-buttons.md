@@ -40,6 +40,11 @@ remains unavailable until the built-in blaster can send codes.
 - D-pad, volume and channel keys retain repeat; they cannot have long bindings.
   Repeat events only repeat navigation, volume and channel functions, even when
   a repeat-capable button is assigned to a toggle or power function.
+- A volume or mute press mapped to a device that can report its level (Sonos,
+  Kodi, LG webOS, Denon) shows the volume card with the level read back after
+  the command, the same card the room list shows for a highlighted speaker.
+  Sonos, Kodi and webOS show a 0–100 meter; Denon shows its dB figure; a muted
+  device shows "Muted". Devices without a readable level show nothing.
 - Overrides apply while the activity screen is open, including its touch sheets.
   Directly opening a device uses normal controls. The touch back arrow always
   exits to Couch. Closing an activity cancels pending holds and local queued mappings;

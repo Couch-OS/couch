@@ -1064,6 +1064,11 @@ impl Client {
     pub fn volume(&self) -> Result<u8> {
         Ok(self.player_volume()?.level)
     }
+    /// Level and mute in one read, for feedback after a volume or mute write.
+    pub fn volume_state(&self) -> Result<(u8, bool)> {
+        let v = self.player_volume()?;
+        Ok((v.level, v.muted))
+    }
     pub fn muted(&self) -> Result<bool> {
         Ok(self.player_volume()?.muted)
     }
