@@ -187,7 +187,7 @@ fn shortcuts(app: App, id: couch_model::Id) -> AnyView {
         <label class="field">"App launch link"<input aria-label=format!("App {} launch link",i+1) maxlength="2048" placeholder="https://www.youtube.com/" prop:value=move ||url.get() on:input=move |e|url.set(event_target_value(&e))/></label>
         <div class="actions"><button class="ghost" disabled=i==0 aria-label=format!("Move app {} up",i+1) on:click=move |_|rows.update(|r|{if i>0 && i<r.len(){r.swap(i,i-1)}})>"Move up"</button>
         <button class="ghost" disabled={move ||i+1>=rows.get().len()} aria-label=format!("Move app {} down",i+1) on:click=move |_|rows.update(|r|{if i+1<r.len(){r.swap(i,i+1)}})>"Move down"</button>
-        <button aria-label=format!("Remove app {}",i+1) on:click=move |_|rows.update(|r|{if i<r.len(){r.remove(i);}})>"Remove"</button></div>
+        <button class="ghost" aria-label=format!("Remove app {}",i+1) on:click=move |_|rows.update(|r|{if i<r.len(){r.remove(i);}})>"Remove"</button></div>
       </div>}).collect_view()}
       <div class="actions"><button class="ghost" disabled={move ||rows.get().len()>=24} on:click=move |_|rows.update(|r|r.push((RwSignal::new(String::new()),RwSignal::new(String::new()))))>"Add app shortcut"</button>
       <button class="primary" on:click=move |_|app.run(api::put(endpoint.get_value(),rows.get_untracked().into_iter().map(|(name,url)|couch_model::AppShortcut{name:name.get_untracked(),url:url.get_untracked()}).collect::<Vec<_>>()))>"Save app shortcuts"</button></div>

@@ -644,8 +644,9 @@ input:focus,select:focus {
 
 /* Shared setup fields and room controls. */
 .actions { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
-.saved-connection summary,.device summary { cursor:pointer; padding:12px 0; font-weight:600; }
-.saved-connection details[open] { margin-bottom:16px; }
+details > summary { cursor:pointer; padding:12px 0; font-weight:600; min-height:44px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+details[open] > summary { margin-bottom:8px; }
+details { margin:12px 0; }
 .discovered-devices { display:grid; gap:12px; margin-top:16px; }
 .discovered-device { margin:0; }
 
@@ -752,3 +753,161 @@ input[type=color] { width:100%; height:48px; padding:4px; border:1px solid var(-
 @media(max-width:520px) { .ir-assignments { padding:12px; } .ir-command { grid-template-columns:1fr; gap:8px; } .ir-editor-actions { flex-direction:column; } .ir-assignment { align-items:flex-start; } }
 
 .coreelec-settings textarea { box-sizing:border-box; width:100%; min-height:110px; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--fg); font:12px/1.5 monospace; resize:vertical; }
+
+
+/* ---------------------------------------------------------------------------
+   Consistency pass. One rhythm for the pieces every screen is built from, so a
+   control needs no screen-specific class to look finished.
+   --------------------------------------------------------------------------- */
+
+/* Text controls that had no shared style: textareas and search boxes match
+   text inputs, and every control inside a .field label reads as the value,
+   not as part of the label. */
+textarea,input[type=search] {
+  width:100%;
+  padding:12px;
+  border:1px solid #c3cdc3;
+  background:#fff;
+  color:var(--fg);
+  border-radius:8px;
+  font:inherit;
+  font-size:16px;
+  min-height:46px;
+}
+textarea {
+  min-height:110px;
+  resize:vertical;
+  line-height:1.5;
+}
+textarea:focus,input[type=search]:focus {
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+label.field {
+  font-size:13px;
+  font-weight:550;
+  color:var(--dim);
+  max-width:600px;
+}
+.field input,.field select,.field textarea {
+  font-weight:400;
+  font-size:16px;
+  color:var(--fg);
+}
+.field input:disabled,.field select:disabled,.field textarea:disabled {
+  opacity:.6;
+}
+/* A checkbox and its sentence, wherever they appear. */
+label:has(> input[type=checkbox]),.field > span:has(> input[type=checkbox]) {
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  margin:4px 0 16px;
+  font-size:14px;
+  font-weight:400;
+  line-height:1.5;
+  color:var(--fg);
+  cursor:pointer;
+}
+label:has(> input[type=checkbox]) > input,.field > span > input[type=checkbox] {
+  width:18px;
+  height:18px;
+  margin:2px 0 0;
+  flex:none;
+  accent-color:var(--accent);
+}
+/* Validation and status lines: styled, and gone when they have nothing to say
+   so an empty paragraph never leaves a gap above a button. */
+p[role=alert],p[role=status] {
+  font-size:14px;
+  line-height:1.5;
+  margin:12px 0;
+}
+p[role=alert] {
+  color:var(--danger);
+  font-weight:550;
+}
+p[role=status] {
+  color:var(--dim);
+}
+p[role=alert]:empty,p[role=status]:empty {
+  display:none;
+}
+/* Buttons standing on their own in a card, form or section get room above and
+   below; buttons in an .actions row are spaced by the row. */
+.card > button,.creation > button,section > button,form > button,details > button,.creation > form > button,.editor > form > button {
+  margin:10px 0 4px;
+}
+.card > button + button,section > button + button,form > button + button {
+  margin-left:8px;
+}
+.actions {
+  margin:16px 0;
+}
+.actions button {
+  margin:0;
+}
+/* Cards, notices and creation panels: content meets the padding cleanly. */
+.card > :first-child,.creation > :first-child,.notice > :first-child,.connection-settings > section > :first-child,.connection-settings > form > :first-child {
+  margin-top:0;
+}
+.card > :last-child,.creation > :last-child,.notice > :last-child,.connection-settings > section > :last-child,.connection-settings > form > :last-child {
+  margin-bottom:0;
+}
+.card h3,.connection-settings h3 {
+  margin:24px 0 10px;
+}
+.card p,.creation p,.connection-settings p {
+  margin:10px 0 14px;
+}
+.notice + .notice,.notice + .section {
+  margin-top:16px;
+}
+.lead + .notice {
+  margin-top:-8px;
+}
+/* Nested cards sit inside their parent rather than floating in the page. */
+.card .card,.connection-settings .card .card {
+  margin:18px 0 0;
+  background:#fafaf6;
+}
+
+/* Connection pages. Every settings block is a card, whether the screen that
+   draws it says so or not, and its first heading is the card's title. */
+.connection-settings > section:not(.card),.connection-settings > form {
+  display:block;
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:14px;
+  margin:16px 0;
+  padding:22px;
+}
+.connection-settings > section > h3:first-child,.connection-settings > .card > h3:first-child {
+  font-size:20px;
+}
+.connection-settings .destination-grid {
+  margin:12px 0;
+}
+.danger-zone {
+  border-color:#e5c3bf;
+}
+.danger-zone h2 {
+  color:var(--danger);
+}
+.rows:empty {
+  display:none;
+}
+@media(max-width:760px) {
+  .connection-settings > section:not(.card),.connection-settings > form {
+    padding:18px;
+  }
+}
+
+/* A count beside a card heading keeps its distance; the last row of a list in
+   a card ends at the card, not at a rule. */
+h2 .count,h3 .count {
+  margin-left:8px;
+}
+.card .rows > .row:last-child {
+  border-bottom:0;
+}

@@ -33,11 +33,15 @@ try{
  browser=await chromium.launch();const page=await browser.newPage({viewport:{width:390,height:844}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await fetch(`${base}/api/rooms`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'Test room'})});
  await page.goto(base);assert.equal(await page.getByRole('navigation').getByRole('button',{name:'Scenes',exact:true}).count(),0);await page.getByRole('navigation').getByRole('button',{name:'Connections',exact:true}).click();
- await page.getByLabel('Connection type',{exact:true}).selectOption('hue');const card=page.locator('.hue-connection');await card.getByLabel('Hue bridge address').fill(bridge);
- pressed=true;await card.getByRole('button',{name:'Pair bridge',exact:true}).click();await page.locator('.saved-connection').getByRole('heading',{name:'Philips Hue',exact:true}).waitFor();
+ await page.getByLabel('Connection type',{exact:true}).selectOption('hue');await page.getByLabel('Connection name',{exact:true}).fill('Philips Hue');await page.getByRole('button',{name:'Create connection',exact:true}).click();
+ const card=page.locator('.hue-connection');await card.getByLabel('Hue bridge address').fill(bridge);
+ pressed=true;await card.getByRole('button',{name:'Pair bridge',exact:true}).click();await card.getByRole('status').filter({hasText:'Connected and saved'}).waitFor();
  assert.equal(await page.getByRole('button',{name:'Add to this room',exact:true}).count(),0);
- assert.equal((await stat(settings)).mode & 0o777,0o600);assert(!JSON.stringify(await(await api('connection')).json()).includes('test-secret'));
- const before=await readFile(settings,'utf8');pressed=false;assert.equal((await api('connection','PUT',{url:bridge})).status,502);assert.equal(await readFile(settings,'utf8'),before);
+ // A named connection keeps its credentials beside the config, per connection.
+ const connectionId=(await(await fetch(`${base}/api/config`)).json()).connections[0].id;const saved=`${dir}/connections/${connectionId}/hue-connection.json`;
+ const named=(path,method='GET',data)=>fetch(`${base}/api/connections/${connectionId}/hue/${path}`,{method,headers:{'Content-Type':'application/json'},body:data?JSON.stringify(data):undefined});
+ assert.equal((await stat(saved)).mode & 0o777,0o600);assert(!JSON.stringify(await(await named('connection')).json()).includes('test-secret'));
+ const before=await readFile(saved,'utf8');pressed=false;assert.equal((await named('connection','PUT',{url:bridge})).status,502);assert.equal(await readFile(saved,'utf8'),before);
  await page.getByRole('navigation').getByRole('button',{name:'Rooms & devices',exact:true}).click();await page.getByRole('button',{name:/^Test room/}).click();
  await page.getByRole('button',{name:'Add to this room',exact:true}).click();await page.locator('.device').getByRole('heading',{name:'Test Hue light',exact:true}).waitFor();
  await page.getByRole('button',{name:'Show light controls',exact:true}).click();
