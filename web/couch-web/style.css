@@ -114,6 +114,21 @@ button:focus-visible,a:focus-visible,summary:focus-visible {
 .tab:hover {
   background:#e1e8df;
 }
+/* Pushes the remote's own pages to the bottom of the rail; a hairline marks
+   the seam. On a phone the rail is a row, and the seam is just a gap. */
+.tabs-spacer {
+  flex:1;
+  min-height:24px;
+  position:relative;
+}
+.tabs-spacer::after {
+  content:"";
+  position:absolute;
+  left:16px;
+  right:16px;
+  bottom:12px;
+  border-top:1px solid var(--line);
+}
 .tab.on {
   background:#dce8dd;
   color:#194e3e;
@@ -572,6 +587,13 @@ input:focus,select:focus {
     padding:10px 13px;
     min-height:42px;
     font-size:13px;
+  }
+  .tabs-spacer {
+    flex:0 0 8px;
+    min-height:0;
+  }
+  .tabs-spacer::after {
+    display:none;
   }
   .banner {
     top:132px;

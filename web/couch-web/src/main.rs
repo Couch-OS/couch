@@ -214,33 +214,45 @@ fn Shell() -> impl IntoView {
             }}
         </main>
 
+        // Two groups. The first is the house, in the order the Overview walks
+        // it (connections, then rooms built from them, then activities, then
+        // the screens that arrange them); the second is the remote itself, and
+        // sits at the bottom on a desktop.
         <nav aria-label="Configuration" class="tabs" class:hidden=move || app.paired.get() != Some(true)>
-            {[
+            {tabs(app, route, &[
                 (Route::Overview, "Overview"),
-                (Route::Rooms, "Rooms & devices"),
                 (Route::Connections, "Connections"),
+                (Route::Rooms, "Rooms & devices"),
+                (Route::Activities, "Activities"),
+                (Route::Areas, "Areas"),
+            ])}
+            <span class="tabs-spacer" aria-hidden="true"></span>
+            {tabs(app, route, &[
                 (Route::Settings, "Remote settings"),
                 (Route::Updates, "Updates"),
-                (Route::Areas, "Areas"),
-                (Route::Activities, "Activities"),
-            ]
-                .into_iter()
-                .map(|(target, label)| {
-                    let for_class = target.clone();
-                    let for_click = target.clone();
-                    view! {
-                        <button
-                            class="tab"
-                            class:on=move || route.get().tab() == for_class
-                            on:click=move |_| app.go(for_click.clone())
-                        >
-                            {label}
-                        </button>
-                    }
-                })
-                .collect_view()}
+            ])}
         </nav>
     }
+}
+
+/// One group of navigation tabs.
+fn tabs(app: App, route: RwSignal<Route>, items: &[(Route, &'static str)]) -> impl IntoView {
+    items
+        .iter()
+        .map(|(target, label)| {
+            let for_class = target.clone();
+            let for_click = target.clone();
+            view! {
+                <button
+                    class="tab"
+                    class:on=move || route.get().tab() == for_class
+                    on:click=move |_| app.go(for_click.clone())
+                >
+                    {*label}
+                </button>
+            }
+        })
+        .collect_view()
 }
 
 /// The pairing screen.
