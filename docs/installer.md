@@ -30,10 +30,14 @@ working ADB alone does not establish access to the download interface. Close
 other tools that may own the remote before starting.
 
 On macOS, the built-in CDC ACM driver binds the remote's MediaTek download
-interface and exposes it as `/dev/cu.usbmodem*`. The installer keeps that
-binding and speaks the download protocol through the callout device that the
-I/O Registry attaches to the exact selected interface, so it never needs root
-and never detaches a kernel driver. Do not run it with `sudo`.
+interface, and only root can release it to libusb. The launcher therefore asks
+for an administrator password once, before the terminal UI starts, and the
+native host runs only the MediaTek USB worker elevated; the host, the terminal
+and everything under `~/.couch-installer` stay under your account. When starting
+the terminal UI by hand, run `sudo -v` in the same terminal first. The
+unprivileged serial-port transport (`/dev/cu.usbmodem*`) reads every partition
+correctly but could not complete a download-agent write on hardware, so it is
+kept only for read-only attachment.
 
 The installer stops any running ADB server immediately before it binds the
 authorized ADB serial to a physical USB port, because a server holding the
@@ -152,6 +156,6 @@ Worker startup failures report an allowlisted exception category, numeric USB er
 
 On Linux, a newly enumerated preloader node may appear before udev applies its existing permissions. The adapter allows up to one second for access to that exact selected device, retrying only libusb access-denied errors before any handshake. Persistent access denial stops installation: check that the installer user's effective groups include the group granted by the device's udev rule. Do not run the installer as root or broaden access to unrelated USB devices.
 
-On macOS, a libusb access error at the interface claim means the kernel's CDC ACM driver owns the preloader and no callout device was resolved for the selected interface. The adapter resolves the port by USB bus, address, vendor and product through `ioreg`; a missing or duplicate `/dev/cu.usbmodem*` under the selected data interface stops installation before any handshake.
+On macOS, "needs administrator rights" before the downloads means no sudo credential is cached: start through `install.sh`, or run `sudo -v` in the same terminal and start again. A libusb access error at the interface claim means the worker was not elevated after all. The host refreshes the credential in the background until the worker has started, so a long firmware download cannot let it expire.
 
 For a local acceptance build or an already-downloaded OS archive, pass `--local-payload /absolute/path/package.tar.gz` alongside `--config installer.json` and `--native-backend`. The installer copies the regular file into its private session with bounded progress and applies the same pinned size, SHA-256, manifest, and member checks as downloaded inputs. This option does not make dependency/official owner-input preparation offline and does not weaken HTTPS downloads.

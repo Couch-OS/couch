@@ -5,6 +5,7 @@ use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
     io::{Read, Write},
+    path::Path,
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, SyncSender},
     thread,
@@ -405,6 +406,68 @@ fn diagnostic_frames(diagnostic: &Value) -> String {
     }
 }
 
+/// The command that runs the MediaTek worker.
+///
+/// On macOS it runs as root through sudo. Apple's CDC ACM driver claims the
+/// preloader's interfaces, and libusb can only take them back by capturing the
+/// device, which needs root. The unprivileged serial-port path proved able to
+/// read every partition but could not complete a download-agent write, so the
+/// worker uses libusb exactly as the Linux path validated on hardware does.
+/// Only this worker is elevated: the host, the terminal and the session
+/// directory stay under the user's account. sudo runs non-interactively, so
+/// `Privilege::acquire` must have succeeded first. The worker speaks over piped
+/// stdio, which sudo preserves.
+pub fn mtk_worker(python: impl AsRef<Path>) -> Command {
+    if cfg!(target_os = "macos") {
+        let mut command = Command::new("sudo");
+        command.arg("-n").arg("--").arg(python.as_ref());
+        command
+    } else {
+        Command::new(python.as_ref())
+    }
+}
+
+fn sudo_succeeds(args: &[&str]) -> bool {
+    Command::new("sudo")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Administrator rights held for the MediaTek worker on macOS.
+///
+/// Acquire it before the long downloads so a missing credential fails early,
+/// and keep it until the worker has started: sudo's cached credential lasts a
+/// few minutes and a firmware download can outlast it. The refresh thread ends
+/// when the guard drops. On other platforms this is inert.
+pub struct Privilege {
+    _stop: Option<mpsc::Sender<()>>,
+}
+impl Privilege {
+    pub fn acquire() -> Result<Self> {
+        if !cfg!(target_os = "macos") {
+            return Ok(Self { _stop: None });
+        }
+        ensure!(
+            sudo_succeeds(&["-n", "true"]),
+            "The MediaTek USB worker needs administrator rights on macOS. Start the installer through install.sh, which asks once up front, or run `sudo -v` in this terminal before starting it"
+        );
+        let (stop, stopped) = mpsc::channel::<()>();
+        thread::spawn(move || {
+            while let Err(mpsc::RecvTimeoutError::Timeout) =
+                stopped.recv_timeout(Duration::from_secs(60))
+            {
+                sudo_succeeds(&["-n", "-v"]);
+            }
+        });
+        Ok(Self { _stop: Some(stop) })
+    }
+}
+
 fn reviewed_source(value: &Value) -> &str {
     value["source"]
         .as_str()
@@ -453,6 +516,32 @@ _ => panic!()
     }
     fn worker(mode: &str) -> Worker {
         Worker::spawn(Command::new(fixture()).arg(mode)).unwrap()
+    }
+    #[test]
+    fn mtk_worker_is_elevated_only_on_macos() {
+        let command = mtk_worker(Path::new("/opt/runtime/python3"));
+        let program = command.get_program().to_string_lossy().into_owned();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        if cfg!(target_os = "macos") {
+            assert_eq!(program, "sudo");
+            assert_eq!(args, ["-n", "--", "/opt/runtime/python3"]);
+        } else {
+            assert_eq!(program, "/opt/runtime/python3");
+            assert!(args.is_empty());
+        }
+    }
+    #[test]
+    fn privilege_is_inert_elsewhere_and_explains_itself_on_macos() {
+        match Privilege::acquire() {
+            Ok(_) => {}
+            Err(error) => {
+                assert!(cfg!(target_os = "macos"), "{error}");
+                assert!(error.to_string().contains("sudo -v"), "{error}");
+            }
+        }
     }
     #[test]
     fn wrapped_worker_errors_name_the_originating_fault() {

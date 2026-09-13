@@ -41,5 +41,14 @@ download "$host_file" "$host_size" "$host_hash" "$installer_work/host"
 download "$tui_file" "$tui_size" "$tui_hash" "$installer_work/tui"
 download 'installer.json' '@CONFIG_SIZE@' '@CONFIG_HASH@' "$installer_work/installer.json"
 chmod 700 "$installer_work/host" "$installer_work/tui"
+if [ "$(uname -s)" = Darwin ]; then
+    cat >&2 <<'NOTICE'
+macOS: the MediaTek USB step needs administrator rights. Apple's serial driver
+claims the remote's download interface and only root can hand it to libusb.
+Only that one worker runs elevated; the installer and your session files stay
+under your account. Enter your password if asked.
+NOTICE
+    sudo -v || { echo 'Administrator rights are required on macOS.' >&2; exit 2; }
+fi
 "$installer_work/tui" --native-backend "$installer_work/host" \
     --config "$installer_work/installer.json" <&3
