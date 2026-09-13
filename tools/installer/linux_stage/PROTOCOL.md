@@ -33,6 +33,20 @@ the host discovers directions from descriptors. No configfs, modern DMABUF,
 SuperSpeed or zero-copy support is assumed. Upstream reference:
 https://raw.githubusercontent.com/torvalds/linux/v3.18/include/uapi/linux/usb/functionfs.h
 
+## Serial channel
+
+The installer stage serves the same requests on its CDC ACM function
+(`/dev/ttyGS0`, passed to the probe as its second argument by init) for hosts
+whose operating system binds a serial driver to that function but has no driver
+for the vendor interface: Windows binds its built-in `usbser` driver and the
+native host's worker opens the resulting COM port. Linux and macOS hosts keep
+using FunctionFS through libusb. On the serial channel, bytes before a valid
+16-byte header are skipped (a Linux modem manager may probe the port with AT
+commands) and a malformed frame ends only that channel, which init's probe
+reopens; the FunctionFS channel keeps its terminate-on-malformed policy. Init
+no longer writes diagnostics to the ACM port in installer mode; they stay in
+RAM.
+
 ## Framing
 
 Requests have a 16-byte little-endian header: magic `CBP1`, u32 operation,

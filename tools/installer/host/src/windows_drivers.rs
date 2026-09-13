@@ -1,13 +1,16 @@
 //! Windows USB driver pre-flight for the remote's download-mode identity.
 //!
-//! libusb on Windows can only open a device whose driver is WinUSB. The
-//! MediaTek preloader (USB `0e8d:0003`) is present for only a few seconds after
-//! the remote restarts, so its binding has to exist before it appears. Windows
-//! records the driver it assigned to every device instance it has ever
-//! enumerated under `HKLM\SYSTEM\CurrentControlSet\Enum\USB`, and Zadig's
-//! "Create New Device" writes the same record without the device present. This
-//! module reads that record and classifies it. It changes nothing: the
-//! installer never installs or replaces drivers.
+//! The installer opens the MediaTek preloader (USB `0e8d:0003`) on Windows
+//! through whichever driver Windows bound to it: its built-in serial-port
+//! driver `usbser`, which Windows picks by itself for the preloader's CDC ACM
+//! function and which the worker uses as a COM port, or WinUSB (also libusbK
+//! and libusb0) when someone bound that on purpose, which the worker uses
+//! through libusb. Windows records the driver it assigned to every device
+//! instance it has ever enumerated under `HKLM\SYSTEM\CurrentControlSet\Enum\USB`.
+//! This module reads that record and says which route applies, so a machine
+//! carrying some third driver is explained before the short download window
+//! is spent on it. It changes nothing: the installer never installs or
+//! replaces drivers.
 //!
 //! The classification is platform independent so it can be unit-tested
 //! everywhere; only the registry reader is Windows-specific.
@@ -49,50 +52,78 @@ pub fn registry_key(pid: u16) -> String {
     format!(r"USB\VID_{VENDOR:04X}&PID_{pid:04X}")
 }
 
-fn is_winusb(service: Option<&str>) -> bool {
-    service.is_some_and(|service| service.eq_ignore_ascii_case("WinUSB"))
+/// How the worker will reach an instance bound to `service`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// Windows' serial-port driver, or a vendor INF over it: the worker opens
+    /// the COM port. An unbound instance takes this route too, because Windows
+    /// re-runs driver installation for a driverless device on every arrival and
+    /// its class match for CDC ACM is `usbser`.
+    Serial,
+    /// A driver libusb can open directly.
+    Libusb,
+    /// The composite parent driver; its interfaces carry the real binding.
+    Composite,
+    /// Something else, which neither route can use.
+    Other,
 }
 
-fn describe_service(service: Option<&str>) -> String {
+fn route(service: Option<&str>) -> Route {
     match service {
-        None => "no driver".into(),
-        Some(service) if service.eq_ignore_ascii_case("usbser") => {
-            "usbser (a serial-port driver; libusb cannot open it)".into()
+        None => Route::Serial,
+        Some(service) if service.eq_ignore_ascii_case("usbser") => Route::Serial,
+        Some(service)
+            if ["WinUSB", "libusbK", "libusb0"]
+                .iter()
+                .any(|known| service.eq_ignore_ascii_case(known)) =>
+        {
+            Route::Libusb
         }
-        Some(service) if service.eq_ignore_ascii_case("usbccgp") => {
-            "usbccgp (composite parent)".into()
-        }
-        Some(service) => service.into(),
+        Some(service) if service.eq_ignore_ascii_case("usbccgp") => Route::Composite,
+        Some(_) => Route::Other,
     }
 }
 
-/// Classify the preloader record. Every recorded instance must be bound to
-/// WinUSB, either directly or, for a composite parent, on all of its
-/// interfaces. Mixed records are not ready because Windows keeps the driver an
-/// existing instance already has when the device reappears on that port.
+fn describe_service(service: Option<&str>) -> String {
+    match (route(service), service) {
+        (Route::Serial, None) => "no driver yet (Windows binds usbser when it appears)".into(),
+        (Route::Serial, Some(service)) => format!("{service} (serial port; opened as a COM port)"),
+        (Route::Libusb, Some(service)) => format!("{service} (opened through libusb)"),
+        (Route::Composite, Some(service)) => format!("{service} (composite parent)"),
+        (_, Some(service)) => format!("{service} (unknown driver; no route)"),
+        (_, None) => "no driver".into(),
+    }
+}
+
+/// Classify the preloader record. Every recorded instance must be reachable by
+/// the serial or the libusb route, either directly or, for a composite parent,
+/// on all of its interfaces. A never-seen preloader is ready: Windows binds
+/// `usbser` to it by itself, and the installer restarts the remote again if
+/// that first driver installation outlasts the download window.
 pub fn assess(inventory: &Inventory) -> Assessment {
     let key = registry_key(PRELOADER);
     if inventory.devices.is_empty() && inventory.interfaces.is_empty() {
         return Assessment {
-            ready: false,
+            ready: true,
             summary: format!(
-                "Windows has no record of the remote's preloader ({key}). It has never been \
-                 enumerated on this machine, so Windows will spend the short download window \
-                 setting it up and libusb will not see it."
+                "Windows has no record of the remote's preloader ({key}) yet. It will bind its \
+                 serial-port driver the first time the preloader appears; if that takes longer \
+                 than the download window, the installer restarts the remote and tries again."
             ),
         };
     }
+    let usable = |service: Option<&str>| matches!(route(service), Route::Serial | Route::Libusb);
     let interfaces_ready = !inventory.interfaces.is_empty()
         && inventory
             .interfaces
             .iter()
-            .all(|interface| is_winusb(interface.service.as_deref()));
+            .all(|interface| usable(interface.service.as_deref()));
     let mut ready = !inventory.devices.is_empty();
     let mut summary = format!("Recorded preloader instances ({key}):\n");
     for device in &inventory.devices {
         let service = device.service.as_deref();
-        let composite = service.is_some_and(|service| service.eq_ignore_ascii_case("usbccgp"));
-        let instance_ready = is_winusb(service) || (composite && interfaces_ready);
+        let instance_ready =
+            usable(service) || (route(service) == Route::Composite && interfaces_ready);
         ready &= instance_ready;
         let _ = writeln!(
             summary,
@@ -106,7 +137,7 @@ pub fn assess(inventory: &Inventory) -> Assessment {
         let _ = writeln!(
             summary,
             "  {} interface {}: {}",
-            if is_winusb(interface.service.as_deref()) {
+            if usable(interface.service.as_deref()) {
                 "ok"
             } else {
                 "!!"
@@ -123,10 +154,10 @@ pub fn assess(inventory: &Inventory) -> Assessment {
         );
     }
     summary.push_str(if ready {
-        "Every recorded instance is bound to WinUSB."
+        "Every recorded instance can be opened as a serial port or through libusb."
     } else {
-        "An instance marked !! is not bound to WinUSB, so the installer cannot open the \
-         preloader on it."
+        "An instance marked !! is bound to a driver that is neither a serial port nor \
+         WinUSB, so the installer cannot open the preloader on it."
     });
     Assessment { ready, summary }
 }
@@ -324,68 +355,79 @@ mod tests {
         }
     }
 
-    #[test]
-    fn never_seen_preloader_is_not_ready_and_names_the_key() {
-        let assessment = assess(&Inventory::default());
-        assert!(!assessment.ready);
-        assert!(assessment.summary.contains(r"USB\VID_0E8D&PID_0003"));
+    fn devices(list: &[(&str, Option<&str>)]) -> Inventory {
+        Inventory {
+            devices: list.iter().map(|(id, s)| instance(id, *s)).collect(),
+            interfaces: vec![],
+        }
     }
 
     #[test]
-    fn winusb_on_every_instance_is_ready_regardless_of_case() {
-        let inventory = Inventory {
-            devices: vec![
-                instance("5&1&0&13", Some("WinUSB")),
-                instance("5&1&0&14", Some("winusb")),
-            ],
-            interfaces: vec![],
-        };
-        let assessment = assess(&inventory);
+    fn never_seen_preloader_is_ready_and_names_the_key() {
+        let assessment = assess(&Inventory::default());
+        assert!(assessment.ready);
+        assert!(assessment.summary.contains(r"USB\VID_0E8D&PID_0003"));
+        assert!(assessment.summary.contains("tries again"));
+    }
+
+    #[test]
+    fn serial_port_driver_is_ready_and_explained() {
+        let assessment = assess(&devices(&[("5&1&0&13", Some("usbser"))]));
+        assert!(assessment.ready, "{}", assessment.summary);
+        assert!(assessment
+            .summary
+            .contains("ok 5&1&0&13: usbser (serial port"));
+    }
+
+    #[test]
+    fn libusb_drivers_are_ready_regardless_of_case() {
+        let assessment = assess(&devices(&[
+            ("5&1&0&13", Some("WinUSB")),
+            ("5&1&0&14", Some("winusb")),
+            ("5&1&0&15", Some("libusbK")),
+        ]));
         assert!(assessment.ready, "{}", assessment.summary);
         assert!(!assessment.summary.contains("!!"));
+        assert!(assessment.summary.contains("through libusb"));
     }
 
     #[test]
-    fn serial_port_driver_blocks_and_is_explained() {
-        let inventory = Inventory {
-            devices: vec![instance("5&1&0&13", Some("usbser"))],
-            interfaces: vec![],
-        };
-        let assessment = assess(&inventory);
+    fn missing_driver_is_ready_because_windows_binds_usbser_on_arrival() {
+        let assessment = assess(&devices(&[("5&1&0&13", None)]));
+        assert!(assessment.ready);
+        assert!(assessment.summary.contains("no driver yet"));
+    }
+
+    #[test]
+    fn mixed_serial_and_libusb_instances_are_ready() {
+        assert!(
+            assess(&devices(&[
+                ("old", Some("usbser")),
+                ("new", Some("WinUSB"))
+            ]))
+            .ready
+        );
+    }
+
+    #[test]
+    fn a_third_driver_blocks_and_is_marked() {
+        let assessment = assess(&devices(&[
+            ("5&1&0&13", Some("mtkvcom")),
+            ("5&1&0&14", Some("usbser")),
+        ]));
         assert!(!assessment.ready);
-        assert!(assessment.summary.contains("!! 5&1&0&13: usbser"));
-        assert!(assessment.summary.contains("serial-port driver"));
+        assert!(assessment
+            .summary
+            .contains("!! 5&1&0&13: mtkvcom (unknown driver"));
+        assert!(assessment.summary.contains("ok 5&1&0&14"));
     }
 
     #[test]
-    fn missing_driver_blocks() {
-        let inventory = Inventory {
-            devices: vec![instance("5&1&0&13", None)],
-            interfaces: vec![],
-        };
-        let assessment = assess(&inventory);
-        assert!(!assessment.ready);
-        assert!(assessment.summary.contains("no driver"));
-    }
-
-    #[test]
-    fn mixed_instances_block_even_when_one_is_winusb() {
-        let inventory = Inventory {
-            devices: vec![
-                instance("old", Some("usbser")),
-                instance("new", Some("WinUSB")),
-            ],
-            interfaces: vec![],
-        };
-        assert!(!assess(&inventory).ready);
-    }
-
-    #[test]
-    fn composite_parent_is_ready_only_when_every_interface_is_winusb() {
+    fn composite_parent_is_ready_only_when_every_interface_has_a_route() {
         let ready = Inventory {
             devices: vec![instance("5&1&0&13", Some("usbccgp"))],
             interfaces: vec![
-                instance("MI_00\\7&1&0&0000", Some("WinUSB")),
+                instance("MI_00\\7&1&0&0000", Some("usbser")),
                 instance("MI_01\\7&1&0&0001", Some("WinUSB")),
             ],
         };
@@ -394,7 +436,7 @@ mod tests {
             devices: vec![instance("5&1&0&13", Some("usbccgp"))],
             interfaces: vec![
                 instance("MI_00\\7&1&0&0000", Some("WinUSB")),
-                instance("MI_01\\7&1&0&0001", Some("usbser")),
+                instance("MI_01\\7&1&0&0001", Some("strange")),
             ],
         };
         assert!(!assess(&partial).ready);

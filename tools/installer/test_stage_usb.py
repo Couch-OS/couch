@@ -16,7 +16,7 @@ class Interface(list):
 
 
 class StageTests(unittest.TestCase):
-    def fixture(self):
+    def fixture(self, platform='linux'):
         incoming=bytearray(struct.pack('<4sIQ',b'CBR1',0,4)+b'CBP1')
         writes=[]
         claims=[]
@@ -32,7 +32,38 @@ class StageTests(unittest.TestCase):
             self.assertEqual((kwargs['idVendor'],kwargs['idProduct']),(0x0e8d,0x201c))
             return [device]
         usb=NS(core=NS(find=find),util=NS(claim_interface=lambda d,n:claims.append(n),release_interface=lambda d,n:claims.remove(n),dispose_resources=lambda d:None))
-        return StageUsb(usb,backend,Candidate(2,10,(4,),0x0e8d,0x2000)),incoming,writes,claims
+        self.serial_opened=[]
+        serial=NS(read=read,write=outgoing.write,close=lambda:self.serial_opened.append('closed'))
+        def serial_port(selected,usb_module):
+            self.serial_opened.append((selected,usb_module is usb))
+            return serial
+        return StageUsb(usb,backend,Candidate(2,10,(4,),0x0e8d,0x2000),platform=platform,serial_port=serial_port),incoming,writes,claims
+
+    def test_windows_talks_to_the_stage_over_its_serial_port(self):
+        stage,incoming,writes,claims=self.fixture(platform='win32')
+        self.assertEqual(claims,[])  # the vendor interface has no Windows driver and is never claimed
+        self.assertEqual(self.serial_opened,[(Candidate(2,10,(4,),0x0e8d,0x2000),True)])
+        self.assertEqual(struct.unpack('<4sIQ',writes[-1]),(b'CBP1',0,0))
+        value=json.dumps({'status':'ready'}).encode()
+        incoming.extend(struct.pack('<4sIQ',b'CBR1',0,len(value))+value)
+        self.assertEqual(stage.dispatch('stage_status',None),{'status':'ready'})
+        stage.close()
+        self.assertEqual(self.serial_opened[-1],'closed')
+
+    def test_stage_port_resolution_uses_the_retained_physical_port(self):
+        from stage_usb import open_stage_port
+        import stage_usb
+        seen=[]
+        def fake_open(candidate,interface_number,usb,**kwargs):
+            seen.append((candidate,kwargs['wait'],kwargs['services'](1,2)))
+            return 'port'
+        original=stage_usb.open_serial_port
+        stage_usb.open_serial_port=fake_open
+        try:
+            self.assertEqual(open_stage_port(Candidate(2,10,(4,1),0x0e8d,0x2000),object()),'port')
+        finally:
+            stage_usb.open_serial_port=original
+        self.assertEqual(seen,[(Candidate(2,0,(4,1),0x0e8d,0x201c),stage_usb.STAGE_PORT_WAIT,[])])
 
     def test_exact_interface_setup_and_no_flash_opcode(self):
         stage,incoming,writes,claims=self.fixture()

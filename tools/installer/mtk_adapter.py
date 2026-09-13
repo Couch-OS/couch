@@ -358,7 +358,7 @@ def serve(wire, factory=Adapter):
 CATEGORIES = {'USBError', 'USBTimeoutError', 'InstallError', 'OSError',
               'PermissionError', 'TimeoutError', 'ValueError', 'TypeError',
               'AttributeError', 'RuntimeError'}
-REVIEWED_SOURCES = {'mtk_adapter.py', 'mtk_usb.py', 'mtk_tty.py', 'mtk_readonly.py', 'mtk_writer.py'}
+REVIEWED_SOURCES = {'mtk_adapter.py', 'mtk_usb.py', 'mtk_tty.py', 'mtk_com.py', 'stage_usb.py', 'mtk_readonly.py', 'mtk_writer.py'}
 
 
 def _observed(error):

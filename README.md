@@ -32,11 +32,11 @@ curl -fsSL https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alph
 Windows users run `install.ps1` from the same release in PowerShell. The script
 downloads the installer binaries and release descriptor for your platform,
 verifies their sizes and SHA-256 hashes against the values pinned inside the
-script, and only then starts the installer. Nothing runs on a mismatch. Native
-Windows also needs a WinUSB driver bound to the remote's preloader beforehand,
-and no Windows installation has completed on hardware yet; the
-[installer guide](docs/installer.md) describes that Zadig step and the Linux
-live USB alternative.
+script, and only then starts the installer. Nothing runs on a mismatch. On
+Windows the installer talks to the remote through the serial ports Windows
+creates by itself, so no driver setup is needed; no Windows installation has
+completed on hardware yet, and the [installer guide](docs/installer.md) has the
+details and the Linux live USB alternative.
 
 The installer saves your remote's original Android partitions and identity
 before writing anything, and it can later reinstall Couch or restore stock

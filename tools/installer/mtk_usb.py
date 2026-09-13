@@ -21,7 +21,8 @@ import time
 
 from couch_install import InstallError, require
 from mtk_session import Candidate, ReadPolicy, loader_bytes, select_candidate, source_pin
-from mtk_tty import TtyEndpoint, open_callout
+from mtk_com import default_callout
+from mtk_tty import TtyEndpoint
 
 
 class _Deadline(BaseException):
@@ -225,10 +226,10 @@ def configuration_after_permissions(dev, *, platform=sys.platform, now=time.mono
 
 class ExactUsbBackend:
     def __init__(self, checkout, *, preloader=None, preloader_sha256=None, usb=None, bindings=None, libusb_path=None,
-                 platform=sys.platform, callout=open_callout, privileged=None):
+                 platform=sys.platform, callout=None, privileged=None):
         self.checkout = checkout
         self.platform = platform
-        self.callout = callout
+        self.callout = default_callout(platform) if callout is None else callout
         self.tty = None
         if privileged is None:
             privileged = hasattr(os, "geteuid") and os.geteuid() == 0
@@ -286,7 +287,14 @@ class ExactUsbBackend:
                 candidates.append((interface, incoming[0], outgoing[0]))
         require(len(candidates) == 1, "Expected one CDC data interface with bulk IN/OUT")
         self.interface, ep_in, ep_out = candidates[0]
-        if self.platform == "darwin" and not self.privileged:
+        if self.platform == "win32":
+            # Windows binds its own serial-port driver to the preloader's CDC
+            # function and libusb cannot open that; nobody installs WinUSB by
+            # accident. Use the COM port Windows created, the way SP Flash Tool
+            # always has, unless the record shows WinUSB was bound on purpose,
+            # in which case the libusb claim below is the one that works.
+            self.tty = self.callout(expected, self.interface.bInterfaceNumber, self.usb)
+        elif self.platform == "darwin" and not self.privileged:
             # Apple's CDC ACM driver owns the preloader's interfaces and only a
             # privileged capture can detach it. Unprivileged, use the callout
             # device the kernel created for this exact interface; it reads every

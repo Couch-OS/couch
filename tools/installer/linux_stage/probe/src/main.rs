@@ -1,8 +1,15 @@
 //! Linux 3.18 FunctionFS probe; private-install and wifi-debug are separate RAM stages.
+//!
+//! The installer stage answers the same framed protocol on its CDC ACM function
+//! as well (`serial`), for hosts whose operating system binds a serial driver
+//! to that function but nothing to the vendor interface: Windows. Linux and
+//! macOS hosts keep using FunctionFS through libusb.
 #[cfg(all(feature = "private-install", feature = "wifi-debug"))]
 compile_error!("private-install and wifi-debug must be built as separate stage binaries");
 #[cfg(feature = "private-install")]
 mod install;
+#[cfg(feature = "private-install")]
+mod serial;
 #[cfg(not(feature = "wifi-debug"))]
 mod scan;
 mod wifi;
@@ -198,62 +205,72 @@ fn run(root: &Path) -> io::Result<()> {
         let mut header = [0u8; 16];
         input.read_exact(&mut header)?;
         let (op, length) = request(&header)?;
-        #[cfg(feature = "wifi-debug")]
-        let _ = length;
-        match op {
-            0 => {
-                response(&mut output, 4)?;
-                output.write_all(b"CBP1")?;
-            }
-            #[cfg(not(feature = "wifi-debug"))]
-            1 | 2 => transfer(&mut input, &mut output, op, length)?,
-            #[cfg(not(feature = "wifi-debug"))]
-            3 => {
-                let data = recovery_hash()?;
-                response(&mut output, data.len() as u64)?;
-                output.write_all(&data)?;
-            }
-            #[cfg(not(feature = "wifi-debug"))]
-            4 => {
-                let mut payload = vec![0; length as usize];
-                input.read_exact(&mut payload)?;
-                wifi::provision(&payload)?;
-                response(&mut output, 0)?;
-            }
-            5 => {
-                let data = wifi::status();
-                response(&mut output, data.len() as u64)?;
-                output.write_all(&data)?;
-            }
-            #[cfg(not(feature = "wifi-debug"))]
-            7 => {
-                let data = scan::response();
-                response(&mut output, data.len() as u64)?;
-                output.write_all(&data)?;
-            }
-            #[cfg(feature = "wifi-debug")]
-            8 => {
-                let data = wifi::debug_status();
-                response(&mut output, data.len() as u64)?;
-                output.write_all(&data)?;
-            }
-            #[cfg(feature = "wifi-debug")]
-            9 => {
-                wifi::request_debug_retry()?;
-                response(&mut output, 0)?;
-            }
-            #[cfg(feature = "private-install")]
-            6 => {
-                let mut payload = vec![0; length as usize];
-                input.read_exact(&mut payload)?;
-                install::bind(&payload)?;
-                response(&mut output, 0)?;
-            }
-            #[cfg(feature = "private-install")]
-            10 => return Err(invalid("installation is TLS-only")),
-            _ => unreachable!(),
-        }
+        handle(op, length, &mut input, &mut output)?;
     }
+}
+/// One validated request on either channel. Errors end the caller's channel.
+fn handle(
+    op: u32,
+    length: u64,
+    input: &mut impl Read,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    #[cfg(feature = "wifi-debug")]
+    let _ = length;
+    match op {
+        0 => {
+            response(output, 4)?;
+            output.write_all(b"CBP1")?;
+        }
+        #[cfg(not(feature = "wifi-debug"))]
+        1 | 2 => transfer(input, output, op, length)?,
+        #[cfg(not(feature = "wifi-debug"))]
+        3 => {
+            let data = recovery_hash()?;
+            response(output, data.len() as u64)?;
+            output.write_all(&data)?;
+        }
+        #[cfg(not(feature = "wifi-debug"))]
+        4 => {
+            let mut payload = vec![0; length as usize];
+            input.read_exact(&mut payload)?;
+            wifi::provision(&payload)?;
+            response(output, 0)?;
+        }
+        5 => {
+            let data = wifi::status();
+            response(output, data.len() as u64)?;
+            output.write_all(&data)?;
+        }
+        #[cfg(not(feature = "wifi-debug"))]
+        7 => {
+            let data = scan::response();
+            response(output, data.len() as u64)?;
+            output.write_all(&data)?;
+        }
+        #[cfg(feature = "wifi-debug")]
+        8 => {
+            let data = wifi::debug_status();
+            response(output, data.len() as u64)?;
+            output.write_all(&data)?;
+        }
+        #[cfg(feature = "wifi-debug")]
+        9 => {
+            wifi::request_debug_retry()?;
+            response(output, 0)?;
+        }
+        #[cfg(feature = "private-install")]
+        6 => {
+            let mut payload = vec![0; length as usize];
+            input.read_exact(&mut payload)?;
+            install::bind(&payload)?;
+            response(output, 0)?;
+        }
+        #[cfg(feature = "private-install")]
+        10 => return Err(invalid("installation is TLS-only")),
+        _ => unreachable!(),
+    }
+    Ok(())
 }
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--capabilities") {
@@ -263,6 +280,10 @@ fn main() {
     let root = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "/dev/ffs-couch".into());
+    #[cfg(feature = "private-install")]
+    if let Some(port) = std::env::args().nth(2) {
+        thread::spawn(move || serial::run(&port));
+    }
     if let Err(error) = run(Path::new(&root)) {
         if wifi::active() {
             eprintln!("USB control ended; provisioned TLS benchmark remains available.");

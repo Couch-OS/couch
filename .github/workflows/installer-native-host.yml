@@ -48,7 +48,7 @@ jobs:
           import os, pathlib, subprocess
           suffix = '.exe' if os.name == 'nt' else ''
           os.environ['COUCH_NATIVE_HOST_TEST'] = str((pathlib.Path('tools/installer/host/target/release') / ('couch-installer-host' + suffix)).resolve())
-          for pattern in ('test_mtk_adapter.py', 'test_mtk_capture_evidence.py', 'test_stage_usb.py', 'test_couch_serial.py', 'test_native_entrypoint.py', 'test_wifi_debug*.py'):
+          for pattern in ('test_mtk_adapter.py', 'test_mtk_capture_evidence.py', 'test_mtk_com.py', 'test_stage_usb.py', 'test_couch_serial.py', 'test_native_entrypoint.py', 'test_wifi_debug*.py'):
               subprocess.run(['python', '-m', 'unittest', 'discover', '-s', 'tools/installer', '-p', pattern], check=True, timeout=120)
       - name: Execute native official input preparation
         if: github.event_name == 'workflow_dispatch' && inputs.verify_official_ota
