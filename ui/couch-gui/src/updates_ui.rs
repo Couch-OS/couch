@@ -107,6 +107,7 @@ impl Controller {
             app.set_update_channel("".into());
             app.set_update_summary("Connecting…".into());
             app.set_update_can_install(false);
+            app.set_update_busy(false);
             app.set_update_ready(false);
             return;
         };
@@ -114,6 +115,9 @@ impl Controller {
         app.set_update_channel(channel_label(s.channel).into());
         app.set_update_summary(summary(s, self.busy).into());
         app.set_update_can_install(s.can_install && !self.busy);
+        app.set_update_busy(
+            self.busy || matches!(s.phase.as_str(), "checking" | "downloading" | "verifying"),
+        );
         app.set_update_ready(s.phase == "ready");
         if self.notice.is_none() {
             app.set_update_message(s.message.as_str().into());
@@ -349,14 +353,29 @@ mod tests {
             window.dispatch_event(WindowEvent::KeyPressed { text });
         }
         assert_eq!(&*events.borrow(), &["channel:1", "check", "install"]);
-        // Once staged, the last row is the restart.
+        // While the download runs the row stays as a status row and OK does
+        // nothing; once staged, the same row is the restart.
         app.set_update_can_install(false);
-        app.set_update_ready(true);
+        app.set_update_busy(true);
+        app.set_update_summary("Downloading…".into());
         slint::platform::update_timers_and_animations();
         events.borrow_mut().clear();
         let text = char::from(Key::Return).to_string().into();
         window.dispatch_event(WindowEvent::KeyPressed { text });
+        assert!(events.borrow().is_empty());
+        app.set_update_busy(false);
+        app.set_update_ready(true);
+        slint::platform::update_timers_and_animations();
+        let text = char::from(Key::Return).to_string().into();
+        window.dispatch_event(WindowEvent::KeyPressed { text });
         assert_eq!(&*events.borrow(), &["restart"]);
+        // The step row going away entirely pulls the cursor back onto a row.
+        app.set_update_ready(false);
+        slint::platform::update_timers_and_animations();
+        events.borrow_mut().clear();
+        let text = char::from(Key::Return).to_string().into();
+        window.dispatch_event(WindowEvent::KeyPressed { text });
+        assert_eq!(&*events.borrow(), &["check"]);
         app.hide().unwrap();
     }
     fn status(phase: &str, available: Option<&str>) -> Status {
