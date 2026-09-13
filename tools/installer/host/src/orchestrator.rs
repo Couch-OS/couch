@@ -512,8 +512,10 @@ pub fn run(ui: &mut Ui, config: Option<&Path>, local_payload: Option<&Path>) -> 
                 &json!({"event":"installation_stopped","preserve_originals":true}),
             );
         }
+        // The alternate form prints the cause chain, so a structural refusal
+        // says which check failed rather than only that the pair was refused.
         let _ = ui.error(&format!(
-            "{error}. Keep saved originals at {}. No automatic retry or restore was attempted.",
+            "{error:#}. Keep saved originals at {}. No automatic retry or restore was attempted.",
             session.path().display()
         ));
     }
