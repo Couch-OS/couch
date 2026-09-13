@@ -633,6 +633,8 @@ impl Controller {
             app.set_volume_target(t.name.as_str().into());
         }
         app.set_volume(i32::from(volume));
+        app.set_volume_text("".into());
+        app.set_volume_meter(true);
         app.set_feedback_enabled(true);
         app.set_volume_shown(true);
         self.volume_until = Some(Instant::now() + Duration::from_millis(1500));
