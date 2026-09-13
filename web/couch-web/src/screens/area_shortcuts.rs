@@ -162,9 +162,7 @@ pub fn editor(app: App, config: &Config, area: &Area) -> AnyView {
         }
     };
     let assigned = area.get_value().shortcuts.len();
-    view! {
-        <h2 class="section">"Quick-access keys"</h2>
-        <p class="dim pad-x">"What the four shortcut keys and the four color keys do while this area is on screen: open a device's controls, switch a light, open an activity or jump to another area. Select a key to choose."</p>
+    let body = view! {
         <section class="card button-editor shortcut-editor" aria-label="Quick-access keys">
             <div class="mapping-columns"><span>"Key"</span><span>"Press"</span></div>
             {SHORTCUT_BUTTONS.iter().map(move |&button| {
@@ -180,7 +178,7 @@ pub fn editor(app: App, config: &Config, area: &Area) -> AnyView {
                 }
             }).collect_view()}
         </section>
-        <p class="dim pad-x">{if assigned == 0 { "No keys assigned yet. Unassigned keys do nothing on this page." } else { "Keys act on the home screen only; a device or activity screen keeps its own keys. Changes apply on the remote within a moment." }}</p>
+        <p class="dim">{if assigned == 0 { "No keys assigned yet. Unassigned keys do nothing on this page." } else { "Keys act on the home screen only; a device or activity screen keeps its own keys. Changes apply on the remote within a moment." }}</p>
         <dialog node_ref=dialog class="command-picker" aria-labelledby="shortcut-picker-title">
             <div class="command-picker-header"><div><span class="eyebrow">"Assign key"</span><h2 id="shortcut-picker-title">{move || key_name(selected.get()).0}</h2></div>
                 <button class="command-close" aria-label="Close key picker" on:click=move |_| { if let Some(d) = dialog.get() { d.close(); } }>"×"</button>
@@ -221,5 +219,10 @@ pub fn editor(app: App, config: &Config, area: &Area) -> AnyView {
             </div>
         </dialog>
     }
-    .into_any()
+    .into_any();
+    crate::ui::section(
+        "Quick-access keys",
+        Some("What the four shortcut keys and the four color keys do while this area is on screen: open a device's controls, switch a light, open an activity or jump to another area. Select a key to choose."),
+        body,
+    )
 }
