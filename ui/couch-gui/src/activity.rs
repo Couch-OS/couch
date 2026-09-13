@@ -673,11 +673,17 @@ impl Controller {
         app.invoke_focus_player();
     }
     pub fn navigation_pending(&self, app: &App) -> bool {
+        let sonos = self.sonos.is_open();
         self.input.borrow().iter().any(|(action, _, _)| {
             action.starts_with("open:")
                 || action == "pages"
                 || action == "custom:source"
                 || (action == "back" || action == "custom:back") && app.get_player_panel() == 0
+                // The Sonos screen leaves on the physical Back and Home keys
+                // too, which reach it as Input.* and must slide like "back".
+                || sonos
+                    && (action == "Input.Back" || action == "Input.Home")
+                    && app.get_player_panel() == 0
         })
     }
     pub fn poll(&mut self, app: &App) {

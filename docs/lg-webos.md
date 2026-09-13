@@ -125,8 +125,11 @@ exists, which is a prerequisite rather than proof of working IR output.
 
 Supply verified power codes using the existing `couch-ir` codeset format:
 `button protocol address command`. The physical button uses `power` (toggle).
-Activity power-on and power-off use separate `power-on` and `power-off` entries.
-No codes are prefilled; missing discrete codes never fall back to toggle. Both
+Activities and mapped buttons can use the same key as the **Power toggle**
+command, which sends the `power` line under IR or, under Network, wakes the TV
+when it is off or unreachable and powers it off when it is on. Discrete
+activity power-on and power-off use separate `power-on` and `power-off`
+entries. No codes are prefilled; missing discrete codes never fall back to toggle. Both
 routes send one frame with zero repeats, no retry and no automatic network
 fallback. If the codes or blaster are unavailable, power reports an error; users
 who need the existing network behavior must explicitly select Network.

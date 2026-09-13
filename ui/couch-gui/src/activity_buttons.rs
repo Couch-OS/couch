@@ -444,16 +444,19 @@ pub(crate) fn execute_with_input(
             result.map_err(|e| e.to_string())
         }
         Integration::WebOs => {
-            if matches!(command, F::PowerOn | F::PowerOff) {
+            if matches!(command, F::PowerOn | F::PowerOff | F::Toggle) {
                 let path = connections::file(connection, "webos");
                 let settings = couch_webos::Settings::load(&path).map_err(|e| e.to_string())?;
                 let preference = couch_webos::power::PowerSettings::load(&path, &settings.url)?;
                 if preference.method == couch_webos::power::Method::Ir {
-                    return preference.transmit(if command == F::PowerOn {
-                        "power-on"
-                    } else {
-                        "power-off"
+                    return preference.transmit(match command {
+                        F::PowerOn => "power-on",
+                        F::PowerOff => "power-off",
+                        _ => "power",
                     });
+                }
+                if command == F::Toggle {
+                    return crate::tv::toggle_power(&settings, &path);
                 }
             }
             if command == F::PowerOn {
