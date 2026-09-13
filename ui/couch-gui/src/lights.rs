@@ -968,7 +968,7 @@ fn description(light: &Light) -> String {
 }
 // Resolve the selected device's own connection; never select the first Android
 // TV when multiple TVs are configured.
-fn tv_connection(config: &couch_model::Config, device_id: &str) -> Option<String> {
+pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Option<String> {
     let (_, device) = config.devices().find(|(_, d)| d.id.as_str() == device_id)?;
     let integration = config.resolve_integration(&device.integration);
     if device.effective_ir_codeset(config).is_some()

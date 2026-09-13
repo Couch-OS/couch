@@ -124,6 +124,8 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
             })
         }
 
+        {super::area_shortcuts::editor(app, config, area)}
+
         <div class="pad">
             {ui::danger_button("Delete this area", move || {
                 app.go(Route::Areas);

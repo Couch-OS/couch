@@ -342,6 +342,7 @@ impl Api {
                 self.edit_found(if_match, move |c| c.remove_area(&id).map(|_| ()))
             }
             ("PUT", ["areas", id, "rooms"]) => self.set_members(&body, if_match, id, Member::Room),
+            ("PUT", ["areas", id, "shortcuts"]) => self.set_shortcuts(&body, if_match, id),
 
             ("POST", ["areas", id, "rooms"]) => self.attach_room(&body, if_match, id),
             ("DELETE", ["areas", id, "rooms", room]) => {
@@ -619,6 +620,7 @@ impl Api {
                 rooms: Vec::new(),
                 scenes: Vec::new(),
                 activities: Vec::new(),
+                shortcuts: Vec::new(),
             });
 
         });
@@ -830,6 +832,22 @@ impl Api {
         })
     }
 
+
+    /// `PUT /api/areas/{id}/shortcuts` replaces what the shortcut and color
+    /// keys reach on this page. The whole list is sent, like the member lists:
+    /// a key is cleared by leaving it out. Model validation rejects unknown
+    /// targets, keys that are not assignable and two actions on one key.
+    fn set_shortcuts(&self, body: &[u8], if_match: Option<u64>, id: &str) -> Reply {
+        let shortcuts: Vec<couch_model::Shortcut> = match parse(body) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let id = Id::new(id);
+        self.edit_found(if_match, move |cfg| {
+            cfg.area_mut(&id)?.shortcuts = shortcuts;
+            Some(())
+        })
+    }
 
     fn attach_room(&self, body: &[u8], if_match: Option<u64>, area: &str) -> Reply {
         let req: AttachRoom = match parse(body) {
@@ -1087,6 +1105,40 @@ mod activity_mapping_tests {
         activity.setup.devices.clear();
         assert_eq!(api.replace_activity(&serde_json::to_vec(&activity).unwrap(), None, activity.id.as_str()).status, 422);
         assert_eq!(std::fs::read(dir.join("config.json")).unwrap(), before);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn area_shortcuts_persist_validate_and_follow_removed_targets() {
+        use couch_model::{buttons::Button, Shortcut, ShortcutAction};
+        let dir = std::env::temp_dir().join(format!("couch-api-shortcuts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), serde_json::to_vec(&Config::seed()).unwrap()).unwrap();
+        let api = Api::new(Store::open(dir.join("config.json")).unwrap(), Assets::embedded(), Arc::new(Auth::new(dir.join("pin"), true)));
+        let (area, upstairs) = api.with(|s| (s.config().areas[0].id.clone(), s.config().areas[1].id.clone()));
+        let shortcuts = vec![
+            Shortcut { button: Button::Tv, action: ShortcutAction::Device { device: "living-tv".into() } },
+            Shortcut { button: Button::Lights, action: ShortcutAction::Toggle { device: "living-hue".into() } },
+            Shortcut { button: Button::Music, action: ShortcutAction::Activity { activity: "watch-tv".into() } },
+            Shortcut { button: Button::Red, action: ShortcutAction::Area { area: upstairs.clone() } },
+        ];
+        let reply = api.set_shortcuts(&serde_json::to_vec(&shortcuts).unwrap(), None, area.as_str());
+        assert_eq!(reply.status, 200);
+        assert_eq!(api.with(|s| s.config().areas[0].shortcuts.clone()), shortcuts);
+        // The saved file carries the tagged action shape the GUI reads.
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
+        assert_eq!(saved["areas"][0]["shortcuts"][3]["action"]["kind"], "area");
+        let original = std::fs::read(dir.join("config.json")).unwrap();
+        let bad = vec![Shortcut { button: Button::Ok, action: ShortcutAction::Activity { activity: "watch-tv".into() } }];
+        let reply = api.set_shortcuts(&serde_json::to_vec(&bad).unwrap(), None, area.as_str());
+        assert_eq!(reply.status, 422);
+        assert_eq!(std::fs::read(dir.join("config.json")).unwrap(), original);
+        let reply = api.set_shortcuts(b"[]", None, "nowhere");
+        assert_eq!(reply.status, 404);
+        // Deleting the target area through the API drops the key that reached it.
+        let reply = api.edit_found(None, |c| c.remove_area(&upstairs).map(|_| ()));
+        assert_eq!(reply.status, 200);
+        let left: Vec<Button> = api.with(|s| s.config().areas[0].shortcuts.iter().map(|s| s.button).collect());
+        assert_eq!(left, vec![Button::Tv, Button::Lights, Button::Music]);
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

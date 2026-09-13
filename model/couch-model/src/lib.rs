@@ -54,6 +54,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod buttons;
 pub mod commands;
+mod shortcuts;
+pub use shortcuts::{Shortcut, ShortcutAction, SHORTCUT_BUTTONS};
 mod app_shortcuts;
 pub use app_shortcuts::{AppShortcut, valid_app_url};
 pub mod activity_setup;
@@ -163,6 +165,9 @@ pub struct Area {
     /// reasonable thing to put on the whole-home page.
     #[serde(default)]
     pub activities: Vec<ActivityId>,
+    /// What the shortcut and color keys reach while this page is showing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shortcuts: Vec<Shortcut>,
 }
 
 /// A place with devices in it: the hub's up/down axis.
@@ -383,6 +388,9 @@ impl Config {
         for area in &mut self.areas {
             area.activities.retain(|a| !orphaned.contains(a));
         }
+        for activity in &orphaned {
+            self.forget_activity_shortcuts(activity);
+        }
         for device in &room.devices {
             self.forget_device(&device.id);
         }
@@ -392,7 +400,9 @@ impl Config {
 
     pub fn remove_area(&mut self, id: &AreaId) -> Option<Area> {
         let at = self.areas.iter().position(|a| &a.id == id)?;
-        Some(self.areas.remove(at))
+        let area = self.areas.remove(at);
+        self.forget_area_shortcuts(id);
+        Some(area)
     }
 
     pub fn remove_scene(&mut self, id: &SceneId) -> Option<Scene> {
@@ -410,6 +420,7 @@ impl Config {
         for area in &mut self.areas {
             area.activities.retain(|a| a != id);
         }
+        self.forget_activity_shortcuts(id);
         Some(activity)
     }
 
@@ -425,6 +436,7 @@ impl Config {
     }
 
     fn forget_device(&mut self, device: &DeviceId) {
+        self.forget_device_shortcuts(device);
         for scene in &mut self.scenes {
             scene.steps.retain(|s| &s.device != device);
         }
