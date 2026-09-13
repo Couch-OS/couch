@@ -321,11 +321,11 @@ impl Controller {
     }
 }
 /// The Sonos speaker on this row of the open room, if that is what it is. Rows
-/// follow the room's device order, as the light controller already relies on.
+/// are the room's pinned activities then its devices, as the light controller lays them out.
 fn target(app: &App, index: usize) -> Option<Target> {
     let config = crate::connections::config()?;
-    let room = config.room(&couch_model::Id::new(app.get_light_room_id().as_str()))?;
-    let device = room.devices.get(index)?;
+    let room = couch_model::Id::new(app.get_light_room_id().as_str());
+    let device = crate::lights::device_at(&config, &room, index)?;
     match config.resolve_integration(&device.integration)? {
         couch_model::Integration::Sonos { host } => Some(Target {
             id: device.id.to_string(),
@@ -659,11 +659,13 @@ mod tests {
                 {"id":"s","name":"S","provider":{"kind":"sonos","host":"192.0.2.9"}}],
             "rooms":[{"id":"den","name":"Den","devices":[
                 {"id":"lamp","name":"Lamp","kind":"light","integration":{"via":"hue","light_id":"1"}},
-                {"id":"speaker","name":"Den Sonos","kind":"speaker","integration":{"via":"connection","connection_id":"s"}}]}]
+                {"id":"speaker","name":"Den Sonos","kind":"speaker","integration":{"via":"connection","connection_id":"s"}}]}],
+            "activities":[{"id":"radio","name":"Radio","room":"den"}]
         })).unwrap();
-        let room = config.room(&couch_model::Id::new("den")).unwrap();
+        let room = couch_model::Id::new("den");
+        // Row 0 is the pinned activity; the devices follow in room order.
         let sonos = |index: usize| {
-            room.devices.get(index).and_then(|d| {
+            crate::lights::device_at(&config, &room, index).and_then(|d| {
                 match config.resolve_integration(&d.integration)? {
                     couch_model::Integration::Sonos { host } => Some((d.name.clone(), host)),
                     _ => None,
@@ -671,7 +673,8 @@ mod tests {
             })
         };
         assert_eq!(sonos(0), None);
-        assert_eq!(sonos(1), Some(("Den Sonos".into(), "192.0.2.9".into())));
-        assert_eq!(sonos(2), None);
+        assert_eq!(sonos(1), None);
+        assert_eq!(sonos(2), Some(("Den Sonos".into(), "192.0.2.9".into())));
+        assert_eq!(sonos(3), None);
     }
 }

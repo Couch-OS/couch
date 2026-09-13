@@ -416,6 +416,9 @@ main {
   min-width:36px;
   min-height:40px;
 }
+.device-head { display:flex; gap:12px; align-items:flex-start; }
+.device-head > div { min-width:0; flex:1; }
+.device-head h3 { margin-top:2px; }
 .device summary {
   cursor:pointer;
   display:flex;
