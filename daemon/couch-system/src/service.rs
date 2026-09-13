@@ -223,6 +223,18 @@ fn handle_updates(
             reply
         }
         Request::Network => network_session(stream),
+        Request::Power { action } => {
+            // Answer first: the reply is the menu's cue to show what is
+            // happening, and nothing after busybox takes over would send it.
+            protocol::write(&Reply::Done(Ok(())), &mut stream)?;
+            std::thread::sleep(Duration::from_secs(1));
+            if let Err(error) =
+                couch_system::power::perform(action, std::path::Path::new(couch_system::power::BCB))
+            {
+                eprintln!("couch-system: power {action:?}: {error}");
+            }
+            Ok(())
+        }
         Request::Hotspot => protocol::write(&Reply::Done(helper("portal.sh")), &mut stream),
         Request::SshAuto => protocol::write(&Reply::Done(crate::access::ssh_auto()), &mut stream),
         Request::Ssh { enabled } => {

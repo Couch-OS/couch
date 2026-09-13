@@ -297,6 +297,16 @@ export component App inherits Window {
     callback update-install();
     callback update-restart();
     callback update-channel-step(int);
+    // Network and Power sections of the settings menu.
+    in-out property <string> net-address;
+    in-out property <string> net-gateway;
+    in-out property <string> net-dns;
+    in-out property <string> net-mac;
+    in-out property <string> net-web;
+    in-out property <bool> power-busy: false;
+    in-out property <bool> power-armed: false;
+    in-out property <string> power-message;
+    callback power-action(int);
     // A brief message, e.g. Wi-Fi progress. Non-empty shows it; the host clears it.
     in-out property <string> toast: "";
     in-out property <bool> feedback-enabled: true;
@@ -315,7 +325,8 @@ export component App inherits Window {
     in-out property <image> wifi-setup-qr;
     in-out property <bool> wifi-setup-has-qr: false;
     callback setting-toggle-ssh();
-    // Which tier the settings menu shows (0 root, 1 display, 2 wifi, 3 ssh),
+    // Which tier the settings menu shows (0 root, 1 display, 2 wifi, 3 ssh,
+    // 4 updates, 5 network, 6 power),
     // owned here so the host can slide between them. Enter and leave are asks.
     in-out property <int> settings-panel: 0;
     callback settings-enter(int);
@@ -604,6 +615,15 @@ export component App inherits Window {
         update-ready: root.update-ready;
         update-armed: root.update-armed;
         update-message: root.update-message;
+        net-address: root.net-address;
+        net-gateway: root.net-gateway;
+        net-dns: root.net-dns;
+        net-mac: root.net-mac;
+        net-web: root.net-web;
+        power-busy: root.power-busy;
+        power-armed: root.power-armed;
+        power-message: root.power-message;
+        power-action(row) => { root.power-action(row); }
         update-check => { root.update-check(); }
         update-install => { root.update-install(); }
         update-restart => { root.update-restart(); }

@@ -43,6 +43,15 @@ retains its journal for recovery. An interrupted service recovers the recorded
 trial when the next network worker starts. Read-only RSSI/status polling remains
 shared library code and does not grant the GUI mutation authority.
 
+## Power
+
+`Power { action: off | restart | recovery }` is answered with `Done(Ok)` and
+performed a second later: `busybox sync`, then `poweroff -f` or `reboot -f`.
+`recovery` first writes the 512-byte `boot-recovery` block init itself arms
+into the first sector of the bootloader control block (`/dev/mmcblk0p10`), so
+the next boot is the recovery image, once. It is a system operation like the
+others: refused while another (an update, a network trial) holds the gate.
+
 ## Recovery portal and SSH
 
 The portal's CGI files only execute the Rust HTTP adapter. Form decoding rejects
