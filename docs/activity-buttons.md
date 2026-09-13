@@ -53,6 +53,10 @@ remains unavailable until the built-in blaster can send codes.
   them to the source device. Missing references and unsupported commands are
   rejected before saving.
 
+On the home screen the shortcut and color keys are the area's
+[quick-access keys](area-shortcuts.md) instead; activity mappings apply only
+while the activity screen is open.
+
 Key names follow the [HA100 front-panel layout](https://www.sanytron.com/cdn/shop/files/A.2066.png).
 The four shortcut buttons above the colored keys were physically captured as
 Linux codes 62, 63, 64 and 65 (left to right). Other measured keys are recorded in

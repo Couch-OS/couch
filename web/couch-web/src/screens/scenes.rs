@@ -46,8 +46,10 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
         {room_assignment(app,config,scene)}
         {scene.hue.as_ref().map(|_|view!{<section class="card"><h2>"Hue scene"</h2><p>"This recalls the scene saved on your bridge. Edit its lighting in the Hue app."</p></section>})}
         <div hidden=scene.hue.is_some()>
-        <h2 class="section">"Device commands"</h2>
-        <p class="dim">"Add commands in the order they should run. For example, turn on the TV, then select its input. Command names depend on the integration; saving does not test or send them."</p>
+        {ui::section(
+            "Device commands",
+            Some("Add commands in the order they should run. For example, turn on the TV, then select its input. Command names depend on the integration; saving does not test or send them."),
+            view! {
         {scene.steps.is_empty().then(|| {
             ui::empty("This scene does nothing yet. Add a step below.")
         })}
@@ -77,7 +79,9 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
             scene.steps.push(action);
             for_add(scene);
         })}
-
+            }
+            .into_any(),
+        )}
         </div>
         <div class="pad"><button class="ghost" on:click=move |_| app.go(Route::Areas)>"Add this scene to an area →"</button></div>
         <div class="pad">

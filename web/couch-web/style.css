@@ -724,8 +724,12 @@ input[type=color] { width:100%; height:48px; padding:4px; border:1px solid var(-
 .command-option { display:flex; justify-content:space-between; text-align:left; gap:12px; width:100%; padding:13px 12px; min-height:44px; border:0; border-radius:8px; background:var(--card); color:var(--fg); font-size:14px; }
 .command-option:hover,.command-option:focus-visible { background:var(--bg); color:var(--accent); }
 .command-empty { padding:20px 8px; }
+/* Area quick-access keys: one slot per key, same slot and picker styling. */
+.shortcut-editor .mapping-columns,.shortcut-editor .mapping-row { grid-template-columns:minmax(130px,.8fr) minmax(0,2fr); }
+.command-option .dim { font-size:12px; }
 @media(max-width:650px) {
  .mapping-columns { display:none; }
+ .shortcut-editor .mapping-row { grid-template-columns:minmax(0,1fr); }
  .mapping-row { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; padding:12px; }
  .mapping-key { grid-column:1/-1; }
  .mapping-gesture { display:block; }
@@ -932,4 +936,129 @@ h2 .count,h3 .count {
 }
 .card .rows > .row:last-child {
   border-bottom:0;
+}
+
+/* ---------------------------------------------------------------------------
+   Sections. A heading and what it introduces share one bordered block, so a
+   page built from lists reads as a stack of blocks rather than one column of
+   text. The markup is <section class="block"><h2 class="section">…</h2>
+   <p class="dim">…</p> …rows, add-rows, creation panels…</section>, which is
+   what ui::section() renders. A bare h2.section (no .block) still works as a
+   label above self-contained cards, as on the overview.
+   --------------------------------------------------------------------------- */
+.block {
+  display:block;
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:14px;
+  margin:16px 0;
+  padding:22px;
+  min-width:0;
+}
+.block > :first-child {
+  margin-top:0;
+}
+.block > :last-child {
+  margin-bottom:0;
+}
+/* One heading scale for every container title: section headings, card titles
+   and creation-panel titles all sit a clear step above 16px row titles and
+   the 14px dim copy under them. */
+.section,.card > h2:first-child,.creation > h2:first-child {
+  font-size:20px;
+  font-weight:650;
+  letter-spacing:-.01em;
+  line-height:1.3;
+}
+.section {
+  margin:34px 0 14px;
+}
+.section + .dim,.section + p.dim {
+  margin:-6px 0 18px;
+  font-size:14px;
+  line-height:1.6;
+  max-width:720px;
+}
+.block > .section {
+  margin:0 0 14px;
+}
+.block > .section + .dim {
+  margin:-8px 0 16px;
+}
+.block > .dim:first-child {
+  margin:0 0 14px;
+}
+/* Rows end at the block, not at a rule, and the add-controls that follow a
+   list are set off from it by one rule and a breath of space. */
+.block .rows > .row:last-child {
+  border-bottom:0;
+}
+.block .rows > .row:first-child {
+  padding-top:4px;
+}
+.block > .empty {
+  margin:0;
+}
+.block .add-row {
+  padding:16px 0 0;
+}
+.block > .rows:not(:empty) + .add-row,.block > .empty + .add-row,.block > .rows:not(:empty) + .creation,.block > .empty + .creation {
+  margin-top:14px;
+  border-top:1px solid var(--line);
+}
+.block > .creation {
+  margin:18px 0 0;
+}
+.block > .rows:not(:empty) + .creation,.block > .empty + .creation {
+  padding-top:20px;
+  border-radius:0 0 14px 14px;
+}
+.block > .add-row + .add-row {
+  padding-top:10px;
+}
+.block > .add-row + .creation {
+  margin-top:16px;
+}
+/* Cards inside a block are tinted, as nested cards already are, so a list of
+   device cards reads as items of the block rather than as more blocks. */
+.block .card {
+  background:#fafaf6;
+  margin:14px 0 0;
+}
+.block > .rows > .card:first-child,.block > .empty + .rows > .card:first-child {
+  margin-top:0;
+}
+/* A scene step's command box was taking the whole row - the generic text
+   input width beat .command's - and pushing the device name into a sliver. */
+.row.step input.command {
+  width:9rem;
+  flex:0 0 9rem;
+}
+/* The delete control at the foot of a detail page, with its caveat, is a
+   danger zone like the one on connection pages rather than loose text. */
+.pad:has(> .danger) {
+  margin-top:24px;
+  padding:18px 22px;
+  background:var(--card);
+  border:1px solid #e5c3bf;
+  border-radius:14px;
+}
+.pad:has(> .danger) > .dim {
+  margin:12px 0 0;
+  max-width:720px;
+}
+@media(max-width:760px) {
+  .block {
+    padding:18px;
+  }
+  .section {
+    margin-top:28px;
+  }
+  .row.step input.command {
+    width:auto;
+    flex:1 1 110px;
+  }
+  .pad:has(> .danger) {
+    padding:16px 18px;
+  }
 }

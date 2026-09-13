@@ -8,6 +8,7 @@
 pub mod updates;
 pub mod activities;
 mod activity_buttons;
+mod area_shortcuts;
 mod activity_sequences;
 pub mod areas;
 mod home_assistant;

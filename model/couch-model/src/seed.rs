@@ -40,6 +40,7 @@ fn area(id: &str, name: &str, rooms: &[&str], scenes: &[&str], activities: &[&st
         rooms: rooms.iter().map(|r| Id::new(*r)).collect(),
         scenes: scenes.iter().map(|s| Id::new(*s)).collect(),
         activities: activities.iter().map(|a| Id::new(*a)).collect(),
+        shortcuts: Vec::new(),
     }
 }
 

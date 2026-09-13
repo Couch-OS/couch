@@ -214,6 +214,7 @@ JSON. `{id}` is a slug like `living-room`.
 | `PUT`    | `/api/areas/{id}/activities`           | replace/reorder the activity strip |
 | `POST`   | `/api/areas/{id}/activities`           | `{activity}` to attach, or `{name, room, kind?, source?}` to create and attach |
 | `DELETE` | `/api/areas/{id}/activities/{act}`     | take it off this area's strip |
+| `PUT`    | `/api/areas/{id}/shortcuts`            | `[{button, action}, ...]` - what the shortcut and color keys reach on this page, see [quick-access keys](area-shortcuts.md) |
 | `GET`    | `/api/rooms`                           | every room in the house |
 | `POST`   | `/api/rooms`                           | `{name, icon?}` |
 | `GET`    | `/api/rooms/{id}`                      | one room, with its devices |

@@ -3,7 +3,11 @@ use crate::{LiveActivity, RoomRow, SceneCell};
 use couch_model::{Config, Id};
 use std::path::PathBuf;
 pub struct Area {
+    /// The configured area, or `None` for the synthetic ALL ROOMS page.
+    pub id: Option<Id>,
     pub name: String,
+    /// What the shortcut and color keys reach on this page.
+    pub shortcuts: Vec<couch_model::Shortcut>,
     pub activities: Vec<LiveActivity>,
     pub activity_ids: Vec<Id>,
     pub rooms: Vec<RoomRow>,
@@ -29,11 +33,13 @@ pub fn read(previous: &str) -> Option<(String, Vec<Area>, [u8; 3])> {
     let config=&snapshot.config;
     Some((raw, project(config), config.appearance.rgb()?))
 }
-fn project(config: &Config) -> Vec<Area> {
-    let make = |name: String, ids: Vec<Id>, scene_ids: Vec<Id>, activity_ids: Vec<Id>| {
+pub(crate) fn project(config: &Config) -> Vec<Area> {
+    let make = |id: Option<Id>, name: String, ids: Vec<Id>, scene_ids: Vec<Id>, activity_ids: Vec<Id>, shortcuts: Vec<couch_model::Shortcut>| {
         let rooms: Vec<_> = ids.iter().filter_map(|id| config.room(id)).collect();
         Area {
+            id,
             name,
+            shortcuts,
             activities: activity_ids.iter().filter_map(|id| config.activities.iter().find(|a| &a.id==id)).map(|a|LiveActivity {
                 kind:a.kind.glyph_index(),title:a.name.as_str().into(),source:a.source.as_ref().and_then(|id|config.devices().find(|(_,d)|&d.id==id).map(|(_,d)|d.name.as_str())).unwrap_or("Choose a source").into(),
                 place:config.room(&a.room).map(|r|r.name.as_str()).unwrap_or("").into(),
@@ -82,13 +88,15 @@ fn project(config: &Config) -> Vec<Area> {
     let mut areas: Vec<_> = config
         .areas
         .iter()
-        .map(|a| make(a.name.clone(), a.rooms.clone(), a.scenes.clone(), a.activities.clone()))
+        .map(|a| make(Some(a.id.clone()), a.name.clone(), a.rooms.clone(), a.scenes.clone(), a.activities.clone(), a.shortcuts.clone()))
         .collect();
     areas.push(make(
+        None,
         "ALL ROOMS".into(),
         config.rooms.iter().map(|r| r.id.clone()).collect(),
         config.scenes.iter().map(|s| s.id.clone()).collect(),
         config.activities.iter().map(|a| a.id.clone()).collect(),
+        Vec::new(),
     ));
 
     areas
@@ -127,6 +135,8 @@ mod tests {
         config.areas[0].rooms.reverse();
         let areas = project(&config);
         assert_eq!(areas[0].name, config.areas[0].name);
+        assert_eq!(areas[0].id.as_ref(), Some(&config.areas[0].id));
+        assert!(areas.last().unwrap().id.is_none());
         assert_eq!(areas[0].room_ids, config.areas[0].rooms);
         assert_eq!(areas.last().unwrap().room_ids.len(), config.rooms.len());
     }

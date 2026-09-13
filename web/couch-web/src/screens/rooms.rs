@@ -69,16 +69,20 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
             </p>
         </section>
 
-        <h2 class="section">
-            "Devices" <span class="count">{counts(&[(room.devices.len(), "device", "devices")])}</span>
-        </h2>
-        {room.devices.is_empty().then(|| ui::empty("No devices here yet."))}
-        <ul class="rows">
-            {room.devices
-                .iter()
-                .map(|device| device_card(app, &id, device))
-                .collect_view()}
-        </ul>
+        {ui::section(
+            view! { "Devices" <span class="count">{counts(&[(room.devices.len(), "device", "devices")])}</span> },
+            None,
+            view! {
+                {room.devices.is_empty().then(|| ui::empty("No devices here yet."))}
+                <ul class="rows">
+                    {room.devices
+                        .iter()
+                        .map(|device| device_card(app, &id, device))
+                        .collect_view()}
+                </ul>
+            }
+            .into_any(),
+        )}
         {room_scenes(app,config,&add_id)}
         {room_activities(app,config,&add_id)}
         {super::device_picker::picker(app, config, &add_id)}
@@ -140,11 +144,12 @@ fn room_scenes(app: App, config: &Config, room: &Id) -> AnyView {
         .iter()
         .filter(|s| s.rooms.contains(room))
         .collect();
-    view!{<h2 class="section">"Scenes" <span class="count">{scenes.len()}</span></h2>
-        <p class="dim">"Shown in the Scenes button at the bottom of this room on the remote."</p>
+    ui::section(view!{"Scenes" <span class="count">{scenes.len()}</span>},
+        Some("Shown in the Scenes button at the bottom of this room on the remote."),
+        view!{
         {scenes.is_empty().then(||ui::empty("No scenes here yet. Choose Hue scenes below to add one."))}
         <ul class="rows room-scenes">{scenes.into_iter().map(|scene|{let open=scene.id.clone();let name=scene.name.clone();let mut next=scene.clone();next.rooms.retain(|r|r!=room);view!{<li class="row"><button class="row-main" on:click=move |_|app.go(Route::Scene(open.clone()))><span class="row-title">{name}</span></button><button class="ghost" disabled=move ||app.busy.get() on:click=move |_|app.run(api::put(format!("/api/scenes/{}",next.id),next.clone()))>"Remove from room"</button></li>}}).collect_view()}</ul>
-    }.into_any()
+    }.into_any())
 }
 
 fn room_activities(app: App, config: &Config, room: &Id) -> AnyView {
@@ -162,7 +167,7 @@ fn room_activities(app: App, config: &Config, room: &Id) -> AnyView {
     let create_room = room.clone();
     let move_room = room.clone();
     view! {
-        <section class="room-activities">
+        <section class="room-activities block">
             <h2 class="section">"Activities" <span class="count">{here.len()}</span></h2>
             <p class="dim">"Activities belong to a room and can also appear in areas. Open one to choose its source device and startup commands."</p>
             <ul class="rows">{here.into_iter().map(|activity| {
