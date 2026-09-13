@@ -9,6 +9,9 @@ export component VolumeOverlay inherits Rectangle {
     in property <bool> shown;
     in property <bool> percentage: false;
     in property <bool> meter: true;
+    // Optional artwork (a track's cover) beside the text.
+    in property <image> art;
+    in property <bool> has-art: false;
     height: 140px;
     background: transparent;
     property <float> reveal: root.shown ? 1 : 0;
@@ -22,8 +25,13 @@ export component VolumeOverlay inherits Rectangle {
         border-width: 1px;
         border-color: Theme.border-raised;
         border-radius: Theme.r-overlay;
+        if root.has-art: Image {
+            x: parent.width - 18px - 84px; y: 18px; width: 84px; height: 84px;
+            source: root.art; image-fit: cover;
+        }
         VerticalLayout {
             padding: 18px;
+            padding-right: root.has-art ? 18px + 84px + 14px : 18px;
             spacing: 9px;
             HorizontalLayout {
                 spacing: 12px;

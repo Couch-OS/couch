@@ -38,6 +38,8 @@ struct Card {
     name: String,
     caption: String,
     volume: Option<u8>,
+    /// The track's cover, decoded small, when a skip landed on a track.
+    art: Option<crate::activity_art::Pixels>,
 }
 enum Input {
     /// A physical key on a highlighted row: (row, command, repeat).
@@ -120,6 +122,13 @@ impl Controller {
         app.set_sonos_feedback_caption(card.caption.as_str().into());
         app.set_sonos_feedback_meter(card.volume.is_some());
         app.set_sonos_feedback_volume(i32::from(card.volume.unwrap_or(0)));
+        match card.art {
+            Some(pixels) => {
+                app.set_sonos_feedback_art(crate::activity_art::slint_image(pixels));
+                app.set_sonos_feedback_has_art(true);
+            }
+            None => app.set_sonos_feedback_has_art(false),
+        }
         app.set_sonos_feedback_shown(true);
         self.card_until = Some(Instant::now() + for_);
     }
@@ -218,6 +227,7 @@ impl Controller {
                             name,
                             caption: "Finding Sonos sources…".into(),
                             volume: None,
+                            art: None,
                         },
                         SEARCH_CARD,
                     );
@@ -235,6 +245,7 @@ impl Controller {
                             name: source.name.clone(),
                             caption: format!("Starting on {}…", target.name),
                             volume: None,
+                            art: None,
                         },
                         SEARCH_CARD,
                     );
@@ -263,6 +274,7 @@ impl Controller {
                                 name: "Add favourites in the Sonos app".into(),
                                 caption: format!("No sources for {}", target.name),
                                 volume: None,
+                                art: None,
                             },
                             ERROR_CARD,
                         );
@@ -421,6 +433,7 @@ fn run(
             name: name.clone(),
             caption,
             volume,
+            art: None,
         })
     };
     Ok(match &request.op {
@@ -441,15 +454,31 @@ fn run(
         }
         Op::Skip(next) => {
             client.command_if_current(if *next { "next" } else { "previous" }, current)?;
-            card(
-                if *next {
-                    "Next track"
-                } else {
-                    "Previous track"
+            let caption = if *next { "Next track" } else { "Previous track" };
+            // Say what we landed on: the track and its cover, when the group
+            // reports one. A skip that lands nowhere still gets its card.
+            match client.now_playing().ok().and_then(|n| n.current) {
+                Some(track) => {
+                    let art = (!track.image_url.is_empty())
+                        .then(|| client.artwork(&track.image_url).ok())
+                        .flatten()
+                        .and_then(|bytes| {
+                            crate::activity_art::decode(&bytes, crate::activity_art::Shape::Thumbnail)
+                        });
+                    let by = line(&track.artist, &track.album);
+                    Answer::Card(Card {
+                        name: track.name,
+                        caption: if by.is_empty() {
+                            format!("{caption} · {name}")
+                        } else {
+                            format!("{caption} · {by}")
+                        },
+                        volume: None,
+                        art,
+                    })
                 }
-                .into(),
-                None,
-            )
+                None => card(caption.into(), None),
+            }
         }
         Op::Sources => {
             if !current() {
@@ -463,6 +492,7 @@ fn run(
                 name: label.clone(),
                 caption: format!("Playing on {name}"),
                 volume: None,
+                art: None,
             })
         }
     })
@@ -487,6 +517,16 @@ fn describe(name: &str, error: couch_sonos::Error) -> Card {
         name: line,
         caption,
         volume: None,
+        art: None,
+    }
+}
+/// "Artist · Album", or whichever of the two the player gave.
+fn line(artist: &str, album: &str) -> String {
+    match (artist.is_empty(), album.is_empty()) {
+        (false, false) if artist != album => format!("{artist} · {album}"),
+        (false, _) => artist.to_owned(),
+        (true, false) => album.to_owned(),
+        (true, true) => String::new(),
     }
 }
 #[cfg(test)]

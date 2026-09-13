@@ -40,14 +40,21 @@ export component Cinema inherits Rectangle {
     property <int> displayed-panel: 0;
     in property <string> panel-detail;
     in property <[PlayerChoice]> choices;
+    // A music player (Sonos): track skips instead of time skips, sources,
+    // play modes and up-next instead of chapters, audio and subtitles, and
+    // the D-pad moves an on-screen selection because there is no player UI
+    // on a TV to send it to.
+    in property <bool> music;
+    in property <[string]> sheets: ["Chapters","Audio","Subtitles"];
     callback action(string,float);
-    property <int> selected:-1;
+    in-out property <int> selected:-1;
     property <int> choice-index:0;
     property <float> seek-preview:0;
     property <length> list-scroll:max(0,root.choice-index - 4)*84px;
     animate list-scroll { duration:160ms; easing:ease-out; }
     changed panel=>{if(root.panel>0){root.choice-index=0;root.displayed-panel=root.panel;}}
-    changed shown=>{root.selected=-1;}
+    changed shown=>{if(!root.music){root.selected=-1;}}
+    public function set-choice(i: int){ root.choice-index=max(0,min(root.choices.length - 1,i)); }
     public function take-focus(){ keys.focus(); }
     background:#111311;
     if root.has-art: Image { source:root.fanart; width:parent.width;height:parent.height;image-fit:cover; }
@@ -72,10 +79,15 @@ export component Cinema inherits Rectangle {
             pointer-event(e)=>{if(e.kind==PointerEventKind.down){root.seek-preview=max(0,min(100,self.mouse-x/self.width*100));}if(e.kind==PointerEventKind.up){root.action("seek",root.seek-preview);}}
             moved=>{if(self.pressed){root.seek-preview=max(0,min(100,self.mouse-x/self.width*100));}}
         }
-        Control {x:38px;y:93px;width:70px;height:70px;icon:@image-url("../../../../assets/lucide/rotate-ccw.svg");label:"10s";enabled:root.can-seek;selected:root.selected==2;activate=>{root.action("skip",-10);}}
+        if !root.music: Control {x:38px;y:93px;width:70px;height:70px;icon:@image-url("../../../../assets/lucide/rotate-ccw.svg");label:"10s";enabled:root.can-seek;selected:root.selected==2;activate=>{root.action("skip",-10);}}
+        if root.music: Control {x:38px;y:93px;width:70px;height:70px;icon:@image-url("../../../../assets/lucide/skip-back.svg");selected:root.selected==2;activate=>{root.action("previous",0);}}
         Control {x:(parent.width - 88px)/2;y:84px;width:88px;height:88px;primary:true;icon:root.paused ? @image-url("../../../../assets/lucide/play.svg") : @image-url("../../../../assets/lucide/pause.svg");selected:root.selected==3;activate=>{root.action("play",0);}}
-        Control {x:parent.width - 108px;y:93px;width:70px;height:70px;icon:@image-url("../../../../assets/lucide/rotate-cw.svg");label:"30s";enabled:root.can-seek;selected:root.selected==4;activate=>{root.action("skip",30);}}
-        for label[i] in ["Chapters","Audio","Subtitles"]: Control {x:i*(parent.width+10px)/3;y:198px;width:(parent.width - 20px)/3;height:76px;label:label;selected:root.selected==i+5;icon:i==0 ? @image-url("../../../../assets/lucide/list-video.svg") : i==1 ? @image-url("../../../../assets/lucide/audio-lines.svg") : @image-url("../../../../assets/lucide/captions.svg");activate=>{root.action(i==0 ? "chapters" : i==1 ? "audio" : "subtitles",0);}}
+        if !root.music: Control {x:parent.width - 108px;y:93px;width:70px;height:70px;icon:@image-url("../../../../assets/lucide/rotate-cw.svg");label:"30s";enabled:root.can-seek;selected:root.selected==4;activate=>{root.action("skip",30);}}
+        if root.music: Control {x:parent.width - 108px;y:93px;width:70px;height:70px;icon:@image-url("../../../../assets/lucide/skip-forward.svg");selected:root.selected==4;activate=>{root.action("next",0);}}
+        for label[i] in root.sheets: Control {x:i*(parent.width+10px)/3;y:198px;width:(parent.width - 20px)/3;height:76px;label:label;selected:root.selected==i+5;
+            icon:root.music ? (i==0 ? @image-url("../../../../assets/lucide/list-music.svg") : i==1 ? @image-url("../../../../assets/lucide/shuffle.svg") : @image-url("../../../../assets/lucide/list-ordered.svg"))
+                : (i==0 ? @image-url("../../../../assets/lucide/list-video.svg") : i==1 ? @image-url("../../../../assets/lucide/audio-lines.svg") : @image-url("../../../../assets/lucide/captions.svg"));
+            activate=>{root.action(i==0 ? "chapters" : i==1 ? "audio" : "subtitles",0);}}
     }
     if !root.ready: Rectangle {x:36px;y:220px;width:parent.width - 72px;height:310px;background:transparent;
         Text {text:root.title;width:parent.width;height:170px;wrap:word-wrap;font-size:27px;color:#f1f2eb;horizontal-alignment:center;vertical-alignment:center;}
@@ -89,7 +101,7 @@ export component Cinema inherits Rectangle {
         // Explicit bounds keep projected children relative to the inset surface.
         Rectangle { x: Theme.overlay-inset; y: tray.content-y; width: tray.content-width; height: tray.content-height;
             TouchArea { }
-            Text {x:28px;y:26px;text:root.displayed-panel==1 ? "Chapters" : root.displayed-panel==2 ? "Audio" : root.displayed-panel==3 ? "Subtitles" : "TV controls";font-size:28px;color:#ffffff;}
+            Text {x:28px;y:26px;text:root.displayed-panel>=1 && root.displayed-panel<=3 ? root.sheets[root.displayed-panel - 1] : "TV controls";font-size:28px;color:#ffffff;}
             Control {x:parent.width - 76px;y:18px;width:48px;height:48px;icon:@image-url("../../../../assets/lucide/x.svg");activate=>{root.action("back",0);}}
             if root.panel-detail!="" && root.displayed-panel<4: Text {x:28px;y:110px;width:parent.width - 56px;height:250px;wrap:word-wrap;font-size:21px;color:#c0c7bc;text:root.panel-detail;}
             if root.displayed-panel<4: Rectangle {x:28px;y:105px;width:parent.width - 56px;height:412px;clip:true;background:transparent;
@@ -107,6 +119,18 @@ export component Cinema inherits Rectangle {
     }
     keys:=FocusScope {enabled:root.shown;
         key-pressed(e)=>{
+            // A music player's sheet is a list on this screen: the D-pad
+            // walks it and OK picks, instead of going to a remote player.
+            if(root.music && root.panel>0){
+                if(e.text==Key.UpArrow){root.choice-index=max(0,root.choice-index - 1);}
+                if(e.text==Key.DownArrow){root.choice-index=min(max(0,root.choices.length - 1),root.choice-index+1);}
+                if(e.text==Key.Return){root.action("choose",root.choice-index);}
+                if(e.text==Key.Escape){root.action("back",0);}
+                if(e.text==Key.Home){root.action("Input.Home",0);}
+                if(e.text==Key.F14){root.action("mute",0);}
+                if(e.text==Key.F23 || e.text==Key.F24){root.action("volume",e.text==Key.F23 ? 5 : -5);}
+                return accept;
+            }
             if(e.text==Key.UpArrow){root.action("Input.Up",0);}
             if(e.text==Key.DownArrow){root.action("Input.Down",0);}
             if(e.text==Key.LeftArrow){root.action("Input.Left",0);}

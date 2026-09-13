@@ -216,6 +216,11 @@ export component App inherits Window {
     in-out property <int> player-panel: 0;
     in-out property <string> player-panel-detail;
     in-out property <[PlayerChoice]> player-choices;
+    // Music-player presentation of the same screen (Sonos): see cinema.slint.
+    in-out property <bool> player-music: false;
+    in-out property <[string]> player-sheets: ["Chapters","Audio","Subtitles"];
+    in-out property <int> player-selected: -1;
+    public function set-player-choice(i: int){cinema.set-choice(i);}
     public function focus-player(){if(root.custom-activity-shown){custom-pages.take-focus();}else{cinema.take-focus();}}
     in-out property <bool> light-shown: false;
     in-out property <string> light-title;
@@ -242,6 +247,8 @@ export component App inherits Window {
     in-out property <string> sonos-feedback-caption;
     in-out property <int> sonos-feedback-volume: 0;
     in-out property <bool> sonos-feedback-meter: false;
+    in-out property <image> sonos-feedback-art;
+    in-out property <bool> sonos-feedback-has-art: false;
     in-out property <bool> scene-feedback-shown: false;
     in-out property <string> scene-feedback-name;
     in-out property <string> scene-feedback-status;
@@ -481,6 +488,7 @@ export component App inherits Window {
         metadata:root.player-metadata;elapsed:root.player-elapsed;remaining:root.player-remaining;
         progress:root.player-progress;message:root.player-message;
         panel:root.player-panel;panel-detail:root.player-panel-detail;choices:root.player-choices;
+        music:root.player-music;sheets:root.player-sheets;selected <=> root.player-selected;
         action(name,value)=>{root.player-action(name,value);}
     }
 
@@ -670,6 +678,8 @@ export component App inherits Window {
         caption: root.sonos-feedback-caption;
         value: root.sonos-feedback-volume;
         meter: root.sonos-feedback-meter;
+        art: root.sonos-feedback-art;
+        has-art: root.sonos-feedback-has-art;
         shown: root.sonos-feedback-shown && root.light-shown && !root.chooser-shown && !root.brightness-shown;
     }
     if root.dock-clock-shown: Rectangle {

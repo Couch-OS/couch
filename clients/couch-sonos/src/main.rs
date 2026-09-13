@@ -7,7 +7,7 @@ fn main() {
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage="Usage: couch-sonos discover | IPv4 [status|play|pause|play-pause|stop|next|previous|volume 0..100|mute|unmute|sources|source tv|line-in|favorite:ID|playlist:ID]";
+    let usage="Usage: couch-sonos discover | IPv4 [status|play|pause|play-pause|stop|next|previous|volume 0..100|mute|unmute|sources|source tv|line-in|favorite:ID|playlist:ID|now]";
     if args.first().map(String::as_str) == Some("discover") && args.len() == 1 {
         println!("{}", serde_json::to_string(&couch_sonos::discover()?)?);
         return Ok(());
@@ -53,7 +53,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "stop" => Some(Playback::Stop),
         "next" => Some(Playback::Next),
         "previous" => Some(Playback::Previous),
-        "status" | "volume" | "mute" | "unmute" | "sources" | "source" => None,
+        "status" | "volume" | "mute" | "unmute" | "sources" | "source" | "now" => None,
         _ => return Err(usage.into()),
     };
     // A configured key that cannot be a header is replaced by the placeholder,
@@ -75,6 +75,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "mute" => client.set_muted(true)?,
             "unmute" => client.set_muted(false)?,
             "source" => client.select_source(&source.unwrap())?,
+            "now" => {
+                println!("{}", serde_json::to_string(&client.snapshot()?)?);
+                return Ok(());
+            }
             "sources" => {
                 // One line per source: the argument `source` takes, then the row text.
                 for s in client.sources()? {

@@ -14,11 +14,20 @@ struct Job {
     fanart: String,
     logo: String,
 }
+/// Decoded artwork, ready to become a Slint image on the UI thread.
 #[derive(Clone)]
-struct Pixels {
+pub(crate) struct Pixels {
     width: u32,
     height: u32,
     data: Vec<u8>,
+}
+/// What an image is decoded into: the player backdrop with its legibility
+/// gradient pre-composed, a small logo, or a thumbnail for a feedback card.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Shape {
+    Backdrop,
+    Logo,
+    Thumbnail,
 }
 struct Reply {
     generation: u64,
@@ -75,9 +84,9 @@ fn fetch(host: &str, connection: &str, path: &str, logo: bool) -> Option<Pixels>
     if data.len() > 8 * 1024 * 1024 {
         return None;
     }
-    decode(&data, logo)
+    decode(&data, if logo { Shape::Logo } else { Shape::Backdrop })
 }
-fn decode(data: &[u8], logo: bool) -> Option<Pixels> {
+pub(crate) fn decode(data: &[u8], shape: Shape) -> Option<Pixels> {
     let mut reader = ImageReader::new(Cursor::new(data))
         .with_guessed_format()
         .ok()?;
@@ -90,14 +99,14 @@ fn decode(data: &[u8], logo: bool) -> Option<Pixels> {
     if u64::from(image.width()) * u64::from(image.height()) > 20_000_000 {
         return None;
     }
-    let image = if logo {
-        image.thumbnail(384, 140)
-    } else {
-        image.resize_to_fill(480, 800, image::imageops::FilterType::Triangle)
+    let image = match shape {
+        Shape::Logo => image.thumbnail(384, 140),
+        Shape::Thumbnail => image.resize_to_fill(112, 112, image::imageops::FilterType::Triangle),
+        Shape::Backdrop => image.resize_to_fill(480, 800, image::imageops::FilterType::Triangle),
     };
     let (width, height) = image.dimensions();
     let mut rgba = image.to_rgba8();
-    if !logo {
+    if shape == Shape::Backdrop {
         // Pre-compose the legibility gradient once, instead of blending a full
         // wallpaper every time the one-second progress label changes.
         for (_, y, pixel) in rgba.enumerate_pixels_mut() {
@@ -115,7 +124,7 @@ fn decode(data: &[u8], logo: bool) -> Option<Pixels> {
         data: rgba.into_raw(),
     })
 }
-fn slint_image(p: Pixels) -> slint::Image {
+pub(crate) fn slint_image(p: Pixels) -> slint::Image {
     slint::Image::from_rgba8(
         slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&p.data, p.width, p.height),
     )
@@ -184,6 +193,7 @@ mod tests {
     use super::*;
     #[test]
     fn malformed_art_is_a_fallback() {
-        assert!(decode(b"not an image", false).is_none());
+        assert!(decode(b"not an image", Shape::Backdrop).is_none());
+        assert!(decode(b"not an image", Shape::Thumbnail).is_none());
     }
 }
