@@ -1,7 +1,8 @@
 //! Sonos from the room list. While a speaker row is highlighted, the volume keys
 //! set its volume, Mute toggles mute, the channel keys skip tracks and Menu
 //! opens a source picker, all without leaving the room. Every network call runs
-//! on one worker thread; the UI thread only ever sees short toasts.
+//! on one worker thread; the UI thread only ever sees the feedback card, the
+//! same large card brightness and scene changes use.
 use crate::{App, ChoiceItem};
 use couch_sonos::{Client, Source, SourceId};
 use slint::{ModelRc, VecModel};
@@ -14,6 +15,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         mpsc, Arc,
     },
+    time::{Duration, Instant},
 };
 
 /// The chooser title the source picker is shown under; `on_chosen` routes by it.
@@ -24,11 +26,18 @@ const VOLUME_STEP: i8 = 2;
 /// The most a coalesced hold may move the volume in one request.
 const VOLUME_BURST: i8 = 20;
 
-/// What the main loop does with the outcome: show a toast, or slide the chooser
-/// in (its rows and title are already set by then).
-pub enum Feedback {
-    Toast(String, u64),
-    OpenChooser,
+/// How long each card stays up once nothing newer replaces it.
+const VOLUME_CARD: Duration = Duration::from_millis(1500);
+const CARD: Duration = Duration::from_secs(2);
+const ERROR_CARD: Duration = Duration::from_secs(4);
+const SEARCH_CARD: Duration = Duration::from_secs(8);
+
+/// One feedback card: the bold line, the caption above it, and a volume
+/// level when there is a meter to draw.
+struct Card {
+    name: String,
+    caption: String,
+    volume: Option<u8>,
 }
 enum Input {
     /// A physical key on a highlighted row: (row, command, repeat).
@@ -55,17 +64,19 @@ struct Request {
     op: Op,
 }
 enum Answer {
-    Message(String),
+    Card(Card),
     Sources(Target, Vec<Source>),
 }
 pub struct Controller {
     input: Rc<RefCell<VecDeque<Input>>>,
     physical_repeat: Rc<Cell<bool>>,
     tx: mpsc::Sender<Request>,
-    rx: mpsc::Receiver<(u64, Result<Answer, String>)>,
+    rx: mpsc::Receiver<(u64, Result<Answer, Card>)>,
     active: Arc<AtomicU64>,
     generation: u64,
     room: String,
+    /// When the card on screen goes away by itself.
+    card_until: Option<Instant>,
     /// The sources the open chooser lists, in row order.
     offered: Option<(Target, Vec<Source>)>,
     /// The chooser was asked for and has not been seen open yet.
@@ -98,9 +109,23 @@ impl Controller {
             active,
             generation: 0,
             room: String::new(),
+            card_until: None,
             offered: None,
             chooser_pending: false,
         }
+    }
+    fn show(&mut self, app: &App, card: Card, for_: Duration) {
+        app.set_feedback_enabled(true);
+        app.set_sonos_feedback_name(card.name.as_str().into());
+        app.set_sonos_feedback_caption(card.caption.as_str().into());
+        app.set_sonos_feedback_meter(card.volume.is_some());
+        app.set_sonos_feedback_volume(i32::from(card.volume.unwrap_or(0)));
+        app.set_sonos_feedback_shown(true);
+        self.card_until = Some(Instant::now() + for_);
+    }
+    fn hide(&mut self, app: &App) {
+        self.card_until = None;
+        app.set_sonos_feedback_shown(false);
     }
     /// Slint synthesizes a release after each press; keep the physical repeat
     /// flag only for the duration of this dispatch, like the other controllers.
@@ -132,20 +157,30 @@ impl Controller {
             op,
         });
     }
-    pub fn poll(&mut self, app: &App) -> Vec<Feedback> {
-        let mut feedback = Vec::new();
+    /// Returns true when the source chooser should be slid in: its rows and
+    /// title are set by then.
+    pub fn poll(&mut self, app: &App) -> bool {
+        let mut open_chooser = false;
         let room = app.get_light_room_id().to_string();
         if !app.get_light_shown() || room != self.room {
             self.room = room;
             if self.generation != 0 || !self.input.borrow().is_empty() || self.offered.is_some() {
                 self.invalidate();
             }
-            if !app.get_light_shown() {
-                return feedback;
+            if self.card_until.is_some() {
+                self.hide(app);
             }
+            if !app.get_light_shown() {
+                return false;
+            }
+        }
+        if self.card_until.is_some_and(|until| Instant::now() >= until) {
+            self.hide(app);
         }
         if self.chooser_pending && app.get_chooser_shown() {
             self.chooser_pending = false;
+            // The list is on screen; the "finding" card has done its job.
+            self.hide(app);
         } else if self.offered.is_some()
             && !self.chooser_pending
             && (!app.get_chooser_shown() || app.get_chooser_title() != CHOOSER_TITLE)
@@ -175,8 +210,17 @@ impl Controller {
                     let Some(target) = target(app, index as usize) else {
                         continue;
                     };
+                    let name = target.name.clone();
                     self.send(target, Op::Sources);
-                    feedback.push(Feedback::Toast("Finding Sonos sources…".into(), 6));
+                    self.show(
+                        app,
+                        Card {
+                            name,
+                            caption: "Finding Sonos sources…".into(),
+                            volume: None,
+                        },
+                        SEARCH_CARD,
+                    );
                 }
                 Input::Choose(index) => {
                     let Some((target, sources)) = self.offered.take() else {
@@ -185,7 +229,15 @@ impl Controller {
                     let Some(source) = sources.get(index) else {
                         continue;
                     };
-                    feedback.push(Feedback::Toast(format!("Starting {}…", source.name), 6));
+                    self.show(
+                        app,
+                        Card {
+                            name: source.name.clone(),
+                            caption: format!("Starting on {}…", target.name),
+                            volume: None,
+                        },
+                        SEARCH_CARD,
+                    );
                     self.send(target, Op::Select(source.id.clone(), source.name.clone()));
                 }
             }
@@ -195,17 +247,25 @@ impl Controller {
                 continue;
             }
             match answer {
-                Ok(Answer::Message(message)) => {
-                    if !message.is_empty() {
-                        feedback.push(Feedback::Toast(message, 2));
-                    }
+                Ok(Answer::Card(card)) => {
+                    let for_ = if card.volume.is_some() {
+                        VOLUME_CARD
+                    } else {
+                        CARD
+                    };
+                    self.show(app, card, for_);
                 }
                 Ok(Answer::Sources(target, sources)) => {
                     if sources.is_empty() {
-                        feedback.push(Feedback::Toast(
-                            "No Sonos sources: add favourites in the Sonos app".into(),
-                            4,
-                        ));
+                        self.show(
+                            app,
+                            Card {
+                                name: "Add favourites in the Sonos app".into(),
+                                caption: format!("No sources for {}", target.name),
+                                volume: None,
+                            },
+                            ERROR_CARD,
+                        );
                         continue;
                     }
                     // The room must still be up and own the screen; a list
@@ -240,12 +300,12 @@ impl Controller {
                     app.set_chooser_index(0);
                     self.offered = Some((target, sources));
                     self.chooser_pending = true;
-                    feedback.push(Feedback::OpenChooser);
+                    open_chooser = true;
                 }
-                Err(error) => feedback.push(Feedback::Toast(error, 4)),
+                Err(card) => self.show(app, card, ERROR_CARD),
             }
         }
-        feedback
+        open_chooser
     }
 }
 /// The Sonos speaker on this row of the open room, if that is what it is. Rows
@@ -277,7 +337,7 @@ fn operation(command: &str, repeat: bool) -> Option<Op> {
 }
 fn worker(
     rx: mpsc::Receiver<Request>,
-    reply: mpsc::Sender<(u64, Result<Answer, String>)>,
+    reply: mpsc::Sender<(u64, Result<Answer, Card>)>,
     active: Arc<AtomicU64>,
 ) {
     let mut cached: Option<(Ipv4Addr, Client)> = None;
@@ -313,7 +373,11 @@ fn worker(
             continue;
         }
         let current = || active.load(Ordering::SeqCst) == request.generation;
-        let result = perform(&mut cached, &request, &current);
+        let result = match perform(&mut cached, &request, &current) {
+            Ok(None) => continue,
+            Ok(Some(answer)) => Ok(answer),
+            Err(card) => Err(card),
+        };
         if reply.send((request.generation, result)).is_err() {
             return;
         }
@@ -323,11 +387,12 @@ fn perform(
     cached: &mut Option<(Ipv4Addr, Client)>,
     request: &Request,
     current: &dyn Fn() -> bool,
-) -> Result<Answer, String> {
+) -> Result<Option<Answer>, Card> {
     let host = request.target.host;
+    let name = &request.target.name;
     if !matches!(cached, Some((cached_host, _)) if *cached_host == host) {
         *cached = None;
-        let client = Client::connect(host).map_err(|e| describe(&request.target.name, e))?;
+        let client = Client::connect(host).map_err(|e| describe(name, e))?;
         *cached = Some((host, client));
     }
     let Some((_, client)) = cached.as_ref() else {
@@ -339,9 +404,10 @@ fn perform(
         *cached = None;
     }
     match result {
-        Ok(answer) => Ok(answer),
-        Err(couch_sonos::Error::Cancelled) => Ok(Answer::Message(String::new())),
-        Err(error) => Err(describe(&request.target.name, error)),
+        Ok(answer) => Ok(Some(answer)),
+        // Expired before dispatch: nothing happened, so nothing to show.
+        Err(couch_sonos::Error::Cancelled) => Ok(None),
+        Err(error) => Err(describe(name, error)),
     }
 }
 fn run(
@@ -349,14 +415,21 @@ fn run(
     request: &Request,
     current: &dyn Fn() -> bool,
 ) -> couch_sonos::Result<Answer> {
-    let name = &request.target.name;
-    Ok(Answer::Message(match &request.op {
+    let name = request.target.name.clone();
+    let card = |caption: String, volume: Option<u8>| {
+        Answer::Card(Card {
+            name: name.clone(),
+            caption,
+            volume,
+        })
+    };
+    Ok(match &request.op {
         Op::Volume(delta) => {
             if !current() {
                 return Err(couch_sonos::Error::Cancelled);
             }
             client.nudge_volume(*delta)?;
-            format!("{name} · Volume {}", client.volume()?)
+            card("Volume".into(), Some(client.volume()?))
         }
         Op::ToggleMute => {
             let muted = client.muted()?;
@@ -364,43 +437,56 @@ fn run(
                 return Err(couch_sonos::Error::Cancelled);
             }
             client.set_muted(!muted)?;
-            format!("{name} · {}", if muted { "Unmuted" } else { "Muted" })
+            card(if muted { "Unmuted" } else { "Muted" }.into(), None)
         }
         Op::Skip(next) => {
             client.command_if_current(if *next { "next" } else { "previous" }, current)?;
-            format!(
-                "{name} · {}",
+            card(
                 if *next {
                     "Next track"
                 } else {
                     "Previous track"
                 }
+                .into(),
+                None,
             )
         }
         Op::Sources => {
             if !current() {
                 return Err(couch_sonos::Error::Cancelled);
             }
-            return Ok(Answer::Sources(request.target.clone(), client.sources()?));
+            Answer::Sources(request.target.clone(), client.sources()?)
         }
         Op::Select(source, label) => {
             client.select_source_if_current(source, current)?;
-            format!("{name} · {label}")
+            Answer::Card(Card {
+                name: label.clone(),
+                caption: format!("Playing on {name}"),
+                volume: None,
+            })
         }
-    }))
+    })
 }
-/// Toast-sized wording. A group member's playback lives with its coordinator;
-/// everything else is the client's own sentence.
-fn describe(name: &str, error: couch_sonos::Error) -> String {
-    match error {
-        couch_sonos::Error::NotCoordinator { coordinator } => {
-            format!("{name} is grouped: control playback on {coordinator}")
-        }
-        couch_sonos::Error::Transport => format!("Cannot reach {name}"),
-        couch_sonos::Error::Api(code) if code == "ERROR_PLAYBACK_NO_CONTENT" => {
-            format!("{name} · Sonos found nothing to play there")
-        }
-        other => other.to_string(),
+/// Card-sized wording: the problem in bold, the speaker as its caption. A
+/// group member's playback lives with its coordinator; everything else is the
+/// client's own sentence.
+fn describe(name: &str, error: couch_sonos::Error) -> Card {
+    let (line, caption) = match error {
+        couch_sonos::Error::NotCoordinator { coordinator } => (
+            format!("Control playback on {coordinator}"),
+            format!("{name} is grouped"),
+        ),
+        couch_sonos::Error::Transport => ("Cannot reach the speaker".to_owned(), name.to_owned()),
+        couch_sonos::Error::Api(code) if code == "ERROR_PLAYBACK_NO_CONTENT" => (
+            "Sonos found nothing to play there".to_owned(),
+            name.to_owned(),
+        ),
+        other => (other.to_string(), name.to_owned()),
+    };
+    Card {
+        name: line,
+        caption,
+        volume: None,
     }
 }
 #[cfg(test)]
@@ -490,31 +576,40 @@ mod tests {
         assert_eq!(seen, ["volume 20", "mute"]);
     }
     #[test]
-    fn grouped_members_and_unreachable_speakers_get_short_toasts() {
+    fn grouped_members_and_unreachable_speakers_get_card_sized_wording() {
+        let grouped = describe(
+            "Kitchen",
+            couch_sonos::Error::NotCoordinator {
+                coordinator: "Living room".into(),
+            },
+        );
         assert_eq!(
-            describe(
-                "Kitchen",
-                couch_sonos::Error::NotCoordinator {
-                    coordinator: "Living room".into()
-                }
+            (
+                grouped.name.as_str(),
+                grouped.caption.as_str(),
+                grouped.volume
             ),
-            "Kitchen is grouped: control playback on Living room"
+            (
+                "Control playback on Living room",
+                "Kitchen is grouped",
+                None
+            )
         );
+        let gone = describe("Kitchen", couch_sonos::Error::Transport);
         assert_eq!(
-            describe("Kitchen", couch_sonos::Error::Transport),
-            "Cannot reach Kitchen"
+            (gone.name.as_str(), gone.caption.as_str()),
+            ("Cannot reach the speaker", "Kitchen")
         );
+        let http = describe("Kitchen", couch_sonos::Error::Http(500));
         assert_eq!(
-            describe("Kitchen", couch_sonos::Error::Http(500)),
-            "Sonos HTTP error 500"
+            (http.name.as_str(), http.caption.as_str()),
+            ("Sonos HTTP error 500", "Kitchen")
         );
-        assert_eq!(
-            describe(
-                "Kitchen",
-                couch_sonos::Error::Api("ERROR_PLAYBACK_NO_CONTENT".into())
-            ),
-            "Kitchen · Sonos found nothing to play there"
+        let empty = describe(
+            "Kitchen",
+            couch_sonos::Error::Api("ERROR_PLAYBACK_NO_CONTENT".into()),
         );
+        assert_eq!(empty.name, "Sonos found nothing to play there");
     }
     #[test]
     fn only_sonos_rows_of_the_open_room_are_targets() {

@@ -234,6 +234,14 @@ export component App inherits Window {
     // (the host needs it for the Menu key, which never reaches Slint).
     callback room-media(int, string);
     in-out property <int> light-index: 0;
+    // The speaker's feedback card: the same large card brightness and scenes
+    // use. `sonos-feedback-name` is the bold line, the caption sits above it,
+    // and a volume shows its meter.
+    in-out property <bool> sonos-feedback-shown: false;
+    in-out property <string> sonos-feedback-name;
+    in-out property <string> sonos-feedback-caption;
+    in-out property <int> sonos-feedback-volume: 0;
+    in-out property <bool> sonos-feedback-meter: false;
     in-out property <bool> scene-feedback-shown: false;
     in-out property <string> scene-feedback-name;
     in-out property <string> scene-feedback-status;
@@ -652,6 +660,17 @@ export component App inherits Window {
         target: root.volume-target;
         value: root.volume;
         shown: root.volume-shown;
+    }
+    VolumeOverlay {
+        visible: root.feedback-enabled;
+        x: Theme.overlay-inset;
+        width: parent.width - 2 * Theme.overlay-inset;
+        y: parent.height - self.height - Theme.overlay-inset;
+        target: root.sonos-feedback-name;
+        caption: root.sonos-feedback-caption;
+        value: root.sonos-feedback-volume;
+        meter: root.sonos-feedback-meter;
+        shown: root.sonos-feedback-shown && root.light-shown && !root.chooser-shown && !root.brightness-shown;
     }
     if root.dock-clock-shown: Rectangle {
         width: parent.width;
