@@ -497,6 +497,7 @@ impl Api {
                     "version": env!("CARGO_PKG_VERSION"),
                     "schema_version": SCHEMA_VERSION,
                     "authenticated": false,
+                    "local_name": crate::local_name::status(),
                 }),
             );
         }
@@ -511,6 +512,7 @@ impl Api {
                     "config_path": s.path().display().to_string(),
                     "revision": s.revision(),
                     "embedded_assets": self.assets.count(),
+                    "local_name": crate::local_name::status(),
                 }),
             )
             .at(s.revision())
