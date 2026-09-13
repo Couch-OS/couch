@@ -23,6 +23,19 @@ const REFRESH: Duration = Duration::from_secs(3);
 /// One press of a volume key on this screen.
 const VOLUME_STEP: i8 = 5;
 const SHEETS: [&str; 3] = ["Sources", "Modes", "Up next"];
+/// How long a closed screen's presentation is kept for an instant reopen.
+/// The worker re-reads the group as soon as the screen is up again, so this
+/// only ever bridges the first few hundred milliseconds.
+const VIEW_TTL: Duration = Duration::from_secs(30);
+
+/// What the screen looked like when it was left, for one speaker.
+struct View {
+    at: Instant,
+    serial: u64,
+    presentation: crate::activity::Presentation,
+    snapshot: Option<Snapshot>,
+    room: slint::SharedString,
+}
 
 /// What the screen was opened for.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,7 +56,9 @@ enum Op {
     Modes(PlayModeChange),
 }
 enum Request {
-    Open(Ipv4Addr),
+    /// Connect to the player; the string is the artwork URL the UI already
+    /// shows, so it is not fetched again.
+    Open(Ipv4Addr, String),
     Refresh,
     Command(Op),
     Close,
@@ -73,6 +88,8 @@ pub struct Controller {
     /// On-screen selection the D-pad moves: 1 seek, 2 previous, 3 play,
     /// 4 next, 5..=7 sheets.
     selected: i32,
+    /// Recently closed screens by device id, restored on reopen.
+    views: std::collections::HashMap<String, View>,
 }
 impl Controller {
     pub fn new() -> Self {
@@ -97,7 +114,30 @@ impl Controller {
             art_key: String::new(),
             sources: Vec::new(),
             selected: 3,
+            views: std::collections::HashMap::new(),
         }
+    }
+    fn serial() -> u64 {
+        crate::config_snapshot::current().map_or(0, |c| c.serial)
+    }
+    /// Keep what the screen shows for this speaker, for an instant reopen.
+    fn remember(&mut self, app: &App) {
+        let Some(t) = &self.target else { return };
+        if app.get_player_shown() && app.get_player_connected() {
+            self.views.insert(
+                t.device.clone(),
+                View {
+                    at: Instant::now(),
+                    serial: Self::serial(),
+                    presentation: crate::activity::Presentation::capture(app, &self.art_key),
+                    snapshot: self.snapshot.clone(),
+                    room: app.get_player_room(),
+                },
+            );
+        }
+        let now = Instant::now();
+        self.views
+            .retain(|_, v| now.duration_since(v.at) < VIEW_TTL);
     }
     pub fn is_open(&self) -> bool {
         self.target.is_some()
@@ -123,26 +163,46 @@ impl Controller {
         app.set_player_selected(self.selected);
         app.set_player_shown(true);
         app.set_player_panel(0);
-        app.set_player_ready(false);
-        app.set_player_connected(false);
         app.set_player_message("".into());
-        app.set_player_title("Connecting to Sonos…".into());
-        app.set_player_metadata("".into());
-        app.set_player_elapsed("".into());
-        app.set_player_remaining("".into());
-        app.set_player_progress(0.);
-        app.set_player_can_seek(false);
-        app.set_player_paused(true);
-        app.set_player_fanart(slint::Image::default());
         app.set_player_logo(slint::Image::default());
         app.set_player_has_logo(false);
-        app.set_player_has_art(false);
         app.set_player_activity(target.name.as_str().into());
         app.set_player_room(target.room.as_str().into());
+        // A screen left within the last half minute comes back as it was,
+        // artwork included, while the worker reads the group again behind it.
+        let serial = Self::serial();
+        let restored = self
+            .views
+            .remove(&target.device)
+            .filter(|v| v.at.elapsed() < VIEW_TTL && v.serial == serial);
+        let mut known_art = String::new();
+        match restored {
+            Some(view) => {
+                view.presentation.restore(app);
+                app.set_player_room(view.room);
+                self.art_key = view.presentation.art_key.clone();
+                known_art = self.art_key.clone();
+                self.snapshot = view.snapshot;
+                self.at = view.at;
+            }
+            None => {
+                app.set_player_ready(false);
+                app.set_player_connected(false);
+                app.set_player_title("Connecting to Sonos…".into());
+                app.set_player_metadata("".into());
+                app.set_player_elapsed("".into());
+                app.set_player_remaining("".into());
+                app.set_player_progress(0.);
+                app.set_player_can_seek(false);
+                app.set_player_paused(true);
+                app.set_player_fanart(slint::Image::default());
+                app.set_player_has_art(false);
+            }
+        }
         app.invoke_focus_player();
         if self
             .tx
-            .try_send((self.generation, Request::Open(target.host)))
+            .try_send((self.generation, Request::Open(target.host, known_art)))
             .is_err()
         {
             self.notice(app, "Connection busy. Reopen the speaker.");
@@ -152,6 +212,7 @@ impl Controller {
     }
     /// Leave the screen. The caller decides where focus goes next.
     pub fn close(&mut self, app: &App) {
+        self.remember(app);
         self.generation += 1;
         self.active.store(self.generation, Ordering::SeqCst);
         let _ = self.tx.try_send((self.generation, Request::Close));
@@ -283,7 +344,9 @@ impl Controller {
                 if let Some(t) = &self.target {
                     self.snapshot = None;
                     self.busy = false;
-                    let _ = self.tx.try_send((self.generation, Request::Open(t.host)));
+                    let _ = self
+                        .tx
+                        .try_send((self.generation, Request::Open(t.host, String::new())));
                 }
             }
             "play" => {
@@ -683,6 +746,39 @@ impl Controller {
         }
     }
 }
+/// The group's metadata once a skip has taken effect. A skip is acknowledged
+/// before the player switches tracks, so a read straight after it still shows
+/// the track being left; poll briefly until the current track differs from
+/// `before` (or until a second has passed and the read is what it is).
+pub(crate) fn now_playing_after_skip(
+    client: &Client,
+    before: Option<&couch_sonos::Track>,
+) -> Option<couch_sonos::NowPlaying> {
+    let same = |now: &couch_sonos::NowPlaying| match (before, now.current.as_ref()) {
+        (Some(b), Some(c)) => {
+            b.name == c.name && b.artist == c.artist && b.image_url == c.image_url
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    let mut latest = None;
+    for attempt in 0..6 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        match client.now_playing() {
+            Ok(now) => {
+                let unchanged = same(&now);
+                latest = Some(now);
+                if !unchanged {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    latest
+}
 /// "Artist · Album", or whichever of the two the player gave.
 fn line(artist: &str, album: &str) -> String {
     match (artist.is_empty(), album.is_empty()) {
@@ -730,8 +826,8 @@ fn worker(
                 client = None;
                 art_sent.clear();
             }
-            Request::Open(host) => {
-                art_sent.clear();
+            Request::Open(host, known_art) => {
+                art_sent = known_art;
                 match Client::connect(host) {
                     Ok(c) => {
                         client = Some(c);
@@ -771,9 +867,15 @@ fn worker(
                     Op::PlayPause => c
                         .command_if_current("play-pause", &current)
                         .map(|_| String::new()),
-                    Op::Skip(forward) => c
-                        .command_if_current(if *forward { "next" } else { "previous" }, &current)
-                        .map(|_| String::new()),
+                    Op::Skip(forward) => {
+                        let before = c.now_playing().ok().and_then(|n| n.current);
+                        c.command_if_current(if *forward { "next" } else { "previous" }, &current)
+                            .map(|_| {
+                                // Let the player switch before the refresh reads it.
+                                now_playing_after_skip(c, before.as_ref());
+                                String::new()
+                            })
+                    }
                     Op::Seek(position) => c
                         .seek_if_current(*position, &current)
                         .map(|_| String::new()),

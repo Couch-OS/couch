@@ -453,25 +453,35 @@ fn run(
             card(if muted { "Unmuted" } else { "Muted" }.into(), None)
         }
         Op::Skip(next) => {
+            let before = client.now_playing().ok().and_then(|n| n.current);
             client.command_if_current(if *next { "next" } else { "previous" }, current)?;
-            let caption = if *next { "Next track" } else { "Previous track" };
-            // Say what we landed on: the track and its cover, when the group
-            // reports one. A skip that lands nowhere still gets its card.
-            match client.now_playing().ok().and_then(|n| n.current) {
+            let caption = if *next {
+                "Next track"
+            } else {
+                "Previous track"
+            };
+            // Say what we landed on, once the player has actually moved: the
+            // track in bold, the artist as the caption, and its cover. A skip
+            // that lands nowhere still gets its card.
+            match crate::sonos_player::now_playing_after_skip(client, before.as_ref())
+                .and_then(|n| n.current)
+            {
                 Some(track) => {
                     let art = (!track.image_url.is_empty())
                         .then(|| client.artwork(&track.image_url).ok())
                         .flatten()
                         .and_then(|bytes| {
-                            crate::activity_art::decode(&bytes, crate::activity_art::Shape::Thumbnail)
+                            crate::activity_art::decode(
+                                &bytes,
+                                crate::activity_art::Shape::Thumbnail,
+                            )
                         });
-                    let by = line(&track.artist, &track.album);
                     Answer::Card(Card {
                         name: track.name,
-                        caption: if by.is_empty() {
-                            format!("{caption} · {name}")
+                        caption: if track.artist.is_empty() {
+                            name.clone()
                         } else {
-                            format!("{caption} · {by}")
+                            track.artist
                         },
                         volume: None,
                         art,
@@ -518,15 +528,6 @@ fn describe(name: &str, error: couch_sonos::Error) -> Card {
         caption,
         volume: None,
         art: None,
-    }
-}
-/// "Artist · Album", or whichever of the two the player gave.
-fn line(artist: &str, album: &str) -> String {
-    match (artist.is_empty(), album.is_empty()) {
-        (false, false) if artist != album => format!("{artist} · {album}"),
-        (false, _) => artist.to_owned(),
-        (true, false) => album.to_owned(),
-        (true, true) => String::new(),
     }
 }
 #[cfg(test)]

@@ -1,6 +1,7 @@
 //! Full-screen activity controls. Provider I/O stays outside Slint.
 #[path = "activity_cache.rs"]
 mod cache;
+pub(crate) use cache::Presentation;
 #[path = "activity_pages.rs"]
 mod pages;
 use crate::{App, PlayerChoice};

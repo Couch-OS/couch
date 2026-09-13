@@ -16,7 +16,7 @@ pub(super) struct Key {
     pub port: u16,
 }
 #[derive(Clone)]
-pub(super) struct Presentation {
+pub(crate) struct Presentation {
     title: SharedString,
     metadata: SharedString,
     elapsed: SharedString,
