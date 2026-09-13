@@ -106,7 +106,9 @@ Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.
 ```
 
 The release launcher verifies the native host, terminal and release configuration
-before execution. Selecting **Cancel** at the first menu creates no installation
+before execution. The terminal's heading row shows the release it is running
+(`installer v0.1.0-…`), and the finish screen repeats it; check that against the
+command above before reporting a problem, and include it in any report. Selecting **Cancel** at the first menu creates no installation
 session and opens no device.
 
 ## Installation flow
