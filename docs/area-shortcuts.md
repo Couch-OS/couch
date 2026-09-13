@@ -1,5 +1,7 @@
 # Quick-access keys
 
+![Quick-access keys](area-shortcuts.png)
+
 The four shortcut keys above the color row (light, curtain, media and climate,
 left to right) and the four color keys (red, green, blue, yellow) do nothing
 on the home screen until an area assigns them. Each area assigns its own
