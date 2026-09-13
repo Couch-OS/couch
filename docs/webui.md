@@ -221,6 +221,7 @@ JSON. `{id}` is a slug like `living-room`.
 | `PUT`    | `/api/rooms/{id}`                      | `{name, icon?}` |
 | `DELETE` | `/api/rooms/{id}`                      | and every reference to it: area lists, its devices, activities anchored to it, scene steps naming those devices |
 | `GET`    | `/api/rooms/{id}/devices`              | the room's devices |
+| `PUT`    | `/api/rooms/{id}/devices`              | `["lamp", ...]` - the order the remote lists them in; devices left out keep their place after the named ones |
 | `POST`   | `/api/rooms/{id}/devices`              | `{name, kind?, icon?, integration?}` |
 | `PUT`    | `/api/rooms/{id}/devices/{device}`     | the whole device; the path names it, so a body with a different id cannot move it |
 | `DELETE` | `/api/rooms/{id}/devices/{device}`     | and every scene step and activity step pointing at it |
@@ -591,7 +592,11 @@ The remote renders the same selected room/device icons from a compiled 24px
 alpha atlas; no runtime SVG decoder or React dependency is needed. Attribution,
 version and regeneration instructions are in assets/lucide/README.md.
 
-The navigation label is Areas. Rooms now include an Activities section to
+The navigation label is Areas. Device cards on a room page carry the same
+up/down arrows as area lists; the order is the order the remote's room view
+lists the devices, below the room's activities, which it pins at the top the
+way an area page keeps its activity strip above its rooms. Rooms also include
+an Activities section to
 create an activity in that room, edit it, or move an existing activity there.
 An activity has one owning room; moving it preserves its existing area
 shortcuts. Activity execution on the physical remote remains a separate,

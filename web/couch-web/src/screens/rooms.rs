@@ -47,6 +47,8 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
 
     let add_id = id.clone();
     let delete_id = id.clone();
+    // The order the remote lists them in, after the room's pinned activities.
+    let device_order: Vec<Id> = room.devices.iter().map(|d| d.id.clone()).collect();
 
     view! {
         {ui::page_header(app, room.name.clone(), Some(Route::Rooms))}
@@ -77,7 +79,8 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
                 <ul class="rows">
                     {room.devices
                         .iter()
-                        .map(|device| device_card(app, &id, device))
+                        .enumerate()
+                        .map(|(index, device)| device_card(app, &id, device, &device_order, index))
                         .collect_view()}
                 </ul>
             }
@@ -100,7 +103,13 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
     .into_any()
 }
 
-fn device_card(app: App, room: &Id, device: &Device) -> AnyView {
+fn device_card(app: App, room: &Id, device: &Device, order: &[Id], index: usize) -> AnyView {
+    let reorder = {
+        let room = room.clone();
+        super::reorder_buttons(order.to_vec(), index, move |next: Vec<Id>| {
+            app.run(api::put(format!("/api/rooms/{room}/devices"), next));
+        })
+    };
     let name = RwSignal::new(device.name.clone());
     let kind = RwSignal::new(device.kind);
     let original_name = device.name.clone();
@@ -125,7 +134,7 @@ fn device_card(app: App, room: &Id, device: &Device) -> AnyView {
     let summary=if device.effective_ir_codeset(&cfg).is_some(){
         if matches!(cfg.resolve_integration(&device.integration),Some(Integration::None|Integration::Ir{..})){"Infrared · Built-in transmitter".into()}else{format!("{summary} · IR commands")}
     }else{summary};
-    view!{<li class="card device"><h3>{device.name.clone()}</h3><p class="dim">{summary}</p>
+    view!{<li class="card device"><div class="device-head">{reorder}<div><h3>{device.name.clone()}</h3><p class="dim">{summary}</p></div></div>
         {super::device_picker::controls(app,device)}
         {super::infrared::device_commands(app, &app.config.get_untracked().unwrap_or_default(), &room, device)}
         <details><summary>"Edit device"</summary><form on:submit=move |e|{e.prevent_default();let title=name.get_untracked().trim().to_string();if title.is_empty(){return}app.run(api::put(format!("/api/rooms/{room}/devices/{}",base.id),Device{name:title,kind:kind.get_untracked(),icon:icon.get_untracked(),..base.clone()}));}>

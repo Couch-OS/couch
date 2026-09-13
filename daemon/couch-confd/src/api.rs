@@ -398,6 +398,7 @@ impl Api {
                 })
             }
             (method @ ("GET" | "PUT" | "DELETE"), ["rooms", room, "devices", device, "ir"]) => self.device_ir(method,room,device,&body,if_match),
+            ("PUT", ["rooms", id, "devices"]) => self.reorder_devices(&body, if_match, id),
             ("POST", ["rooms", id, "devices", "ir"]) => self.create_ir_device(id,&body,if_match),
             ("POST", ["rooms", id, "devices"]) => self.create_device(&body, if_match, id),
             ("PUT", ["rooms", id, "devices", dev]) => {
@@ -833,6 +834,24 @@ impl Api {
     }
 
 
+    /// `PUT /api/rooms/{id}/devices` takes the room's device ids in the order
+    /// the remote should list them. Devices the list leaves out keep their
+    /// relative order after the named ones, so a stale list from a second
+    /// phone cannot drop a device the other one just added.
+    fn reorder_devices(&self, body: &[u8], if_match: Option<u64>, id: &str) -> Reply {
+        let order: Vec<Id> = match parse(body) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let id = Id::new(id);
+        self.edit_found(if_match, move |cfg| {
+            let room = cfg.room_mut(&id)?;
+            room.devices
+                .sort_by_key(|d| order.iter().position(|o| o == &d.id).unwrap_or(usize::MAX));
+            Some(())
+        })
+    }
+
     /// `PUT /api/areas/{id}/shortcuts` replaces what the shortcut and color
     /// keys reach on this page. The whole list is sent, like the member lists:
     /// a key is cleared by leaving it out. Model validation rejects unknown
@@ -1105,6 +1124,21 @@ mod activity_mapping_tests {
         activity.setup.devices.clear();
         assert_eq!(api.replace_activity(&serde_json::to_vec(&activity).unwrap(), None, activity.id.as_str()).status, 422);
         assert_eq!(std::fs::read(dir.join("config.json")).unwrap(), before);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn device_order_follows_the_list_and_keeps_unnamed_devices() {
+        let dir = std::env::temp_dir().join(format!("couch-api-order-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), serde_json::to_vec(&Config::seed()).unwrap()).unwrap();
+        let api = Api::new(Store::open(dir.join("config.json")).unwrap(), Assets::embedded(), Arc::new(Auth::new(dir.join("pin"), true)));
+        let ids = |api: &Api| api.with(|s| s.config().room(&Id::new("living-room")).unwrap().devices.iter().map(|d| d.id.to_string()).collect::<Vec<_>>());
+        assert_eq!(ids(&api)[..2], ["living-kodi", "living-hue"]);
+        let reply = api.reorder_devices(br#"["living-lamp","living-hue","ghost"]"#, None, "living-room");
+        assert_eq!(reply.status, 200);
+        assert_eq!(ids(&api), ["living-lamp", "living-hue", "living-kodi", "living-tv", "living-soundbar"]);
+        assert_eq!(api.reorder_devices(b"[]", None, "nowhere").status, 404);
+        assert_eq!(api.reorder_devices(b"not json", None, "living-room").status, 400);
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

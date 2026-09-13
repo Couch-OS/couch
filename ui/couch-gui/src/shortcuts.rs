@@ -81,13 +81,8 @@ fn open_device(config: &Config, id: &Id) -> Dispatch {
     }
     if config.can_toggle(device) {
         // Lights and covers have no screen of their own: the room list is
-        // where their brightness and position live. Rows follow the room's
-        // device order, so the device's index is its row.
-        let row = room
-            .devices
-            .iter()
-            .position(|d| d.id == device.id)
-            .unwrap_or(0);
+        // where their brightness and position live.
+        let row = crate::lights::row_of_device(config, &room.id, &device.id).unwrap_or(0);
         return Dispatch::OpenRoom(room.id.clone(), row);
     }
     Dispatch::Unavailable("Controls for this device are not available yet".into())
@@ -283,9 +278,12 @@ mod tests {
             plan(Button::Tv),
             Some(Dispatch::OpenTv("device:living-tv".into(), "LG C3".into()))
         );
+        // The Hue light is the second device, after the room's pinned activities.
+        let pinned = crate::lights::activity_rows(&config, &Id::new("living-room"));
+        assert!(pinned > 0);
         assert_eq!(
             plan(Button::Green),
-            Some(Dispatch::OpenRoom(Id::new("living-room"), 1))
+            Some(Dispatch::OpenRoom(Id::new("living-room"), pinned + 1))
         );
         assert_eq!(
             plan(Button::Blue),
