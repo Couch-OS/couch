@@ -26,7 +26,7 @@ carried by Wi-Fi. Start Android on the HA100, enable USB debugging, connect the
 remote, then run the pinned installer for the current prerelease in a terminal:
 
 ```sh
-curl -fsSL https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.115/install.sh | sh
+curl -fsSL https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.130/install.sh | sh
 ```
 
 Windows users run `install.ps1` from the same release in PowerShell. The script
@@ -34,9 +34,8 @@ downloads the installer binaries and release descriptor for your platform,
 verifies their sizes and SHA-256 hashes against the values pinned inside the
 script, and only then starts the installer. Nothing runs on a mismatch. On
 Windows the installer talks to the remote through the serial ports Windows
-creates by itself, so no driver setup is needed; no Windows installation has
-completed on hardware yet, and the [installer guide](docs/installer.md) has the
-details and the Linux live USB alternative.
+creates by itself, so no driver setup is needed; the [installer guide](docs/installer.md)
+has the details.
 
 The installer saves your remote's original Android partitions and identity
 before writing anything, and it can later reinstall Couch or restore stock
