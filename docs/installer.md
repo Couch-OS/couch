@@ -46,13 +46,43 @@ authorized ADB serial to a physical USB port, because a server holding the
 device makes Windows refuse the descriptor read. Later steps restart the
 server on demand; the device's USB debugging authorization is unaffected.
 
-On Windows, both the remote's MediaTek download interface and the Couch installer
-interface (VID `0e8d`, PID `201c`) need compatible **WinUSB** bindings. Android ADB
-uses its own interface and can work while these other interfaces remain
-unavailable. Configure only the selected remote's interfaces. The installer does
-not install or replace USB drivers automatically and stops if it cannot claim
-the selected interface. Platform fixture success is not physical Windows driver
-validation.
+On Windows, libusb can only open a device whose driver is **WinUSB**. Two
+identities of the remote matter:
+
+- the Android/Couch device (VID `0e8d`, PID `201c`), whose USB descriptor the
+  installer reads when it binds the authorized ADB serial to a physical port;
+- the MediaTek preloader (VID `0e8d`, PID `0003`), which exists for only a few
+  seconds after the installer restarts the remote and is the device the
+  download agent is delivered to.
+
+Android ADB uses its own interface and proves nothing about either. Windows 10
+and 11 usually bind the preloader to their built-in serial-port driver
+(`usbser`, shown as "USB Serial Device"), or to a MediaTek VCOM driver if one
+was ever installed, and libusb cannot open those. Bind WinUSB to the preloader
+*before* it appears, using Zadig:
+
+1. Download Zadig (zadig.akeo.ie) and run it as Administrator.
+2. Choose **Device > Create New Device** (enable **Options > Advanced Mode** if
+   it is greyed out).
+3. Enter USB ID `0E8D` `0003`, a name such as "MediaTek Preloader", select
+   **WinUSB** as the driver and click **Install Driver**.
+4. If **Options > List All Devices** already shows a `0E8D 0003` entry, such as
+   "MediaTek PreLoader USB VCOM" or "USB Serial Device", select it instead and
+   choose **Replace Driver**.
+
+Before opening any device, the installer reads the driver Windows has recorded
+for the preloader under `HKLM\SYSTEM\CurrentControlSet\Enum\USB` and shows it.
+If no recorded instance is bound to WinUSB, it offers to stop; continuing anyway
+ends in the 120-second download-mode timeout with nothing written. The
+installer never installs or replaces drivers. Configure only this remote's
+interfaces. Platform fixture success is not physical Windows driver validation.
+
+A Windows installation has not yet completed on hardware. The reliable
+alternative on a Windows machine is to boot a Linux live USB (an Ubuntu live
+session, no installation needed) and run the Linux command below from it; that
+is the libusb path validated on hardware and needs no driver work. WSL is not a
+shortcut: WSL2 USB passthrough needs usbipd-win, which replaces the device's
+driver itself and re-attaches too slowly for the preloader's window.
 
 ## Release commands
 
