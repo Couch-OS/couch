@@ -2,9 +2,11 @@
 
 The integrated native installer prepares the host dependencies, enrolls the
 remote over USB, and uses authenticated Wi-Fi for backups and OS transfer.
-Release `v0.1.0-alpha.20260910.24` is published as a prerelease. Its final
+Release `v0.1.0-alpha.20260913.115` is published as a prerelease. Its
 launchers passed download, checksum and safe-Cancel tests on Linux, macOS and
-Windows; physical installation acceptance remains pending.
+Windows. Complete installations have run on hardware from Linux and, with this
+release's elevated USB worker, from macOS on 2026-09-13. A Windows installation
+has not yet been run on hardware.
 
 ## Before starting
 
@@ -61,13 +63,13 @@ Linux x64 and macOS, from an interactive terminal:
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260910.24/install.sh | sh
+  https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.115/install.sh | sh
 ```
 
 Windows x64, from PowerShell:
 
 ```powershell
-Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260910.24/install.ps1' | Invoke-Expression
+Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.115/install.ps1' | Invoke-Expression
 ```
 
 The release launcher verifies the native host, terminal and release configuration
