@@ -113,9 +113,11 @@ changes use, with the speaker's name in bold: a volume shows its meter and
 level, mute shows "Muted"/"Unmuted", a skip shows "Next track"/"Previous
 track", a chosen source shows its name over "Playing on Kitchen", and an error
 shows the problem in bold with the speaker as its caption. After a skip the
-card names the track it landed on, with "Next track · artist · album" as the
-caption and the track's cover as a thumbnail when the player reports one (one
-metadata read and one bounded artwork fetch after the skip). A group member is
+card names the track it landed on in bold with the artist as its caption and
+the cover as a thumbnail when the player reports one. A skip is acknowledged
+before the player switches, so the worker notes the track before the command
+and polls the metadata (up to six reads, 200 ms apart) until it differs before
+drawing the card; a skip that lands nowhere still gets its plain card. A group member is
 told which room controls its playback rather than being forwarded. The Sonos
 worker keeps its connection to the last player between presses and reconnects
 on the next press after a transport failure.
@@ -159,7 +161,11 @@ interpolated between reads. Artwork comes from the track's `imageUrl` through
 player), decoded into the 480×800 backdrop with the legibility gradient the
 Kodi screen uses; text stands on its own when art is missing. A group member
 sees the coordinator's track and volume but is told which room controls
-playback instead of having transport, seek, sources or modes sent. The D-pad
+playback instead of having transport, seek, sources or modes sent. Leaving the
+screen keeps its presentation (title, metadata, progress, artwork) per speaker
+for thirty seconds, like the Kodi screen; reopening within that window shows
+it at once while the worker reads the group again, and the worker is told
+which artwork the screen already holds so it is not fetched twice. The D-pad
 moves an on-screen selection (seek line, transport, sheets) and OK activates
 it; inside a sheet Up/Down walk the list and OK picks. Channel keys skip
 tracks, Volume keys nudge this player's volume by five and show the volume
