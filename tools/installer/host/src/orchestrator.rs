@@ -32,78 +32,6 @@ fn random() -> Result<[u8; 32]> {
         .map_err(|_| anyhow::anyhow!("secure randomness unavailable"))?;
     Ok(value)
 }
-/// Raised when the selected USB port never showed a download-mode identity.
-/// No write has happened at that point.
-const DOWNLOAD_MODE_TIMEOUT: &str = if cfg!(windows) {
-    "Remote did not enter download mode within 120 s. No boot write occurred. On Windows the \
-     preloader (USB 0e8d:0003) must already be bound to WinUSB when it appears; see the Windows \
-     USB notes in the installer guide. Also check the cable, the port and power."
-} else {
-    "Remote did not enter download mode. No boot write occurred; check USB driver binding and power"
-};
-/// Read-only Windows driver check before any device is opened. Returns `false`
-/// when the user chose to stop and prepare the driver; the installer then exits
-/// cleanly like Cancel.
-#[cfg(windows)]
-fn windows_driver_preflight(ui: &mut Ui) -> Result<bool> {
-    use crate::windows_drivers::{assess, describe_couch, inventory, Assessment, COUCH, PRELOADER};
-    let assessment = match inventory(PRELOADER) {
-        Ok(preloader) => assess(&preloader),
-        Err(error) => Assessment {
-            ready: false,
-            summary: format!("The preloader driver record could not be read: {error:#}"),
-        },
-    };
-    let couch = match inventory(COUCH) {
-        Ok(record) => describe_couch(&record),
-        Err(error) => format!("could not be read: {error:#}"),
-    };
-    let footer = format!(
-        "Android/Couch device (USB 0e8d:201c): {couch}\n\nADB working alone verifies none of this. \
-         The installer never installs or replaces drivers, and only the download interface of \
-         this remote should be bound."
-    );
-    if assessment.ready {
-        ui.choose(
-            "Windows USB driver check",
-            &format!("{}\n\n{footer}", assessment.summary),
-            &[choice(
-                "Continue",
-                "The preloader can be opened when the remote restarts.",
-            )],
-        )?;
-        return Ok(true);
-    }
-    let body = format!(
-        "{}\n\nThe preloader is present for only a few seconds after the remote restarts, so bind \
-         WinUSB to it before it appears:\n\
-         1. Download Zadig (zadig.akeo.ie) and run it as Administrator.\n\
-         2. Choose Device > Create New Device (turn on Options > Advanced Mode if it is greyed \
-         out).\n\
-         3. Enter USB ID 0E8D 0003, a name such as MediaTek Preloader, select WinUSB as the \
-         driver and click Install Driver.\n\
-         4. If Options > List All Devices already shows a 0E8D 0003 entry, such as MediaTek \
-         PreLoader USB VCOM or USB Serial Device, select that entry instead and choose Replace \
-         Driver.\n\
-         5. Start this installer again.\n\n{footer}",
-        assessment.summary
-    );
-    let selected = ui.choose(
-        "Windows USB driver setup needed",
-        &body,
-        &[
-            choice(
-                "Stop and prepare the driver",
-                "Nothing is opened or written; run the installer again afterwards.",
-            ),
-            choice(
-                "Continue anyway",
-                "Expect the download-mode wait to time out unless the binding exists. No write happens without it.",
-            ),
-        ],
-    )?;
-    Ok(selected == 1)
-}
 fn choice(label: &str, detail: &str) -> Choice {
     Choice {
         label: label.into(),
@@ -319,9 +247,7 @@ pub fn run(ui: &mut Ui, config: Option<&Path>, local_payload: Option<&Path>) -> 
     let reinstall = mode == 2 || mode == 3;
     let restore = mode == 3;
     #[cfg(windows)]
-    if !windows_driver_preflight(ui)? {
-        return Ok(());
-    }
+    ui.choose("Windows USB driver setup", "The selected remote's MediaTek download interface and Couch installer interface (VID 0e8d, PID 201c) need usable WinUSB bindings. ADB working alone does not verify those drivers. Configure only this remote's interfaces; the installer will stop on a claim failure and will not replace drivers automatically.", &[choice("Continue with drivers prepared", "See the Windows USB notes in the installer guide.")])?;
     let release = public_inputs::release(
         config.context("This installer requires its verified release configuration")?,
     )?;
@@ -618,10 +544,7 @@ fn install(
     };
     let start = Instant::now();
     let candidate = loop {
-        ensure!(
-            start.elapsed() < Duration::from_secs(120),
-            "{DOWNLOAD_MODE_TIMEOUT}"
-        );
+        ensure!(start.elapsed()<Duration::from_secs(120),"Remote did not enter download mode. No boot write occurred; check USB driver binding and power");
         let result = simple(
             &mut worker,
             json!({"op":"enumerate"}),
