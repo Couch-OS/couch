@@ -42,3 +42,6 @@ couch-androidtv = { path = "../../clients/couch-androidtv" }
 couch-appletv = { path = "../../clients/couch-appletv" }
 couch-tizen = { path = "../../clients/couch-tizen" }
 mdns-sd = "0.13"
+# couch.local diagnostics: the mDNS crate's own log lines and an interface probe.
+log = "0.4"
+if-addrs = "0.13"

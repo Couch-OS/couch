@@ -293,7 +293,10 @@ mod tests {
         let alpha = version("v0.1.0-alpha.20260913.122").unwrap();
         let dev = version("v0.1.0-alpha.20260913.122.dev").unwrap();
         let other = version("v0.1.0-beta.1").unwrap();
-        assert!(!accepts(Channel::Alpha, &version("v0.1.0-alpha.20260913.122.dev.2").unwrap()));
+        assert!(!accepts(
+            Channel::Alpha,
+            &version("v0.1.0-alpha.20260913.122.dev.2").unwrap()
+        ));
         for (channel, takes) in [
             (Channel::Stable, [true, false, false, false]),
             (Channel::Alpha, [true, true, false, false]),

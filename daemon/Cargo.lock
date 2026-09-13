@@ -386,6 +386,8 @@ dependencies = [
  "couch-unifi-protect",
  "couch-webos",
  "flate2",
+ "if-addrs",
+ "log",
  "mdns-sd",
  "serde",
  "serde_json",
