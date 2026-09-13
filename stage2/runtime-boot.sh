@@ -3,6 +3,8 @@
 BB=/bin/busybox
 ROOT=$(dirname "$0")
 RUNTIME=$ROOT/runtime
+# The bootloader control block init arms at every boot; see rollback().
+BCB=/dev/mmcblk0p10
 export COUCH_RUNTIME_SELECTED=1
 # Recovery must remain usable even when an application update is broken.
 [ "${COUCH_NO_UI:-0}" = 1 ] && exec "$BB" sh "$ROOT/stage2.sh"
@@ -23,6 +25,15 @@ rollback() {
     fi
     $BB sync
     $BB rm -f "$RUNTIME/pending" "$RUNTIME/attempted"
+    # init writes boot-recovery into the BCB before anything can hang and clears
+    # it only after watching a healthy GUI, which starts 90 s in and needs three
+    # advancing heartbeats. This gate gives up at 90 s, so by the time it reboots
+    # the flag is still armed and lk boots recovery, not the runtime we have just
+    # rolled back to. Clear it here, after the pointer switch succeeded: the next
+    # boot arms it again before its own checks, so a previous runtime that turns
+    # out to be broken is still caught by init and still lands in recovery.
+    $BB dd if=/dev/zero of="$BCB" bs=512 count=1 conv=notrunc 2>/dev/null
+    $BB sync
 }
 CURRENT=$($BB readlink "$RUNTIME/current" 2>/dev/null)
 SELECTED=${CURRENT#slots/}

@@ -40,6 +40,25 @@ recovery. A working Couch recovery image provides a USB serial shell. Verify
 that access before changing boot images, including with userdata unavailable.
 Keep the rescue kernel independent of experimental normal kernels.
 
+### Leaving recovery after a rejected runtime candidate
+
+On images whose bootstrap predates the rollback fix, a runtime candidate that
+fails its health check is rolled back correctly but the reboot enters recovery
+with the flag still armed. Recovery keeps the flag on purpose and offers a root
+shell on USB serial (`0e8d:201c`, `/dev/cu.usbmodem*` on macOS, `/dev/ttyACM*`
+on Linux). Confirm the slot state, clear the flag exactly as init does after a
+healthy boot, and reboot:
+
+```sh
+readlink /mnt/alpine/opt/couch/runtime/current      # expect the previous slot
+dd if=/dev/zero of=/dev/mmcblk0p10 bs=512 count=1 conv=notrunc; sync; reboot -f
+```
+
+The normal boot then starts the selected slot, and init re-arms and later clears
+the flag itself once the GUI is healthy. Recovery also brings Wi-Fi up with the
+base runtime, so the remote is reachable at its usual address but without the
+web UI (`COUCH_NO_UI`).
+
 If neither slot boots, use the reviewed MTK download-mode recovery workflow
 with that device's verified originals. Do not improvise raw writes from the
 reference partition numbers. The [installer workflow](installer-wifi-wizard.md)

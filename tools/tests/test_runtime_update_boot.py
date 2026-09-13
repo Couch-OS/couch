@@ -49,10 +49,14 @@ class RuntimeBootTests(unittest.TestCase):
             helper = root / 'helper'
             helper.write_text('#!/bin/sh\ncase "$1" in sync) exit 0;; reboot) exit 99;; esac\nexec "$@"\n')
             helper.chmod(0o755)
+            # init has armed the recovery request for this boot, as it always does.
+            (root / 'bcb').write_bytes(b'boot-recovery' + b'\0' * 499)
             script = root / 'runtime-boot.sh'
-            script.write_text(SCRIPT.read_text().replace('BB=/bin/busybox', 'BB=' + str(helper)))
+            script.write_text(SCRIPT.read_text().replace('BB=/bin/busybox', 'BB=' + str(helper))
+                              .replace('BCB=/dev/mmcblk0p10', 'BCB=' + str(root / 'bcb')))
             result = subprocess.run(['sh', str(script)], capture_output=True, text=True, timeout=5, check=True)
-            return result.stdout.strip(), (runtime / 'pending').exists()
+            return (result.stdout.strip(), (runtime / 'pending').exists(),
+                    (root / 'bcb').read_bytes() == b'\0' * 512)
 
     def boot_health(self, pattern):
         with tempfile.TemporaryDirectory(prefix='couch-health-test-') as temporary:
@@ -94,9 +98,11 @@ esac
 exec "$@"
 """)
             helper.chmod(0o755)
+            (root / 'bcb').write_bytes(b'boot-recovery' + b'\0' * 499)
             script = root / 'runtime-boot.sh'
             script.write_text(SCRIPT.read_text()
                               .replace('BB=/bin/busybox', 'BB=' + str(helper))
+                              .replace('BCB=/dev/mmcblk0p10', 'BCB=' + str(root / 'bcb'))
                               .replace('/tmp/couch-gui.health', str(root / 'health'))
                               .replace('/tmp/update-boot.log', str(root / 'boot.log'))
                               .replace('/proc/', str(root / 'proc') + '/'))
@@ -112,34 +118,36 @@ exec "$@"
                     time.sleep(0.01)
             return (result.stdout.strip(), (runtime / 'current').is_symlink(),
                     (root / 'rebooted').exists(),
-                    (runtime / 'previous').read_text().strip() if (runtime / 'previous').exists() else None)
+                    (runtime / 'previous').read_text().strip() if (runtime / 'previous').exists() else None,
+                    (root / 'bcb').read_bytes() == b'\0' * 512)
 
     def test_healthy_candidate_is_committed_after_consecutive_checks(self):
-        self.assertEqual(self.boot_health('healthy'), ('candidate', True, False, 'base'))
+        self.assertEqual(self.boot_health('healthy'), ('candidate', True, False, 'base', False))
 
     def test_frozen_gui_with_live_pid_cannot_commit_recent_heartbeat(self):
-        self.assertEqual(self.boot_health('frozen'), ('candidate', False, True, None))
+        self.assertEqual(self.boot_health('frozen'), ('candidate', False, True, None, True))
 
     def test_restarting_gui_cannot_accumulate_heartbeats_from_different_processes(self):
-        self.assertEqual(self.boot_health('changing'), ('candidate', False, True, None))
+        self.assertEqual(self.boot_health('changing'), ('candidate', False, True, None, True))
 
     def test_hung_system_health_rolls_back_and_requests_reboot(self):
-        self.assertEqual(self.boot_health('hung'), ('candidate', False, True, None))
+        self.assertEqual(self.boot_health('hung'), ('candidate', False, True, None, True))
 
     def test_missing_heartbeat_rolls_back_and_requests_reboot(self):
-        self.assertEqual(self.boot_health('missing'), ('candidate', False, True, None))
+        self.assertEqual(self.boot_health('missing'), ('candidate', False, True, None, True))
 
     def test_intermittent_heartbeat_does_not_accumulate_successes(self):
-        self.assertEqual(self.boot_health('intermittent'), ('candidate', False, True, None))
+        self.assertEqual(self.boot_health('intermittent'), ('candidate', False, True, None, True))
 
     def test_failed_candidate_returns_to_factory_runtime(self):
-        self.assertEqual(self.run_boot(), ('base', False))
+        self.assertEqual(self.run_boot(), ('base', False, True))
 
     def test_failed_candidate_returns_to_previous_slot(self):
-        self.assertEqual(self.run_boot(previous='b' * 64), ('previous', False))
+        self.assertEqual(self.run_boot(previous='b' * 64), ('previous', False, True))
 
     def test_power_loss_before_pointer_switch_keeps_current_runtime(self):
-        self.assertEqual(self.run_boot(attempted=False, switched=False), ('base', False))
+        # No rollback happened, so the flag is left for init's own health check to clear.
+        self.assertEqual(self.run_boot(attempted=False, switched=False), ('base', False, False))
 
 if __name__ == '__main__':
     unittest.main()
