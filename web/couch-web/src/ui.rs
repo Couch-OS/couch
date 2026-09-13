@@ -188,6 +188,29 @@ pub fn add_row(
     .into_any()
 }
 
+/// A titled section: the heading and everything it introduces in one
+/// bordered block, so a page of lists reads as a stack of blocks rather than
+/// as one column of text.
+///
+/// The `.block` rules in style.css give the container its frame and the rhythm
+/// between a heading, its intro line, its rows and its add-controls. Anything
+/// that needs the same look without this helper can use the same markup:
+/// `<section class="block"><h2 class="section">…</h2><p class="dim">…</p>…</section>`.
+pub fn section(
+    title: impl IntoView + 'static,
+    intro: Option<&'static str>,
+    body: AnyView,
+) -> AnyView {
+    view! {
+        <section class="block">
+            <h2 class="section">{title}</h2>
+            {intro.map(|text| view! { <p class="dim">{text}</p> })}
+            {body}
+        </section>
+    }
+    .into_any()
+}
+
 /// An empty-state line, so a list that is legitimately empty does not read as
 /// a page that failed to load.
 pub fn empty(message: &'static str) -> AnyView {
