@@ -53,6 +53,9 @@ struct State {
     action: String,
     result: String,
     log_path: String,
+    /// Release version of the installer configuration in use, shown on every
+    /// screen so a screenshot identifies the build that produced it.
+    version: String,
     measurement: Option<(u64, u64, f64)>,
     measurement_unit: ProgressUnit,
 }
@@ -81,6 +84,7 @@ impl Ui {
                 action: String::new(),
                 result: "active".into(),
                 log_path: String::new(),
+                version: String::new(),
                 measurement: None,
                 measurement_unit: ProgressUnit::Bytes,
             },
@@ -152,6 +156,16 @@ impl Ui {
     }
     pub fn set_log_path(&mut self, path: &str) -> Result<()> {
         self.state.log_path = path.into();
+        self.state()
+    }
+    /// Name the installer release on screen. Display text only; bounded so a
+    /// malformed configuration cannot flood the channel.
+    pub fn set_version(&mut self, version: &str) -> Result<()> {
+        ensure!(
+            !version.is_empty() && version.len() <= 128,
+            "invalid installer version"
+        );
+        self.state.version = version.into();
         self.state()
     }
     pub fn progress(&mut self, phase: usize, label: &str, done: u64, total: u64) -> Result<()> {

@@ -84,6 +84,11 @@ fn ui_smoke(args: &[std::ffi::OsString]) -> Result<()> {
         Ui::stdio()
     };
     ui.set_steps(vec!["Interface check".into()])?;
+    ui.set_version(concat!(
+        "host ",
+        env!("CARGO_PKG_VERSION"),
+        " (interface check)"
+    ))?;
     ui.choose(
         "Device-free interface check",
         "This checks the terminal channel only.",

@@ -327,7 +327,20 @@ esac
         )
         .unwrap();
         std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let identity = capture(&adb, "remote").unwrap();
+        // Another test's child process can inherit this script's write handle
+        // for the instant between its fork and exec, and Linux then refuses to
+        // execute the script with ETXTBSY. Nothing in the code under test is
+        // involved; wait that instant out rather than fail the run.
+        let identity = (0..50)
+            .find_map(|_| match capture(&adb, "remote") {
+                Err(error) if format!("{error:#}").contains("Text file busy") => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    None
+                }
+                result => Some(result),
+            })
+            .unwrap()
+            .unwrap();
         assert_eq!(identity.model, "HA100");
         assert_eq!(identity.wifi_mac.as_deref(), Some("a0:b1:c2:d3:e4:f5"));
         // ro.serialno that disagrees with the enumerated serial is not a Device ID.

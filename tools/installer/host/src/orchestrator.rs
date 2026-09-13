@@ -432,6 +432,13 @@ pub fn run(ui: &mut Ui, config: Option<&Path>, local_payload: Option<&Path>) -> 
         .map(String::from)
         .to_vec(),
     )?;
+    // Read the release configuration first so its version is on every screen,
+    // including the first menu and any error; a missing configuration is still
+    // reported after the menu, where it always was.
+    let release = config.map(public_inputs::release).transpose()?;
+    if let Some(release) = &release {
+        ui.set_version(&release.version)?;
+    }
     let mode = ui.choose(
         "Install Couch",
         "For a fresh installation, start Android, enable USB debugging and connect USB. To reinstall Couch, keep it running and have your saved Android enrollment ready.",
@@ -462,9 +469,7 @@ pub fn run(ui: &mut Ui, config: Option<&Path>, local_payload: Option<&Path>) -> 
     // and a saved Android enrollment is imported and re-bound before any write.
     let reinstall = mode == 2 || mode == 3;
     let restore = mode == 3;
-    let release = public_inputs::release(
-        config.context("This installer requires its verified release configuration")?,
-    )?;
+    let release = release.context("This installer requires its verified release configuration")?;
     #[cfg(windows)]
     if !windows_driver_preflight(ui)? {
         return Ok(());

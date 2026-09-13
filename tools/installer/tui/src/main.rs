@@ -62,6 +62,8 @@ enum Message {
         action: String,
         result: String,
         log_path: String,
+        #[serde(default)]
+        version: String,
         measurement: Option<(u64, u64, f64)>,
         #[serde(default)]
         measurement_unit: ProgressUnit,
@@ -145,6 +147,7 @@ struct App {
     action: String,
     result: String,
     log_path: String,
+    version: String,
     measurement: Option<(u64, u64, f64)>,
     measurement_unit: ProgressUnit,
     measured_at: Instant,
@@ -172,6 +175,11 @@ impl App {
             action: "Keep your remote connected.".into(),
             result: "active".into(),
             log_path: String::new(),
+            version: if demo {
+                "preview build".into()
+            } else {
+                String::new()
+            },
             measurement: None,
             measurement_unit: ProgressUnit::Bytes,
             measured_at: Instant::now(),
@@ -191,6 +199,7 @@ impl App {
                 action,
                 result,
                 log_path,
+                version,
                 measurement,
                 measurement_unit,
             } => {
@@ -200,6 +209,9 @@ impl App {
                 self.action = clean(&action);
                 self.result = result;
                 self.log_path = clean(&log_path);
+                if !version.is_empty() {
+                    self.version = clean(&version);
+                }
                 self.measurement_unit = measurement_unit;
                 self.measured_at = Instant::now();
                 self.measurement = measurement.filter(|(done, total, rate)| {
@@ -377,7 +389,25 @@ fn draw(frame: &mut Frame, app: &App) {
             Style::default().fg(VIOLET),
         ),
     ]);
-    frame.render_widget(Paragraph::new(heading), chunks[0]);
+    // The installer release, right-aligned on the heading row, so every
+    // screenshot says which build produced it.
+    let version = if app.version.is_empty() {
+        String::new()
+    } else if area.width >= 60 {
+        format!("installer {}", app.version)
+    } else {
+        app.version.clone()
+    };
+    let heading_columns = Layout::horizontal([
+        Constraint::Min(20),
+        Constraint::Length(version.len() as u16),
+    ])
+    .split(chunks[0]);
+    frame.render_widget(Paragraph::new(heading), heading_columns[0]);
+    frame.render_widget(
+        Paragraph::new(version).style(Style::default().fg(MUTED)),
+        heading_columns[1],
+    );
     let mut route = Vec::new();
     let short = ["PREPARE", "USB", "WI-FI", "BACKUP", "WRITE", "BOOT"];
     for (i, name) in short.iter().enumerate() {
@@ -444,7 +474,16 @@ fn draw(frame: &mut Frame, app: &App) {
         .split(body);
         status(frame, app, rows[0], compact);
         let text = if app.finished.is_some() && !app.log_path.is_empty() {
-            format!("{}\n\nLog: {}", app.action, app.log_path)
+            format!(
+                "{}\n\nLog: {}{}",
+                app.action,
+                app.log_path,
+                if app.version.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nInstaller: {}", app.version)
+                }
+            )
         } else {
             app.action.clone()
         };
@@ -1075,6 +1114,9 @@ fn main() -> io::Result<()> {
     if !app.log_path.is_empty() {
         println!("Log: {}", app.log_path);
     }
+    if !app.version.is_empty() {
+        println!("Installer: {}", app.version);
+    }
     result?;
     if app.finished.is_some_and(|code| code != 0) {
         std::process::exit(app.finished.unwrap());
@@ -1314,10 +1356,44 @@ mod tests {
             action: String::new(),
             result: "active".into(),
             log_path: String::new(),
+            version: String::new(),
             measurement: Some((11, 10, 1.0)),
             measurement_unit: ProgressUnit::Bytes,
         });
         assert!(app.measurement.is_none());
+    }
+    #[test]
+    fn version_is_kept_across_frames_and_drawn_on_the_heading() {
+        let mut app = App::new(false);
+        assert!(app.version.is_empty());
+        let steps = app.steps.clone();
+        let frame = |version: &str| Message::State {
+            step: 0,
+            steps: steps.clone(),
+            detail: "test".into(),
+            action: String::new(),
+            result: "active".into(),
+            log_path: String::new(),
+            version: version.into(),
+            measurement: None,
+            measurement_unit: ProgressUnit::Bytes,
+        };
+        app.receive(frame("v0.1.0-alpha.20260913.115"));
+        app.receive(frame(""));
+        assert_eq!(app.version, "v0.1.0-alpha.20260913.115");
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let top: String = (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 1)].symbol().to_string())
+            .collect();
+        assert!(top.contains("couch."), "{top}");
+        assert!(top.contains("installer v0.1.0-alpha.20260913.115"), "{top}");
+        let mut narrow = Terminal::new(TestBackend::new(50, 18)).unwrap();
+        narrow.draw(|f| draw(f, &app)).unwrap();
+        let top: String = (0..50)
+            .map(|x| narrow.backend().buffer()[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(top.contains("v0.1.0-alpha.20260913.115"), "{top}");
     }
     #[test]
     fn menu_typing_cannot_submit_an_invalid_security_value() {
