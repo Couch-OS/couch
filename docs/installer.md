@@ -2,12 +2,12 @@
 
 The integrated native installer prepares the host dependencies, enrolls the
 remote over USB, and uses authenticated Wi-Fi for backups and OS transfer.
-Release `v0.1.0-alpha.20260913.115` is published as a prerelease. Its
+Release `v0.1.0-alpha.20260913.130` is published as a prerelease. Its
 launchers passed download, checksum and safe-Cancel tests on Linux, macOS and
-Windows. Complete installations have run on hardware from Linux and, with this
-release's elevated USB worker, from macOS on 2026-09-13. A Windows installation
-has not yet completed on hardware; the serial-port route described below is what
-Windows testers are validating.
+Windows. Complete installations have run on hardware from Linux, from macOS
+with the elevated USB worker (2026-09-13), and from Windows with the serial-port
+route described below, reported working by a tester on the .128.dev test build
+on 2026-09-13.
 
 ## Before starting
 
@@ -83,9 +83,9 @@ must list the remote before the installer can start, as on any platform.
 
 If a Windows machine still cannot reach download mode, booting a Linux live USB
 (an Ubuntu live session, no installation needed) and running the Linux command
-below from it is the path validated on hardware. WSL is not a shortcut: WSL2 USB
-passthrough needs usbipd-win, which replaces the device's driver itself and
-re-attaches too slowly for the preloader's window.
+below from it is an alternative. WSL is not a shortcut: WSL2 USB passthrough
+needs usbipd-win, which replaces the device's driver itself and re-attaches too
+slowly for the preloader's window.
 
 ## Release commands
 
@@ -96,13 +96,13 @@ Linux x64 and macOS, from an interactive terminal:
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.115/install.sh | sh
+  https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.130/install.sh | sh
 ```
 
 Windows x64, from PowerShell:
 
 ```powershell
-Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.115/install.ps1' | Invoke-Expression
+Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.130/install.ps1' | Invoke-Expression
 ```
 
 The release launcher verifies the native host, terminal and release configuration
