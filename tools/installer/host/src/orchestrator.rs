@@ -32,6 +32,65 @@ fn random() -> Result<[u8; 32]> {
         .map_err(|_| anyhow::anyhow!("secure randomness unavailable"))?;
     Ok(value)
 }
+/// Raised when the selected USB port never showed a download-mode identity.
+/// No write has happened at that point.
+const DOWNLOAD_MODE_TIMEOUT: &str = "Remote did not enter download mode within 120 s. No boot \
+     write occurred; check the cable, the USB port and power";
+/// Download-mode entries attempted before giving up. The first time a preloader
+/// appears on a Windows machine, Windows usually spends the whole download
+/// window installing its serial-port driver; the second appearance is instant.
+/// Startup is read-only, so restarting the remote again risks nothing.
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+/// How long a remote may take to boot back to Android or Couch after a missed
+/// download window before the installer stops waiting for it.
+const RETURN_WAIT: u64 = 90;
+/// Read-only Windows driver check before any device is opened. The worker
+/// opens the preloader through the serial port Windows creates for it, or
+/// through WinUSB when that was bound on purpose; this only warns when a
+/// recorded instance carries some third driver. Returns `false` when the user
+/// chose to stop; the installer then exits cleanly like Cancel.
+#[cfg(windows)]
+fn windows_driver_preflight(ui: &mut Ui) -> Result<bool> {
+    use crate::windows_drivers::{assess, describe_couch, inventory, Assessment, COUCH, PRELOADER};
+    let assessment = match inventory(PRELOADER) {
+        Ok(preloader) => assess(&preloader),
+        Err(error) => Assessment {
+            ready: true,
+            summary: format!("The preloader driver record could not be read: {error:#}"),
+        },
+    };
+    if assessment.ready {
+        return Ok(true);
+    }
+    let couch = match inventory(COUCH) {
+        Ok(record) => describe_couch(&record),
+        Err(error) => format!("could not be read: {error:#}"),
+    };
+    let body = format!(
+        "{}\n\nThe installer opens the preloader either as the serial port Windows creates for it \
+         (usbser) or through WinUSB, and never installs or replaces drivers. An instance bound to \
+         another driver can be removed in Device Manager (View > Show hidden devices, then \
+         Uninstall device, ticking the option to delete its driver software if offered) so that \
+         Windows binds its serial-port driver the next time the preloader appears.\n\n\
+         Android/Couch device (USB 0e8d:201c): {couch}",
+        assessment.summary
+    );
+    let selected = ui.choose(
+        "Windows USB driver check",
+        &body,
+        &[
+            choice(
+                "Continue anyway",
+                "Windows may still create a serial port when the preloader appears on another port.",
+            ),
+            choice(
+                "Stop",
+                "Nothing is opened or written; run the installer again afterwards.",
+            ),
+        ],
+    )?;
+    Ok(selected == 0)
+}
 fn choice(label: &str, detail: &str) -> Choice {
     Choice {
         label: label.into(),
@@ -66,6 +125,163 @@ fn simple(
         ensure!(result["event"] == event, "unexpected USB operation result");
         Ok(result)
     })
+}
+/// Spawn the MediaTek worker and have it prepare the verified loader. A worker
+/// stops for good at its first failure, so every attempt starts a fresh one.
+fn prepared_worker(
+    dependencies: &dependencies::PreparedDependencies,
+    script: &Path,
+    prepared: &Path,
+    session_dir: &Path,
+    ui: &mut Ui,
+) -> Result<Worker> {
+    let mut command = adapter::mtk_worker(&dependencies.python);
+    command
+        .arg("-I")
+        .arg("-B")
+        .arg(dependencies::python_path(script)?)
+        .arg("--events-stdio")
+        .current_dir(session_dir);
+    let mut worker = Worker::spawn(&mut command)?;
+    simple(
+        &mut worker,
+        json!({"op":"prepare","checkout":dependencies::python_path(&dependencies.mtk_root)?,"loader":dependencies::python_path(&dependencies.owner_da)?,"loader_sha256":dependencies.owner_da_sha256,"preloader":dependencies::python_path(&prepared.join("bootstrap/preloader.img"))?,"preloader_sha256":"0ad0d14b7203d98a6567af7a022cfe5df5b6fcbba60cb4e9b4bc2ee569cf1069","libusb":dependencies::python_path(&dependencies.libusb)?}),
+        "prepared",
+        60,
+        ui,
+        1,
+    )?;
+    Ok(worker)
+}
+/// Ask a running Couch to restart through its USB serial and, when that is
+/// unavailable, have the user do it by hand.
+fn couch_restart(
+    worker: &mut Worker,
+    bound: &Value,
+    expected_cid: &str,
+    session: &mut SessionGuard,
+    ui: &mut Ui,
+) -> Result<()> {
+    ui.progress(
+        1,
+        "Checking Couch identity and requesting USB restart",
+        0,
+        0,
+    )?;
+    let restart = simple(
+        worker,
+        json!({"op":"couch_reboot","candidate":bound,"cid":expected_cid}),
+        "couch_reboot",
+        20,
+        ui,
+        1,
+    ).context("Couch USB identity/restart failed or its delivery is ambiguous; no automatic retry was attempted")?;
+    session.checkpoint(&json!({"event":"couch_restart","usb":bound,"result":restart["result"]}))?;
+    match restart["result"].as_str() {
+        Some("requested") => {}
+        Some("unavailable") => {
+            ui.choose("Restart the selected remote", "USB serial restart is unavailable; no reboot command was sent. Keep USB connected. After Continue, hold the side Power button until the remote turns off, then release it. If needed, hold Power until it starts again.",&[choice("Continue and watch USB","Only the selected physical USB port can be captured.")])?;
+        }
+        _ => anyhow::bail!("Invalid Couch restart result"),
+    }
+    Ok(())
+}
+/// Wait for the selected physical port to show a download-mode identity, then
+/// start the read-only download-agent session on it. Nothing is written here.
+fn download_mode(worker: &mut Worker, bound: &Value, ui: &mut Ui) -> Result<Value> {
+    let start = Instant::now();
+    let candidate = loop {
+        ensure!(
+            start.elapsed() < Duration::from_secs(120),
+            "{DOWNLOAD_MODE_TIMEOUT}"
+        );
+        let result = simple(worker, json!({"op":"enumerate"}), "candidates", 20, ui, 3)?;
+        let found = result["devices"]
+            .as_array()
+            .context("invalid USB inventory")?
+            .iter()
+            .filter(|d| {
+                d["bus"] == bound["bus"]
+                    && d["ports"] == bound["ports"]
+                    && d["pid"].as_u64().is_some_and(|pid| {
+                        [0x0003, 0x6000, 0x2000, 0x2001, 0x20ff, 0x3000].contains(&pid)
+                    })
+            })
+            .collect::<Vec<_>>();
+        ensure!(found.len() <= 1, "ambiguous selected USB port");
+        if let Some(device) = found.first() {
+            break (*device).clone();
+        }
+        ui.progress_with_unit(
+            3,
+            "Waiting for the selected remote on USB",
+            start.elapsed().as_secs(),
+            120,
+            crate::frontend::ProgressUnit::Seconds,
+        )?;
+        thread::sleep(Duration::from_millis(20));
+    };
+    let connected = simple(
+        worker,
+        json!({"op":"start","candidate":candidate}),
+        "connected",
+        120,
+        ui,
+        3,
+    )
+    .map_err(|error| anyhow::anyhow!("USB download startup failed: {error:#}"))?;
+    Ok(connected)
+}
+/// Whether the selected Android remote is back on ADB after a missed download
+/// window. A restart is only issued again to a remote that came back by itself.
+fn android_returned(adb: &Path, serial: &str, ui: &mut Ui) -> Result<bool> {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(RETURN_WAIT) {
+        if let Ok(devices) = android::discover(adb) {
+            if devices
+                .iter()
+                .any(|d| d.serial == serial && d.state == "device")
+            {
+                return Ok(true);
+            }
+        }
+        ui.progress_with_unit(
+            3,
+            "Waiting for the remote to return to Android",
+            start.elapsed().as_secs(),
+            RETURN_WAIT,
+            crate::frontend::ProgressUnit::Seconds,
+        )?;
+        thread::sleep(Duration::from_secs(2));
+    }
+    Ok(false)
+}
+/// Whether a running Couch is back on its bound physical port after a missed
+/// download window.
+fn couch_returned(worker: &mut Worker, bound: &Value, ui: &mut Ui) -> Result<bool> {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(RETURN_WAIT) {
+        let result = simple(worker, json!({"op":"enumerate"}), "candidates", 20, ui, 3)?;
+        let back = result["devices"]
+            .as_array()
+            .context("invalid USB inventory")?
+            .iter()
+            .any(|d| {
+                d["bus"] == bound["bus"] && d["ports"] == bound["ports"] && d["pid"] == 0x201c
+            });
+        if back {
+            return Ok(true);
+        }
+        ui.progress_with_unit(
+            3,
+            "Waiting for the remote to return to Couch",
+            start.elapsed().as_secs(),
+            RETURN_WAIT,
+            crate::frontend::ProgressUnit::Seconds,
+        )?;
+        thread::sleep(Duration::from_millis(500));
+    }
+    Ok(false)
 }
 fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = create(path)?;
@@ -216,6 +432,13 @@ pub fn run(ui: &mut Ui, config: Option<&Path>, local_payload: Option<&Path>) -> 
         .map(String::from)
         .to_vec(),
     )?;
+    // Read the release configuration first so its version is on every screen,
+    // including the first menu and any error; a missing configuration is still
+    // reported after the menu, where it always was.
+    let release = config.map(public_inputs::release).transpose()?;
+    if let Some(release) = &release {
+        ui.set_version(&release.version)?;
+    }
     let mode = ui.choose(
         "Install Couch",
         "For a fresh installation, start Android, enable USB debugging and connect USB. To reinstall Couch, keep it running and have your saved Android enrollment ready.",
@@ -246,11 +469,11 @@ pub fn run(ui: &mut Ui, config: Option<&Path>, local_payload: Option<&Path>) -> 
     // and a saved Android enrollment is imported and re-bound before any write.
     let reinstall = mode == 2 || mode == 3;
     let restore = mode == 3;
+    let release = release.context("This installer requires its verified release configuration")?;
     #[cfg(windows)]
-    ui.choose("Windows USB driver setup", "The selected remote's MediaTek download interface and Couch installer interface (VID 0e8d, PID 201c) need usable WinUSB bindings. ADB working alone does not verify those drivers. Configure only this remote's interfaces; the installer will stop on a claim failure and will not replace drivers automatically.", &[choice("Continue with drivers prepared", "See the Windows USB notes in the installer guide.")])?;
-    let release = public_inputs::release(
-        config.context("This installer requires its verified release configuration")?,
-    )?;
+    if !windows_driver_preflight(ui)? {
+        return Ok(());
+    }
     let parent = state_root()?;
     let mut session =
         SessionGuard::create(&parent.join(format!("install-{}", &hex(&random()?)[..16])))?;
@@ -294,8 +517,10 @@ pub fn run(ui: &mut Ui, config: Option<&Path>, local_payload: Option<&Path>) -> 
                 &json!({"event":"installation_stopped","preserve_originals":true}),
             );
         }
+        // The alternate form prints the cause chain, so a structural refusal
+        // says which check failed rather than only that the pair was refused.
         let _ = ui.error(&format!(
-            "{error}. Keep saved originals at {}. No automatic retry or restore was attempted.",
+            "{error:#}. Keep saved originals at {}. No automatic retry or restore was attempted.",
             session.path().display()
         ));
     }
@@ -448,22 +673,8 @@ fn install(
     };
     dependencies.verify()?;
     let script = adapter::materialize(session)?;
-    let mut command = adapter::mtk_worker(&dependencies.python);
-    command
-        .arg("-I")
-        .arg("-B")
-        .arg(dependencies::python_path(&script)?)
-        .arg("--events-stdio")
-        .current_dir(session.path());
-    let mut worker = Worker::spawn(&mut command)?;
-    simple(
-        &mut worker,
-        json!({"op":"prepare","checkout":dependencies::python_path(&dependencies.mtk_root)?,"loader":dependencies::python_path(&dependencies.owner_da)?,"loader_sha256":dependencies.owner_da_sha256,"preloader":dependencies::python_path(&prepared.join("bootstrap/preloader.img"))?,"preloader_sha256":"0ad0d14b7203d98a6567af7a022cfe5df5b6fcbba60cb4e9b4bc2ee569cf1069","libusb":dependencies::python_path(&dependencies.libusb)?}),
-        "prepared",
-        60,
-        ui,
-        1,
-    )?;
+    let session_dir = session.path().to_path_buf();
+    let mut worker = prepared_worker(&dependencies, &script, &prepared, &session_dir, ui)?;
     let bound = if let Some(serial) = &serial {
         // The ADB server must not hold the remote while the worker reads its
         // USB serial descriptor (issue #89, Windows). Reboot restarts it.
@@ -517,76 +728,52 @@ fn install(
             let selected=ui.choose("Select the connected Couch remote","Its stored CID and calibration must match the imported enrollment before any write.",&options)?;
             break candidates[selected].clone();
         };
-        ui.progress(
-            1,
-            "Checking Couch identity and requesting USB restart",
-            0,
-            0,
-        )?;
-        let restart = simple(
-            &mut worker,
-            json!({"op":"couch_reboot","candidate":bound,"cid":expected_cid}),
-            "couch_reboot",
-            20,
-            ui,
-            1,
-        ).context("Couch USB identity/restart failed or its delivery is ambiguous; no automatic retry was attempted")?;
-        session
-            .checkpoint(&json!({"event":"couch_restart","usb":bound,"result":restart["result"]}))?;
-        match restart["result"].as_str() {
-            Some("requested") => {}
-            Some("unavailable") => {
-                ui.choose("Restart the selected remote", "USB serial restart is unavailable; no reboot command was sent. Keep USB connected. After Continue, hold the side Power button until the remote turns off, then release it. If needed, hold Power until it starts again.",&[choice("Continue and watch USB","Only the selected physical USB port can be captured.")])?;
-            }
-            _ => anyhow::bail!("Invalid Couch restart result"),
-        }
+        couch_restart(&mut worker, &bound, &expected_cid, session, ui)?;
         bound
     };
-    let start = Instant::now();
-    let candidate = loop {
-        ensure!(start.elapsed()<Duration::from_secs(120),"Remote did not enter download mode. No boot write occurred; check USB driver binding and power");
-        let result = simple(
-            &mut worker,
-            json!({"op":"enumerate"}),
-            "candidates",
-            20,
-            ui,
-            3,
-        )?;
-        let found = result["devices"]
-            .as_array()
-            .context("invalid USB inventory")?
-            .iter()
-            .filter(|d| {
-                d["bus"] == bound["bus"]
-                    && d["ports"] == bound["ports"]
-                    && d["pid"].as_u64().is_some_and(|pid| {
-                        [0x0003, 0x6000, 0x2000, 0x2001, 0x20ff, 0x3000].contains(&pid)
-                    })
-            })
-            .collect::<Vec<_>>();
-        ensure!(found.len() <= 1, "ambiguous selected USB port");
-        if let Some(device) = found.first() {
-            break (*device).clone();
+    let mut attempt = 1u32;
+    let connected = loop {
+        let error = match download_mode(&mut worker, &bound, ui) {
+            Ok(result) => break result,
+            Err(error) => error,
+        };
+        if attempt >= DOWNLOAD_ATTEMPTS {
+            return Err(error.context(format!(
+                "Download mode was not reached in {DOWNLOAD_ATTEMPTS} attempts; no boot write occurred"
+            )));
         }
-        ui.progress_with_unit(
-            3,
-            "Waiting for the selected remote on USB",
-            start.elapsed().as_secs(),
-            120,
-            crate::frontend::ProgressUnit::Seconds,
+        // Startup is read-only, so a missed or failed entry has written nothing.
+        // A worker stops for good at its first failure; a fresh one prepares the
+        // same verified loader before the remote is restarted again.
+        drop(worker);
+        worker = prepared_worker(&dependencies, &script, &prepared, &session_dir, ui)?;
+        let returned = if let Some(serial) = &serial {
+            android_returned(&dependencies.adb, serial, ui)?
+        } else {
+            couch_returned(&mut worker, &bound, ui)?
+        };
+        ensure!(
+            returned,
+            "{error:#}. The remote did not come back on USB within {RETURN_WAIT} s, so it was not \
+             restarted again. Hold the side Power button until it turns off, start it again and \
+             run the installer again; no boot write occurred"
+        );
+        attempt += 1;
+        session
+            .checkpoint(&json!({"event":"download_mode_retry","attempt":attempt,"usb":bound}))?;
+        ui.progress(
+            1,
+            &format!("Restarting the remote again (attempt {attempt} of {DOWNLOAD_ATTEMPTS})"),
+            0,
+            0,
         )?;
-        thread::sleep(Duration::from_millis(20));
+        if let Some(serial) = &serial {
+            dependencies.verify()?;
+            android::reboot(&dependencies.adb, serial)?;
+        } else {
+            couch_restart(&mut worker, &bound, &expected_cid, session, ui)?;
+        }
     };
-    let connected = simple(
-        &mut worker,
-        json!({"op":"start","candidate":candidate}),
-        "connected",
-        120,
-        ui,
-        3,
-    )
-    .map_err(|error| anyhow::anyhow!("USB download startup failed: {error:#}"))?;
     let cid = connected["cid"]
         .as_str()
         .context("missing observed canonical CID")?;

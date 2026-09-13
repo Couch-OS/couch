@@ -9,7 +9,10 @@ cargo run -- --snapshot
 cargo test --locked
 ```
 
-Both preview modes work without a device. Normal operation takes explicit
+Both preview modes work without a device. The heading row's right edge names
+the installer release the host is running from (`installer v0.1.0-…`), and the
+finish screen and the plain-terminal summary repeat it as `Installer: …`, so a
+screenshot or a pasted terminal says which build produced it. Normal operation takes explicit
 `--python`, `--backend`, and `--config` paths. The backend supplies structured
 progress and input requests; Unix uses an inherited socket and Windows uses
 private standard-input/output pipes. Pairing or Wi-Fi secrets are masked in the

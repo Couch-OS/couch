@@ -206,6 +206,30 @@ pub(crate) fn wake_tv(settings: &Settings, credentials: &std::path::Path) -> Res
     )
     .map_err(|e| e.to_string())
 }
+/// The TV's power key from an activity or a mapped button, over the network:
+/// wake it when it is off or unreachable, power it off when it is on. The
+/// same decision the TV screen's Power key makes, without a kept client.
+pub(crate) fn toggle_power(
+    settings: &Settings,
+    credentials: &std::path::Path,
+) -> Result<(), String> {
+    let mut client = match Client::connect(settings) {
+        Ok(c) => c,
+        Err(couch_control::Error::Transport | couch_control::Error::Timeout) => {
+            return wake_tv(settings, credentials);
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    remember_wake(settings, credentials);
+    let status = client.power_state().map_err(|e| e.to_string())?;
+    let state = status["state"]
+        .as_str()
+        .ok_or("TV did not report its power state")?;
+    if state != "Active" {
+        return wake_tv(settings, credentials);
+    }
+    client.power_off().map_err(|e| e.to_string())
+}
 fn power(
     client: &mut Option<Client>,
     active: &AtomicU64,

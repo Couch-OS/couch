@@ -1,0 +1,5 @@
+# macOS "cc" is Apple clang, whose ld rejects the GNU flags rustc passes for
+# this target. rust-lld ships with the toolchain and links static musl binaries
+# with no cross-gcc and no Docker.
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"

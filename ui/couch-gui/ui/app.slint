@@ -289,6 +289,7 @@ export component App inherits Window {
     in-out property <string> update-channel;
     in-out property <string> update-summary;
     in-out property <bool> update-can-install: false;
+    in-out property <bool> update-busy: false;
     in-out property <bool> update-ready: false;
     in-out property <bool> update-armed: false;
     in-out property <string> update-message;
@@ -344,6 +345,10 @@ export component App inherits Window {
     in-out property <bool> volume-shown: false;
     in-out property <int> volume: 0;
     in-out property <string> volume-target: "";
+    // A reading with no 0..100 scale (a dB figure) or a "Muted" word replaces
+    // the number; the meter goes with the scale.
+    in-out property <string> volume-text: "";
+    in-out property <bool> volume-meter: true;
 
     fs := FocusScope {
         key-pressed(e) => {
@@ -595,6 +600,7 @@ export component App inherits Window {
         update-channel: root.update-channel;
         update-summary: root.update-summary;
         update-can-install: root.update-can-install;
+        update-busy: root.update-busy;
         update-ready: root.update-ready;
         update-armed: root.update-armed;
         update-message: root.update-message;
@@ -690,6 +696,8 @@ export component App inherits Window {
         y: parent.height - self.height - Theme.overlay-inset;
         target: root.volume-target;
         value: root.volume;
+        value-text: root.volume-text;
+        meter: root.volume-meter;
         shown: root.volume-shown;
     }
     VolumeOverlay {

@@ -36,6 +36,7 @@ mod connections;
 mod config_snapshot;
 mod input;
 mod navigation;
+mod shortcuts;
 use input::{Standby,TouchDisposition,touch_disposition,wake};
 use navigation::Intent;
 mod remote_clock;
@@ -123,6 +124,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut areas = vec![
         Area {
+            id: None,
+            shortcuts: Vec::new(),
             activity_ids: Vec::new(),
             name: "WHOLE HOME".into(),
             room_ids: Vec::new(),
@@ -147,6 +150,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
         },
         Area {
+            id: None,
+            shortcuts: Vec::new(),
             activity_ids: Vec::new(),
             name: "UPSTAIRS".into(),
             room_ids: Vec::new(),
@@ -160,6 +165,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             scenes: vec![scene("Bedtime"), scene("Wake up"), scene("Upstairs off")],
         },
         Area {
+            id: None,
+            shortcuts: Vec::new(),
             activity_ids: Vec::new(),
             name: "DOWNSTAIRS".into(),
             room_ids: Vec::new(),
@@ -183,6 +190,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
         },
         Area {
+            id: None,
+            shortcuts: Vec::new(),
             activity_ids: Vec::new(),
             name: "OUTSIDE".into(),
             room_ids: Vec::new(),
@@ -221,6 +230,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some((raw, saved, accent)) = home::read(&loaded_home) { home::apply_accent(&app,accent); loaded_home = raw; areas = saved; }
     let mut light_controls = lights::Controller::install(&app);
     let mut room_monitor = home::RoomMonitor::new(light_controls.hue_live());
+    let mut shortcut_controls = shortcuts::Controller::new(light_controls.hue_live());
+    let open_room_row = light_controls.opener();
     let mut scene_controls = scenes::Controller::new(&app);
     let mut activity_controls = activity::Controller::new(&app);
     let mut tv_controls = tv::Controller::new(&app);
@@ -512,6 +523,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut network_setup = network_ui::Controller::install(&app);
     if std::env::var_os("COUCH_WIFI_SETUP").is_some() { app.invoke_setting_change_wifi(); }
     let toast_until: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+    // When the volume card raised by a mapped press goes away by itself.
+    let volume_until: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     let toast = {
         let (weak, until) = (app.as_weak(), toast_until.clone());
         move |msg: String, secs: u64| {
@@ -664,6 +677,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         lights.clear_brightness(app);
         toast_until.set(None);
         app.set_toast("".into());
+        volume_until.set(None);
         app.set_volume_shown(false);
         app.set_thermostat_feedback_shown(false);
         app.set_sonos_feedback_shown(false);
@@ -779,6 +793,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             if app.get_activity_busy() { continue; }
+            // The shortcut and color keys reach what the area assigns them,
+            // on the hub only: a device screen or list owns its own keys. A
+            // press is a down edge here (releases returned above), and these
+            // keys never repeat, so one press is one action.
+            if !press.repeat && !press.released && !replayed {
+                let on_hub = !app.get_tv_shown() && !app.get_player_shown() && !app.get_light_shown()
+                    && !app.get_thermostat_shown() && !app.get_camera_shown() && !app.get_wifi_setup_shown()
+                    && !app.get_settings_shown() && !app.get_keyboard_shown() && !app.get_chooser_shown()
+                    && !app.get_pair_shown() && !app.get_setup_mode() && !app.get_recording();
+                let plan = couch_model::buttons::Button::from_evdev(press.code)
+                    .filter(|b| on_hub && b.is_shortcut())
+                    .and_then(|b| connections::config().and_then(|c| shortcuts::plan(&c, &areas.borrow(), current.get(), b).map(|p| (c, p))));
+                if let Some((config, plan)) = plan {
+                    println!("couch-gui: shortcut {:?}", plan);
+                    match plan {
+                        shortcuts::Dispatch::ShowArea(index) => ask(Intent::Area(index as i32 - current.get() as i32)),
+                        shortcuts::Dispatch::OpenActivity(id) => app.invoke_open_activity(id.into()),
+                        shortcuts::Dispatch::OpenThermostat(id, name) => app.invoke_open_thermostat(id.into(), name.into()),
+                        shortcuts::Dispatch::OpenTv(id, name) => { app.set_active_activity("".into()); app.invoke_open_tv(id.into(), name.into()); }
+                        shortcuts::Dispatch::OpenCamera(id, name) => app.invoke_open_camera(id.into(), name.into()),
+                        shortcuts::Dispatch::OpenRoom(room, row) => { open_room_row(room); app.set_light_index(row as i32); }
+                        shortcuts::Dispatch::Toggle(device) => { if !shortcut_controls.toggle(config, device) { toast("Still switching the last one".into(), 2); } }
+                        shortcuts::Dispatch::Unavailable(message) => toast(message, 3),
+                    }
+                    continue;
+                }
+            }
             if !replayed && button_controls.handle(&app,&press) {continue;}
             if press.code == 60 && app.get_activity_running() && !press.repeat {
                 app.invoke_end_activity();
@@ -908,6 +949,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if toast_until.get().is_some_and(|t| now_monotonic_us() >= t) {
             toast_until.set(None);
             app.set_toast("".into());
+        }
+        if volume_until.get().is_some_and(|t| now_monotonic_us() >= t) {
+            volume_until.set(None);
+            app.set_volume_shown(false);
         }
 
         network_setup.poll(&app);
@@ -1102,7 +1147,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tv_controls.poll(&app);
         cameras.poll(&app, standby != Standby::Off);
         if let Some(message)=thermostat_controls.poll(&app){toast(message,2);}
-        if let Some(error)=button_controls.poll(&app) {toast(error,3);}
+        if let Some(message)=shortcut_controls.poll(){toast(message,2);}
+        match button_controls.poll(&app) {
+            Some(activity_buttons::Feedback::Error(error)) => toast(error, 3),
+            Some(activity_buttons::Feedback::Volume(reading)) => {
+                // The same card the room list shows for a highlighted speaker.
+                app.set_volume_target(reading.target.as_str().into());
+                app.set_volume(reading.level.max(0));
+                app.set_volume_text(reading.text.as_str().into());
+                app.set_volume_meter(reading.level >= 0);
+                app.set_feedback_enabled(true);
+                app.set_volume_shown(true);
+                volume_until.set(Some(now_monotonic_us() + 1_500_000));
+            }
+            None => {}
+        }
         if !app.get_player_shown() && !app.get_tv_shown() {app.set_active_activity("".into());}
         if activity_navigation && was_activity != (app.get_player_shown(), app.get_tv_shown(), app.get_thermostat_shown()) {
             dismiss_feedback(&app, &mut scene_controls, &mut light_controls);

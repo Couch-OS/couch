@@ -27,6 +27,33 @@ struct Request {
     action: Action,
     repeat: bool,
 }
+/// A volume level read back from a device after a volume or mute command,
+/// for the volume card. `level` is 0..=100 where the device has such a scale;
+/// `text` replaces the number when set (a dB reading, or "Muted").
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct VolumeReading {
+    pub target: String,
+    pub level: i32,
+    pub text: String,
+}
+/// What a mapped command left behind: nothing, or a volume reading to show.
+#[derive(Default, Debug, PartialEq)]
+pub(crate) struct Outcome {
+    pub volume: Option<VolumeReading>,
+}
+/// What the main loop is told about a mapped press: a problem to toast, or a
+/// reading to put on the volume card.
+pub(crate) enum Feedback {
+    Error(String),
+    Volume(VolumeReading),
+}
+fn volume_reading(target: &str, level: Option<i64>, muted: bool) -> Option<VolumeReading> {
+    Some(VolumeReading {
+        target: target.to_owned(),
+        level: level?.clamp(0, 100) as i32,
+        text: if muted { "Muted".into() } else { String::new() },
+    })
+}
 pub struct Controller {
     context: String,
     config: Arc<Config>,
@@ -35,7 +62,7 @@ pub struct Controller {
     replay: VecDeque<Press>,
     generation: Arc<AtomicU64>,
     tx: mpsc::SyncSender<Request>,
-    rx: mpsc::Receiver<(u64, String)>,
+    rx: mpsc::Receiver<(u64, Feedback)>,
 }
 impl Controller {
     pub fn new() -> Self {
@@ -158,7 +185,7 @@ impl Controller {
             self.context = context;
         }
     }
-    pub fn poll(&mut self, app: &App) -> Option<String> {
+    pub fn poll(&mut self, app: &App) -> Option<Feedback> {
         self.sync_context(app);
         let due: Vec<_> = self
             .pending
@@ -187,7 +214,7 @@ impl Controller {
 // leaving an activity. Observe cancellation even when no new keys arrive.
 fn worker(
     rx: mpsc::Receiver<Request>,
-    reply: mpsc::SyncSender<(u64, String)>,
+    reply: mpsc::SyncSender<(u64, Feedback)>,
     current: Arc<AtomicU64>,
 ) {
     let mut lanes = HashMap::<String, mpsc::SyncSender<Request>>::new();
@@ -219,7 +246,10 @@ fn worker(
                     .and_then(|v| serde_json::to_string(&v).ok()),
             });
         let Some(key) = key else {
-            let _ = reply.try_send((generation, "Mapped device was removed".into()));
+            let _ = reply.try_send((
+                generation,
+                Feedback::Error("Mapped device was removed".into()),
+            ));
             continue;
         };
         let tx = lanes.entry(key).or_insert_with(|| {
@@ -231,14 +261,17 @@ fn worker(
         });
         if tx.try_send(r).is_err() {
             eprintln!("couch-gui: mapped connection queue full");
-            let _ = reply.try_send((generation, "Device command queue is full".into()));
+            let _ = reply.try_send((
+                generation,
+                Feedback::Error("Device command queue is full".into()),
+            ));
         }
     }
 }
 
 fn connection_worker(
     rx: mpsc::Receiver<Request>,
-    reply: mpsc::SyncSender<(u64, String)>,
+    reply: mpsc::SyncSender<(u64, Feedback)>,
     current: Arc<AtomicU64>,
 ) {
     let mut denon = HashMap::new();
@@ -262,7 +295,7 @@ fn connection_worker(
         if r.generation != generation || r.at.elapsed() > Duration::from_millis(750) {
             continue;
         }
-        if let Err(error) = execute_with_input(
+        match execute_with_input(
             &r.config,
             &r.action,
             &mut denon,
@@ -274,7 +307,15 @@ fn connection_worker(
                     && r.at.elapsed() <= Duration::from_millis(750)
             },
         ) {
-            let _ = reply.try_send((r.generation, error));
+            Err(error) => {
+                let _ = reply.try_send((r.generation, Feedback::Error(error)));
+            }
+            Ok(Outcome {
+                volume: Some(reading),
+            }) => {
+                let _ = reply.try_send((r.generation, Feedback::Volume(reading)));
+            }
+            Ok(_) => {}
         }
     }
 }
@@ -286,7 +327,7 @@ pub(crate) fn execute(
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
 ) -> Result<(), String> {
-    execute_with_input(config, action, denon, tv, streaming, false, &|| true)
+    execute_with_input(config, action, denon, tv, streaming, false, &|| true).map(|_| ())
 }
 
 /// Physical input preserves hold edges; other callers represent distinct presses.
@@ -299,9 +340,9 @@ pub(crate) fn execute_with_input(
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     repeat: bool,
     current: &dyn Fn() -> bool,
-) -> Result<(), String> {
+) -> Result<Outcome, String> {
     if !current() {
-        return Ok(());
+        return Ok(Outcome::default());
     }
     let device = config
         .devices()
@@ -310,8 +351,15 @@ pub(crate) fn execute_with_input(
         .ok_or("Mapped device was removed")?;
     let command = F::parse(&action.command).ok_or("Unsupported button function")?;
     if try_device_ir(config, device.id.as_str(), &command, repeat, current)? {
-        return Ok(());
+        return Ok(Outcome::default());
     }
+    // A volume or mute press on a device that can report its level gets the
+    // level read back for the volume card; everything else reports nothing.
+    let sound = matches!(
+        command,
+        F::VolumeUp | F::VolumeDown | F::Mute | F::MuteOn | F::MuteOff
+    );
+    let name = device.name.clone();
     let integration = config
         .resolve_integration(&device.integration)
         .ok_or("Mapped connection was removed")?;
@@ -324,8 +372,22 @@ pub(crate) fn execute_with_input(
     };
     match integration {
         Integration::Sonos { host } => {
-            let client=couch_sonos::Client::connect(host.parse().map_err(|_|"Sonos requires an IPv4 address")?).map_err(|e|e.to_string())?;
-            client.command_if_current(&command.id(),current).map_err(|e|e.to_string())
+            let client = couch_sonos::Client::connect(
+                host.parse().map_err(|_| "Sonos requires an IPv4 address")?,
+            )
+            .map_err(|e| e.to_string())?;
+            client
+                .command_if_current(&command.id(), current)
+                .map_err(|e| e.to_string())?;
+            let volume = if sound {
+                client
+                    .volume_state()
+                    .ok()
+                    .and_then(|(level, muted)| volume_reading(&name, Some(i64::from(level)), muted))
+            } else {
+                None
+            };
+            Ok(Outcome { volume })
         }
         Integration::Ir { .. } => Err(format!("No IR code assigned to {}", command.id())),
         Integration::AndroidTv | Integration::AppleTv | Integration::Tizen => {
@@ -362,7 +424,7 @@ pub(crate) fn execute_with_input(
             if result.is_err() {
                 streaming.remove(&key);
             }
-            result
+            result.map(|_| Outcome::default())
         }
         Integration::Denon { host, port } => {
             let key = format!("{host}:{port}");
@@ -374,10 +436,12 @@ pub(crate) fn execute_with_input(
                 );
             }
             let c = denon.get_mut(&key).unwrap();
+            // The receiver answers every command with its state, so the
+            // reading for the volume card costs no further query.
             let result = (|| {
                 use couch_denon::Command as C;
                 if command == F::Mute {
-                    return c.toggle_mute().map(|_| ());
+                    return c.toggle_mute();
                 }
                 let cmd = match command {
                     F::PowerOn => C::Power(true),
@@ -390,12 +454,30 @@ pub(crate) fn execute_with_input(
 
                     _ => return Err(couch_control::Error::Protocol),
                 };
-                c.command(cmd).map(|_| ())
+                c.command(cmd)
             })();
             if result.is_err() {
                 denon.remove(&key);
             }
-            result.map_err(|e| e.to_string())
+            let state = result.map_err(|e| e.to_string())?;
+            let volume = if sound {
+                Some(VolumeReading {
+                    target: name.clone(),
+                    level: -1,
+                    text: if state.muted == Some(true) {
+                        "Muted".into()
+                    } else {
+                        match state.volume_db {
+                            Some(db) => format!("{db:.1} dB"),
+                            None if state.volume_minimum => "Minimum".into(),
+                            None => "—".into(),
+                        }
+                    },
+                })
+            } else {
+                None
+            };
+            Ok(Outcome { volume })
         }
         Integration::Kodi { host, port } => {
             let c = couch_kodi::settings::Settings::load(&connections::file(connection, "kodi"))
@@ -441,25 +523,38 @@ pub(crate) fn execute_with_input(
                     c.player_command(p.player, method, params).map(|_| ())
                 }
             };
-            result.map_err(|e| e.to_string())
+            result.map_err(|e| e.to_string())?;
+            let volume = if sound {
+                c.volume()
+                    .ok()
+                    .and_then(|v| volume_reading(&name, Some(v.volume), v.muted))
+            } else {
+                None
+            };
+            Ok(Outcome { volume })
         }
         Integration::WebOs => {
-            if matches!(command, F::PowerOn | F::PowerOff) {
+            if matches!(command, F::PowerOn | F::PowerOff | F::Toggle) {
                 let path = connections::file(connection, "webos");
                 let settings = couch_webos::Settings::load(&path).map_err(|e| e.to_string())?;
                 let preference = couch_webos::power::PowerSettings::load(&path, &settings.url)?;
                 if preference.method == couch_webos::power::Method::Ir {
-                    return preference.transmit(if command == F::PowerOn {
-                        "power-on"
-                    } else {
-                        "power-off"
-                    });
+                    return preference
+                        .transmit(match command {
+                            F::PowerOn => "power-on",
+                            F::PowerOff => "power-off",
+                            _ => "power",
+                        })
+                        .map(|_| Outcome::default());
+                }
+                if command == F::Toggle {
+                    return crate::tv::toggle_power(&settings, &path).map(|_| Outcome::default());
                 }
             }
             if command == F::PowerOn {
                 let path = connections::file(connection, "webos");
                 let settings = couch_webos::Settings::load(&path).map_err(|e| e.to_string())?;
-                return crate::tv::wake_tv(&settings, &path);
+                return crate::tv::wake_tv(&settings, &path).map(|_| Outcome::default());
             }
             if !tv.contains_key(connection) {
                 let settings = couch_webos::Settings::load(&connections::file(connection, "webos"))
@@ -473,7 +568,26 @@ pub(crate) fn execute_with_input(
             if result.is_err() {
                 tv.remove(connection);
             }
-            result.map_err(|e| e.to_string())
+            result.map_err(|e| e.to_string())?;
+            let volume = if sound {
+                tv.get_mut(connection)
+                    .and_then(|c| c.volume().ok())
+                    .and_then(|v| {
+                        let v = if v["volumeStatus"].is_object() {
+                            &v["volumeStatus"]
+                        } else {
+                            &v
+                        };
+                        volume_reading(
+                            &name,
+                            v["volume"].as_i64(),
+                            v["muteStatus"] == true || v["muted"] == true,
+                        )
+                    })
+            } else {
+                None
+            };
+            Ok(Outcome { volume })
         }
         Integration::Hue { light_id } => {
             let (id, raw) = connections::split(&light_id);
@@ -489,7 +603,9 @@ pub(crate) fn execute_with_input(
                     .on
                     .ok_or("Hue light is unavailable")?,
             };
-            c.set_power(raw, on).map_err(|e| e.to_string())
+            c.set_power(raw, on)
+                .map(|_| Outcome::default())
+                .map_err(|e| e.to_string())
         }
         Integration::HomeAssistant { entity_id } => {
             let (c, raw) = connections::ha(&entity_id)?;
@@ -510,6 +626,7 @@ pub(crate) fn execute_with_input(
                     couch_ha::Command::Off
                 },
             )
+            .map(|_| Outcome::default())
             .map_err(|e| e.to_string())
         }
         _ => Err("This integration cannot send button commands yet".into()),

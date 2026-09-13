@@ -205,6 +205,9 @@ pub fn functions(integration: &Integration) -> &'static [(&'static str, &'static
             ("back", "Back"),
             ("home", "Home"),
             ("menu", "Menu"),
+            // The TV's single power key: the connection's IR `power` line, or
+            // wake / power-off over the network by the TV's current state.
+            ("toggle", "Power toggle"),
             ("power-on", "Power on"),
             ("power-off", "Power off"),
             ("volume-up", "Volume up"),

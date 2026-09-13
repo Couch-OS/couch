@@ -46,6 +46,7 @@ impl Config {
     pub fn validate(&self) -> Result<(), ValidationError> {
         let mut problems = Vec::new();
         self.validate_app_shortcuts(&mut problems);
+        self.validate_shortcuts(&mut problems);
         if self.appearance.rgb().is_none() { problems.push(Problem{at:"appearance.accent".into(),message:"Use a color in #RRGGBB format".into()}); }
 
         if self.schema_version > SCHEMA_VERSION {
@@ -339,6 +340,7 @@ mod tests {
                 rooms: vec![Id::new("nowhere")],
                 scenes: vec![],
                 activities: vec![],
+                shortcuts: vec![],
             }],
             ..Config::default()
         };
@@ -356,6 +358,7 @@ mod tests {
                 rooms: vec![],
                 scenes: vec![],
                 activities: vec![Id::new("nothing")],
+                shortcuts: vec![],
             }],
             ..Config::default()
         };

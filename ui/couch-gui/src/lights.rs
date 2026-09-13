@@ -141,11 +141,45 @@ fn configured(room: &Id) -> Result<Vec<Entry>, String> {
     let config = crate::connections::config().ok_or("Cannot read your rooms")?;
     configured_in(&config, room)
 }
+/// The activity rows pinned above the devices in a room's list, the way the
+/// area page keeps its activity strip above its rooms.
+pub(crate) fn activity_rows(config: &couch_model::Config, room: &Id) -> usize {
+    config.activities.iter().filter(|a| &a.room == room).count()
+}
+/// The configured device on a row of the room list, if the row is a device:
+/// rows follow the room's own device order after the pinned activities.
+pub(crate) fn device_at<'a>(
+    config: &'a couch_model::Config,
+    room: &Id,
+    row: usize,
+) -> Option<&'a couch_model::Device> {
+    let index = row.checked_sub(activity_rows(config, room))?;
+    config.room(room)?.devices.get(index)
+}
+/// The row a device sits on in its room's list.
+pub(crate) fn row_of_device(config: &couch_model::Config, room: &Id, device: &Id) -> Option<usize> {
+    let index = config.room(room)?.devices.iter().position(|d| &d.id == device)?;
+    Some(activity_rows(config, room) + index)
+}
 fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, String> {
     let room = config
         .room(room)
         .ok_or("This room was removed; return home to reload")?;
-    let mut entries: Vec<Entry> = room
+    let mut entries: Vec<Entry> = config
+        .activities
+        .iter()
+        .filter(|a| a.room == room.id)
+        .map(|a| Entry {
+            icon: couch_model::Icon::Tv,
+            name: a.name.clone(),
+            id: format!("activity:{}", a.id),
+            state: None,
+            hue: false,
+            matter: false,
+            media: false,
+        })
+        .collect();
+    entries.extend(room
         .devices
         .iter()
         .filter_map(|d| {
@@ -194,23 +228,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                     media: matches!(integration, Some(Integration::Sonos { .. })),
                 }),
             }
-        })
-        .collect();
-    entries.extend(
-        config
-            .activities
-            .iter()
-            .filter(|a| a.room == room.id)
-            .map(|a| Entry {
-                icon: couch_model::Icon::Tv,
-                name: a.name.clone(),
-                id: format!("activity:{}", a.id),
-                state: None,
-                hue: false,
-                matter: false,
-                media: false,
-            }),
-    );
+        }));
     Ok(entries)
 }
 fn toggle_command(state: &Light) -> Result<Command, String> {
@@ -492,8 +510,7 @@ impl Controller {
     fn intercept_ir(&mut self, i: usize, function: &str, repeat: bool, resume: Input) {
         let device = self.room.as_ref().and_then(|room| {
             crate::connections::config().and_then(|c| {
-                c.room(room)
-                    .and_then(|r| r.devices.get(i))
+                device_at(&c, room, i)
                     .filter(|d| d.effective_ir_codeset(&c).is_some())
                     .map(|d| (d.id.clone(), c.clone()))
             })
@@ -540,11 +557,8 @@ impl Controller {
     }
     fn device_resource(&self, i: usize) -> Option<String> {
         self.room.as_ref().and_then(|room| {
-            crate::connections::config().and_then(|c| {
-                c.room(room)
-                    .and_then(|r| r.devices.get(i))
-                    .map(|d| format!("device:{}", d.id))
-            })
+            crate::connections::config()
+                .and_then(|c| device_at(&c, room, i).map(|d| format!("device:{}", d.id)))
         })
     }
     fn adjust_brightness(&mut self, app: &App, i: usize, delta: i32) {
@@ -968,7 +982,7 @@ fn description(light: &Light) -> String {
 }
 // Resolve the selected device's own connection; never select the first Android
 // TV when multiple TVs are configured.
-fn tv_connection(config: &couch_model::Config, device_id: &str) -> Option<String> {
+pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Option<String> {
     let (_, device) = config.devices().find(|(_, d)| d.id.as_str() == device_id)?;
     let integration = config.resolve_integration(&device.integration);
     if device.effective_ir_codeset(config).is_some()
@@ -1011,6 +1025,24 @@ mod tests {
         let entries = configured_in(&config, &Id::new("r")).unwrap();
         assert_eq!(entries.iter().map(|e| (e.id.as_str(), e.media)).collect::<Vec<_>>(),
             [("device:speaker", true), ("device:tv", false), ("hue:1", false)]);
+    }
+    #[test]
+    fn activities_are_pinned_above_the_devices_and_rows_still_find_their_device() {
+        let config: couch_model::Config = serde_json::from_value(serde_json::json!({"schema_version":1,
+            "rooms":[{"id":"r","name":"Room","devices":[
+                {"id":"lamp","name":"Lamp","kind":"light","integration":{"via":"hue","light_id":"1"}},
+                {"id":"tv","name":"TV","kind":"tv"}]}],
+            "activities":[{"id":"watch","name":"Watch","room":"r"},{"id":"elsewhere","name":"Elsewhere","room":"other"}]})).unwrap();
+        let room = Id::new("r");
+        let entries = configured_in(&config, &room).unwrap();
+        assert_eq!(entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["activity:watch", "hue:1", "device:tv"]);
+        assert_eq!(activity_rows(&config, &room), 1);
+        assert!(device_at(&config, &room, 0).is_none());
+        assert_eq!(device_at(&config, &room, 1).map(|d| d.id.as_str()), Some("lamp"));
+        assert_eq!(device_at(&config, &room, 2).map(|d| d.id.as_str()), Some("tv"));
+        assert!(device_at(&config, &room, 3).is_none());
+        assert_eq!(row_of_device(&config, &room, &Id::new("tv")), Some(2));
+        assert_eq!(row_of_device(&config, &room, &Id::new("ghost")), None);
     }
     #[test]
     fn selected_ir_device_keeps_per_device_target() {

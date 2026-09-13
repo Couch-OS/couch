@@ -2,11 +2,12 @@
 
 The integrated native installer prepares the host dependencies, enrolls the
 remote over USB, and uses authenticated Wi-Fi for backups and OS transfer.
-Release `v0.1.0-alpha.20260913.115` is published as a prerelease. Its
+Release `v0.1.0-alpha.20260913.130` is published as a prerelease. Its
 launchers passed download, checksum and safe-Cancel tests on Linux, macOS and
-Windows. Complete installations have run on hardware from Linux and, with this
-release's elevated USB worker, from macOS on 2026-09-13. A Windows installation
-has not yet been run on hardware.
+Windows. Complete installations have run on hardware from Linux, from macOS
+with the elevated USB worker (2026-09-13), and from Windows with the serial-port
+route described below, reported working by a tester on the .128.dev test build
+on 2026-09-13.
 
 ## Before starting
 
@@ -16,7 +17,8 @@ has not yet been run on hardware.
   network visible to the remote. Linux/macOS need `curl` and `sha256sum` or
   `shasum`; Windows needs PowerShell 5.1 or later.
 - The installer downloads and verifies its own ADB, Python, MediaTek adapter and
-  libusb. You do not need to install Python, pip, Git or host filesystem tools.
+  libusb. You do not need to install Python, pip, Git, host filesystem tools or,
+  on Windows, any USB driver.
 - Allow enough local disk space for downloads and the selected backups. The
   installer checks backup space before writing. Keep the complete saved session
   directory after installation, preferably with another copy on separate storage.
@@ -46,13 +48,44 @@ authorized ADB serial to a physical USB port, because a server holding the
 device makes Windows refuse the descriptor read. Later steps restart the
 server on demand; the device's USB debugging authorization is unaffected.
 
-On Windows, both the remote's MediaTek download interface and the Couch installer
-interface (VID `0e8d`, PID `201c`) need compatible **WinUSB** bindings. Android ADB
-uses its own interface and can work while these other interfaces remain
-unavailable. Configure only the selected remote's interfaces. The installer does
-not install or replace USB drivers automatically and stops if it cannot claim
-the selected interface. Platform fixture success is not physical Windows driver
-validation.
+On Windows the installer needs no driver work: it talks to the remote through
+the serial ports Windows creates by itself. libusb on Windows can only open a
+device bound to WinUSB, and nothing binds WinUSB by accident, so the two USB
+identities the installer must open take the serial route instead:
+
+- the MediaTek preloader (VID `0e8d`, PID `0003`), which exists for only a few
+  seconds after the installer restarts the remote, is a CDC ACM device. Windows
+  10 and 11 bind their built-in `usbser` driver to it ("USB Serial Device
+  (COMx)"), or a MediaTek VCOM driver over the same class if one was ever
+  installed, and the worker delivers the download agent over that COM port, the
+  way SP Flash Tool always has on Windows;
+- the RAM installer stage that boots after the bootstrap write (VID `0e8d`,
+  PID `201c`) carries a CDC ACM function beside its vendor interface. Windows
+  binds `usbser` to it as well, and the stage answers its Wi-Fi provisioning
+  protocol on that port. The vendor interface stays unbound on Windows, which
+  is harmless.
+
+The first time the preloader ever appears on a machine, Windows usually spends
+the whole download window installing that driver. The installer then restarts
+the remote through ADB and tries again, up to three times; the second
+appearance is instant. Startup is read-only, so a missed window writes nothing.
+A remote that does not return to Android within 90 seconds is not restarted
+automatically: hold the side Power button until it turns off, start it again
+and run the installer again.
+
+Before opening any device, the installer reads the driver Windows has recorded
+for the preloader under `HKLM\SYSTEM\CurrentControlSet\Enum\USB`. A serial
+port driver, WinUSB (or libusbK or libusb0, which libusb opens directly) or no
+record at all are all fine; only an instance bound to some third driver is
+shown, with the Device Manager steps to remove it. The installer never installs
+or replaces drivers. Windows ADB drivers are a separate matter: `adb devices`
+must list the remote before the installer can start, as on any platform.
+
+If a Windows machine still cannot reach download mode, booting a Linux live USB
+(an Ubuntu live session, no installation needed) and running the Linux command
+below from it is an alternative. WSL is not a shortcut: WSL2 USB passthrough
+needs usbipd-win, which replaces the device's driver itself and re-attaches too
+slowly for the preloader's window.
 
 ## Release commands
 
@@ -63,17 +96,19 @@ Linux x64 and macOS, from an interactive terminal:
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.115/install.sh | sh
+  https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.130/install.sh | sh
 ```
 
 Windows x64, from PowerShell:
 
 ```powershell
-Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.115/install.ps1' | Invoke-Expression
+Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.130/install.ps1' | Invoke-Expression
 ```
 
 The release launcher verifies the native host, terminal and release configuration
-before execution. Selecting **Cancel** at the first menu creates no installation
+before execution. The terminal's heading row shows the release it is running
+(`installer v0.1.0-…`), and the finish screen repeats it; check that against the
+command above before reporting a problem, and include it in any report. Selecting **Cancel** at the first menu creates no installation
 session and opens no device.
 
 ## Installation flow
@@ -157,6 +192,10 @@ Private trial artifacts and session history are kept outside published releases.
 Worker startup failures report an allowlisted exception category, numeric USB error codes, and a reviewed adapter source filename/line. Exception messages, paths, locals, and device data are excluded. A failure stops the worker; the diagnostic does not authorize an automatic retry or restore.
 
 On Linux, a newly enumerated preloader node may appear before udev applies its existing permissions. The adapter allows up to one second for access to that exact selected device, retrying only libusb access-denied errors before any handshake. Persistent access denial stops installation: check that the installer user's effective groups include the group granted by the device's udev rule. Do not run the installer as root or broaden access to unrelated USB devices.
+
+If the installer stops with "original boot/overlay pair is not HA100 Android firmware", the saved originals did not pass the structural check (an Android boot image with a gzip cpio ramdisk carrying `init.rc`, and a MediaTek dtbo overlay). The message names the failing check. `tools/installer/support/originals_check.py SESSION_DIR` reads the session's journal and the first bytes of the saved originals and prints the installer release that ran, the ramdisk compression, the ramdisk root entries and the overlay magic, without sending or writing anything; attach its output to a report. Releases before .115 stopped instead with "differs from reviewed HA100 Android firmware", a firmware allowlist that no longer exists; the fix for that message is the current release command.
+
+On Windows, the worker resolves the preloader and the installer stage to their COM ports by vendor, product and physical port chain (`serial.tools.list_ports`), accepts exactly one match, and reports the same USB-style timeouts and disconnects as the libusb path so every protocol step above the transport is unchanged. If Windows recorded WinUSB for every preloader instance, the worker claims it through libusb instead.
 
 On macOS, "needs administrator rights" before the downloads means no sudo credential is cached: start through `install.sh`, or run `sudo -v` in the same terminal and start again. A libusb access error at the interface claim means the worker was not elevated after all. The host refreshes the credential in the background until the worker has started, so a long firmware download cannot let it expire.
 

@@ -38,6 +38,7 @@ pub fn materialize(session: &SessionGuard) -> Result<std::path::PathBuf> {
         ),
         ("mtk_usb.py", include_bytes!("../../mtk_usb.py").as_slice()),
         ("mtk_tty.py", include_bytes!("../../mtk_tty.py").as_slice()),
+        ("mtk_com.py", include_bytes!("../../mtk_com.py").as_slice()),
         (
             "mtk_readonly.py",
             include_bytes!("../../mtk_readonly.py").as_slice(),
@@ -477,6 +478,8 @@ fn reviewed_source(value: &Value) -> &str {
                 "mtk_adapter.py"
                     | "mtk_usb.py"
                     | "mtk_tty.py"
+                    | "mtk_com.py"
+                    | "stage_usb.py"
                     | "mtk_readonly.py"
                     | "mtk_writer.py"
             )
