@@ -333,6 +333,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     active: false,
                     light: false,
                     media: false,
+                    activity: false,
+                    kind: 0,
                     power_known: false,
                     icon: slint::Image::default(),
                 })
@@ -366,6 +368,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         active: false,
                         light: false,
                     media: false,
+                    activity: false,
+                    kind: 0,
                         power_known: false,
                         icon: slint::Image::default(),
                     })
@@ -403,6 +407,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         active: false,
                         light: false,
                     media: false,
+                    activity: false,
+                    kind: 0,
                         power_known: false,
                         icon: slint::Image::default(),
                     })

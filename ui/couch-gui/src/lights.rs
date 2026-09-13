@@ -96,6 +96,9 @@ struct Entry {
     matter: bool,
     /// A Sonos speaker: the physical keys drive it from this list.
     media: bool,
+    /// An activity pinned above the devices: its glyph index and the
+    /// "source · room" caption the area page's strip shows for it.
+    activity: Option<(i32, String)>,
 }
 enum Operation {
     IrCheck(Id, String, bool, Arc<couch_model::Config>, Input),
@@ -161,6 +164,17 @@ pub(crate) fn row_of_device(config: &couch_model::Config, room: &Id, device: &Id
     let index = config.room(room)?.devices.iter().position(|d| &d.id == device)?;
     Some(activity_rows(config, room) + index)
 }
+/// The caption the area page's activity strip shows: the source device and
+/// the room, joined the way home.rs joins them.
+fn activity_caption(config: &couch_model::Config, activity: &couch_model::Activity) -> String {
+    let source = activity
+        .source
+        .as_ref()
+        .and_then(|id| config.devices().find(|(_, d)| &d.id == id).map(|(_, d)| d.name.as_str()))
+        .unwrap_or("Choose a source");
+    let place = config.room(&activity.room).map(|r| r.name.as_str()).unwrap_or("");
+    format!("{source} · {place}")
+}
 fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, String> {
     let room = config
         .room(room)
@@ -177,6 +191,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
             hue: false,
             matter: false,
             media: false,
+            activity: Some((a.kind.glyph_index(), activity_caption(config, a))),
         })
         .collect();
     entries.extend(room
@@ -196,6 +211,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                         hue: false,
                         matter: false,
                         media: false,
+                        activity: None,
                     })
                 }
                 Some(Integration::Hue { light_id }) if !light_id.starts_with("scene:") => {
@@ -207,6 +223,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                         hue: true,
                         matter: false,
                         media: false,
+                        activity: None,
                     })
                 }
                 Some(Integration::Matter { device }) => Some(Entry {
@@ -217,6 +234,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                     hue: false,
                     matter: true,
                     media: false,
+                    activity: None,
                 }),
                 _ => Some(Entry {
                     name: d.name.clone(),
@@ -226,6 +244,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                     hue: false,
                     matter: false,
                     media: matches!(integration, Some(Integration::Sonos { .. })),
+                    activity: None,
                 }),
             }
         }));
@@ -442,8 +461,8 @@ impl Controller {
     fn row(&self, e: &Entry) -> ChoiceItem {
         let detail = if !e.hue && self.busy.as_deref() == Some(&e.id) {
             "Updating…".into()
-        } else if e.id.starts_with("activity:") {
-            "Open activity".into()
+        } else if let Some((_, caption)) = &e.activity {
+            caption.clone()
         } else if e.id.starts_with("device:") {
             "Press OK for controls".into()
         } else {
@@ -462,10 +481,12 @@ impl Controller {
             icon: crate::icons::image(e.icon),
             title: e.name.clone().into(),
             detail: detail.into(),
-            light: !e.id.starts_with("device:"),
+            light: !e.id.starts_with("device:") && e.activity.is_none(),
             media: e.media,
             active: e.state.as_ref().is_some_and(|s| s.active() == Some(true)),
             power_known: e.state.as_ref().is_some_and(|s| s.active().is_some()),
+            activity: e.activity.is_some(),
+            kind: e.activity.as_ref().map_or(0, |(kind, _)| *kind),
         }
     }
     fn update_rows(&self, app: &App, reset: bool) {
@@ -1032,10 +1053,14 @@ mod tests {
             "rooms":[{"id":"r","name":"Room","devices":[
                 {"id":"lamp","name":"Lamp","kind":"light","integration":{"via":"hue","light_id":"1"}},
                 {"id":"tv","name":"TV","kind":"tv"}]}],
-            "activities":[{"id":"watch","name":"Watch","room":"r"},{"id":"elsewhere","name":"Elsewhere","room":"other"}]})).unwrap();
+            "activities":[{"id":"watch","name":"Watch","room":"r","kind":"video","source":"tv"},{"id":"elsewhere","name":"Elsewhere","room":"other"}]})).unwrap();
         let room = Id::new("r");
         let entries = configured_in(&config, &room).unwrap();
         assert_eq!(entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["activity:watch", "hue:1", "device:tv"]);
+        // The pinned row carries what the area page's strip shows for the
+        // activity: its glyph and "source · room"; devices carry nothing.
+        assert_eq!(entries[0].activity, Some((1, "TV · Room".to_string())));
+        assert!(entries[1].activity.is_none() && entries[2].activity.is_none());
         assert_eq!(activity_rows(&config, &room), 1);
         assert!(device_at(&config, &room, 0).is_none());
         assert_eq!(device_at(&config, &room, 1).map(|d| d.id.as_str()), Some("lamp"));

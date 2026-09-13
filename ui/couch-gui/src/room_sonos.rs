@@ -303,6 +303,8 @@ impl Controller {
                                 active: false,
                                 light: false,
                                 media: false,
+                                activity: false,
+                                kind: 0,
                                 power_known: false,
                                 icon: slint::Image::default(),
                             })

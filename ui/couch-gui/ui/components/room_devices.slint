@@ -68,11 +68,39 @@ export component RoomDevices inherits Rectangle {
             height: max(0px, root.items.length * root.pitch - root.row-gap);
             for item[i] in root.items : Rectangle {
                 x: 0px; y: i * root.pitch; width: parent.width; height: root.row-h;
-                background: Theme.surface;
-                border-width: 1px; border-color: Theme.border; border-radius: Theme.r-row;
+                // An activity row is the area page's activity strip, at row
+                // height: raised card, accent glyph, title over "source · room".
+                background: item.activity ? Theme.surface-raised : Theme.surface;
+                border-width: 1px;
+                border-color: item.activity ? Theme.border-raised : Theme.border;
+                border-radius: item.activity ? Theme.r-card : Theme.r-row;
                 // Like the room list, a tap selects; OK acts on the focused row.
                 TouchArea { clicked => { root.index = i; } }
-                HorizontalLayout {
+                if item.activity: HorizontalLayout {
+                    padding-left: 18px; padding-right: 18px; spacing: 12px;
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        if item.kind == 0: HorizontalLayout {
+                            spacing: 3px;
+                            alignment: center;
+                            Rectangle { width: 3px; height: 10px; background: Theme.accent; }
+                            Rectangle { width: 3px; height: 16px; background: Theme.accent; }
+                            Rectangle { width: 3px; height: 7px; background: Theme.accent; }
+                        }
+                        if item.kind != 0: Image {
+                            source: @image-url("../../assets/glyph-play.png");
+                            width: 14px; height: 18px;
+                            colorize: Theme.accent;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center; spacing: 2px; horizontal-stretch: 1;
+                        Text { text: item.title; color: Theme.text; font-size: 21px; font-weight: 600; overflow: elide; }
+                        Text { text: item.detail; color: Theme.text-secondary; font-size: 14px; letter-spacing: 0.06 * 14px; overflow: elide; }
+                    }
+                }
+                if !item.activity: HorizontalLayout {
                     padding: 18px; spacing: 16px;
                     Rectangle {
                         width: 52px; height: 52px; border-radius: Theme.r-disc;
@@ -95,7 +123,11 @@ export component RoomDevices inherits Rectangle {
             if root.items.length > 0 && root.index < root.items.length: Rectangle {
                 x: 0px; y: root.ring-y; width: parent.width; height: root.row-h;
                 background: transparent;
-                FocusRing { focused: true; radius-inner: Theme.r-row; box-width: parent.width; box-height: parent.height; }
+                FocusRing {
+                    focused: true;
+                    radius-inner: root.items[root.index].activity ? Theme.r-card : Theme.r-row;
+                    box-width: parent.width; box-height: parent.height;
+                }
             }
         }
     }

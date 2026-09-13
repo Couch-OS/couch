@@ -103,6 +103,8 @@ impl Demo {
                         power_known: true,
                         light: true,
                         media: false,
+                        activity: false,
+                        kind: 0,
                         icon: lamp(),
                     },
                 );
