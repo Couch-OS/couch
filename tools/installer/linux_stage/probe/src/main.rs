@@ -8,10 +8,10 @@
 compile_error!("private-install and wifi-debug must be built as separate stage binaries");
 #[cfg(feature = "private-install")]
 mod install;
-#[cfg(feature = "private-install")]
-mod serial;
 #[cfg(not(feature = "wifi-debug"))]
 mod scan;
+#[cfg(feature = "private-install")]
+mod serial;
 mod wifi;
 #[cfg(not(feature = "wifi-debug"))]
 use std::time::Instant;
@@ -209,12 +209,7 @@ fn run(root: &Path) -> io::Result<()> {
     }
 }
 /// One validated request on either channel. Errors end the caller's channel.
-fn handle(
-    op: u32,
-    length: u64,
-    input: &mut impl Read,
-    output: &mut impl Write,
-) -> io::Result<()> {
+fn handle(op: u32, length: u64, input: &mut impl Read, output: &mut impl Write) -> io::Result<()> {
     #[cfg(feature = "wifi-debug")]
     let _ = length;
     match op {

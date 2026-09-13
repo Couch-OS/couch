@@ -77,7 +77,8 @@ mod tests {
 
     #[test]
     fn frames_resynchronise_past_junk() {
-        let mut stream: &[u8] = b"AT\r\nATI\r\nCBP1\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00tail";
+        let mut stream: &[u8] =
+            b"AT\r\nATI\r\nCBP1\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00tail";
         let header = frame(&mut stream).unwrap();
         assert_eq!(&header[..4], b"CBP1");
         assert_eq!(stream, b"tail");
