@@ -86,6 +86,16 @@ export component Settings inherits Rectangle {
     in property <bool> update-ready;
     in property <bool> update-armed;           // one OK given, waiting for the second
     in property <string> update-message;
+    // Network: read by the host from the kernel's tables while the panel is up.
+    in property <string> net-address;          // "192.168.1.127 /24"
+    in property <string> net-gateway;
+    in property <string> net-dns;
+    in property <string> net-mac;
+    in property <string> net-web;              // "http://couch.local  ·  192.168.1.127:8090"
+    // Power: three actions; recovery takes two presses.
+    in property <bool> power-busy;
+    in property <bool> power-armed;
+    in property <string> power-message;
 
     callback brightness-changed(int);
     callback dim-changed(int);
@@ -97,6 +107,7 @@ export component Settings inherits Rectangle {
     callback update-install();
     callback update-restart();
     callback update-channel-step(int);
+    callback power-action(int);                // 0 off, 1 restart, 2 recovery
     // Enter panel N, or leave the current tier - the host performs these as
     // slides (like the hub's page changes), so it owns the panel and this only
     // asks. leave() climbs to the root, or closes settings from the root.
@@ -105,8 +116,9 @@ export component Settings inherits Rectangle {
 
     public function take-focus() { fs.focus(); }
 
-    // 0 root, 1 display, 2 wifi, 3 ssh, 4 updates. Set by the host so the
-    // change can be slid to; the cursor resets whenever it moves.
+    // 0 root, 1 display, 2 wifi, 3 ssh, 4 updates, 5 network, 6 power. Set by
+    // the host so the change can be slid to; the cursor resets whenever it
+    // moves. Panel numbers are stable ids; the root list has its own order.
     in property <int> panel: 0;
     property <int> sel: 0;
     changed panel => { root.sel = 0; }
@@ -118,7 +130,8 @@ export component Settings inherits Rectangle {
     property <length> row-h: 72px;
     property <length> gap: 10px;
     property <length> pitch: root.row-h + root.gap;
-    property <[string]> sections: ["Display", "Wi-Fi", "SSH", "Updates"];
+    property <[string]> sections: ["Display", "Wi-Fi", "Network", "SSH", "Updates", "Power"];
+    property <[int]> section-panels: [1, 2, 5, 3, 4, 6];
 
     // Rows per panel, for wrapping the cursor.
     function row-count() -> int {
@@ -128,6 +141,8 @@ export component Settings inherits Rectangle {
         if (root.panel == 4) {               // installed, channel, check, then the step row
             return 3 + (root.update-can-install || root.update-busy || root.update-ready ? 1 : 0);
         }
+        if (root.panel == 5) { return 5; }   // address, gateway, dns, mac, web
+        if (root.panel == 6) { return 3; }   // off, restart, recovery
         return 1;                            // ssh toggle
     }
 
@@ -157,7 +172,8 @@ export component Settings inherits Rectangle {
     }
 
     function activate() {
-        if (root.panel == 0) { root.enter(root.sel + 1); return; }
+        if (root.panel == 0) { root.enter(root.section-panels[root.sel]); return; }
+        if (root.panel == 6) { if (!root.power-busy) { root.power-action(root.sel); } return; }
         if (root.panel == 2) {
             if (root.sel == 0) { root.change-wifi(); } else { root.recovery-wifi(); }
             return;
@@ -210,7 +226,9 @@ export component Settings inherits Rectangle {
             text: root.panel == 0 ? "SETTINGS"
                 : root.panel == 1 ? "DISPLAY"
                 : root.panel == 2 ? "WI-FI"
-                : root.panel == 3 ? "SSH" : "UPDATES";
+                : root.panel == 3 ? "SSH"
+                : root.panel == 5 ? "NETWORK"
+                : root.panel == 6 ? "POWER" : "UPDATES";
             font-size: 15px;
             letter-spacing: 0.14 * 15px;
             color: Theme.text-quaternary;
@@ -303,6 +321,32 @@ export component Settings inherits Rectangle {
                 }
             }
 
+            // Network: what the kernel says, read-only.
+            if root.panel == 5: VerticalLayout {
+                spacing: root.gap;
+                SettingsRow { title: "Address"; value: root.net-address == "" ? "none" : root.net-address; stepper: false; }
+                SettingsRow { title: "Gateway"; value: root.net-gateway == "" ? "none" : root.net-gateway; stepper: false; }
+                SettingsRow { title: "DNS"; value: root.net-dns == "" ? "none" : root.net-dns; stepper: false; }
+                SettingsRow { title: "Wi-Fi MAC"; value: root.net-mac; stepper: false; }
+                SettingsRow { title: "Web UI"; value: root.net-web; stepper: false; }
+            }
+
+            // Power: three actions, and the service's answer underneath.
+            if root.panel == 6: VerticalLayout {
+                spacing: root.gap;
+                SettingsRow { title: "Power off"; value: ">"; stepper: false; }
+                SettingsRow { title: "Restart"; value: ">"; stepper: false; }
+                SettingsRow { title: "Restart into recovery"; value: root.power-armed ? "OK again" : ">"; stepper: false; }
+                Text {
+                    text: root.power-message;
+                    font-size: 15px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                    height: 120px;
+                    vertical-alignment: top;
+                }
+            }
+
             // The focus ring. Its row differs between panels: on Wi-Fi the
             // cursor sits on the "Change network" row (index 1 of two), so the
             // ring is offset by one there.
@@ -329,6 +373,8 @@ export component Settings inherits Rectangle {
             text: root.panel == 1 ? "Left / right to change  ·  Back to return"
                 : root.panel == 0 ? "OK to open  ·  Back to close"
                 : root.panel == 4 ? "OK to run  ·  Left / right for channel  ·  Back to return"
+                : root.panel == 5 ? "Back to return"
+                : root.panel == 6 ? "OK to run  ·  Back to return"
                 : "OK to change  ·  Back to return";
             font-size: 14px;
             color: Theme.text-quaternary;

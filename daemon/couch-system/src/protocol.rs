@@ -22,6 +22,10 @@ pub enum Request {
         version: String,
     },
     UpdateRestart,
+    /// Power off, restart, or restart into the recovery image.
+    Power {
+        action: crate::power::Action,
+    },
     Hotspot,
     Ssh {
         enabled: bool,
@@ -91,6 +95,25 @@ mod tests {
         assert!(read::<Request>(&mut &u32::MAX.to_be_bytes()[..]).is_err());
         let mut data = Vec::new();
         write(&serde_json::json!({"Run":{"command":"reboot"}}), &mut data).unwrap();
+        assert!(read::<Request>(&mut &data[..]).is_err());
+        let mut data = Vec::new();
+        write(
+            &serde_json::json!({"Power":{"action":"recovery"}}),
+            &mut data,
+        )
+        .unwrap();
+        assert!(matches!(
+            read::<Request>(&mut &data[..]).unwrap(),
+            Request::Power {
+                action: crate::power::Action::Recovery
+            }
+        ));
+        let mut data = Vec::new();
+        write(
+            &serde_json::json!({"Power":{"action":"halt","force":true}}),
+            &mut data,
+        )
+        .unwrap();
         assert!(read::<Request>(&mut &data[..]).is_err());
     }
 }

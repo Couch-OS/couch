@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use api::Api;
 use assets::Assets;
+mod local_name;
 use auth::Auth;
 use store::Store;
 
@@ -87,7 +88,8 @@ fn main() {
         }
     };
 
-    let server = match tiny_http::Server::http(resolve(&options.addr)) {
+    let bound = resolve(&options.addr);
+    let server = match tiny_http::Server::http(bound) {
         Ok(server) => Arc::new(server),
         Err(e) => {
             eprintln!("couch-confd: cannot bind {}: {e}", options.addr);
@@ -95,6 +97,44 @@ fn main() {
         }
     };
     println!("couch-confd: listening on http://{}", options.addr);
+    // On the device, also answer on the plain port and for couch.local, so
+    // the address in a browser is a name and nothing else. Neither is fatal:
+    // the port may be taken and multicast may be down; :8090 still works.
+    let plain =
+        local_name::plain_listener(&bound).and_then(|addr| match tiny_http::Server::http(addr) {
+            Ok(server) => {
+                println!("couch-confd: also listening on http://{addr}");
+                Some(Arc::new(server))
+            }
+            Err(e) => {
+                println!(
+                    "couch-confd: port {} unavailable ({e}); use :{}",
+                    addr.port(),
+                    bound.port()
+                );
+                None
+            }
+        });
+    if local_name::is_device_listener(&bound) {
+        let port = plain
+            .as_ref()
+            .map_or(bound.port(), |_| local_name::PLAIN_PORT);
+        match local_name::advertise(port) {
+            Ok(()) => println!(
+                "couch-confd: answering for http://{}{}",
+                local_name::display_host(),
+                if port == local_name::PLAIN_PORT {
+                    String::new()
+                } else {
+                    format!(":{port}")
+                }
+            ),
+            Err(e) => println!(
+                "couch-confd: not advertising {}: {e}",
+                local_name::display_host()
+            ),
+        }
+    }
 
     let auth = Arc::new(Auth::new(&options.pin_file, options.no_auth));
     if auth.disabled() {
@@ -102,7 +142,10 @@ fn main() {
         // the LAN, and this hands that back.
         println!("couch-confd: *** --no-auth: anything on this network can rewrite the config ***");
     } else {
-        println!("couch-confd: pairing by PIN, shown via {}", options.pin_file);
+        println!(
+            "couch-confd: pairing by PIN, shown via {}",
+            options.pin_file
+        );
     }
 
     // A PIN nobody follows up on has to leave the panel by itself. Checking
@@ -116,12 +159,19 @@ fn main() {
         });
     }
 
-    couch_control::serve(&store.path().with_file_name("control.sock")).expect("start private control socket");
+    couch_control::serve(&store.path().with_file_name("control.sock"))
+        .expect("start private control socket");
     let api = Arc::new(Api::new(store, assets, auth));
     let mut workers = Vec::new();
     for _ in 1..WORKERS {
         let (server, api) = (server.clone(), api.clone());
         workers.push(std::thread::spawn(move || serve(&server, &api)));
+    }
+    if let Some(plain) = plain {
+        for _ in 0..WORKERS {
+            let (server, api) = (plain.clone(), api.clone());
+            workers.push(std::thread::spawn(move || serve(&server, &api)));
+        }
     }
     serve(&server, &api);
     for worker in workers {

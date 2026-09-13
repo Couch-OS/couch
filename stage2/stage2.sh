@@ -4,6 +4,9 @@ BASE_DIR=$(dirname "$0")
 if [ "${COUCH_RUNTIME_SELECTED:-0}" != 1 ]; then
     exec /bin/busybox sh "$BASE_DIR/runtime-boot.sh"
 fi
+# The kernel's name, for the DHCP lease and logs; couch.local itself is
+# answered by the config daemon over mDNS, which needs no hostname.
+/bin/busybox hostname couch 2>/dev/null
 . "$BASE_DIR/hardware-init.sh"
 
 # The system service is independent of the GUI and remains available in recovery.

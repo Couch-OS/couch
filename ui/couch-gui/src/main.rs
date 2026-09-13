@@ -29,6 +29,8 @@ mod activity_buttons;
 mod tv;
 mod room_sonos;
 mod sonos_player;
+mod network_info;
+mod power_ui;
 mod updates_ui;
 mod thermostat;
 mod camera;
@@ -652,6 +654,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut update_controls = updates_ui::Controller::install(&app);
+    let mut power_controls = power_ui::Controller::install(&app);
+    // The Network section reads the kernel's tables while it is up.
+    let mut network_info_at: Option<std::time::Instant> = None;
     let mut button_controls = activity_buttons::Controller::new();
     let mut standby = Standby::Active;
     let mut manual_sleep = false;
@@ -963,6 +968,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         network_setup.poll(&app);
         update_controls.poll(&app);
+        power_controls.poll(&app);
+        if app.get_settings_shown() && app.get_settings_panel() == 5 {
+            if network_info_at.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(2)) {
+                network_info_at = Some(std::time::Instant::now());
+                let info = network_info::current();
+                app.set_net_address(info.address.as_str().into());
+                app.set_net_gateway(info.gateway.as_str().into());
+                app.set_net_dns(info.dns.as_str().into());
+                app.set_net_mac(info.mac.as_str().into());
+                app.set_net_web(info.web().into());
+            }
+        } else {
+            network_info_at = None;
+        }
         // Capture only navigation, then slide framebuffer snapshots so the
         // room animation does not rasterize the entire Slint scene every frame.
         let was_room = app.get_light_shown();
