@@ -135,92 +135,21 @@ fn read_trimmed(path: &str) -> Option<String> {
 /// The wpa_supplicant control socket stage2 opens, and the tools that talk to
 /// it. Absolute, because couch-gui's PATH at boot is not guaranteed to carry
 /// /sbin.
-
 // --- user settings ----------------------------------------------------------
 //
-// Brightness and the two standby timeouts, chosen in the settings menu and
-// kept across restarts in one small file. Written atomically (temp then
-// rename) so a crash mid-write cannot leave a half-line the parser trips on;
-// read leniently, since a file a person never opened is the defaults.
-
-/// Dim-after choices, seconds and their labels, index-aligned with the menu.
-pub const DIM_SECS: [u64; 5] = [15, 30, 60, 120, 300];
-pub const DIM_LABELS: [&str; 5] = ["15s", "30s", "1m", "2m", "5m"];
-/// Screen-off choices; 0 is "Never", the one that only dims.
-pub const OFF_SECS: [u64; 6] = [30, 60, 120, 300, 600, 0];
-pub const OFF_LABELS: [&str; 6] = ["30s", "1m", "2m", "5m", "10m", "Never"];
-
-const SETTINGS_PATH: &str = "/opt/couch/settings.conf";
-
-pub struct UiSettings {
-    pub brightness: i32, // 10..100, percent
-    pub dim_index: i32,
-    pub off_index: i32,
-    /// Whether SSH should be running. The preference, persisted so a reboot
-    /// keeps it; couch-system reads it at boot. Only meaningful when a key or
-    /// password is enrolled - see ssh_available.
-    pub ssh: bool,
-}
-
-impl Default for UiSettings {
-    fn default() -> Self {
-        // 100% bright, dim after 30s, off after 2m - the timings that were
-        // hard-coded before the menu existed.
-        // SSH default follows enrolment: if a key is enrolled the shipped
-        // couch-system already starts it, so the stored default matches.
-        UiSettings {
-            brightness: 100,
-            dim_index: 1,
-            off_index: 3,
-            ssh: ssh_available(),
-        }
-    }
-}
+// Brightness, key backlight and the two standby timeouts, chosen in the
+// settings menu or on the web UI's Remote settings page, kept across restarts
+// in one small file that couch-system's `ui_settings` module owns the format
+// of, so the web daemon reads and writes the same values.
+pub use couch_system::ui_settings::{DIM_LABELS, DIM_SECS, OFF_LABELS, OFF_SECS};
+pub type UiSettings = couch_system::ui_settings::Settings;
 
 pub fn load_settings() -> UiSettings {
-    let mut s = UiSettings::default();
-    if let Ok(text) = std::fs::read_to_string(SETTINGS_PATH) {
-        for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else {
-                continue;
-            };
-            let (k, v) = (k.trim(), v.trim());
-            match k {
-                "brightness" => {
-                    if let Ok(n) = v.parse::<i32>() {
-                        s.brightness = n.clamp(10, 100);
-                    }
-                }
-                "dim" => {
-                    if let Ok(n) = v.parse::<i32>() {
-                        s.dim_index = n.clamp(0, DIM_SECS.len() as i32 - 1);
-                    }
-                }
-                "off" => {
-                    if let Ok(n) = v.parse::<i32>() {
-                        s.off_index = n.clamp(0, OFF_SECS.len() as i32 - 1);
-                    }
-                }
-                "ssh" => s.ssh = v == "1",
-                _ => {}
-            }
-        }
-    }
-    s
+    couch_system::ui_settings::load(UiSettings::defaults(ssh_available()))
 }
 
 pub fn save_settings(s: &UiSettings) {
-    let body = format!(
-        "brightness={}\ndim={}\noff={}\nssh={}\n",
-        s.brightness,
-        s.dim_index,
-        s.off_index,
-        if s.ssh { 1 } else { 0 }
-    );
-    let tmp = format!("{SETTINGS_PATH}.tmp");
-    if std::fs::write(&tmp, body).is_ok() {
-        let _ = std::fs::rename(&tmp, SETTINGS_PATH);
-    }
+    let _ = couch_system::ui_settings::save(s);
 }
 
 /// Percent to an 8-bit backlight level, with a floor: 10% must still be
@@ -239,15 +168,7 @@ pub fn wifi_ssid() -> String {
 
 /// Whether sshd is listening.
 pub fn ssh_running() -> bool {
-    std::fs::read_dir("/proc")
-        .map(|dir| {
-            dir.filter_map(|e| e.ok()).any(|e| {
-                std::fs::read_to_string(e.path().join("comm"))
-                    .map(|c| c.trim() == "sshd")
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
+    couch_system::ui_settings::sshd_running()
 }
 
 /// Whether anyone is enrolled to use SSH: a key, or a root password. Without

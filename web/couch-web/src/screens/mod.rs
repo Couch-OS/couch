@@ -267,6 +267,7 @@ mod tizen;
 mod kodi;
 
 mod remote;
+mod remote_device;
 
 mod activity_pages;
 
