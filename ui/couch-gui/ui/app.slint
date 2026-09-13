@@ -284,6 +284,18 @@ export component App inherits Window {
     in-out property <string> wifi-ssid: "";
     in-out property <bool> ssh-on: false;
     in-out property <bool> ssh-available: false;
+    // Updates section of the settings menu; mirrored from the system service.
+    in-out property <string> update-installed;
+    in-out property <string> update-channel;
+    in-out property <string> update-summary;
+    in-out property <bool> update-can-install: false;
+    in-out property <bool> update-ready: false;
+    in-out property <bool> update-armed: false;
+    in-out property <string> update-message;
+    callback update-check();
+    callback update-install();
+    callback update-restart();
+    callback update-channel-step(int);
     // A brief message, e.g. Wi-Fi progress. Non-empty shows it; the host clears it.
     in-out property <string> toast: "";
     in-out property <bool> feedback-enabled: true;
@@ -579,6 +591,17 @@ export component App inherits Window {
         wifi-level: root.wifi-level;
         ssh-on: root.ssh-on;
         ssh-available: root.ssh-available;
+        update-installed: root.update-installed;
+        update-channel: root.update-channel;
+        update-summary: root.update-summary;
+        update-can-install: root.update-can-install;
+        update-ready: root.update-ready;
+        update-armed: root.update-armed;
+        update-message: root.update-message;
+        update-check => { root.update-check(); }
+        update-install => { root.update-install(); }
+        update-restart => { root.update-restart(); }
+        update-channel-step(d) => { root.update-channel-step(d); }
         brightness-changed(v) => { root.setting-brightness = v; root.setting-brightness-changed(v); }
         dim-changed(i) => { root.dim-index = i; root.setting-dim-changed(i); }
         off-changed(i) => { root.off-index = i; root.setting-off-changed(i); }

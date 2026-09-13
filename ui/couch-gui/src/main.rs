@@ -29,6 +29,7 @@ mod activity_buttons;
 mod tv;
 mod room_sonos;
 mod sonos_player;
+mod updates_ui;
 mod thermostat;
 mod camera;
 mod connections;
@@ -631,6 +632,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.on_settings_leave(move || ask(Intent::SettingsBack));
     }
 
+    let mut update_controls = updates_ui::Controller::install(&app);
     let mut button_controls = activity_buttons::Controller::new();
     let mut standby = Standby::Active;
     let mut manual_sleep = false;
@@ -909,6 +911,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         network_setup.poll(&app);
+        update_controls.poll(&app);
         // Capture only navigation, then slide framebuffer snapshots so the
         // room animation does not rasterize the entire Slint scene every frame.
         let was_room = app.get_light_shown();

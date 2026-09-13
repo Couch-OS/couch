@@ -30,3 +30,12 @@ rendering. No system-wide timezone file or clock is changed.
 Validation includes browser save/reload, timezone path traversal rejection and
 an on-device mount-namespace fixture for charging, time format changes and wake.
 Physical dock detection should be checked against the real charging indicator.
+
+## Updates on the remote
+
+The remote's own Settings menu (hold Menu on the home screen) has an
+**Updates** section beside Display, Wi-Fi and SSH. It shows the installed
+build and the release channel, checks for updates, downloads and verifies an
+offered build, and installs it with a two-press restart. It drives the same
+system service the web UI's Updates page does; see
+[runtime updates](runtime-updates.md).

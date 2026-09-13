@@ -14,6 +14,7 @@ description = "The Couch remote's on-screen UI"
 couch-appletv = { path = "../../clients/couch-appletv" }
 couch-sonos = { path = "../../clients/couch-sonos" }
 couch-system = { path = "../../daemon/couch-system" }
+couch-updates = { path = "../../daemon/couch-updates" }
 couch-unifi-protect = { path = "../../clients/couch-unifi-protect", features = ["media"] }
 couch-androidtv = { path = "../../clients/couch-androidtv" }
 couch-ir = { path = "../../clients/couch-ir" }
