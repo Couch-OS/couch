@@ -165,6 +165,56 @@ class UsbBackendTests(unittest.TestCase):
         self.assertIsNone(backend.tty)
         self.assertEqual(self.events, [("detach", 0), ("claim", 0), ("detach", 1), ("claim", 1)])
 
+    def test_windows_uses_the_serial_port_windows_created(self):
+        resolved, closed = [], []
+        tests = self
+        class Transport:
+            def read(self, size, timeout=None):
+                return bytes([tests.handshake_bytes[-1] ^ 0xff])
+            def write(self, data, timeout=None):
+                tests.handshake_bytes.extend(data)
+                return len(data)
+            def set_line_coding(self, *args, **kwargs):
+                pass
+            def setcontrollinestate(self, **kwargs):
+                pass
+            def close(self):
+                closed.append(True)
+        transport = Transport()
+        def resolver(candidate, interface_number, usb):
+            resolved.append((candidate, interface_number, usb))
+            return transport
+        backend = ExactUsbBackend("unused-test-checkout", usb=self.usb, bindings=(self.config, self.mtk),
+                                  platform="win32", callout=resolver, privileged=False)
+        self.addCleanup(backend.close)
+        backend.prepare(b"loader")
+        backend.claim(descriptor(self.dev))
+        self.assertEqual(resolved, [(descriptor(self.dev), 1, self.usb)])
+        self.assertEqual(self.events, [])  # no detach, no interface claim
+        mtk = backend.start_readonly(b"loader", ReadPolicy())
+        self.assertEqual(self.handshake_bytes, [0xa0, 0x0a, 0x50, 0x05])
+        self.assertEqual(mtk.port.cdc.set_line_coding, transport.set_line_coding)
+        with self.assertRaises(InstallError):
+            mtk.port.cdc.ctrl_transfer(0x21, 0x22, 0, 0, None)
+        backend.close()
+        self.assertEqual(closed, [True])
+
+    def test_windows_with_winusb_bound_claims_through_libusb(self):
+        backend = ExactUsbBackend("unused-test-checkout", usb=self.usb, bindings=(self.config, self.mtk),
+                                  platform="win32", callout=lambda candidate, interface_number, usb: None)
+        self.addCleanup(backend.close)
+        backend.claim(descriptor(self.dev))
+        self.assertIsNone(backend.tty)
+        self.assertEqual(self.events, [("detach", 0), ("claim", 0), ("detach", 1), ("claim", 1)])
+
+    def test_default_resolver_is_chosen_by_platform(self):
+        from mtk_com import open_serial_port
+        from mtk_tty import open_callout
+        self.assertIs(ExactUsbBackend("c", usb=self.usb, bindings=(self.config, self.mtk), platform="win32").callout,
+                      open_serial_port)
+        self.assertIs(ExactUsbBackend("c", usb=self.usb, bindings=(self.config, self.mtk), platform="darwin").callout,
+                      open_callout)
+
     def test_other_platforms_never_consult_the_registry(self):
         backend = ExactUsbBackend("unused-test-checkout", usb=self.usb, bindings=(self.config, self.mtk),
                                   platform="linux", callout=lambda *args: self.fail("registry consulted"))

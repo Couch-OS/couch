@@ -6,7 +6,8 @@ Release `v0.1.0-alpha.20260913.115` is published as a prerelease. Its
 launchers passed download, checksum and safe-Cancel tests on Linux, macOS and
 Windows. Complete installations have run on hardware from Linux and, with this
 release's elevated USB worker, from macOS on 2026-09-13. A Windows installation
-has not yet been run on hardware.
+has not yet completed on hardware; the serial-port route described below is what
+Windows testers are validating.
 
 ## Before starting
 
@@ -16,7 +17,8 @@ has not yet been run on hardware.
   network visible to the remote. Linux/macOS need `curl` and `sha256sum` or
   `shasum`; Windows needs PowerShell 5.1 or later.
 - The installer downloads and verifies its own ADB, Python, MediaTek adapter and
-  libusb. You do not need to install Python, pip, Git or host filesystem tools.
+  libusb. You do not need to install Python, pip, Git, host filesystem tools or,
+  on Windows, any USB driver.
 - Allow enough local disk space for downloads and the selected backups. The
   installer checks backup space before writing. Keep the complete saved session
   directory after installation, preferably with another copy on separate storage.
@@ -46,43 +48,44 @@ authorized ADB serial to a physical USB port, because a server holding the
 device makes Windows refuse the descriptor read. Later steps restart the
 server on demand; the device's USB debugging authorization is unaffected.
 
-On Windows, libusb can only open a device whose driver is **WinUSB**. Two
-identities of the remote matter:
+On Windows the installer needs no driver work: it talks to the remote through
+the serial ports Windows creates by itself. libusb on Windows can only open a
+device bound to WinUSB, and nothing binds WinUSB by accident, so the two USB
+identities the installer must open take the serial route instead:
 
-- the Android/Couch device (VID `0e8d`, PID `201c`), whose USB descriptor the
-  installer reads when it binds the authorized ADB serial to a physical port;
 - the MediaTek preloader (VID `0e8d`, PID `0003`), which exists for only a few
-  seconds after the installer restarts the remote and is the device the
-  download agent is delivered to.
+  seconds after the installer restarts the remote, is a CDC ACM device. Windows
+  10 and 11 bind their built-in `usbser` driver to it ("USB Serial Device
+  (COMx)"), or a MediaTek VCOM driver over the same class if one was ever
+  installed, and the worker delivers the download agent over that COM port, the
+  way SP Flash Tool always has on Windows;
+- the RAM installer stage that boots after the bootstrap write (VID `0e8d`,
+  PID `201c`) carries a CDC ACM function beside its vendor interface. Windows
+  binds `usbser` to it as well, and the stage answers its Wi-Fi provisioning
+  protocol on that port. The vendor interface stays unbound on Windows, which
+  is harmless.
 
-Android ADB uses its own interface and proves nothing about either. Windows 10
-and 11 usually bind the preloader to their built-in serial-port driver
-(`usbser`, shown as "USB Serial Device"), or to a MediaTek VCOM driver if one
-was ever installed, and libusb cannot open those. Bind WinUSB to the preloader
-*before* it appears, using Zadig:
-
-1. Download Zadig (zadig.akeo.ie) and run it as Administrator.
-2. Choose **Device > Create New Device** (enable **Options > Advanced Mode** if
-   it is greyed out).
-3. Enter USB ID `0E8D` `0003`, a name such as "MediaTek Preloader", select
-   **WinUSB** as the driver and click **Install Driver**.
-4. If **Options > List All Devices** already shows a `0E8D 0003` entry, such as
-   "MediaTek PreLoader USB VCOM" or "USB Serial Device", select it instead and
-   choose **Replace Driver**.
+The first time the preloader ever appears on a machine, Windows usually spends
+the whole download window installing that driver. The installer then restarts
+the remote through ADB and tries again, up to three times; the second
+appearance is instant. Startup is read-only, so a missed window writes nothing.
+A remote that does not return to Android within 90 seconds is not restarted
+automatically: hold the side Power button until it turns off, start it again
+and run the installer again.
 
 Before opening any device, the installer reads the driver Windows has recorded
-for the preloader under `HKLM\SYSTEM\CurrentControlSet\Enum\USB` and shows it.
-If no recorded instance is bound to WinUSB, it offers to stop; continuing anyway
-ends in the 120-second download-mode timeout with nothing written. The
-installer never installs or replaces drivers. Configure only this remote's
-interfaces. Platform fixture success is not physical Windows driver validation.
+for the preloader under `HKLM\SYSTEM\CurrentControlSet\Enum\USB`. A serial
+port driver, WinUSB (or libusbK or libusb0, which libusb opens directly) or no
+record at all are all fine; only an instance bound to some third driver is
+shown, with the Device Manager steps to remove it. The installer never installs
+or replaces drivers. Windows ADB drivers are a separate matter: `adb devices`
+must list the remote before the installer can start, as on any platform.
 
-A Windows installation has not yet completed on hardware. The reliable
-alternative on a Windows machine is to boot a Linux live USB (an Ubuntu live
-session, no installation needed) and run the Linux command below from it; that
-is the libusb path validated on hardware and needs no driver work. WSL is not a
-shortcut: WSL2 USB passthrough needs usbipd-win, which replaces the device's
-driver itself and re-attaches too slowly for the preloader's window.
+If a Windows machine still cannot reach download mode, booting a Linux live USB
+(an Ubuntu live session, no installation needed) and running the Linux command
+below from it is the path validated on hardware. WSL is not a shortcut: WSL2 USB
+passthrough needs usbipd-win, which replaces the device's driver itself and
+re-attaches too slowly for the preloader's window.
 
 ## Release commands
 
@@ -187,6 +190,8 @@ Private trial artifacts and session history are kept outside published releases.
 Worker startup failures report an allowlisted exception category, numeric USB error codes, and a reviewed adapter source filename/line. Exception messages, paths, locals, and device data are excluded. A failure stops the worker; the diagnostic does not authorize an automatic retry or restore.
 
 On Linux, a newly enumerated preloader node may appear before udev applies its existing permissions. The adapter allows up to one second for access to that exact selected device, retrying only libusb access-denied errors before any handshake. Persistent access denial stops installation: check that the installer user's effective groups include the group granted by the device's udev rule. Do not run the installer as root or broaden access to unrelated USB devices.
+
+On Windows, the worker resolves the preloader and the installer stage to their COM ports by vendor, product and physical port chain (`serial.tools.list_ports`), accepts exactly one match, and reports the same USB-style timeouts and disconnects as the libusb path so every protocol step above the transport is unchanged. If Windows recorded WinUSB for every preloader instance, the worker claims it through libusb instead.
 
 On macOS, "needs administrator rights" before the downloads means no sudo credential is cached: start through `install.sh`, or run `sudo -v` in the same terminal and start again. A libusb access error at the interface claim means the worker was not elevated after all. The host refreshes the credential in the background until the worker has started, so a long firmware download cannot let it expire.
 

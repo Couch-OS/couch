@@ -6,12 +6,25 @@ setup frames on the physical port retained from the successful boot operation.
 """
 import json
 import struct
+import sys
 from couch_install import require
+from mtk_com import open_serial_port
+from mtk_session import Candidate
+
+# Windows starts usbser for a stage it has never seen only after installing the
+# driver; the native host allows this open forty seconds.
+STAGE_PORT_WAIT = 30.0
+
+
+def open_stage_port(selected, usb):
+    """The stage's CDC ACM function as a COM port, found by the retained physical port."""
+    stage = Candidate(selected.bus, 0, selected.ports, 0x0e8d, 0x201c)
+    return open_serial_port(stage, 0, usb, services=lambda vid, pid: [], wait=STAGE_PORT_WAIT)
 
 
 class StageUsb:
-    def __init__(self, usb, backend, selected):
-        self.usb, self.device, self.interface = usb, None, None
+    def __init__(self, usb, backend, selected, *, platform=sys.platform, serial_port=open_stage_port):
+        self.usb, self.device, self.interface, self.serial = usb, None, None, None
         devices = [d for d in usb.core.find(find_all=True, idVendor=0x0e8d,
                    idProduct=0x201c, backend=backend)
                    if d.bus == selected.bus and tuple(d.port_numbers or ()) == selected.ports]
@@ -28,16 +41,22 @@ class StageUsb:
             incoming = [e for e in endpoints if e.bEndpointAddress & 0x80]
             outgoing = [e for e in endpoints if not e.bEndpointAddress & 0x80]
             require(len(incoming) == len(outgoing) == 1, 'Expected one IN and OUT endpoint')
-            # WinUSB has no kernel-driver-active API; claiming the exact vendor
-            # interface succeeds only if its driver binding is already usable.
-            try:
-                require(not self.device.is_kernel_driver_active(interface.bInterfaceNumber),
-                        'Installer interface is owned by a kernel driver')
-            except NotImplementedError:
-                pass
-            usb.util.claim_interface(self.device, interface.bInterfaceNumber)
-            self.interface = interface.bInterfaceNumber
-            self.incoming, self.outgoing = incoming[0], outgoing[0]
+            if platform == 'win32':
+                # Windows has no driver for the vendor interface and libusb
+                # cannot open one without it, but it binds usbser to the ACM
+                # function the stage carries beside it, and the stage answers
+                # the same framed protocol on that serial port.
+                self.serial = serial_port(selected, usb)
+                self.incoming = self.outgoing = self.serial
+            else:
+                try:
+                    require(not self.device.is_kernel_driver_active(interface.bInterfaceNumber),
+                            'Installer interface is owned by a kernel driver')
+                except NotImplementedError:
+                    pass
+                usb.util.claim_interface(self.device, interface.bInterfaceNumber)
+                self.interface = interface.bInterfaceNumber
+                self.incoming, self.outgoing = incoming[0], outgoing[0]
             require(self.request(0, b'', maximum=4) == b'CBP1', 'Invalid installer protocol')
         except BaseException:
             self.close()
@@ -81,6 +100,9 @@ class StageUsb:
         return {'accepted': True}
 
     def close(self):
+        if self.serial is not None:
+            serial, self.serial = self.serial, None
+            serial.close()
         if self.device is not None:
             try:
                 if self.interface is not None:
