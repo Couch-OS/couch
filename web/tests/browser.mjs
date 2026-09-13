@@ -33,7 +33,10 @@ try {
   await page.getByRole('textbox',{name:'Room name',exact:true}).fill('Living room');
   await saved(() => page.getByRole('textbox',{name:'Room name',exact:true}).press('Enter'));
   await page.getByRole('button',{name:/Living room.*Open/}).click();
-  await page.getByRole('button',{name:'Set up a connection',exact:true}).waitFor();
+  // With no connections yet, the room page still offers the picker; its
+  // dropdown only holds the manual/infrared choice.
+  await page.getByRole('heading',{name:'Add to this room',exact:true}).waitFor();
+  assert.deepEqual(await page.getByLabel('From connection',{exact:true}).locator('option').allTextContents(),['Choose a device source','Manual / infrared']);
   await navigate('Connections');
   await page.getByLabel('Connection type',{exact:true}).selectOption('kodi');
   await page.getByLabel('Connection name',{exact:true}).fill('Kodi player');
@@ -44,7 +47,13 @@ try {
   assert.equal((await config()).connections.length,0);
   await page.getByLabel('TCP port',{exact:true}).fill('9090');
   await saved(()=>page.getByRole('button',{name:'Save connection',exact:true}).click());
+  // Creating a connection opens its own page, where its settings live.
+  await page.getByRole('heading',{name:'Kodi player',exact:true}).waitFor();
+  assert(new URL(page.url()).pathname.startsWith('/connections/'));
+  await page.getByRole('heading',{name:'Kodi web access',exact:true}).waitFor();
   assert.equal(await page.getByRole('button',{name:'Add to this room',exact:true}).count(),0);
+  await noOverflow();
+  await page.screenshot({path:'build/webui-review/connection-mobile.png',fullPage:true});
   await navigate('Rooms & devices');await page.getByRole('button',{name:/Living room.*Open/}).click();
   assert.equal(await page.getByLabel('Hostname or IP address').count(),0);
   await saved(()=>page.getByRole('button',{name:'Add to this room',exact:true}).click());
@@ -68,7 +77,25 @@ try {
   await retryEditor.getByRole('button',{name:'Discard changes'}).click();
   await noOverflow();
   await page.screenshot({path:'build/webui-review/devices-mobile.png',fullPage:true});
-  await navigate('Areas');
+  await navigate('Connections');
+  // The list only names each connection and what depends on it; the card opens the page.
+  assert.equal(await page.getByLabel('Hostname or IP address').count(),0);
+  await page.getByRole('button',{name:/Kodi player.*1 assigned device.*Open/}).click();
+  await page.getByRole('heading',{name:'Kodi player',exact:true}).waitFor();
+  await page.getByRole('button',{name:/Living room player/}).waitFor();
+  await page.getByLabel('Hostname or IP address',{exact:true}).fill('192.168.1.21');
+  await saved(()=>page.getByRole('button',{name:'Save connection',exact:true}).click());
+  assert.equal((await config()).connections[0].provider.host,'192.168.1.21');
+  const connectionId=(await config()).connections[0].id;
+  assert.equal((await context.request.delete(`${origin}/api/connections/${connectionId}`)).status(),422);
+  assert.equal((await config()).connections.length,1);
+  await page.getByRole('button',{name:'Back to list',exact:true}).click();
+  await page.getByRole('heading',{name:'Connections',exact:true}).waitFor();
+  // Infrared needs no connection any more: it is configured per device, so the
+  // type list offers none.
+  assert.equal(await page.getByLabel('Connection type',{exact:true}).locator('option[value=ir]').count(),0);
+  // Appearance lives on Remote settings.
+  await navigate('Remote settings');
   const appearance=page.locator('.appearance');
   await appearance.getByRole('button',{name:'Purple accent',exact:true}).click();
   assert.equal((await config()).appearance.accent,'#FFFFFF');
@@ -83,10 +110,11 @@ try {
   await appearance.getByRole('button',{name:'Discard color changes',exact:true}).click();
   await appearance.getByLabel('Hex color',{exact:true}).fill('#4fd1c5');
   await saved(()=>appearance.getByRole('button',{name:'Save appearance',exact:true}).click());
-  await page.reload();await page.getByRole('heading',{name:'Areas',exact:true}).waitFor();
+  await page.reload();await page.getByRole('heading',{name:'Remote settings',exact:true}).waitFor();
   assert.equal(await page.getByLabel('Hex color',{exact:true}).inputValue(),'#4FD1C5');
   await page.getByRole('button',{name:'Purple accent',exact:true}).click();await saved(()=>page.getByRole('button',{name:'Save appearance',exact:true}).click());
   await page.screenshot({path:'build/webui-review/appearance-mobile.png',fullPage:true});
+  await navigate('Areas');
   await page.getByRole('textbox',{name:'Area name'}).fill('Whole home');
   await saved(() => page.getByRole('button',{name:'Create area'}).click());
   await page.getByRole('button',{name:/Whole home/}).click();
@@ -107,31 +135,17 @@ try {
   await navigate('Activities');
   await page.getByRole('button',{name:/Watch TV/}).click();
   const deviceId = (await config()).rooms[0].devices[0].id;
-  await saved(() => page.getByLabel(/^Source device/).selectOption(deviceId));
+  // An activity includes devices first, then picks which of them supplies its screen.
+  await saved(() => page.locator('.activity-device-choice').filter({hasText:'Living room player'}).locator('input').check());
+  await page.getByRole('button',{name:'Remote screen',exact:true}).click();
+  await saved(() => page.locator('.activity-screen-choice').filter({hasText:'Living room player'}).locator('input').check());
+  assert.equal((await config()).activities[0].source, deviceId);
   assert.equal(await page.getByRole('navigation').getByRole('button',{name:'Scenes',exact:true}).count(),0);
   await navigate('Areas');
   await page.getByRole('button',{name:/Whole home/}).click();
   await page.getByRole('button',{name:/Movie night/}).click();
   await saved(() => page.locator('.add-row select').selectOption(deviceId));
   assert.equal((await config()).scenes[0].steps.length,1);
-  await navigate('Connections');
-  const connectionCard=page.locator('.saved-connection');
-  await connectionCard.getByRole('heading',{name:'Kodi player',exact:true}).waitFor();
-  await connectionCard.getByText('Connection settings',{exact:true}).click();
-  await connectionCard.getByLabel('Hostname or IP address',{exact:true}).fill('192.168.1.21');
-  await saved(()=>connectionCard.getByRole('button',{name:'Save connection',exact:true}).click());
-  assert.equal((await config()).connections[0].provider.host,'192.168.1.21');
-  const connectionId=(await config()).connections[0].id;
-  assert.equal((await context.request.delete(`${origin}/api/connections/${connectionId}`)).status(),422);
-  assert.equal((await config()).connections.length,1);
-  await page.getByLabel('Connection type',{exact:true}).selectOption('ir');
-  await saved(()=>page.locator('.creation').getByRole('button',{name:'Save connection',exact:true}).click());
-  await navigate('Rooms & devices');await page.getByRole('button',{name:/Living room.*Open/}).click();
-  await page.getByLabel('From connection',{exact:true}).selectOption((await config()).connections.find(c=>c.provider.kind==='ir').id);
-  await page.locator('.device-picker').getByLabel('Device name',{exact:true}).fill('Infrared TV');
-  await page.getByLabel('Codeset name',{exact:true}).fill('lg-tv');
-  await saved(()=>page.getByRole('button',{name:'Add to this room',exact:true}).click());
-  assert.equal((await config()).rooms[0].devices[1].integration.resource_id,'lg-tv');
   await navigate('Connections');
   await noOverflow();
   // Revision guard: a second editor must not overwrite changes it never saw.
@@ -162,5 +176,5 @@ try {
     await navigate(label); await noOverflow();
   }
   assert.deepEqual(errors,[]);
-  console.log('PASS: empty setup, keyboard creation, validation, device draft/save/discard and failed-save preservation, screen membership/preview/unlink/order, activity source, scene command, connection inventory, stale-write rejection, seed routes, mobile overflow; no browser exceptions.');
+  console.log('PASS: empty setup, keyboard creation, validation, device draft/save/discard and failed-save preservation, screen membership/preview/unlink/order, activity source, scene command, connection list and pages, stale-write rejection, seed routes, mobile overflow; no browser exceptions.');
 } finally { await browser.close(); }

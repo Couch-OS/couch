@@ -19,6 +19,7 @@ pub enum Route {
     Overview,
     Rooms,
     Connections,
+    Connection(Id),
     Settings,
     Updates,
     Areas,
@@ -42,6 +43,7 @@ impl Route {
             ["overview"] => Route::Overview,
             ["rooms"] => Route::Rooms,
             ["connections"] => Route::Connections,
+            ["connections", id] => Route::Connection(Id::new(*id)),
             ["settings"] => Route::Settings,
             ["updates"] => Route::Updates,
             ["areas"] => Route::Areas,
@@ -60,6 +62,7 @@ impl Route {
             Route::Overview => "/".to_string(),
             Route::Rooms => "/rooms".to_string(),
             Route::Connections => "/connections".to_string(),
+            Route::Connection(id) => format!("/connections/{id}"),
             Route::Settings => "/settings".to_string(),
             Route::Updates => "/updates".to_string(),
             Route::Areas | Route::NotFound => "/areas".to_string(),
@@ -76,7 +79,7 @@ impl Route {
         match self {
             Route::Overview => Route::Overview,
             Route::Rooms | Route::Room(_) => Route::Rooms,
-            Route::Connections => Route::Connections,
+            Route::Connections | Route::Connection(_) => Route::Connections,
             Route::Settings => Route::Settings,
             Route::Updates => Route::Updates,
             Route::Scene(_) => Route::Rooms,
@@ -136,6 +139,7 @@ mod tests {
             Route::Overview,
             Route::Rooms,
             Route::Connections,
+            Route::Connection(Id::new("living-room-sonos")),
             Route::Areas,
             Route::Area(Id::new("upstairs")),
             Route::Room(Id::new("study")),
@@ -146,6 +150,7 @@ mod tests {
             assert_eq!(Route::from_path(&route.path()), route);
         }
         assert_eq!(Route::Room(Id::new("study")).tab(), Route::Rooms);
+        assert_eq!(Route::Connection(Id::new("hue")).tab(), Route::Connections);
         assert_eq!(Route::from_path("/scenes"), Route::Rooms);
         assert_eq!(Route::Scene(Id::new("night")).tab(), Route::Rooms);
         assert_eq!(Route::from_path("/unknown"), Route::NotFound);

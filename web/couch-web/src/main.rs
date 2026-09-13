@@ -66,6 +66,19 @@ impl App {
     where
         F: Future<Output = Result<Config, ApiError>> + 'static,
     {
+        self.run_then(call, |_| {});
+    }
+
+    /// [`run`](Self::run), then `then` with the configuration that came back.
+    ///
+    /// For the one thing a screen may want to do after a successful edit that
+    /// is not a re-render: move to the page of what was just created. `then`
+    /// runs after the config signal is set, so the destination exists by the
+    /// time the router is asked for it.
+    pub fn run_then<F>(&self, call: F, then: impl Fn(&Config) + 'static)
+    where
+        F: Future<Output = Result<Config, ApiError>> + 'static,
+    {
         if self.busy.get_untracked() {
             return;
         }
@@ -74,7 +87,10 @@ impl App {
         error.set(None);
         spawn_local(async move {
             match call.await {
-                Ok(next) => config.set(Some(next)),
+                Ok(next) => {
+                    config.set(Some(next.clone()));
+                    then(&next);
+                }
                 Err(e) if e.unauthorized => {
                     // Not an edit that failed - the session went away. Sending
                     // them to the PIN box says what to do; an error banner over

@@ -27,6 +27,7 @@ pub fn render(app: App, config: &Config, route: Route) -> AnyView {
         Route::Overview => overview::overview(app, config),
         Route::Rooms => overview::rooms(app, config),
         Route::Connections => overview::connections(app, config),
+        Route::Connection(id) => connections::detail(app, config, &id),
         Route::Settings => remote::screen(app, config),
         Route::Updates => updates::screen(app),
         Route::Areas => areas::list(app, config),

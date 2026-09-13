@@ -16,7 +16,7 @@ pub fn form(app: App, existing: Option<Connection>) -> AnyView {
     let host = RwSignal::new(h);
     let port = RwSignal::new(p);
     let error = RwSignal::new(String::new());
-    view!{<form on:submit=move|e|{e.prevent_default();let Ok(port)=port.get_untracked().parse::<u16>()else{error.set("Enter a TCP port from 1 to 65535".into());return};let host=host.get_untracked().trim().to_string();let name=name.get_untracked().trim().to_string();if host.is_empty()||name.is_empty()||port==0{error.set("Enter a name, address and TCP port".into());return}let body=json!({"name":name,"provider":Provider::CoreElec{host,port}});match &existing{Some(c)=>app.run(api::put(format!("/api/connections/{}",c.id),body)),None=>app.run(api::post("/api/connections",body))}}>
+    view!{<form on:submit=move|e|{e.prevent_default();let Ok(port)=port.get_untracked().parse::<u16>()else{error.set("Enter a TCP port from 1 to 65535".into());return};let host=host.get_untracked().trim().to_string();let name=name.get_untracked().trim().to_string();if host.is_empty()||name.is_empty()||port==0{error.set("Enter a name, address and TCP port".into());return}let body=json!({"name":name,"provider":Provider::CoreElec{host,port}});match &existing{Some(c)=>app.run(api::put(format!("/api/connections/{}",c.id),body)),None=>super::connections::create(app,body)}}>
     {super::connections::field("Connection name",name,"Living room CoreELEC")}
     {super::connections::field("Hostname or IP address",host,"192.168.1.20")}
     {super::connections::field("Kodi TCP port",port,"9090")}

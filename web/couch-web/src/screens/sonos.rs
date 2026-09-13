@@ -21,7 +21,7 @@ pub fn form(app: App, existing: Option<Connection>) -> AnyView {
         let host = host.get_untracked().trim().to_owned();
         if name.is_empty() || host.parse::<std::net::Ipv4Addr>().is_err() { error.set("Enter a connection name and the speaker’s IPv4 address".into()); return; }
         let body = json!({"name":name,"provider":Provider::Sonos{host}});
-        match &existing { Some(c) => app.run(api::put(format!("/api/connections/{}",c.id),body)), None => app.run(api::post("/api/connections",body)) }
+        match &existing { Some(c) => app.run(api::put(format!("/api/connections/{}",c.id),body)), None => super::connections::create(app,body) }
     }>
         {super::connections::field("Connection name",name,"Living room Sonos")}
         {super::connections::field("Speaker IPv4 address",host,"192.168.1.50")}

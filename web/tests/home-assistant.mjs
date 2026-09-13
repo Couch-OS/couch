@@ -35,16 +35,22 @@ try{
   await fetch(`${base}/api/rooms`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'Test room'})});
   await page.goto(base);await page.getByRole('navigation').getByRole('button',{name:'Connections',exact:true}).click();
   await page.getByLabel('Connection type',{exact:true}).selectOption('home-assistant');
+  await page.getByLabel('Connection name',{exact:true}).fill('Home Assistant');
+  await page.getByRole('button',{name:'Create connection',exact:true}).click();
+  await page.getByRole('heading',{name:'Home Assistant',exact:true}).first().waitFor();
   await page.getByLabel('Server URL',{exact:true}).fill(ha);
   await page.getByLabel('Long-lived access token').fill('test-secret');
   await page.getByRole('button',{name:'Test & save connection'}).click();
-  await page.locator('.saved-connection').getByRole('heading',{name:'Home Assistant',exact:true}).waitFor();
+  await page.locator('.ha-connection').getByRole('status').filter({hasText:'Connected and saved'}).waitFor();
   assert.equal(await page.getByRole('button',{name:'Add to this room',exact:true}).count(),0);
   assert.equal(await page.getByLabel('Long-lived access token').inputValue(),'');
-  assert.equal((await stat(settings)).mode & 0o777,0o600);
-  const publicSettings=await(await fetch(`${base}/api/ha/connection`)).json();assert(!JSON.stringify(publicSettings).includes('test-secret'));
-  const before=await readFile(settings,'utf8');
-  const rejected=await fetch(`${base}/api/ha/connection`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:ha,token:'wrong'})});assert.equal(rejected.status,502);assert.equal(await readFile(settings,'utf8'),before);
+  // A named connection keeps its credentials beside the config, per connection.
+  const connectionId=(await(await fetch(`${base}/api/config`)).json()).connections[0].id;
+  const saved=`${directory}/connections/${connectionId}/ha-connection.json`;
+  assert.equal((await stat(saved)).mode & 0o777,0o600);
+  const publicSettings=await(await fetch(`${base}/api/connections/${connectionId}/ha/connection`)).json();assert(!JSON.stringify(publicSettings).includes('test-secret'));
+  const before=await readFile(saved,'utf8');
+  const rejected=await fetch(`${base}/api/connections/${connectionId}/ha/connection`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:ha,token:'wrong'})});assert.equal(rejected.status,502);assert.equal(await readFile(saved,'utf8'),before);
   await page.getByRole('navigation').getByRole('button',{name:'Rooms & devices',exact:true}).click();await page.getByRole('button',{name:/^Test room/}).click();
   await page.getByRole('button',{name:'Add to this room',exact:true}).click();await page.locator('.device').getByRole('heading',{name:'Test light',exact:true}).waitFor();
   await page.getByRole('button',{name:'Show light controls',exact:true}).click();

@@ -113,7 +113,7 @@ pub fn library(app: App, output: RwSignal<String>, power_only: bool) -> AnyView 
                 {super::connections::field("Import name",import_name,"Remote model")}
                 <label class="field">"File format"<select aria-label="IR import format" on:change=move |e|import_format.set(event_target_value(&e))><option value="flipper">"Flipper .ir"</option><option value="couch">"Couch codeset"</option></select></label>
                 <label class="field">"Paste file contents"<textarea aria-label="IR import contents" rows="5" maxlength="262144" prop:value=move ||import_text.get() on:input=move |e|import_text.set(event_target_value(&e)) /></label>
-                <button type="button" disabled=move ||busy.get()||import_text.get().trim().is_empty() on:click=move |_|fetch("/api/ir/import".into(),Some(json!({"name":import_name.get_untracked(),"format":import_format.get_untracked(),"text":import_text.get_untracked()})))>"Preview imported commands"</button>
+                <button type="button" class="primary" disabled=move ||busy.get()||import_text.get().trim().is_empty() on:click=move |_|fetch("/api/ir/import".into(),Some(json!({"name":import_name.get_untracked(),"format":import_format.get_untracked(),"text":import_text.get_untracked()})))>"Preview imported commands"</button>
             </details>
             <p role="status">{move ||message.get()}</p>
             <Show when=move ||!commands.get().is_empty()><div class="ir-match-actions"><button type="button" class="ghost" disabled=move ||busy.get()||!commands.get().iter().any(|v|v["supported"]==true&&suggested_function(v["name"].as_str().unwrap_or(""),power_only).is_some()) on:click=move |_|{

@@ -24,7 +24,7 @@ reference; **Delete** removes the entity and its dependent references. Room
 removal also deletes its devices and room-bound activities.
 
 Device edits are local drafts with explicit **Save device** and **Discard changes**
-buttons. Connection settings are edited separately on Connections. Other names,
+buttons. Connection settings are edited on each connection's own page under Connections. Other names,
 selectors and ordering save on change. Writes are serialized, controls disable
 while saving, and the header reports Saved, Saving or Not saved. Requests send
 the loaded revision in `If-Match`; a stale write reloads saved configuration with
@@ -66,7 +66,9 @@ COUCH_TEST_URL=http://127.0.0.1:18092 node web/tests/browser.mjs
 ```
 
 The browser flow covers keyboard room creation, invalid connection fields,
-device save/discard and failed-save draft preservation, screen membership,
+the connection list and per-connection pages (creation landing on the new
+page, editing there, the assigned-device list, Back to the list), device
+save/discard and failed-save draft preservation, screen membership,
 preview, unlinking and order, activity sources, scene commands, conflicting
 browser revisions, seeded configurations and 360-pixel mobile overflow. All
 checks passed in Chromium with no browser exceptions. Screenshots are written under ignored `build/webui-review/`.
@@ -529,11 +531,17 @@ against the screen it replaces.
 
 ## Connections and room devices
 
-**Connections** manages named Kodi players, the Home Assistant server, the Philips
-Hue bridge, and the built-in infrared transmitter. Add a connection by type; edit
-its server or pairing settings there. This page has no device assignment or light
-controls. Kodi supports multiple connections; HA, Hue and infrared each support
-one. Infrared sending remains unavailable on the current production kernel.
+**Connections** lists every saved connection as a card: its name, provider,
+how many devices use it and where it points, never a credential. Opening a card
+goes to the connection's own page at `/connections/ID`, which holds everything
+that can be changed about it: the address or pairing form, the provider's
+test controls, the devices assigned to it (each linking to its room), and the
+removal control. Creating a connection from **Add a connection** lands on that
+page too, because for most providers the record is the first of two steps and
+the address or pairing is only offered there. The list itself has no settings,
+device assignment or light controls. Kodi supports multiple connections; HA,
+Hue and infrared each support one. Infrared sending remains unavailable on the
+current production kernel.
 
 **Rooms & devices** creates rooms and assigns devices from saved connections.
 Open a room, select **From connection**, then search discovered HA/Hue lights or

@@ -179,7 +179,7 @@ fn power_settings(app: App, base: String) -> AnyView {
             <label class="field">"IR power code assignments"<textarea rows="4" maxlength="4096" prop:value=move ||codeset.get() disabled=move ||busy.get() on:input=move |e|codeset.set(event_target_value(&e)) /></label>
             <p class="dim">"Use couch-ir codeset lines: button protocol address command. Use power for the physical toggle, and power-on / power-off for activity commands. Enter codes verified for your TV; none are supplied automatically. A missing discrete code never falls back to toggle."</p>
         </Show>
-        <button disabled=move ||busy.get()||!loaded.get() on:click=move |_|{
+        <button class="primary" disabled=move ||busy.get()||!loaded.get() on:click=move |_|{
             busy.set(true);let body=json!({"method":method.get_untracked(),"codeset":codeset.get_untracked()});
             spawn_local(async move{let response=api::ha("PUT",&endpoint.get_value(),Some(body)).await;if busy.try_get_untracked().is_none(){return;}match response{Ok(_)=>message.set("Power settings saved. No command was sent.".into()),Err(e)=>fail(app,message,e)}busy.set(false);});
         }>"Save power settings"</button><p role="status">{move ||message.get()}</p>
