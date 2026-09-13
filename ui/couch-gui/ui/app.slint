@@ -289,6 +289,7 @@ export component App inherits Window {
     in-out property <string> update-channel;
     in-out property <string> update-summary;
     in-out property <bool> update-can-install: false;
+    in-out property <bool> update-busy: false;
     in-out property <bool> update-ready: false;
     in-out property <bool> update-armed: false;
     in-out property <string> update-message;
@@ -599,6 +600,7 @@ export component App inherits Window {
         update-channel: root.update-channel;
         update-summary: root.update-summary;
         update-can-install: root.update-can-install;
+        update-busy: root.update-busy;
         update-ready: root.update-ready;
         update-armed: root.update-armed;
         update-message: root.update-message;

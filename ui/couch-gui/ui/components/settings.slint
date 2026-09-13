@@ -82,6 +82,7 @@ export component Settings inherits Rectangle {
     in property <string> update-channel;       // "Stable" / "Alpha"
     in property <string> update-summary;       // the value on the check row
     in property <bool> update-can-install;
+    in property <bool> update-busy;            // a check, download or restart is in flight
     in property <bool> update-ready;
     in property <bool> update-armed;           // one OK given, waiting for the second
     in property <string> update-message;
@@ -109,6 +110,11 @@ export component Settings inherits Rectangle {
     in property <int> panel: 0;
     property <int> sel: 0;
     changed panel => { root.sel = 0; }
+    // The Updates step row comes and goes with the service's state; the cursor
+    // must never be left on a row that is no longer there.
+    changed update-can-install => { root.sel = Math.min(root.sel, root.row-count() - 1); }
+    changed update-busy => { root.sel = Math.min(root.sel, root.row-count() - 1); }
+    changed update-ready => { root.sel = Math.min(root.sel, root.row-count() - 1); }
     property <length> row-h: 72px;
     property <length> gap: 10px;
     property <length> pitch: root.row-h + root.gap;
@@ -119,8 +125,8 @@ export component Settings inherits Rectangle {
         if (root.panel == 0) { return root.sections.length; }
         if (root.panel == 1) { return 3; }   // brightness, dim, off
         if (root.panel == 2) { return 2; }   // change network
-        if (root.panel == 4) {               // installed, channel, check, then what applies
-            return 3 + (root.update-can-install ? 1 : 0) + (root.update-ready ? 1 : 0);
+        if (root.panel == 4) {               // installed, channel, check, then the step row
+            return 3 + (root.update-can-install || root.update-busy || root.update-ready ? 1 : 0);
         }
         return 1;                            // ssh toggle
     }
@@ -159,8 +165,10 @@ export component Settings inherits Rectangle {
         if (root.panel == 3) { root.toggle-ssh(); return; }
         if (root.panel == 4) {
             if (root.sel == 2) { root.update-check(); }
-            else if (root.sel == 3) { if (root.update-can-install) { root.update-install(); } else { root.update-restart(); } }
-            else if (root.sel == 4) { root.update-restart(); }
+            else if (root.sel == 3) {
+                if (root.update-ready) { root.update-restart(); }
+                else if (root.update-can-install && !root.update-busy) { root.update-install(); }
+            }
             return;
         }
         // Display rows have no OK action; left/right do the work.
@@ -277,8 +285,14 @@ export component Settings inherits Rectangle {
                 SettingsRow { title: "Installed"; value: root.update-installed; stepper: false; }
                 SettingsRow { title: "Channel"; value: root.update-channel; }
                 SettingsRow { title: "Check for updates"; value: root.update-summary; stepper: false; }
-                if root.update-can-install: SettingsRow { title: "Download & verify"; value: ">"; stepper: false; }
-                if root.update-ready: SettingsRow { title: "Install & restart"; value: root.update-armed ? "OK again" : ">"; stepper: false; }
+                // One step row: what to do next, or what is happening now. It
+                // stays put while a download runs so the cursor has somewhere
+                // to be until "Install & restart" takes its place.
+                if root.update-can-install || root.update-busy || root.update-ready: SettingsRow {
+                    title: root.update-ready ? "Install & restart" : root.update-busy ? "Working…" : "Download & verify";
+                    value: root.update-ready ? (root.update-armed ? "OK again" : ">") : root.update-busy ? root.update-summary : ">";
+                    stepper: false;
+                }
                 Text {
                     text: root.update-message;
                     font-size: 15px;

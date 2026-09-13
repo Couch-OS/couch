@@ -21,6 +21,7 @@ pub mod transaction;
 pub mod vendor_transfer;
 pub mod wifi_debug;
 pub mod wifi_debug_transition;
+pub mod windows_drivers;
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 use serde_json::json;
