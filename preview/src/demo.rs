@@ -102,6 +102,7 @@ impl Demo {
                         active: level > 0,
                         power_known: true,
                         light: true,
+                        media: false,
                         icon: lamp(),
                     },
                 );
