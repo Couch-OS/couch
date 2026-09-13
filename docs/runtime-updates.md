@@ -119,6 +119,10 @@ The pin records build inputs; its capability ID stays independent of application
 release versions. Changing the supported OS capabilities requires a reviewed pin
 and ID change. Updating a reviewed package pin without changing capabilities may
 retain the ID after compatibility validation.
+The same applies to the stable bootstrap: the 2026-09-13 change that clears the
+recovery flag on rollback updated `runtime_boot_sha256` and kept
+`ha100-alpine321-ffmpeg612-runtimeboot2`, because nothing a runtime bundle relies
+on changed; only where a rejected candidate's reboot lands.
 
 The runtime publisher now requires that generated marker at the root of its
 `CLEAN_RUNTIME` input. It signs the ID without shipping the marker. A clean runtime
