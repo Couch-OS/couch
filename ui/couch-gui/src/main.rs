@@ -28,6 +28,7 @@ mod activity_runtime;
 mod activity_buttons;
 mod tv;
 mod room_sonos;
+mod sonos_player;
 mod thermostat;
 mod camera;
 mod connections;

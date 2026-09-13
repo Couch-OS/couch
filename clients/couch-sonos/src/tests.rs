@@ -55,6 +55,27 @@ fn playlists() -> String {
     })
     .to_string()
 }
+fn playback(state: &str, position: u64) -> String {
+    serde_json::json!({
+        "_objectType": "playbackStatus",
+        "playbackState": state,
+        "positionMillis": position,
+        "itemId": "7",
+        "playModes": {"repeat": false, "repeatOne": true, "shuffle": true, "crossfade": false},
+        "availablePlaybackActions": {"canSeek": true, "canSkip": true, "canSkipBack": false, "canPause": true},
+    })
+    .to_string()
+}
+fn metadata() -> String {
+    serde_json::json!({
+        "_objectType": "metadataStatus",
+        "container": {"name": "Made for Spatial Audio", "type": "playlist", "id": {"serviceId": "65435", "objectId": "0"}},
+        "currentItem": {"track": {"name": "Sun Ain't Even Gone Down Yet", "artist": {"name": "Brothers Osborne"}, "album": {"name": "Brothers Osborne"},
+            "imageUrl": "http://192.0.2.10:1400/getaa?s=1&u=x", "durationMillis": 182000, "service": {"name": "Apple Music"}}},
+        "nextItem": {"track": {"name": "Now And Then", "artist": {"name": "The Beatles"}, "durationMillis": 248000}},
+    })
+    .to_string()
+}
 pub(crate) fn groups(coordinator: &str, state: &str) -> String {
     serde_json::json!({
         "_objectType": "groups",
@@ -842,4 +863,155 @@ fn expired_source_selection_stops_after_topology_read() {
         Err(Error::Cancelled)
     );
     thread.join().unwrap();
+}
+
+#[test]
+fn a_snapshot_is_one_topology_read_then_playback_metadata_and_volume() {
+    let (base, thread) = server(vec![
+        (200, info()),
+        (200, groups(PLAYER, "PLAYBACK_STATE_PLAYING")),
+        (200, playback("PLAYBACK_STATE_PLAYING", 61500)),
+        (200, metadata()),
+        (200, volume(26, false)),
+    ]);
+    let client = connect(&base);
+    let snapshot = client.snapshot().unwrap();
+    assert_eq!(snapshot.status.transport, "PLAYING");
+    assert_eq!(snapshot.status.volume, 26);
+    assert_eq!(snapshot.playback.state, "PLAYING");
+    assert_eq!(snapshot.playback.position_ms, 61500);
+    assert_eq!(
+        snapshot.playback.modes,
+        PlayModes {
+            shuffle: true,
+            repeat: false,
+            repeat_one: true,
+            crossfade: false
+        }
+    );
+    assert!(
+        snapshot.playback.can_seek
+            && snapshot.playback.can_skip
+            && !snapshot.playback.can_skip_back
+    );
+    assert_eq!(snapshot.now_playing.container, "Made for Spatial Audio");
+    assert_eq!(snapshot.now_playing.container_type, "playlist");
+    let track = snapshot.now_playing.current.unwrap();
+    assert_eq!(
+        (
+            track.name.as_str(),
+            track.artist.as_str(),
+            track.album.as_str(),
+            track.duration_ms,
+            track.service.as_str()
+        ),
+        (
+            "Sun Ain't Even Gone Down Yet",
+            "Brothers Osborne",
+            "Brothers Osborne",
+            Some(182000),
+            "Apple Music"
+        )
+    );
+    assert_eq!(track.image_url, "http://192.0.2.10:1400/getaa?s=1&u=x");
+    let next = snapshot.now_playing.next.unwrap();
+    assert_eq!(
+        (
+            next.name.as_str(),
+            next.artist.as_str(),
+            next.album.as_str()
+        ),
+        ("Now And Then", "The Beatles", "")
+    );
+    let requests = thread.join().unwrap();
+    assert_eq!(
+        requests.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+        [
+            "/api/v1/players/local/info",
+            "/api/v1/households/local/groups",
+            "/api/v1/groups/RINCON_TEST:1/playback",
+            "/api/v1/groups/RINCON_TEST:1/playbackMetadata",
+            "/api/v1/players/RINCON_TEST/playerVolume",
+        ]
+    );
+    assert!(requests.iter().all(|r| r.method == "GET" && r.key == KEY));
+}
+#[test]
+fn an_empty_metadata_document_is_a_quiet_group_not_an_error() {
+    let (base, thread) = server(vec![
+        (200, info()),
+        (200, groups(PLAYER, "PLAYBACK_STATE_IDLE")),
+        (200, r#"{"_objectType":"metadataStatus"}"#.into()),
+    ]);
+    let client = connect(&base);
+    let now = client.now_playing().unwrap();
+    assert_eq!(now, NowPlaying::default());
+    thread.join().unwrap();
+}
+#[test]
+fn seek_and_play_modes_are_group_writes_refused_on_members() {
+    let (base, thread) = server(vec![
+        (200, info()),
+        (200, groups(PLAYER, "PLAYBACK_STATE_PLAYING")),
+        ok(),
+        (200, groups(PLAYER, "PLAYBACK_STATE_PLAYING")),
+        ok(),
+        (200, groups(OTHER, "PLAYBACK_STATE_PLAYING")),
+    ]);
+    let client = connect(&base);
+    client.seek(90_000).unwrap();
+    client
+        .set_play_modes(PlayModeChange {
+            shuffle: Some(true),
+            repeat_one: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        client.seek(1),
+        Err(Error::NotCoordinator {
+            coordinator: "Sonos Arc".into()
+        })
+    );
+    assert_eq!(
+        client.set_play_modes(PlayModeChange::default()),
+        Err(Error::Command)
+    );
+    let requests = thread.join().unwrap();
+    assert_eq!(
+        requests[2].url,
+        "/api/v1/groups/RINCON_TEST:1/playback/seek"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&requests[2].body).unwrap(),
+        serde_json::json!({"positionMillis": 90000})
+    );
+    assert_eq!(
+        requests[4].url,
+        "/api/v1/groups/RINCON_TEST:1/playback/playMode"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&requests[4].body).unwrap(),
+        serde_json::json!({"playModes": {"shuffle": true, "repeatOne": false}})
+    );
+    assert_eq!(requests.len(), 6);
+}
+#[test]
+fn artwork_is_fetched_plain_without_the_api_key_and_bounded() {
+    let (base, thread) = server(vec![(200, info())]);
+    let client = connect(&base);
+    thread.join().unwrap();
+    let (art_base, art_thread) = server(vec![(200, "not really a jpeg".into())]);
+    let bytes = client
+        .artwork(&format!("{art_base}/getaa?s=1&u=x"))
+        .unwrap();
+    assert_eq!(bytes, b"not really a jpeg");
+    let requests = art_thread.join().unwrap();
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].key, "");
+    assert_eq!(
+        client.artwork("ftp://192.0.2.10/x"),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(client.artwork("/getaa?s=1"), Err(Error::Unsupported));
 }

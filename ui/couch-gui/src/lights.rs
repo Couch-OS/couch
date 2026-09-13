@@ -793,7 +793,7 @@ impl Controller {
                                 .find(|(_, d)| d.id.as_str() == e.id.trim_start_matches("device:"))
                                 .map(|(_, d)| d)
                                 .and_then(|d| c.resolve_integration(&d.integration))
-                                .is_some_and(|i| matches!(i, Integration::Kodi { .. }))
+                                .is_some_and(|i| matches!(i, Integration::Kodi { .. } | Integration::Sonos { .. }))
                         });
                         if kodi {
                             app.invoke_open_activity(e.id.as_str().into());

@@ -13,6 +13,9 @@ use std::{
 /// Players serve the Control API over TLS on 1443; 1400 was the legacy UPnP port.
 const PORT: u16 = 1443;
 const LIMIT: u64 = 512 * 1024;
+/// Artwork is the one thing bigger than a JSON document; a player's proxied
+/// cover is a few hundred KB, so anything past this is refused, not decoded.
+const ART_LIMIT: u64 = 4 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const KEY_HEADER: &str = "X-Sonos-Api-Key";
 /// One operator override for the whole remote, ahead of every file.
@@ -69,13 +72,13 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Player {
     pub uuid: String,
     pub name: String,
     pub model: String,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Status {
     pub player: Player,
     /// Coordinator player id, comparable with `player.uuid`.
@@ -116,6 +119,60 @@ pub struct Source {
     pub name: String,
     /// Where it comes from ("Apple Music", "Sonos playlist · 12 tracks", "This player").
     pub detail: String,
+}
+
+/// What the group is playing, as far as the player will say. Every field is
+/// optional at the wire; an empty string here means the player did not say.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct Track {
+    pub name: String,
+    pub artist: String,
+    pub album: String,
+    /// Absolute URL of the artwork, usually served by the player itself on
+    /// port 1400 as a proxy for the service's image. Fetch it with [`Client::artwork`].
+    pub image_url: String,
+    pub duration_ms: Option<u64>,
+    pub service: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct NowPlaying {
+    /// The playlist, station, queue or input the group is playing from.
+    pub container: String,
+    pub container_type: String,
+    pub current: Option<Track>,
+    pub next: Option<Track>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct PlayModes {
+    pub shuffle: bool,
+    pub repeat: bool,
+    pub repeat_one: bool,
+    pub crossfade: bool,
+}
+/// A partial change to the play modes: `None` leaves a mode as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlayModeChange {
+    pub shuffle: Option<bool>,
+    pub repeat: Option<bool>,
+    pub repeat_one: Option<bool>,
+    pub crossfade: Option<bool>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct PlaybackStatus {
+    /// Group playback state with the `PLAYBACK_STATE_` prefix removed.
+    pub state: String,
+    pub position_ms: u64,
+    pub modes: PlayModes,
+    pub can_seek: bool,
+    pub can_skip: bool,
+    pub can_skip_back: bool,
+}
+/// Everything the player screen shows, from one topology read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Snapshot {
+    pub status: Status,
+    pub playback: PlaybackStatus,
+    pub now_playing: NowPlaying,
 }
 
 // Wire types. Fields are optional at the parser so a firmware that renames or
@@ -200,6 +257,84 @@ struct Playlist {
 struct Playlists {
     #[serde(default)]
     playlists: Vec<Playlist>,
+}
+#[derive(Deserialize, Default)]
+struct NamedThing {
+    #[serde(default)]
+    name: String,
+}
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TrackBody {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    artist: NamedThing,
+    #[serde(default)]
+    album: NamedThing,
+    #[serde(default)]
+    image_url: String,
+    #[serde(default)]
+    duration_millis: Option<u64>,
+    #[serde(default)]
+    service: NamedThing,
+}
+#[derive(Deserialize, Default)]
+struct ItemBody {
+    #[serde(default)]
+    track: Option<TrackBody>,
+}
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ContainerBody {
+    #[serde(default)]
+    name: String,
+    #[serde(rename = "type", default)]
+    kind: String,
+}
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct MetadataBody {
+    #[serde(default)]
+    container: Option<ContainerBody>,
+    #[serde(default)]
+    current_item: Option<ItemBody>,
+    #[serde(default)]
+    next_item: Option<ItemBody>,
+}
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PlayModesBody {
+    #[serde(default)]
+    repeat: bool,
+    #[serde(default)]
+    repeat_one: bool,
+    #[serde(default)]
+    shuffle: bool,
+    #[serde(default)]
+    crossfade: bool,
+}
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ActionsBody {
+    #[serde(default)]
+    can_seek: bool,
+    #[serde(default)]
+    can_skip: bool,
+    #[serde(default)]
+    can_skip_back: bool,
+}
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PlaybackBody {
+    #[serde(default)]
+    playback_state: String,
+    #[serde(default)]
+    position_millis: u64,
+    #[serde(default)]
+    play_modes: PlayModesBody,
+    #[serde(default)]
+    available_playback_actions: ActionsBody,
 }
 #[derive(Deserialize, Default)]
 struct Groups {
@@ -748,6 +883,166 @@ impl Client {
             Some(&body.to_string()),
         )
         .map(|_| ())
+    }
+    /// The group's playback status: state, position, play modes and which
+    /// transport actions the player says are available right now.
+    pub fn playback_status(&self) -> Result<PlaybackStatus> {
+        let group = self.membership()?;
+        self.playback_in(&group.id)
+    }
+    fn playback_in(&self, group: &str) -> Result<PlaybackStatus> {
+        let body: PlaybackBody = json(&self.request(&format!("/groups/{group}/playback"), None)?)?;
+        Ok(PlaybackStatus {
+            state: transport(&body.playback_state),
+            position_ms: body.position_millis,
+            modes: PlayModes {
+                shuffle: body.play_modes.shuffle,
+                repeat: body.play_modes.repeat,
+                repeat_one: body.play_modes.repeat_one,
+                crossfade: body.play_modes.crossfade,
+            },
+            can_seek: body.available_playback_actions.can_seek,
+            can_skip: body.available_playback_actions.can_skip,
+            can_skip_back: body.available_playback_actions.can_skip_back,
+        })
+    }
+    /// What the group is playing: container, current track and next track.
+    /// TV, line-in and some streams report no track; the container then says
+    /// what is on.
+    pub fn now_playing(&self) -> Result<NowPlaying> {
+        let group = self.membership()?;
+        self.now_playing_in(&group.id)
+    }
+    fn now_playing_in(&self, group: &str) -> Result<NowPlaying> {
+        let body: MetadataBody =
+            json(&self.request(&format!("/groups/{group}/playbackMetadata"), None)?)?;
+        let track = |item: Option<ItemBody>| {
+            item.and_then(|i| i.track)
+                .filter(|t| !t.name.is_empty())
+                .map(|t| Track {
+                    name: t.name,
+                    artist: t.artist.name,
+                    album: t.album.name,
+                    image_url: t.image_url,
+                    duration_ms: t.duration_millis.filter(|d| *d > 0),
+                    service: t.service.name,
+                })
+        };
+        let container = body.container.unwrap_or_default();
+        Ok(NowPlaying {
+            container: container.name,
+            container_type: container.kind,
+            current: track(body.current_item),
+            next: track(body.next_item),
+        })
+    }
+    /// One topology read, then the group's playback, its metadata and this
+    /// player's volume: the player screen's whole picture in four requests.
+    pub fn snapshot(&self) -> Result<Snapshot> {
+        let group = self.membership()?;
+        let playback = self.playback_in(&group.id)?;
+        let now_playing = self.now_playing_in(&group.id)?;
+        let volume = self.player_volume()?;
+        Ok(Snapshot {
+            status: Status {
+                player: self.player.clone(),
+                coordinator: group.coordinator,
+                coordinator_name: group.coordinator_name,
+                transport: group.transport,
+                volume: volume.level,
+                muted: volume.muted,
+            },
+            playback,
+            now_playing,
+        })
+    }
+    pub fn seek(&self, position_ms: u64) -> Result<()> {
+        self.seek_if_current(position_ms, &|| true)
+    }
+    /// Seek within the current track. A group write, so refused on a member
+    /// and checked for freshness after the topology read, like playback.
+    pub fn seek_if_current(&self, position_ms: u64, current: &dyn Fn() -> bool) -> Result<()> {
+        let group = self.coordinated_group(current)?;
+        self.request(
+            &format!("/groups/{}/playback/seek", group.id),
+            Some(&serde_json::json!({ "positionMillis": position_ms }).to_string()),
+        )
+        .map(|_| ())
+    }
+    pub fn set_play_modes(&self, change: PlayModeChange) -> Result<()> {
+        self.set_play_modes_if_current(change, &|| true)
+    }
+    /// Change shuffle, repeat, repeat-one or crossfade; unset fields stay as
+    /// they are. A group write like the others.
+    pub fn set_play_modes_if_current(
+        &self,
+        change: PlayModeChange,
+        current: &dyn Fn() -> bool,
+    ) -> Result<()> {
+        let mut modes = serde_json::Map::new();
+        for (key, value) in [
+            ("shuffle", change.shuffle),
+            ("repeat", change.repeat),
+            ("repeatOne", change.repeat_one),
+            ("crossfade", change.crossfade),
+        ] {
+            if let Some(value) = value {
+                modes.insert(key.into(), serde_json::Value::Bool(value));
+            }
+        }
+        if modes.is_empty() {
+            return Err(Error::Command);
+        }
+        let group = self.coordinated_group(current)?;
+        self.request(
+            &format!("/groups/{}/playback/playMode", group.id),
+            Some(&serde_json::json!({ "playModes": modes }).to_string()),
+        )
+        .map(|_| ())
+    }
+    /// The group, once this player is confirmed to coordinate it and the
+    /// command is still wanted.
+    fn coordinated_group(&self, current: &dyn Fn() -> bool) -> Result<Membership> {
+        if !current() {
+            return Err(Error::Cancelled);
+        }
+        let group = self.membership()?;
+        if group.coordinator != self.player.uuid {
+            return Err(Error::NotCoordinator {
+                coordinator: group.coordinator_name,
+            });
+        }
+        if !current() {
+            return Err(Error::Cancelled);
+        }
+        Ok(group)
+    }
+    /// Fetch a track's artwork by the absolute URL the player gave. The
+    /// player's own proxy on port 1400 is plain HTTP; a service's own image
+    /// host is HTTPS with normal certificate checks. No API key travels with
+    /// it, the size is bounded, and redirects are not followed off the host.
+    pub fn artwork(&self, url: &str) -> Result<Vec<u8>> {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(Error::Unsupported);
+        }
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .proxy(None)
+            .max_redirects(2)
+            .http_status_as_error(false)
+            .timeout_global(Some(TIMEOUT))
+            .build()
+            .into();
+        let mut response = agent.get(url).call().map_err(|_| Error::Transport)?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(Error::Http(status));
+        }
+        response
+            .body_mut()
+            .with_config()
+            .limit(ART_LIMIT)
+            .read_to_vec()
+            .map_err(|_| Error::Response)
     }
     /// A reading missing either field is a failure, not a zero volume and an
     /// unmuted speaker: a mute toggle decides its write from `muted`, and

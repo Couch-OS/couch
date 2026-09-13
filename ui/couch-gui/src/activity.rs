@@ -69,6 +69,34 @@ fn target(config: &Config, id: &str) -> Result<Target, String> {
         _ => Err("This activity needs a Kodi source device".into()),
     }
 }
+/// A Sonos speaker behind this id, if that is what it is: the device itself,
+/// or an activity whose source device is one. Sonos takes the player screen
+/// over instead of the Kodi worker.
+fn sonos_target(config: &Config, id: &str) -> Option<crate::sonos_player::Target> {
+    let (device, name, room) = if let Some(id) = id.strip_prefix("device:") {
+        let room = config
+            .rooms
+            .iter()
+            .find(|r| r.devices.iter().any(|d| d.id.as_str() == id))?;
+        let device = room.devices.iter().find(|d| d.id.as_str() == id)?;
+        (device, device.name.clone(), room.name.clone())
+    } else {
+        let activity = config.activities.iter().find(|a| a.id.as_str() == id)?;
+        let room = config.room(&activity.room)?;
+        let source = activity.source.as_ref()?;
+        let device = config.devices().find(|(_, d)| &d.id == source).map(|(_, d)| d)?;
+        (device, activity.name.clone(), room.name.clone())
+    };
+    match config.resolve_integration(&device.integration) {
+        Some(Integration::Sonos { host }) => Some(crate::sonos_player::Target {
+            device: device.id.to_string(),
+            name,
+            room,
+            host: host.parse().ok()?,
+        }),
+        _ => None,
+    }
+}
 fn kodi_client(t: &Target) -> Kodi {
     if let Ok(s) =
         couch_kodi::settings::Settings::load(&crate::connections::file(&t.connection, "kodi"))
@@ -288,6 +316,8 @@ pub struct Controller {
     cache: cache::Cache,
     cache_key: Option<cache::Key>,
     presentation_at: Option<Instant>,
+    /// The Sonos presentation of the same screen; open when a speaker is.
+    sonos: crate::sonos_player::Controller,
 }
 impl Controller {
     pub fn new(app: &App) -> Self {
@@ -335,6 +365,13 @@ impl Controller {
             cache: cache::Cache::default(),
             cache_key: None,
             presentation_at: None,
+            sonos: crate::sonos_player::Controller::new(),
+        }
+    }
+    /// Hand the player screen back from Sonos before something else takes it.
+    fn release_sonos(&mut self, app: &App) {
+        if self.sonos.is_open() {
+            self.sonos.close(app);
         }
     }
     fn remember(&mut self, app: &App) {
@@ -379,6 +416,7 @@ impl Controller {
             return;
         };
         self.remember(app);
+        self.release_sonos(app);
         self.cache_key = None;
         self.presentation_at = None;
         self.generation += 1;
@@ -411,12 +449,33 @@ impl Controller {
     }
     fn open(&mut self, app: &App, id: &str, custom: bool) {
         self.remember(app);
+        self.release_sonos(app);
         self.cache_key = None;
         self.presentation_at = None;
         app.set_active_activity(if id.starts_with("device:") { "" } else { id }.into());
         self.pages.close(app);
         app.set_custom_activity_available(false);
         if let Some(config) = crate::connections::config() {
+            if let Some(target) = sonos_target(&config, id) {
+                // Release the Kodi side entirely; the Sonos controller owns the
+                // screen until it is closed or something else opens.
+                self.generation += 1;
+                self.active_generation
+                    .store(self.generation, std::sync::atomic::Ordering::Release);
+                self.snapshot = None;
+                self.target = None;
+                self.busy = false;
+                self.art_key.clear();
+                let _ = self.tx.try_send((self.generation, Request::Close));
+                if app.get_tv_shown() {
+                    app.invoke_tv_action("close".into());
+                    app.set_tv_shown(false);
+                }
+                app.set_player_has_logo(false);
+                app.set_player_logo(slint::Image::default());
+                self.sonos.open(app, target);
+                return;
+            }
             if let Some(activity) = config.activities.iter().find(|a| a.id.as_str() == id) {
                 app.set_custom_activity_available(!activity.setup.pages.is_empty());
                 if custom && activity.setup.custom_screen && !activity.setup.pages.is_empty() {
@@ -434,7 +493,7 @@ impl Controller {
             if let Some((_, device)) = config.devices().find(|(_, d)| Some(&d.id) == source) {
                 if matches!(
                     config.resolve_integration(&device.integration),
-                    Some(Integration::WebOs | Integration::AndroidTv | Integration::AppleTv | Integration::Tizen | Integration::Sonos {..})
+                    Some(Integration::WebOs | Integration::AndroidTv | Integration::AppleTv | Integration::Tizen)
                 ) {
                     self.generation += 1;
                     self.active_generation
@@ -649,6 +708,19 @@ impl Controller {
             if !app.get_player_shown() {
                 continue;
             }
+            if self.sonos.is_open() {
+                if !self.sonos.action(app, &action, value, repeat) {
+                    self.sonos.close(app);
+                    app.set_player_shown(false);
+                    app.set_player_message("".into());
+                    if app.get_light_shown() {
+                        app.invoke_focus_light()
+                    } else {
+                        app.invoke_focus_home()
+                    }
+                }
+                continue;
+            }
             match action.as_str() {
                 "back" => {
                     if app.get_player_panel() != 0 {
@@ -729,6 +801,7 @@ impl Controller {
             }
         }
         self.pages.poll(app);
+        self.sonos.poll(app);
         let serial = crate::config_snapshot::current().map_or(0, |c| c.serial);
         self.cache.prune(serial, Instant::now());
         if self.cache_key.as_ref().is_some_and(|k| k.serial != serial) {

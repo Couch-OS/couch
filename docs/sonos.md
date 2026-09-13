@@ -112,7 +112,10 @@ Each action reports through the large feedback card that brightness and scene
 changes use, with the speaker's name in bold: a volume shows its meter and
 level, mute shows "Muted"/"Unmuted", a skip shows "Next track"/"Previous
 track", a chosen source shows its name over "Playing on Kitchen", and an error
-shows the problem in bold with the speaker as its caption. A group member is
+shows the problem in bold with the speaker as its caption. After a skip the
+card names the track it landed on, with "Next track · artist · album" as the
+caption and the track's cover as a thumbnail when the player reports one (one
+metadata read and one bounded artwork fetch after the skip). A group member is
 told which room controls its playback rather than being forwarded. The Sonos
 worker keeps its connection to the last player between presses and reconnects
 on the next press after a transport failure.
@@ -135,12 +138,39 @@ failing to stream on that player, not the request shape; the remote shows the
 refusal as "Sonos found nothing to play there" and never retries a load. The CLI exposes
 the same two calls as `sources` and `source tv|line-in|favorite:ID|playlist:ID`.
 
-The remote’s speaker card opens Sonos playback, volume, mute and refresh controls.
-Playback failures on group members name the coordinating room; there is no
-automatic forwarding. Status refreshes on open, after commands, and when the
-displayed observation ages out. Stale queued physical commands are cancelled
-before writes, including after preparatory network reads; leaving the screen or
-changing configuration invalidates the queued target.
+## The player screen
+
+Opening a Sonos speaker from a room, or an activity whose source device is
+one, shows the same full-screen player the Kodi Cinema activity uses, in its
+music form: the track's cover as the backdrop, title, "artist · album", a
+live progress line with seek, previous / play-pause / next, and three sheets:
+**Sources** (the source picker: TV and line-in when the hardware has them,
+then favourites and Sonos playlists), **Modes** (shuffle, repeat off / all /
+this track, crossfade) and **Up next** (the queued track; choosing it skips).
+TV, line-in and streams without a track show the container's name and no
+progress; an idle group says so and points at Sources.
+
+The screen is fed by one worker thread that keeps its connection to the
+player and reads `Client::snapshot()` (one topology read, then the group's
+`playback`, its `playbackMetadata` and this player's volume) on open, after
+every command and every three seconds while the screen is up; position is
+interpolated between reads. Artwork comes from the track's `imageUrl` through
+`Client::artwork` (bounded, no API key, normal certificate checks off the
+player), decoded into the 480×800 backdrop with the legibility gradient the
+Kodi screen uses; text stands on its own when art is missing. A group member
+sees the coordinator's track and volume but is told which room controls
+playback instead of having transport, seek, sources or modes sent. The D-pad
+moves an on-screen selection (seek line, transport, sheets) and OK activates
+it; inside a sheet Up/Down walk the list and OK picks. Channel keys skip
+tracks, Volume keys nudge this player's volume by five and show the volume
+card, Mute toggles, Menu opens Sources, Back closes a sheet or the screen.
+
+The remote’s older speaker card (playback, volume, mute and refresh) remains
+for the TV-style screen path. Playback failures on group members name the
+coordinating room; there is no automatic forwarding. Stale queued physical
+commands are cancelled before writes, including after preparatory network
+reads; leaving the screen or changing configuration invalidates the queued
+target.
 
 Authenticated daemon routes are `GET /api/connections/ID/sonos/status` and
 `POST /api/connections/ID/sonos/command`. Command bodies use a closed `command`
