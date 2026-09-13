@@ -94,6 +94,8 @@ struct Entry {
     state: Option<DeviceState>,
     hue: bool,
     matter: bool,
+    /// A Sonos speaker: the physical keys drive it from this list.
+    media: bool,
 }
 enum Operation {
     IrCheck(Id, String, bool, Arc<couch_model::Config>, Input),
@@ -137,14 +139,18 @@ pub struct Controller {
 }
 fn configured(room: &Id) -> Result<Vec<Entry>, String> {
     let config = crate::connections::config().ok_or("Cannot read your rooms")?;
+    configured_in(&config, room)
+}
+fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, String> {
     let room = config
         .room(room)
         .ok_or("This room was removed; return home to reload")?;
     let mut entries: Vec<Entry> = room
         .devices
         .iter()
-        .filter_map(
-            |d| match config.resolve_integration(&d.integration).as_ref() {
+        .filter_map(|d| {
+            let integration = config.resolve_integration(&d.integration);
+            match integration.as_ref() {
                 Some(Integration::HomeAssistant { entity_id })
                     if matches!(ha_domain(entity_id), "light" | "cover" | "climate") =>
                 {
@@ -155,6 +161,7 @@ fn configured(room: &Id) -> Result<Vec<Entry>, String> {
                         state: None,
                         hue: false,
                         matter: false,
+                        media: false,
                     })
                 }
                 Some(Integration::Hue { light_id }) if !light_id.starts_with("scene:") => {
@@ -165,6 +172,7 @@ fn configured(room: &Id) -> Result<Vec<Entry>, String> {
                         state: None,
                         hue: true,
                         matter: false,
+                        media: false,
                     })
                 }
                 Some(Integration::Matter { device }) => Some(Entry {
@@ -174,6 +182,7 @@ fn configured(room: &Id) -> Result<Vec<Entry>, String> {
                     state: None,
                     hue: false,
                     matter: true,
+                    media: false,
                 }),
                 _ => Some(Entry {
                     name: d.name.clone(),
@@ -182,9 +191,10 @@ fn configured(room: &Id) -> Result<Vec<Entry>, String> {
                     state: None,
                     hue: false,
                     matter: false,
+                    media: matches!(integration, Some(Integration::Sonos { .. })),
                 }),
-            },
-        )
+            }
+        })
         .collect();
     entries.extend(
         config
@@ -198,6 +208,7 @@ fn configured(room: &Id) -> Result<Vec<Entry>, String> {
                 state: None,
                 hue: false,
                 matter: false,
+                media: false,
             }),
     );
     Ok(entries)
@@ -434,6 +445,7 @@ impl Controller {
             title: e.name.clone().into(),
             detail: detail.into(),
             light: !e.id.starts_with("device:"),
+            media: e.media,
             active: e.state.as_ref().is_some_and(|s| s.active() == Some(true)),
             power_known: e.state.as_ref().is_some_and(|s| s.active().is_some()),
         }
@@ -988,6 +1000,18 @@ fn tv_connection(config: &couch_model::Config, device_id: &str) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sonos_rows_are_the_only_media_rows() {
+        let config:couch_model::Config=serde_json::from_value(serde_json::json!({"schema_version":1,
+            "connections":[{"id":"s","name":"S","provider":{"kind":"sonos","host":"192.0.2.9"}},{"id":"tv","name":"TV","provider":{"kind":"apple-tv"}}],
+            "rooms":[{"id":"r","name":"Room","devices":[
+                {"id":"speaker","name":"Speaker","kind":"speaker","integration":{"via":"connection","connection_id":"s"}},
+                {"id":"tv","name":"TV","kind":"tv","integration":{"via":"connection","connection_id":"tv"}},
+                {"id":"lamp","name":"Lamp","kind":"light","integration":{"via":"hue","light_id":"1"}}]}]})).unwrap();
+        let entries = configured_in(&config, &Id::new("r")).unwrap();
+        assert_eq!(entries.iter().map(|e| (e.id.as_str(), e.media)).collect::<Vec<_>>(),
+            [("device:speaker", true), ("device:tv", false), ("hue:1", false)]);
+    }
     #[test]
     fn selected_ir_device_keeps_per_device_target() {
         let config:couch_model::Config=serde_json::from_value(serde_json::json!({"schema_version":1,"connections":[{"id":"ir","name":"IR","provider":{"kind":"ir"}}],"rooms":[{"id":"r","name":"Room","devices":[{"id":"tv-a","name":"A","kind":"tv","integration":{"via":"connection","connection_id":"ir","resource_id":"a"}},{"id":"tv-b","name":"B","kind":"tv","integration":{"via":"connection","connection_id":"ir","resource_id":"b"}}]}]})).unwrap();

@@ -230,6 +230,10 @@ export component App inherits Window {
     callback light-back();
     callback room-scenes();
     callback room-scene-step(int);
+    // A highlighted speaker's physical keys, and which row is highlighted
+    // (the host needs it for the Menu key, which never reaches Slint).
+    callback room-media(int, string);
+    in-out property <int> light-index: 0;
     in-out property <bool> scene-feedback-shown: false;
     in-out property <string> scene-feedback-name;
     in-out property <string> scene-feedback-status;
@@ -440,8 +444,10 @@ export component App inherits Window {
         scene-label: root.light-scene-label;
         open-scenes => {root.room-scenes();}
         scene-step(delta) => {root.room-scene-step(delta);}
+        index <=> root.light-index;
         activate(i) => {root.light-activate(i);}
         brightness(i, delta) => {root.light-brightness(i, delta);}
+        media(i, command) => {root.room-media(i, command);}
         back => {root.light-back();}
     }
 

@@ -7,11 +7,13 @@ export component RoomDevices inherits Rectangle {
     in property <bool> shown;
     in property <string> detail;
     in property <[ChoiceItem]> items;
-    property <int> index: 0;
+    in-out property <int> index: 0;
     property <bool> ok-down: false;
     property <length> scroll: 0px;
     callback activate(int);
     callback brightness(int, int);
+    // A speaker row's physical keys: volume-up/down, mute, next, previous.
+    callback media(int, string);
     callback back();
     callback open-scenes();
     callback scene-step(int);
@@ -110,13 +112,27 @@ export component RoomDevices inherits Rectangle {
     keys := FocusScope {
         enabled: root.shown;
         key-pressed(e) => {
+            // Channel keys step scenes, unless a speaker is highlighted: then
+            // they skip tracks, and the volume and mute keys drive it too.
             if (e.text == Key.F21 || e.text == Key.F22) {
-                root.scene-step(e.text == Key.F21 ? 1 : -1);
+                if (root.index < root.items.length && root.items[root.index].media) {
+                    root.media(root.index, e.text == Key.F21 ? "next" : "previous");
+                } else {
+                    root.scene-step(e.text == Key.F21 ? 1 : -1);
+                }
                 return accept;
             }
             if (e.text == Key.F23 || e.text == Key.F24) {
                 if (root.index < root.items.length && root.items[root.index].light) {
                     root.brightness(root.index, e.text == Key.F23 ? 5 : -5);
+                } else if (root.index < root.items.length && root.items[root.index].media) {
+                    root.media(root.index, e.text == Key.F23 ? "volume-up" : "volume-down");
+                }
+                return accept;
+            }
+            if (e.text == Key.F14) {
+                if (root.index < root.items.length && root.items[root.index].media) {
+                    root.media(root.index, "mute");
                 }
                 return accept;
             }
