@@ -222,6 +222,10 @@ JSON. `{id}` is a slug like `living-room`.
 | `DELETE` | `/api/rooms/{id}`                      | and every reference to it: area lists, its devices, activities anchored to it, scene steps naming those devices |
 | `GET`    | `/api/rooms/{id}/devices`              | the room's devices |
 | `PUT`    | `/api/rooms/{id}/devices`              | `["lamp", ...]` - the order the remote lists them in; devices left out keep their place after the named ones |
+| `GET`    | `/api/remote/device`                   | the remote's own settings: `brightness` (10-100 in tens), `keys` (keypad backlight while awake), `dim_index`/`off_index` with their `dim_choices`/`off_choices`, and `ssh` `{available, enabled, running}` |
+| `PUT`    | `/api/remote/device`                   | the same five fields; written to the remote's settings file, which the remote applies within a second; `ssh` also starts or stops sshd through the system service |
+| `GET`    | `/api/remote/network`                  | `address`, `gateway`, `dns`, `mac`, `web` and `host` (`couch.local`), as the remote's Settings → Network shows them |
+| `POST`   | `/api/remote/power`                    | `{"action": "off" \| "restart" \| "recovery", "confirm": true}`; 202 once the system service has accepted it |
 | `POST`   | `/api/rooms/{id}/devices`              | `{name, kind?, icon?, integration?}` |
 | `PUT`    | `/api/rooms/{id}/devices/{device}`     | the whole device; the path names it, so a body with a different id cannot move it |
 | `DELETE` | `/api/rooms/{id}/devices/{device}`     | and every scene step and activity step pointing at it |

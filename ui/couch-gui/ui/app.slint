@@ -277,6 +277,7 @@ export component App inherits Window {
     // hold). A modal page over the hub, owning the D-pad while up.
     in-out property <bool> settings-shown: false;
     in-out property <int> setting-brightness: 100;
+    in-out property <bool> setting-keys-on: true;
     in-out property <[string]> dim-choices;
     in-out property <int> dim-index: 0;
     in-out property <[string]> off-choices;
@@ -311,6 +312,7 @@ export component App inherits Window {
     in-out property <string> toast: "";
     in-out property <bool> feedback-enabled: true;
     callback setting-brightness-changed(int);
+    callback setting-keys-changed(bool);
     callback setting-dim-changed(int);
     callback setting-off-changed(int);
     in-out property <bool> wifi-setup-shown: false;
@@ -598,6 +600,7 @@ export component App inherits Window {
         shown: root.settings-shown;
         panel: root.settings-panel;
         brightness: root.setting-brightness;
+        keys-on: root.setting-keys-on;
         dim-choices: root.dim-choices;
         dim-index: root.dim-index;
         off-choices: root.off-choices;
@@ -629,6 +632,7 @@ export component App inherits Window {
         update-restart => { root.update-restart(); }
         update-channel-step(d) => { root.update-channel-step(d); }
         brightness-changed(v) => { root.setting-brightness = v; root.setting-brightness-changed(v); }
+        keys-changed(v) => { root.setting-keys-on = v; root.setting-keys-changed(v); }
         dim-changed(i) => { root.dim-index = i; root.setting-dim-changed(i); }
         off-changed(i) => { root.off-index = i; root.setting-off-changed(i); }
         change-wifi => { root.setting-change-wifi(); }

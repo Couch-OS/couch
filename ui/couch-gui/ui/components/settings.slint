@@ -66,6 +66,7 @@ export component Settings inherits Rectangle {
 
     // Display.
     in-out property <int> brightness;          // 10..100, in tens
+    in-out property <bool> keys-on;            // keypad backlight while awake
     in property <[string]> dim-choices;
     in-out property <int> dim-index;
     in property <[string]> off-choices;
@@ -98,6 +99,7 @@ export component Settings inherits Rectangle {
     in property <string> power-message;
 
     callback brightness-changed(int);
+    callback keys-changed(bool);
     callback dim-changed(int);
     callback off-changed(int);
     callback change-wifi();
@@ -136,7 +138,7 @@ export component Settings inherits Rectangle {
     // Rows per panel, for wrapping the cursor.
     function row-count() -> int {
         if (root.panel == 0) { return root.sections.length; }
-        if (root.panel == 1) { return 3; }   // brightness, dim, off
+        if (root.panel == 1) { return 4; }   // brightness, keys, dim, off
         if (root.panel == 2) { return 2; }   // change network
         if (root.panel == 4) {               // installed, channel, check, then the step row
             return 3 + (root.update-can-install || root.update-busy || root.update-ready ? 1 : 0);
@@ -161,6 +163,9 @@ export component Settings inherits Rectangle {
             root.brightness = Math.max(10, Math.min(100, root.brightness + delta * 10));
             root.brightness-changed(root.brightness);
         } else if (root.sel == 1) {
+            root.keys-on = !root.keys-on;
+            root.keys-changed(root.keys-on);
+        } else if (root.sel == 2) {
             root.dim-index = Math.mod(root.dim-index + delta + root.dim-choices.length,
                                       root.dim-choices.length);
             root.dim-changed(root.dim-index);
@@ -265,10 +270,11 @@ export component Settings inherits Rectangle {
                 }
             }
 
-            // Display: three stepper rows.
+            // Display: four stepper rows.
             if root.panel == 1: VerticalLayout {
                 spacing: root.gap;
                 SettingsRow { title: "Brightness"; value: root.brightness + "%"; }
+                SettingsRow { title: "Key backlight"; value: root.keys-on ? "On" : "Off"; }
                 SettingsRow { title: "Dim after"; value: root.dim-choices[root.dim-index]; }
                 SettingsRow { title: "Screen off after"; value: root.off-choices[root.off-index]; }
             }

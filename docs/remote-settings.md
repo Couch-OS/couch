@@ -31,6 +31,17 @@ Validation includes browser save/reload, timezone path traversal rejection and
 an on-device mount-namespace fixture for charging, time format changes and wake.
 Physical dock detection should be checked against the real charging indicator.
 
+## The remote's settings on the web
+
+The **Remote settings** page mirrors the remote's own Settings menu below the
+clock and wake options: **Display & keys** (brightness, keypad backlight, dim
+and screen-off timeouts), **SSH**, **Network** (read-only) and **Power**. The
+daemon reads and writes the same file the remote does
+(`/opt/couch/settings.conf`, owned by `couch-system`'s `ui_settings`), and the
+remote notices a change to it within a second and applies it, so the two
+never disagree for long. Clock, wake and appearance stay web-only. The
+endpoints are in [the web UI guide](webui.md).
+
 ## Network on the remote
 
 The remote's own Settings menu (hold Menu on the home screen) has a

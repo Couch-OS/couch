@@ -22,8 +22,10 @@ answering the D-pad.
 
 ## Sections
 
-**Display** — three stepper rows, all applied live and saved at once:
-- Brightness, 10-100% in tens. `system::brightness_level` maps percent to an
+**Display** — four stepper rows, all applied live and saved at once:
+- Brightness, 10-100% in tens.
+- Key backlight, On or Off: whether the keypad LEDs are lit while the screen
+  is awake. They are a GPIO (lit or not), always dark while dimmed or off. `system::brightness_level` maps percent to an
   8-bit backlight with a floor (10% -> 30, so the screen never goes dark), and
   the standby dim level follows at a sixth of it.
 - Dim after: 15s / 30s / 1m / 2m / 5m.

@@ -29,7 +29,6 @@ mod activity_buttons;
 mod tv;
 mod room_sonos;
 mod sonos_player;
-mod network_info;
 mod power_ui;
 mod updates_ui;
 mod thermostat;
@@ -585,13 +584,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let s = settings.borrow();
         app.set_setting_brightness(s.brightness);
+        app.set_setting_keys_on(s.keys);
         app.set_dim_index(s.dim_index);
         app.set_off_index(s.off_index);
+        Panel::set_keys_policy(s.keys, active_level.get());
     }
     // Apply the saved brightness now: claim() and backlight_on() above lit the
     // panel at full to show the splash, but the level a person chose is what
     // they should see from the first frame, not until the first dim.
     Panel::set_backlight(active_level.get());
+    // The web UI's Remote settings page writes the same file; when its
+    // modification time moves, the tick reloads it and applies what differs.
+    let mut settings_seen = couch_system::ui_settings::modified(&couch_system::ui_settings::path());
 
     // Brightness applies to the panel at once (the menu is up, so the screen is
     // active); the timeouts take effect on the next idle. All three persist.
@@ -601,8 +605,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let level = system::brightness_level(pct);
             al.set(level);
             dl.set((level / 6).clamp(8, level));
+            Panel::set_keys_policy(sett.borrow().keys, level);
             Panel::set_backlight(level);
             sett.borrow_mut().brightness = pct;
+            system::save_settings(&sett.borrow());
+        });
+    }
+    {
+        let (al, sett) = (active_level.clone(), settings.clone());
+        app.on_setting_keys_changed(move |on| {
+            sett.borrow_mut().keys = on;
+            Panel::set_keys_policy(on, al.get());
             system::save_settings(&sett.borrow());
         });
     }
@@ -972,7 +985,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if app.get_settings_shown() && app.get_settings_panel() == 5 {
             if network_info_at.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(2)) {
                 network_info_at = Some(std::time::Instant::now());
-                let info = network_info::current();
+                let info = couch_system::netinfo::current();
                 app.set_net_address(info.address.as_str().into());
                 app.set_net_gateway(info.gateway.as_str().into());
                 app.set_net_dns(info.dns.as_str().into());
@@ -1020,6 +1033,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Device state changes in seconds, not frames.
         if now - last_tick > 1_000_000 {
             last_tick = now;
+            // Another writer (the web UI) changed the settings file: apply
+            // what differs from what this process last applied or saved.
+            let seen_now = couch_system::ui_settings::modified(&couch_system::ui_settings::path());
+            if seen_now != settings_seen {
+                settings_seen = seen_now;
+                let fresh = couch_system::ui_settings::load(settings.borrow().clone());
+                let previous = settings.borrow().clone();
+                if fresh != previous {
+                    if fresh.brightness != previous.brightness {
+                        let level = system::brightness_level(fresh.brightness);
+                        active_level.set(level);
+                        dim_level.set((level / 6).clamp(8, level));
+                        app.set_setting_brightness(fresh.brightness);
+                        if standby == Standby::Active {
+                            Panel::set_backlight(level);
+                        }
+                    }
+                    if fresh.keys != previous.keys {
+                        app.set_setting_keys_on(fresh.keys);
+                    }
+                    Panel::set_keys_policy(fresh.keys, active_level.get());
+                    if fresh.dim_index != previous.dim_index {
+                        dim_after_us.set(fresh.dim_secs() * 1_000_000);
+                        app.set_dim_index(fresh.dim_index);
+                    }
+                    if fresh.off_index != previous.off_index {
+                        off_after_us.set(fresh.off_secs() * 1_000_000);
+                        app.set_off_index(fresh.off_index);
+                    }
+                    if fresh.ssh != previous.ssh {
+                        app.set_ssh_on(system::ssh_running());
+                    }
+                    *settings.borrow_mut() = fresh;
+                }
+            }
             if let Some((clock, settings)) = remote_clock.poll() {
                 app.set_clock(clock.into());
                 dock_clock_enabled = settings.dock_clock;

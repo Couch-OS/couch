@@ -1,5 +1,5 @@
-//! What the Settings menu's Network section shows: address, gateway, DNS,
-//! the Wi-Fi MAC and the web UI's name.
+//! What the remote's Network section and the web UI's Remote settings page
+//! show: address, gateway, DNS, the Wi-Fi MAC and the web UI's name.
 //!
 //! Read from the kernel's own tables rather than by running `ip` or `route`:
 //! `/proc/net/route` carries the default route and the subnet mask, the
@@ -13,7 +13,7 @@ const INTERFACE: &str = "wlan0";
 /// The name the config daemon advertises over mDNS.
 pub const WEB_HOST: &str = "couch.local";
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Info {
     /// "192.168.1.127 / 24", or "" when there is no address.
     pub address: String,

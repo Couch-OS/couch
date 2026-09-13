@@ -1065,3 +1065,19 @@ h2 .count,h3 .count {
     padding:16px 18px;
   }
 }
+
+/* Remote settings: the device sections mirrored from the remote's menu. */
+.facts {
+  display:grid;
+  grid-template-columns:max-content 1fr;
+  gap:6px 18px;
+  margin:0;
+  font-size:14px;
+}
+.facts dt { color:var(--dim); }
+.facts dd { margin:0; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.power-actions {
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+}
