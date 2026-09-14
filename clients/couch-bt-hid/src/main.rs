@@ -22,7 +22,7 @@ use zbus::{interface, Connection, Proxy};
 const ADAPTER: &str = "/org/bluez/hci0";
 const AGENT_PATH: &str = "/couch/hid/agent";
 const APP: &str = "/couch/hid/app";
-const SOCK_PATH: &str = "/run/couch-bt-hid.sock";
+const SOCK_PATH: &str = "/tmp/couch-bt-hid.sock";
 
 fn uuid16(x: u16) -> String {
     format!("0000{x:04x}-0000-1000-8000-00805f9b34fb")
@@ -245,7 +245,13 @@ fn start_advertising() -> std::io::Result<bool> {
 }
 
 async fn set_adapter(conn: &Connection, prop: &str, value: Value<'_>) -> zbus::Result<()> {
-    let props = Proxy::new(conn, "org.bluez", ADAPTER, "org.freedesktop.DBus.Properties").await?;
+    let props = Proxy::new(
+        conn,
+        "org.bluez",
+        ADAPTER,
+        "org.freedesktop.DBus.Properties",
+    )
+    .await?;
     props
         .call_method("Set", &("org.bluez.Adapter1", prop, value))
         .await?;
@@ -277,51 +283,131 @@ async fn main() -> zbus::Result<()> {
     // GATT application object tree, under an ObjectManager BlueZ enumerates.
     server.at(APP, zbus::fdo::ObjectManager).await?;
 
-    server.at("/couch/hid/app/s0", GattService { uuid: uuid16(DEVICE_INFO_SERVICE) }).await?;
+    server
+        .at(
+            "/couch/hid/app/s0",
+            GattService {
+                uuid: uuid16(DEVICE_INFO_SERVICE),
+            },
+        )
+        .await?;
     server
         .at(
             "/couch/hid/app/s0/c0",
-            char_obj(PNP_ID, "/couch/hid/app/s0", &["read"], vec![0x02, 0x6b, 0x1d, 0x01, 0x00, 0x01, 0x00]),
+            char_obj(
+                PNP_ID,
+                "/couch/hid/app/s0",
+                &["read"],
+                vec![0x02, 0x6b, 0x1d, 0x01, 0x00, 0x01, 0x00],
+            ),
         )
         .await?;
 
-    server.at("/couch/hid/app/s1", GattService { uuid: uuid16(BATTERY_SERVICE) }).await?;
     server
-        .at("/couch/hid/app/s1/c0", char_obj(BATTERY_LEVEL, "/couch/hid/app/s1", &["read"], vec![100]))
+        .at(
+            "/couch/hid/app/s1",
+            GattService {
+                uuid: uuid16(BATTERY_SERVICE),
+            },
+        )
+        .await?;
+    server
+        .at(
+            "/couch/hid/app/s1/c0",
+            char_obj(BATTERY_LEVEL, "/couch/hid/app/s1", &["read"], vec![100]),
+        )
         .await?;
 
-    server.at("/couch/hid/app/s2", GattService { uuid: uuid16(HID_SERVICE) }).await?;
+    server
+        .at(
+            "/couch/hid/app/s2",
+            GattService {
+                uuid: uuid16(HID_SERVICE),
+            },
+        )
+        .await?;
     server
         .at(
             "/couch/hid/app/s2/c0",
-            char_obj(HID_INFORMATION, "/couch/hid/app/s2", &["read"], vec![0x11, 0x01, 0x00, 0x03]),
+            char_obj(
+                HID_INFORMATION,
+                "/couch/hid/app/s2",
+                &["read"],
+                vec![0x11, 0x01, 0x00, 0x03],
+            ),
         )
         .await?;
     server
-        .at("/couch/hid/app/s2/c1", char_obj(REPORT_MAP, "/couch/hid/app/s2", &["read"], REPORT_MAP_BYTES.to_vec()))
+        .at(
+            "/couch/hid/app/s2/c1",
+            char_obj(
+                REPORT_MAP,
+                "/couch/hid/app/s2",
+                &["read"],
+                REPORT_MAP_BYTES.to_vec(),
+            ),
+        )
         .await?;
     server
-        .at("/couch/hid/app/s2/c2", char_obj(HID_CONTROL_POINT, "/couch/hid/app/s2", &["write-without-response"], vec![0]))
+        .at(
+            "/couch/hid/app/s2/c2",
+            char_obj(
+                HID_CONTROL_POINT,
+                "/couch/hid/app/s2",
+                &["write-without-response"],
+                vec![0],
+            ),
+        )
         .await?;
     server
-        .at("/couch/hid/app/s2/c3", char_obj(PROTOCOL_MODE, "/couch/hid/app/s2", &["read", "write-without-response"], vec![0x01]))
+        .at(
+            "/couch/hid/app/s2/c3",
+            char_obj(
+                PROTOCOL_MODE,
+                "/couch/hid/app/s2",
+                &["read", "write-without-response"],
+                vec![0x01],
+            ),
+        )
         .await?;
     server
-        .at(KEYBOARD_REPORT, char_obj(REPORT, "/couch/hid/app/s2", &["read", "notify"], vec![0u8; 8]))
+        .at(
+            KEYBOARD_REPORT,
+            char_obj(
+                REPORT,
+                "/couch/hid/app/s2",
+                &["read", "notify"],
+                vec![0u8; 8],
+            ),
+        )
         .await?;
     server
         .at(
             "/couch/hid/app/s2/c4/d0",
-            ReportRef { characteristic: owned(KEYBOARD_REPORT), value: vec![KEYBOARD_ID, 0x01] },
+            ReportRef {
+                characteristic: owned(KEYBOARD_REPORT),
+                value: vec![KEYBOARD_ID, 0x01],
+            },
         )
         .await?;
     server
-        .at(CONSUMER_REPORT, char_obj(REPORT, "/couch/hid/app/s2", &["read", "notify"], vec![0u8; 2]))
+        .at(
+            CONSUMER_REPORT,
+            char_obj(
+                REPORT,
+                "/couch/hid/app/s2",
+                &["read", "notify"],
+                vec![0u8; 2],
+            ),
+        )
         .await?;
     server
         .at(
             "/couch/hid/app/s2/c5/d0",
-            ReportRef { characteristic: owned(CONSUMER_REPORT), value: vec![CONSUMER_ID, 0x01] },
+            ReportRef {
+                characteristic: owned(CONSUMER_REPORT),
+                value: vec![CONSUMER_ID, 0x01],
+            },
         )
         .await?;
 
@@ -333,14 +419,20 @@ async fn main() -> zbus::Result<()> {
     // Register the pairing agent.
     let agent_mgr = Proxy::new(&conn, "org.bluez", "/org/bluez", "org.bluez.AgentManager1").await?;
     let agent_path = ObjectPath::try_from(AGENT_PATH)?;
-    agent_mgr.call_method("RegisterAgent", &(&agent_path, "NoInputNoOutput")).await?;
-    agent_mgr.call_method("RequestDefaultAgent", &(&agent_path,)).await?;
+    agent_mgr
+        .call_method("RegisterAgent", &(&agent_path, "NoInputNoOutput"))
+        .await?;
+    agent_mgr
+        .call_method("RequestDefaultAgent", &(&agent_path,))
+        .await?;
 
     // Register the GATT application.
     let gatt_mgr = Proxy::new(&conn, "org.bluez", ADAPTER, "org.bluez.GattManager1").await?;
     let app_path = ObjectPath::try_from(APP)?;
     let options: HashMap<String, Value> = HashMap::new();
-    gatt_mgr.call_method("RegisterApplication", &(&app_path, options)).await?;
+    gatt_mgr
+        .call_method("RegisterApplication", &(&app_path, options))
+        .await?;
     println!("couch-bt-hid: HID GATT application registered");
 
     // Advertise over raw HCI (no LEAdvertisingManager1 on this kernel).
@@ -355,9 +447,16 @@ async fn main() -> zbus::Result<()> {
     let socket = tokio::net::UnixDatagram::bind(SOCK_PATH)?;
     println!("couch-bt-hid: keys on {SOCK_PATH}");
     let mut buf = [0u8; 64];
+    let mut readvertise = tokio::time::interval(std::time::Duration::from_secs(15));
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
+            _ = readvertise.tick() => {
+                // Cheap re-enable; the controller stops advertising on connect,
+                // so this brings us back within 15s of a disconnect. Ignored
+                // (command disallowed) while a link is up.
+                let _ = hci("0x000A", &["01"]);
+            }
             r = socket.recv(&mut buf) => {
                 let Ok(n) = r else { continue };
                 let cmd = String::from_utf8_lossy(&buf[..n]);

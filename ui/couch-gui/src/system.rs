@@ -204,7 +204,7 @@ pub fn bluetooth_available() -> bool {
     couch_system::ui_settings::bluetooth_available()
 }
 pub fn bluetooth_running() -> bool {
-    couch_system::ui_settings::bridge_running()
+    couch_system::ui_settings::hid_running()
 }
 /// Start or stop the bridge through the system service; the error is the
 /// service's own sentence, for the toast.

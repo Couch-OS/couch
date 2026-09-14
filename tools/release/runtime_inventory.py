@@ -18,6 +18,7 @@ from clean_stage import REPO, archive_name, build, require, secret_path
 RUNTIME = {
     'couch-coreelec': 'clients/target/armv7-unknown-linux-musleabihf/release/couch-coreelec',
     'couch-bt-bridge': 'clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-bridge',
+    'couch-bt-hid': 'clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-hid',
     'couch-sonos': 'clients/target/armv7-unknown-linux-musleabihf/release/couch-sonos',
     'couch-gui': 'ui/target/armv7-unknown-linux-musleabihf/release/couch-gui',
     'couch-system': 'daemon/target/armv7-unknown-linux-musleabihf/release/couch-system',

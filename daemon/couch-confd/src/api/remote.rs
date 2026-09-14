@@ -59,7 +59,7 @@ fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
         "bluetooth": {
             "available": ui_settings::bluetooth_available(),
             "enabled": settings.bluetooth,
-            "running": ui_settings::bridge_running(),
+            "running": ui_settings::hid_running(),
         },
     })
 }

@@ -151,6 +151,10 @@ pub fn sshd_running() -> bool {
 pub fn bridge_running() -> bool {
     process_running("couch-bt-bridge")
 }
+/// Whether the HID GATT daemon is running (Bluetooth is fully up).
+pub fn hid_running() -> bool {
+    process_running("couch-bt-hid")
+}
 /// Whether this kernel can do Bluetooth at all: the virtual HCI driver and
 /// the MediaTek transport both present. Older boot images have neither.
 pub fn bluetooth_available() -> bool {
