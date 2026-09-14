@@ -106,3 +106,7 @@
 @media(min-width:1500px){.bluetooth:before{left:84px;right:84px}}
 @media(max-width:1000px){.bluetooth{grid-template-columns:1fr;gap:24px}}
 @media(max-width:850px){.bluetooth{padding-top:36px;padding-bottom:38px;gap:16px}.bluetooth h2 br{display:none}}
+
+/* The contribute path: links inside body copy need their own underline. */
+.project-contribute a{text-decoration:underline;text-underline-offset:4px}
+.project-contribute a:hover{color:#755299}
