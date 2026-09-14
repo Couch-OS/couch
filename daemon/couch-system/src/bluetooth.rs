@@ -81,6 +81,53 @@ fn kill_comm(names: &[&str]) -> Result<(), String> {
     alpine_sh(&script)
 }
 
+/// Kernels built without the in-tree Bluetooth core carry the backported
+/// 4.4 core as modules in the boot ramdisk (`/extra/*.ko`, see
+/// docs/kernel-backports-research.md). Load them the first time the toggle is
+/// used; the virtual HCI misc device then needs its node, which mdev created
+/// at boot on kernels where the driver is built in.
+fn load_modules() -> Result<(), String> {
+    if Path::new("/sys/class/misc/vhci").exists() {
+        return make_vhci_node();
+    }
+    if !Path::new("/extra/hci_vhci.ko").exists() {
+        return Ok(());
+    }
+    for name in ["compat.ko", "bluetooth.ko", "hci_vhci.ko"] {
+        let output = Command::new("/bin/busybox")
+            .args(["insmod", &format!("/extra/{name}")])
+            .output()
+            .map_err(|_| "Could not run insmod")?;
+        let text = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() && !text.contains("File exists") {
+            return Err(format!("Loading {name} failed: {}", text.trim()));
+        }
+    }
+    if !wait_for(|| Path::new("/sys/class/misc/vhci").exists(), 20, Duration::from_millis(100)) {
+        return Err("hci_vhci loaded but no vhci device appeared".into());
+    }
+    make_vhci_node()
+}
+
+fn make_vhci_node() -> Result<(), String> {
+    if Path::new("/dev/vhci").exists() {
+        return Ok(());
+    }
+    let minor = fs::read_to_string("/sys/class/misc/vhci/dev")
+        .ok()
+        .and_then(|d| d.trim().split(':').nth(1).map(str::to_owned))
+        .unwrap_or_else(|| "137".into());
+    let status = Command::new("/bin/busybox")
+        .args(["mknod", "-m", "660", "/dev/vhci", "c", "10", &minor])
+        .status()
+        .map_err(|_| "Could not run mknod")?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Could not create /dev/vhci".into())
+    }
+}
+
 fn wait_for(what: impl Fn() -> bool, steps: u32, step: Duration) -> bool {
     for _ in 0..steps {
         if what() {
@@ -133,6 +180,7 @@ fn up() -> Result<(), String> {
         return Ok(());
     }
     let base = base().ok_or("couch-bt-hid is not part of this runtime")?;
+    load_modules()?;
     // A bluetoothd or HID daemon left over from an earlier bridge holds stale
     // adapter state; when the bridge has to be (re)started, start them fresh.
     if !crate::ui_settings::bridge_running() {

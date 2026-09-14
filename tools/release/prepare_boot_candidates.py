@@ -56,6 +56,14 @@ def clean_ramdisk(root, role):
             expected.add('extra/boot-health.sh')
             expected.add('extra/couch-bt-bridge')
             expected.add('extra/couch-bt-hid')
+            # A kernel built without the in-tree Bluetooth core carries the
+            # backported 4.4 core as modules; they must match this exact
+            # kernel (MODVERSIONS), so they travel in the same boot payload.
+            for name in ('compat.ko', 'bluetooth.ko', 'hci_vhci.ko'):
+                module = root / 'build/backports' / name
+                if module.is_file():
+                    shutil.copyfile(module, tree / 'extra' / name)
+                    expected.add('extra/' + name)
         payloads = {name for name, content in entries.items() if content}
         require(payloads == expected, 'Unexpected payload file in clean ramdisk')
         ramdisk = gzip.compress(raw, compresslevel=9, mtime=0)

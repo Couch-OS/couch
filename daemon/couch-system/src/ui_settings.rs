@@ -204,7 +204,10 @@ pub fn bluetooth_state() -> BluetoothState {
 /// Whether this kernel can do Bluetooth at all: the virtual HCI driver and
 /// the MediaTek transport both present. Older boot images have neither.
 pub fn bluetooth_available() -> bool {
-    Path::new("/dev/vhci").exists() && Path::new("/dev/stpbt").exists()
+    // A boot image built for the backported Bluetooth core has no /dev/vhci
+    // until the toggle loads the modules it carries in /extra.
+    Path::new("/dev/stpbt").exists()
+        && (Path::new("/dev/vhci").exists() || Path::new("/extra/hci_vhci.ko").exists())
 }
 /// Whether a process with exactly this `comm` is running.
 ///
