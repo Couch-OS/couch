@@ -180,16 +180,6 @@ main() {
     while true; do $BB sleep 3600; done
 }
 
-# The panel switches its own backlight off when idle; hold it on quietly. The
-# old heartbeat kept the screen alive only as a side effect of blinking it.
-( while true; do
-    $BB echo 255 > /sys/class/leds/lcd-backlight/brightness 2>/dev/null
-    $BB echo 255 > /sys/class/leds/button-backlight/brightness 2>/dev/null
-    $BB sleep 5
-  done ) &
-# So the runtime can stop it by pid rather than by guessing its shape
-# (stage2/gui-start.sh). /tmp is shared with the rootfs.
-echo $! > /tmp/backlight-keeper.pid
 mark $((BASE+0)) "S0 init entered"
 
 # Everything the console itself depends on has to be up before the pipeline
@@ -202,6 +192,21 @@ $BB mount -t sysfs sysfs /sys
 $BB mount -t tmpfs tmpfs /tmp
 $BB --install -s /bin
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+# The panel switches its own backlight off when idle; hold it on quietly. The
+# old heartbeat kept the screen alive only as a side effect of blinking it.
+# This has to sit below the mounts: the pid file used to be written before the
+# tmpfs went on /tmp, so the runtime saw an empty /tmp and gui-start.sh always
+# fell back to its process-shape scan instead of the pid (#134/#135). The first
+# brightness write also needs /sys.
+( while true; do
+    $BB echo 255 > /sys/class/leds/lcd-backlight/brightness 2>/dev/null
+    $BB echo 255 > /sys/class/leds/button-backlight/brightness 2>/dev/null
+    $BB sleep 5
+  done ) &
+# So the runtime can stop it by pid rather than by guessing its shape
+# (stage2/gui-start.sh). /tmp is shared with the rootfs.
+echo $! > /tmp/backlight-keeper.pid
 
 $BB mkdir -p $ALPINE
 if $BB mount -t ext4 /dev/mmcblk0p23 $ALPINE 2>/dev/null &&
