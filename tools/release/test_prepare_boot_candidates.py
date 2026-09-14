@@ -19,6 +19,7 @@ class BootCandidateTests(unittest.TestCase):
                 'initramfs/boot-health.sh': b'health', 'build/busybox-armv7l': elf(),
                 'build/fbcon': elf(),
                 'clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-bridge': elf(),
+                'clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-hid': elf(),
                 'tools/mkcpio.py': (candidate.REPO / 'tools/mkcpio.py').read_bytes()}.items():
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -40,6 +41,7 @@ class BootCandidateTests(unittest.TestCase):
                     self.assertNotIn('extra/props.tar.gz', names)
                 self.assertIn('extra/boot-health.sh', result['images']['boot']['ramdisk_payload_files'])
                 self.assertIn('extra/couch-bt-bridge', result['images']['boot']['ramdisk_payload_files'])
+                self.assertIn('extra/couch-bt-hid', result['images']['boot']['ramdisk_payload_files'])
                 self.assertNotIn('extra/couch-bt-bridge', result['images']['recovery']['ramdisk_payload_files'])
                 self.assertNotIn('extra/boot-health.sh', result['images']['recovery']['ramdisk_payload_files'])
                 with self.assertRaises(ValueError):
