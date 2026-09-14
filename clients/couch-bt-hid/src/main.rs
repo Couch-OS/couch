@@ -516,6 +516,7 @@ async fn main() -> zbus::Result<()> {
                 let cmd = String::from_utf8_lossy(&buf[..n]);
                 let cmd = cmd.trim();
                 if let Some(usage) = consumer_usage(cmd) {
+                    println!("couch-bt-hid: key {cmd} (usage {usage:#06x})");
                     push(&conn, CONSUMER_REPORT, usage.to_le_bytes().to_vec()).await;
                     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
                     push(&conn, CONSUMER_REPORT, vec![0, 0]).await;
