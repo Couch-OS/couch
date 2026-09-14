@@ -63,6 +63,10 @@ pub struct Controller {
     generation: Arc<AtomicU64>,
     tx: mpsc::SyncSender<Request>,
     rx: mpsc::Receiver<(u64, Feedback)>,
+    // A press the worker queue had no room for. The key is consumed either
+    // way, so without this the remote's primary input disappears in silence;
+    // poll turns it into the same toast every other dispatch path raises.
+    dropped: bool,
 }
 impl Controller {
     pub fn new() -> Self {
@@ -80,6 +84,7 @@ impl Controller {
             generation,
             tx,
             rx: out,
+            dropped: false,
         }
     }
     fn binding(&self, button: Button, gesture: Gesture) -> Option<&Binding> {
@@ -87,20 +92,22 @@ impl Controller {
             .iter()
             .find(|b| b.button == button && b.gesture == gesture)
     }
-    fn fire(&self, button: Button, gesture: Gesture, repeat: bool) -> bool {
+    fn fire(&mut self, button: Button, gesture: Gesture, repeat: bool) -> bool {
         let Some(binding) = self.binding(button, gesture) else {
             return false;
         };
-        if let Some(action) = &binding.action {
-            if !repeat || couch_model::buttons::repeatable(&action.command) {
-                let _ = self.tx.try_send(Request {
-                    generation: self.generation.load(Ordering::SeqCst),
-                    at: Instant::now(),
-                    config: self.config.clone(),
-                    action: action.clone(),
-                    repeat,
-                });
-            }
+        let Some(action) = binding.action.clone() else {
+            return true;
+        };
+        if !repeat || couch_model::buttons::repeatable(&action.command) {
+            let sent = self.tx.try_send(Request {
+                generation: self.generation.load(Ordering::SeqCst),
+                at: Instant::now(),
+                config: self.config.clone(),
+                action,
+                repeat,
+            });
+            self.dropped |= sent.is_err();
         }
         true
     }
@@ -202,12 +209,22 @@ impl Controller {
         for button in due {
             self.fire(button, Gesture::Long, false);
         }
+        self.feedback()
+    }
+    /// What the workers and `fire` left for the main loop. Separate from
+    /// `poll` because it needs no App, and so can be tested without a panel.
+    fn feedback(&mut self) -> Option<Feedback> {
         let generation = self.generation.load(Ordering::SeqCst);
-        self.rx
+        let latest = self
+            .rx
             .try_iter()
             .filter(|(g, _)| *g == generation)
             .map(|(_, e)| e)
-            .last()
+            .last();
+        if std::mem::take(&mut self.dropped) {
+            return Some(Feedback::Error("Still sending the last command".into()));
+        }
+        latest
     }
 }
 // An idle recv() would retain an AVR's scarce control socket forever after
@@ -921,6 +938,26 @@ mod tests {
         assert!(rx.try_recv().unwrap().repeat);
     }
 
+    #[test]
+    fn a_press_dropped_by_a_full_queue_is_reported() {
+        let (mut c, rx) = fixture();
+        c.bindings = vec![Binding {
+            button: Button::VolumeUp,
+            gesture: Gesture::Short,
+            action: Some(Action::new("tv", "volume-up")),
+        }];
+        for _ in 0..8 {
+            assert!(c.handle_press(&press(115, false)));
+        }
+        assert!(c.feedback().is_none());
+        assert!(c.handle_press(&press(115, false)));
+        assert!(
+            matches!(c.feedback(), Some(Feedback::Error(m)) if m == "Still sending the last command")
+        );
+        assert!(c.feedback().is_none());
+        assert_eq!(rx.try_iter().count(), 8);
+    }
+
     fn fixture() -> (Controller, mpsc::Receiver<Request>) {
         let (tx, rx) = mpsc::sync_channel(8);
         let (_, out) = mpsc::channel();
@@ -934,6 +971,7 @@ mod tests {
                 generation: Arc::new(AtomicU64::new(1)),
                 tx,
                 rx: out,
+                dropped: false,
             },
             rx,
         )
