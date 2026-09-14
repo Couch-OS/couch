@@ -266,6 +266,11 @@ export component App inherits Window {
     in-out property <string> light-room-id;
     changed chooser-shown => { if (root.chooser-shown) { fs.focus(); } else if (root.light-shown) { light-page.take-focus(); } }
     public function focus-light() { light-page.take-focus(); }
+    /// The room page's scroll destination and the current place of its focus
+    /// outline, for the room navigation test. Functions rather than out
+    /// properties, for the reason given where they come from.
+    public function room-scroll-destination() -> length { return light-page.scroll-destination(); }
+    public function room-ring-position() -> length { return light-page.ring-position(); }
     public function focus-home() { fs.focus(); }
 
     // --- keyboard -------------------------------------------------------------

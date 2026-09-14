@@ -361,6 +361,16 @@ On-device framebuffer checks with nine rooms, eight devices and twelve scenes
 verified full cards at the top and after scrolling. Use an isolated configuration
 for these checks so household devices and saved configuration remain untouched.
 
+A room page's device rows and its scenes card are one ring of stops, and one
+outline marks them, in page space with the scroll already taken off, the way
+the area pane does it. It was two outlines, one inside the scrolling content
+and one on the card, and neither could travel to the other: a wrap onto the
+card swapped them where they stood, and a wrap back off it brought the first
+one in at the position it had been left at, the top of the list, to slide down
+from there behind the scroll. The card is furniture below the window rather
+than a row in it, so wrapping onto it moves only the outline; wrapping off it
+scrolls to the last row under an outline going straight there.
+
 
 ### Full Lucide catalog
 
