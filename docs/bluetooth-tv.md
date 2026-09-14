@@ -60,8 +60,15 @@ waking, or leave the TV's own remote for that.
 ## How it works
 
 `couch-bt-hid` (the HID daemon) registers a HID-over-GATT service with
-bluetoothd and advertises through raw HCI commands, because the 3.18 kernel's
-BlueZ has no advertising manager. The GUI sends one datagram per key press,
+bluetoothd and then advertises one of two ways, depending on the kernel it
+finds. Where bluetoothd offers an advertising manager (the backported
+Bluetooth core), the daemon registers an advertisement object and bluetoothd
+owns it: it comes back by itself after a TV disconnects. On the 3.18 kernel,
+whose BlueZ has no advertising manager, the daemon drives the controller with
+raw HCI commands and re-enables advertising every 15 seconds, because that
+kernel stops advertising when a TV connects and never restarts it. Both
+adverts carry the same name, HID service and appearance, so a TV pairs the
+same way either way. The GUI sends one datagram per key press,
 the function's id, to `/tmp/couch-bt-hid.sock`; the daemon turns it into an
 input report (usage down, 30 ms, usage up) on the notifying connection. The
 socket is mode 0600 and root-owned, because writing one word to it presses a

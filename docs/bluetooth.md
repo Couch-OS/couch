@@ -211,7 +211,8 @@ Userland (this repo):
 - [ ] Program `bluetooth_mac` from the identity record at bring-up.
 - [x] HID-over-GATT peripheral (2026-09-14, `clients/couch-bt-hid`): GATT HID
       service via bluetoothd GattManager1, keyboard + consumer-control report
-      map, advertising driven through raw HCI.
+      map, advertising through bluetoothd's `LEAdvertisingManager1` where the
+      kernel's Bluetooth core has it and raw HCI where it does not.
 - [x] First pairing with a real TV (2026-09-14): just-works pairing accepted;
       after connect, a consumer volume-up report changed the TV volume. Paired
       with the synthetic controller address 00:00:46:65:80:01 (set-BD_ADDR not
@@ -226,7 +227,13 @@ Userland (this repo):
       ~110 mA idle with or without Bluetooth on; Wi-Fi throughput unchanged
       with Bluetooth on and idle, halved only during a continuous LE scan.
 - [ ] Bond store keyed per activity; disconnect-and-redirect on switch.
-- [ ] Re-advertise immediately on disconnect (today: every 15 s).
+- [ ] Re-advertise immediately on disconnect. Done where bluetoothd exports
+      `LEAdvertisingManager1` (the backported core, see
+      [kernel backports research](kernel-backports-research.md)):
+      `couch-bt-hid` registers an `org.bluez.LEAdvertisement1` object at
+      `/couch/hid/adv0` instead of running the raw-HCI path, and bluetoothd
+      restores the advertisement itself. The 3.18 core keeps the 15 s
+      re-enable tick. Host-tested only; not yet run on a remote.
 
 ## Open questions
 
