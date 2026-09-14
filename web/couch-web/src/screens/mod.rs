@@ -1,16 +1,19 @@
 //! The screens, and the bits more than one of them needs.
 //!
-//! Every screen is a function of `(&Config, Route)`. They hold no state of
-//! their own beyond what a half-typed field needs, because the config signal is
-//! replaced wholesale after each edit and anything else would have to be
-//! reconciled with it.
+//! A screen is built once, when its route is opened, and updates itself after
+//! that: it reads the slice memos on [`App`] inside its own closures, its lists
+//! are keyed `<For>`s over ids, and each row reads its item through
+//! [`App::room`] and friends. Nothing here may read a slice while it is being
+//! constructed - that would make the router's closure depend on the document
+//! and rebuild the whole screen on every write, which is what this replaced.
 //!
-//! The exception is transient editor state - the open tab, the open IR editor,
-//! a filter box - which is what a user is in the middle of rather than
-//! anything the house knows about. Each screen declares its own, and
-//! [`provide_editor_state`] creates all of it at the root, because an accepted
-//! write rebuilds the screen subtree and a signal created inside a screen
-//! would go with it.
+//! [`keyed`] is the old behaviour, for screens not converted yet: they still
+//! take a `&Config` and are redrawn whole when the revision changes.
+//!
+//! Transient editor state - the open tab, the open IR editor, a filter box - is
+//! what a user is in the middle of rather than anything the house knows about.
+//! Each screen declares its own and [`provide_editor_state`] creates it at the
+//! root, so it also survives leaving a screen and coming back to it.
 
 pub mod updates;
 pub mod activities;
@@ -32,8 +35,8 @@ use crate::App;
 
 /// Create the transient editor state every screen reads through context.
 ///
-/// Called once, from the root component, so it outlives the rebuild that
-/// follows every accepted write.
+/// Called once, from the root component, so it outlives both a screen being
+/// left and a screen still on the keyed path being redrawn.
 pub fn provide_editor_state() {
     provide_context(activities::State::new());
     provide_context(activity_sequences::State::new());
@@ -41,22 +44,38 @@ pub fn provide_editor_state() {
     provide_context(infrared::State::new());
 }
 
-pub fn render(app: App, config: &Config, route: Route) -> AnyView {
+pub fn render(app: App, route: Route) -> AnyView {
     match route {
-        Route::Overview => overview::overview(app, config),
-        Route::Rooms => overview::rooms(app, config),
-        Route::Connections => overview::connections(app, config),
-        Route::Connection(id) => connections::detail(app, config, &id),
-        Route::Settings => remote::screen(app, config),
+        Route::Overview => overview::overview(app),
+        Route::Rooms => overview::rooms(app),
+        Route::Connections => overview::connections(app),
+        Route::Connection(id) => connections::detail(app, id),
+        Route::Settings => remote::screen(app),
         Route::Updates => updates::screen(app),
-        Route::Areas => areas::list(app, config),
-        Route::Area(id) => areas::detail(app, config, &id),
-        Route::Room(id) => rooms::detail(app, config, &id),
-        Route::Scene(id) => scenes::detail(app, config, &id),
-        Route::Activities => activities::list(app, config),
-        Route::Activity(id) => activities::detail(app, config, &id),
+        Route::Areas => areas::list(app),
+        Route::Area(id) => areas::detail(app, id),
+        Route::Room(id) => rooms::detail(app, id),
+        Route::Scene(id) => scenes::detail(app, id),
+        Route::Activities => activities::list(app),
+        Route::Activity(id) => activities::detail(app, id),
         Route::NotFound => gone(app, "That page does not exist."),
     }
+}
+
+/// A screen, or one block of a converted screen, that still reads the whole
+/// document when it is built.
+///
+/// It is thrown away and drawn again whenever the revision changes, which is
+/// what every screen did before the slices existed. Converting a screen means
+/// reading the slices it draws inside its own closures and dropping this.
+pub fn keyed(app: App, draw: impl Fn(App, &Config) -> AnyView + Send + Sync + 'static) -> AnyView {
+    view! {
+        {move || {
+            app.revision.track();
+            app.config.with_untracked(|c| c.as_ref().map(|config| draw(app, config)))
+        }}
+    }
+    .into_any()
 }
 
 /// Shown when a detail screen's subject is not in the config.
@@ -205,6 +224,94 @@ pub fn reorder_buttons(
                 aria-label="Move down"
                 disabled=down.is_none()
                 on:click=move |_| if let Some(next) = down.clone() { commit(next) }
+            >"↓"</button>
+        </span>
+    }
+    .into_any()
+}
+
+/// The ids of a collection, as their own memo: what a keyed `<For>` iterates.
+///
+/// It only changes when something is added, removed or reordered, so editing
+/// one row never makes the list diff itself, let alone rebuild its siblings.
+pub fn ids<T: Send + Sync + 'static>(slice: Memo<Vec<T>>, id: fn(&T) -> &Id) -> Memo<Vec<Id>> {
+    Memo::new(move |_| slice.with(|items| items.iter().map(|item| id(item).clone()).collect()))
+}
+
+/// A room's name, read from the slice.
+///
+/// Call this from inside a closure rather than `App::room`, which allocates a
+/// memo: one per lookup per recomputation is a leak the screen only gives back
+/// when it unmounts.
+pub fn room_name(app: App, id: &Id) -> String {
+    app.rooms.with(|rooms| {
+        rooms
+            .iter()
+            .find(|r| &r.id == id)
+            .map(|r| r.name.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// [`device_name`] read from the slices instead of from a document.
+pub fn device_label(app: App, id: &Id) -> String {
+    device_place(app, id.clone())()
+        .map(|(device, room)| format!("{device} · {room}"))
+        .unwrap_or_else(|| format!("{id} (missing)"))
+}
+
+/// A device's own name and the name of the room it is in, read reactively.
+///
+/// The pair every picker labels a device with. Both halves come from their own
+/// slice, so a room rename updates the label without the row being rebuilt.
+pub fn device_place(app: App, id: Id) -> impl Fn() -> Option<(String, String)> + Copy {
+    let id = StoredValue::new(id);
+    move || {
+        let (room, name) = app.devices.with(|all| {
+            id.with_value(|id| {
+                all.iter()
+                    .find(|(_, d)| &d.id == id)
+                    .map(|(room, d)| (room.clone(), d.name.clone()))
+            })
+        })?;
+        let room = app
+            .rooms
+            .with(|rooms| rooms.iter().find(|r| r.id == room).map(|r| r.name.clone()))?;
+        Some((name, room))
+    }
+}
+
+/// [`reorder_buttons`] for a row inside a keyed `<For>`.
+///
+/// The row does not know its index - that is the point of keying by id - so
+/// the buttons find their own place in the order and enable themselves. Moving
+/// a neighbour then updates two buttons instead of rebuilding the list.
+pub fn reorder_in(
+    order: Memo<Vec<Id>>,
+    id: Id,
+    commit: impl Fn(Vec<Id>) + Clone + Send + Sync + 'static,
+) -> AnyView {
+    let id = StoredValue::new(id);
+    let step = move |delta: isize| {
+        order.with(|list| {
+            let at = id.with_value(|id| list.iter().position(|other| other == id))?;
+            moved(list, at, delta)
+        })
+    };
+    let up_commit = commit.clone();
+    view! {
+        <span class="reorder">
+            <button
+                class="icon"
+                aria-label="Move up"
+                disabled=move || step(-1).is_none()
+                on:click=move |_| if let Some(next) = step(-1) { up_commit(next) }
+            >"↑"</button>
+            <button
+                class="icon"
+                aria-label="Move down"
+                disabled=move || step(1).is_none()
+                on:click=move |_| if let Some(next) = step(1) { commit(next) }
             >"↓"</button>
         </span>
     }
