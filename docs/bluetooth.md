@@ -76,10 +76,11 @@ for multi-device keyboards applies here:
 ## Implementation plan (branch `bluetooth`, rebased onto `dev` 2026-09-14)
 
 The first milestone is the spike: prove the radio through Linux's virtual HCI
-device with BlueZ on top. Everything below it is blocked on one thing that
-cannot ship as a runtime update: a kernel with `CONFIG_BT` and
-`CONFIG_BT_HCIVHCI`, which means a new OS image. This branch prepares each
-side so the image, when built, has something to run.
+device with BlueZ on top. Everything below it needs a kernel with `CONFIG_BT`
+and `CONFIG_BT_HCIVHCI`. Since [boot image updates](runtime-updates.md#boot-image-updates)
+that kernel reaches a remote on the Dev channel as the boot payload of a dev
+build, no reinstall; only the BlueZ packages still wait for a new OS image and
+are `apk add`ed over SSH on the development remote meanwhile.
 
 **What is on this branch**
 
@@ -97,25 +98,30 @@ side so the image, when built, has something to run.
 - `kernel/couch-ha100.config`: `CONFIG_BT=y`, `CONFIG_BT_HCIVHCI=y`, every
   other Bluetooth profile and transport explicitly off. This changes the
   config hash `kernel/release-pin.json` pins, so a Bluetooth kernel is a new
-  candidate through `docs/kernel-release-candidate.md`, not a drop-in. Run
-  `olddefconfig` on Ollie before the first build; the symbols listed exist in
-  this tree (`net/bluetooth/Kconfig`, `drivers/bluetooth/Kconfig`). The
-  kernel repository's `bluetooth` branch carries the same task list in
-  `Documentation/couch/bluetooth.md`; it is not checked out on Ollie yet
-  (`git fetch couch bluetooth` there).
+  candidate through `docs/kernel-release-candidate.md`, not a drop-in. Built
+  clean on Ollie 2026-09-14 from the pinned source commit (`ea122a39`, the
+  kernel repository's `bluetooth` branch adds only documentation on top of
+  it) into `~/couch-kernel/out-bluetooth`; `kernel/release-pin.json` on this
+  branch pins that build (zImage `9dd8e84c…`, effective config `1568fe8c…`)
+  so `prepare_public_boot.py` exports it. `CONFIG_BT` alone pulled no extra
+  symbols in; `olddefconfig` kept the rest of the config byte for byte.
 - `tools/provision-alpine.sh`: `bluez` and `bluez-deprecated` join the image
   package list, for `bluetoothd`, `btmgmt`, `hciconfig` and `hcitool`.
 
 **Milestones**
 
-1. *Spike image.* Build the kernel candidate with the config above, provision
-   an Alpine root with the new package list, add `couch-bt-bridge` to the
-   runtime payload (`tools/build-release.sh`, `tools/release/runtime_inventory.py`
-   and the stage script list it beside `couch-sonos`), and start it from
-   `stage2/gui-start.sh` guarded on `/dev/vhci` and `/dev/stpbt` both existing.
-   Acceptance: `hciconfig hci0 up`, `btmgmt info` reports LE, `hcitool lescan`
-   sees nearby advertisers, and the bridge log shows the set-address command
-   answered (or names the opcode that must replace 0xFC1A).
+1. *Spike kernel.* Dev build `.140.dev` carries the kernel above as a boot
+   image payload: install the runtime, then the boot image the Updates page
+   offers after the reboot, then over SSH `apk add bluez bluez-deprecated`,
+   `scp` the `couch-bt-bridge-armv7` release asset to `/opt/couch/couch-bt-bridge`
+   and run it. Acceptance: `/dev/vhci` and `/dev/stpbt` exist, the bridge
+   creates `hci0`, `hciconfig hci0 up`, `btmgmt info` reports LE,
+   `hcitool lescan` sees nearby advertisers, and the bridge log shows the
+   set-address command answered (or names the opcode that must replace 0xFC1A).
+   Only after that: `couch-bt-bridge` joins the runtime payload
+   (`tools/build-release.sh`, `tools/release/runtime_inventory.py`, the stage
+   script) and `stage2/gui-start.sh` starts it guarded on both devices
+   existing, and the kernel goes through the candidate checks for promotion.
 2. *Power and coexistence.* BT idle current unplugged per
    `docs/ha100-power-validation.md`; Wi-Fi throughput with the BT function on.
 3. *HID over GATT.* A second daemon (or the same one grown) that registers the
@@ -136,7 +142,10 @@ Kernel (couch-kernel `bluetooth` branch, built on Ollie):
 - [x] `CONFIG_BT=y`, `CONFIG_BT_HCIVHCI=y` in `couch-ha100.config`; keep
       `BT_RFCOMM`, `BT_BNEP`, `BT_HIDP` off unless a profile needs them
       (on this branch; the candidate still needs building and re-pinning).
-- [ ] Build `normal`, confirm `/dev/vhci` and `/dev/stpbt` both appear.
+- [x] Build `normal` (Ollie `out-bluetooth`, 2026-09-14; pinned on this branch).
+- [ ] First boot on the HA100 through the `.140.dev` boot image; confirm
+      `/dev/vhci` and `/dev/stpbt` both appear and Wi-Fi, IR, display and
+      keys behave as on the pinned kernel.
 - [ ] Later: in-kernel STP HCI driver replacing the bridge daemon.
 
 Userland (this repo):
