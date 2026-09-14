@@ -210,6 +210,14 @@ fn up() -> Result<(), String> {
         }
         thread::sleep(Duration::from_millis(1500));
     }
+    // The backported 4.4 core runs its own setup pass on a new controller,
+    // during which the MediaTek firmware raises an HCI hardware error and the
+    // core resets the device (about 300 ms after open). bluetoothd powering
+    // the adapter on in the middle of that reset times out, so give the core
+    // a moment; the in-tree 3.18 core has no such pass.
+    if Path::new("/sys/module/hci_vhci").exists() {
+        thread::sleep(Duration::from_millis(3000));
+    }
     // dbus, then bluetoothd, then the HID daemon. The HID daemon waits for
     // bluetoothd's adapter itself, so the three start back to back.
     alpine_sh(
