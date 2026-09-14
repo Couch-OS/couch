@@ -4,7 +4,7 @@
 
 ```sh
 tools/build-wmt-properties.sh
-tools/build-release.sh   # couch-gui, couch-confd, couch-system, couch-sonos, couch-coreelec, couch-bt-bridge
+tools/build-release.sh   # couch-gui, couch-confd, couch-system, couch-sonos, couch-coreelec, couch-bt-bridge, couch-bt-hid
 python3 tools/release/runtime_inventory.py build/alpine-staging-input.json build/runtime-payload
 python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json \
   build/offline-armv7 build/packaged-runtime
@@ -26,6 +26,8 @@ python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json
 | Readable notices | Lato/Inter OFL and Lucide ISC notices under `/opt/couch/licenses` |
 | GUI resources | Lato fonts, Slint source/assets and build-policy hashes; fonts/images are embedded by Slint, and the raw Lucide alpha catalog is verified inside the GUI binary |
 | Configuration webUI | Every current `web/couch-web/dist` file must occur verbatim in the daemon binary, including HTML, JavaScript and WASM; a placeholder or stale bundle fails |
+
+This payload is described in four places: the lists in this script, the destination allowlist in `tools/release/clean_stage.py`, the `REQUIRED` names the updater enforces in `daemon/couch-updates/src/staging.rs`, and the build order in `tools/build-release.sh`. `tools/release/test_runtime_payload_lists.py` compares them, so drift between them fails CI instead of a device.
 
 Provider clients are Rust libraries linked into GUI/daemon binaries. Sonos and CoreELEC also ship standalone CLIs; see [Sonos LAN client](sonos.md) for browser setup, remote controls and diagnostic commands. The offline Alpine closure includes `openssh-client-default` for optional CoreELEC OS controls. Package assembly checks the actual ARM client version and strict batch/host-key options with `ssh -G`, which does not contact a device. The diagnostic WMT script is omitted. No settings, network profiles, user configuration, enrollment keys, host keys, properties snapshot, device identity or calibration enters the generated artifact list. The clean stager still generates empty onboarding configuration.
 
