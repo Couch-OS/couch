@@ -1,0 +1,14 @@
+--- backport-include/linux/cred.h.orig	2026-09-14 16:43:24.976374837 -0400
++++ backport-include/linux/cred.h	2026-09-14 16:43:24.989274154 -0400
+@@ -3,8 +3,11 @@
+ #include_next <linux/cred.h>
+ #include <linux/version.h>
+ 
++/* 3.18 has the inline current_user_ns(); the pre-3.8 macro shim would redefine it. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0)
+ #ifndef current_user_ns
+ #define current_user_ns()	(current->nsproxy->user_ns)
+ #endif
++#endif
+ 
+ #endif /* __BACKPORT_LINUX_CRED_H */
