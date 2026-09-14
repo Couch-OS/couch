@@ -61,6 +61,15 @@ Network joining acknowledges the request before switching radio modes, tests
 and saves through the same Rust policy, and returns to the hotspot on failure
 without rebooting the remote. A successful join reloads the supervised GUI.
 
+`portal.sh` rolls back any failure that happens after it has torn the station
+down: it stops hostapd, dnsmasq and the portal web server, removes
+`/tmp/couch.setup` and re-runs `station.sh`, so a half-built hotspot never
+leaves the remote with neither a station nor a working AP. That web server is
+our own multi-call binary invoked as `busybox httpd`, so `killall` cannot match
+it; `portal.sh` records its pid in `/tmp/portal-httpd.pid` and `station.sh`
+stops it, which is what takes the setup CGI surface off the home LAN after a
+join.
+
 Enrollment is accepted only while recovery setup is active. The service
 serializes approval requests, drains pre-request events and accepts only a new
 keypad EV_KEY press. Key releases, repeats, synchronization and touch events do

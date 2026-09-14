@@ -5,6 +5,14 @@ set -e
 BB=/bin/busybox
 A=/mnt/alpine
 $BB chroot "$A" /bin/sh -c 'killall hostapd dnsmasq wpa_supplicant udhcpc 2>/dev/null || true'
+# The portal's web server is our own multi-call binary run as "busybox httpd",
+# so its argv[0] is "busybox" and the killall above never matched it: after a
+# join it kept serving the setup pages, and the ungated cgi-bin/scan, on the
+# home LAN. portal.sh records the pid it started.
+if [ -s /tmp/portal-httpd.pid ]; then
+    kill "$($BB cat /tmp/portal-httpd.pid)" 2>/dev/null || true
+    $BB rm -f /tmp/portal-httpd.pid
+fi
 $BB sleep 1
 $BB chroot "$A" /sbin/ip addr flush dev ap0 || true
 $BB chroot "$A" /sbin/ip link set ap0 down || true
