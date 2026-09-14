@@ -442,6 +442,57 @@ mod tests {
     }
 
     #[test]
+    fn home_assistant_blinds_and_thermostats_can_be_bound_to_a_key() {
+        let mut living = room("living", "Living room");
+        for (id, name, kind, entity) in [
+            ("blind", "Blind", DeviceKind::Blind, "cover.office"),
+            ("stat", "Thermostat", DeviceKind::Thermostat, "climate.office"),
+        ] {
+            living.devices.push(Device::new(Id::new(id), name, kind).with_integration(
+                crate::Integration::Connection { connection_id: Id::new("ha"), resource_id: entity.to_string() },
+            ));
+        }
+        let base = Config {
+            connections: vec![crate::Connection { id: Id::new("ha"), name: "HA".to_string(), provider: crate::Provider::HomeAssistant }],
+            rooms: vec![living],
+            activities: vec![crate::Activity {
+                setup: Default::default(),
+                id: Id::new("a"),
+                name: "A".to_string(),
+                kind: Default::default(),
+                room: Id::new("living"),
+                source: None,
+                buttons: vec![],
+                steps: vec![],
+            }],
+            ..Config::default()
+        };
+        for (device, command, valid) in [
+            ("blind", "open", true),
+            ("blind", "close", true),
+            ("blind", "stop", true),
+            ("blind", "position:70", true),
+            ("blind", "position:101", false),
+            ("blind", "mode:heat", false),
+            ("blind", "on", false),
+            ("stat", "mode:heat", true),
+            ("stat", "mode:off", true),
+            ("stat", "temperature-up", true),
+            ("stat", "temperature-down", true),
+            ("stat", "open", false),
+            ("stat", "dim:30", false),
+        ] {
+            let mut config = base.clone();
+            config.activities[0].buttons = vec![crate::buttons::Binding {
+                button: crate::buttons::Button::Lights,
+                gesture: crate::buttons::Gesture::Short,
+                action: Some(Action::new(Id::new(device), command)),
+            }];
+            assert_eq!(config.validate().is_ok(), valid, "{device} {command}");
+        }
+    }
+
+    #[test]
     fn a_newer_schema_is_refused() {
         let cfg = Config { schema_version: SCHEMA_VERSION + 1, ..Config::default() };
         assert!(cfg.validate().is_err());

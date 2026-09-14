@@ -51,6 +51,10 @@ remains unavailable until the built-in blaster can send codes.
   level: brightness on Hue and Home Assistant lights, volume on Sonos, Kodi and
   LG webOS, position on Home Assistant covers. Denon sets volume in dB rather
   than percent, so it keeps only its relative keys.
+- Home Assistant blinds offer Open, Close, Stop and a position level; Home
+  Assistant thermostats offer each HVAC mode and Warmer / Cooler, one advertised
+  increment per press. Offered keys follow the entity domain, so a light never
+  offers Open and a thermostat never offers On.
 - Overrides apply while the activity screen is open, including its touch sheets.
   Directly opening a device uses normal controls. The touch back arrow always
   exits to Couch. Closing an activity cancels pending holds and local queued mappings;

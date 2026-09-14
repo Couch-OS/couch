@@ -39,7 +39,15 @@ pub enum Function {
     On,
     Off,
     Toggle,
+    Open,
+    Close,
+    /// One advertised increment of a thermostat's target temperature.
+    TemperatureUp,
+    TemperatureDown,
     Input(String),
+    /// A thermostat's operating mode, `mode:heat_cool`. The value is Home
+    /// Assistant's own token, the way `input:` carries the provider's.
+    Mode(String),
     App(String),
     /// A percentage, 0..=100: brightness, absolute volume, cover position.
     /// Carried in the id (`dim:30`) because no fixed variant can hold a level.
@@ -54,6 +62,9 @@ impl Function {
         }
         if let Some(id) = value.strip_prefix("app:").filter(|s| valid_id(s) || crate::valid_app_url(s)) {
             return Some(Self::App(id.into()));
+        }
+        if let Some(id) = value.strip_prefix("mode:").filter(|s| HVAC_MODES.contains(s)) {
+            return Some(Self::Mode(id.into()));
         }
         if let Some(p) = percent(value, "dim:") {
             return Some(Self::Dim(p));
@@ -97,6 +108,10 @@ impl Function {
             "on" => Self::On,
             "off" => Self::Off,
             "toggle" => Self::Toggle,
+            "open" => Self::Open,
+            "close" => Self::Close,
+            "temperature-up" => Self::TemperatureUp,
+            "temperature-down" => Self::TemperatureDown,
             _ => return None,
         })
     }
@@ -104,6 +119,7 @@ impl Function {
         match self {
             Self::Input(id) => format!("input:{id}"),
             Self::App(id) => format!("app:{id}"),
+            Self::Mode(m) => format!("mode:{m}"),
             Self::Dim(p) => format!("dim:{p}"),
             Self::Volume(p) => format!("volume:{p}"),
             Self::Position(p) => format!("position:{p}"),
@@ -140,6 +156,10 @@ impl Function {
                 Self::On => "on",
                 Self::Off => "off",
                 Self::Toggle => "toggle",
+                Self::Open => "open",
+                Self::Close => "close",
+                Self::TemperatureUp => "temperature-up",
+                Self::TemperatureDown => "temperature-down",
                 _ => unreachable!(),
             }
             .to_string(),
@@ -198,6 +218,9 @@ impl Function {
 /// Mirrors `couch_tizen::INPUTS`; kept here so the wasm build stays free of
 /// the client crates.
 pub const TIZEN_INPUTS: &[&str] = &["tv", "hdmi", "hdmi1", "hdmi2", "hdmi3", "hdmi4"];
+/// Mirrors `couch_ha::entities::valid_mode`, for the same reason. A thermostat
+/// advertises its own subset; `climate_command` refuses one it does not have.
+pub const HVAC_MODES: &[&str] = &["off", "heat", "cool", "heat_cool", "auto", "dry", "fan_only"];
 /// `dim:030` and `dim:+5` are refused so a rendered id parses back to the same
 /// value; `dim:` and `dim:101` are not levels at all.
 fn percent(value: &str, prefix: &str) -> Option<u8> {
@@ -238,6 +261,12 @@ mod tests {
             Integration::HomeAssistant {
                 entity_id: "light.test".into(),
             },
+            Integration::HomeAssistant {
+                entity_id: "ha-one/cover.test".into(),
+            },
+            Integration::HomeAssistant {
+                entity_id: "ha-one/climate.test".into(),
+            },
         ] {
             for (id, _) in crate::buttons::functions(&integration) {
                 let f = Function::parse(id).unwrap();
@@ -256,6 +285,34 @@ mod tests {
             }));
         assert!(Function::parse("input:BD\rMV98").is_none());
         assert!(Function::parse("arbitrary-rpc").is_none());
+    }
+    #[test]
+    fn thermostat_modes_take_home_assistants_own_tokens_and_nothing_else() {
+        let climate = Integration::HomeAssistant { entity_id: "ha-one/climate.office".into() };
+        for mode in HVAC_MODES {
+            let id = alloc::format!("mode:{mode}");
+            let parsed = Function::parse(&id).unwrap();
+            assert_eq!(parsed.id(), id);
+            assert!(parsed.supports(&climate), "{id}");
+        }
+        for id in ["mode:", "mode:heat-cool", "mode:HEAT", "mode:eco", "mode:off/on"] {
+            assert!(Function::parse(id).is_none(), "{id}");
+        }
+        // A cover's keys are a cover's; a thermostat gets no open or on.
+        let cover = Integration::HomeAssistant { entity_id: "ha-one/cover.office".into() };
+        for (function, on_cover, on_climate) in [
+            (Function::Open, true, false),
+            (Function::Close, true, false),
+            (Function::Stop, true, false),
+            (Function::Position(70), true, false),
+            (Function::TemperatureUp, false, true),
+            (Function::TemperatureDown, false, true),
+            (Function::Mode("heat".into()), false, true),
+            (Function::On, false, false),
+        ] {
+            assert_eq!(function.supports(&cover), on_cover, "{} on a cover", function.id());
+            assert_eq!(function.supports(&climate), on_climate, "{} on a climate", function.id());
+        }
     }
     #[test]
     fn levels_round_trip_and_refuse_anything_that_is_not_a_percentage() {

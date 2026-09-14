@@ -677,9 +677,35 @@ pub(crate) fn execute_with_input(
         Integration::HomeAssistant { entity_id } => {
             let (c, raw) = connections::ha(&entity_id)?;
             // One entity domain per device kind, each with its own service set.
-            if let F::Position(percent) = command {
+            let cover = match command {
+                F::Open => Some(couch_ha::CoverCommand::Open),
+                F::Close => Some(couch_ha::CoverCommand::Close),
+                F::Stop => Some(couch_ha::CoverCommand::Stop),
+                F::Position(percent) => Some(couch_ha::CoverCommand::Position(percent)),
+                _ => None,
+            };
+            if let Some(cover) = cover {
                 return c
-                    .cover_command(&raw, couch_ha::CoverCommand::Position(percent))
+                    .cover_command(&raw, cover)
+                    .map(|_| Outcome::default())
+                    .map_err(|e| e.to_string());
+            }
+            // Stepping the target reads it first: the increment, the limits and
+            // whether the thermostat is in range mode are the entity's, not ours.
+            let climate = match command {
+                F::Mode(ref mode) => Some(couch_ha::ClimateCommand::HvacMode(mode.clone())),
+                F::TemperatureUp | F::TemperatureDown => Some(
+                    c.climate(&raw)
+                        .and_then(|state| {
+                            state.adjusted_target(if command == F::TemperatureUp { 1 } else { -1 }, None)
+                        })
+                        .map_err(|e| e.to_string())?,
+                ),
+                _ => None,
+            };
+            if let Some(climate) = climate {
+                return c
+                    .climate_command(&raw, climate)
                     .map(|_| Outcome::default())
                     .map_err(|e| e.to_string());
             }
