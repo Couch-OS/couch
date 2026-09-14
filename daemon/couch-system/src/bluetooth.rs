@@ -124,6 +124,9 @@ fn process_running(comm: &str) -> bool {
 
 fn down() -> Result<(), String> {
     let result = stop_stack(true);
+    // The HID daemon binds its key socket last; a stale path from the previous
+    // run would otherwise look ready while the next one is still registering.
+    let _ = fs::remove_file("/tmp/couch-bt-hid.sock");
     publish("off");
     result
 }
