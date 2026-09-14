@@ -106,6 +106,7 @@ impl Pages {
                         &mut caches.1,
                         &mut caches.2,
                         &mut caches.3,
+                        &crate::connections::matter(),
                     )
                 },
             );

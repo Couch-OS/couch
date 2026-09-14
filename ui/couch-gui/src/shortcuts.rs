@@ -108,7 +108,7 @@ impl Controller {
         let (tx, requests) = mpsc::sync_channel::<(Arc<Config>, Id)>(4);
         let (events, rx) = mpsc::sync_channel(4);
         std::thread::spawn(move || {
-            let matter = connections::MatterFleet::default();
+            let matter = connections::matter();
             while let Ok((config, id)) = requests.recv() {
                 let message = match toggle(&config, &id, &hue, &matter) {
                     Ok(message) => message,

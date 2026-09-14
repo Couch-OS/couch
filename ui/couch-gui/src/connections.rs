@@ -190,6 +190,13 @@ impl HueFleet {
     }
 }
 
+/// The one fleet in the process. Opening a fabric twice would open a second
+/// CASE session to every node it holds, so the room list, the shortcut keys and
+/// mapped buttons share these controllers rather than each keeping their own.
+pub fn matter() -> Arc<MatterFleet> {
+    static FLEET: std::sync::OnceLock<Arc<MatterFleet>> = std::sync::OnceLock::new();
+    FLEET.get_or_init(Default::default).clone()
+}
 /// Matter fabrics, one controller per connection, opened on first use and kept
 /// so light reads reuse the bound sockets. Lights carry `<connection>/<node>/<endpoint>`
 /// like Hue resources, so the room list needs no new state shape.
@@ -249,9 +256,51 @@ impl MatterFleet {
             .map_err(|e| e.to_string())
     }
     pub fn brightness(&self, resource: &str, percent: u8) -> Result<couch_ha::Light, String> {
+        self.send(resource, couch_matter::Command::Brightness(percent))
+    }
+    /// A mapped `on` or `off`: the binding already says which way it wants the
+    /// light, so there is nothing to read first.
+    pub fn power(&self, resource: &str, on: bool) -> Result<couch_ha::Light, String> {
+        self.send(
+            resource,
+            if on {
+                couch_matter::Command::On
+            } else {
+                couch_matter::Command::Off
+            },
+        )
+    }
+    /// A mapped `toggle`. The read decides, as it does for the room list, but a
+    /// device that will not report its state is turned on rather than refused:
+    /// a key press has to leave the room different.
+    pub fn toggle_or_on(&self, resource: &str) -> Result<couch_ha::Light, String> {
         let (id, raw) = split(resource);
-        self.get(id)?
-            .command(raw, couch_matter::Command::Brightness(percent))
+        let controller = self.get(id)?;
+        let on = controller
+            .light(raw)
+            .ok()
+            .and_then(|l| l.on)
+            .unwrap_or(false);
+        let command = if on {
+            couch_matter::Command::Off
+        } else {
+            couch_matter::Command::On
+        };
+        Self::sent(id, controller.command(raw, command))
+    }
+    fn send(
+        &self,
+        resource: &str,
+        command: couch_matter::Command,
+    ) -> Result<couch_ha::Light, String> {
+        let (id, raw) = split(resource);
+        Self::sent(id, self.get(id)?.command(raw, command))
+    }
+    fn sent(
+        id: &str,
+        result: Result<couch_matter::Light, couch_matter::Error>,
+    ) -> Result<couch_ha::Light, String> {
+        result
             .map(|l| Self::light(id, l))
             .map_err(|e| e.to_string())
     }

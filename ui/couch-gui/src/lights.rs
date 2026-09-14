@@ -408,9 +408,10 @@ impl Controller {
         let (events, rx) = mpsc::channel();
         let hue = Arc::new(crate::connections::HueFleet::default());
         let worker_hue = hue.clone();
-        // Matter has no push cache and nothing the GUI thread asks for directly,
-        // so the fleet lives on the worker alone and opens fabrics on first use.
-        let worker_matter = Arc::new(crate::connections::MatterFleet::default());
+        // Matter has no push cache and nothing the GUI thread asks for directly.
+        // The fleet is shared with the shortcut keys and mapped buttons so one
+        // node never carries two CASE sessions; it opens fabrics on first use.
+        let worker_matter = crate::connections::matter();
         let active = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let worker_active = active.clone();
         std::thread::spawn(move || {
