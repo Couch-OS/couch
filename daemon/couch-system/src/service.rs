@@ -210,22 +210,7 @@ fn handle_updates(
         }
         Request::UpdateRestart => {
             let result = if updates.ready() {
-                couch_updates::activate(std::path::Path::new("/mnt/alpine/opt/couch")).and_then(
-                    |()| {
-                        // Init arms recovery at every boot and clears it only
-                        // after health checks that begin 90 s in. An install
-                        // pressed before then rebooted into recovery (.140.dev,
-                        // 2026-09-14); the next boot arms the flag again itself.
-                        couch_system::power::clear_recovery(std::path::Path::new(
-                            couch_system::power::BCB,
-                        ))
-                        .map_err(|e| {
-                            format!(
-                                "Update applied but the recovery flag could not be cleared: {e}"
-                            )
-                        })
-                    },
-                )
+                couch_updates::activate(std::path::Path::new("/mnt/alpine/opt/couch"))
             } else {
                 Err("No verified update is ready".into())
             };
@@ -233,7 +218,17 @@ fn handle_updates(
             let reply = protocol::write(&Reply::Done(result), &mut stream);
             if reboot {
                 std::thread::sleep(Duration::from_secs(2));
-                let _ = Command::new("/bin/busybox").args(["reboot", "-f"]).status();
+                // The same restart the menu performs: it clears the recovery
+                // flag init arms at every boot (an install pressed before the
+                // 90 s health checks rebooted into recovery, .140.dev), and it
+                // syncs first, which a bare `reboot -f` here did not - the
+                // GUI's config writes, settings.conf and the logs were dirty.
+                if let Err(error) = couch_system::power::perform(
+                    couch_system::power::Action::Restart,
+                    std::path::Path::new(couch_system::power::BCB),
+                ) {
+                    eprintln!("couch-system: update restart: {error}");
+                }
             }
             reply
         }
