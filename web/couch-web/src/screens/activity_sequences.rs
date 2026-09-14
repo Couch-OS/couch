@@ -38,6 +38,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
     let dynamic = RwSignal::new(Vec::<(String, String)>::new());
     let status = RwSignal::new(String::new());
     let delay = RwSignal::new(1000u32);
+    let level = RwSignal::new(50i32);
     let dragged = RwSignal::new(None::<usize>);
     let selected = move || {
         let c = cfg.get_value();
@@ -161,7 +162,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         view!{
             <ol class="activity-sequence-list">
                 {steps.into_iter().enumerate().map(move |(index,step)| {
-                    let label=match step {SequenceStep::Delay{ms}=>format!("Wait {:.1} seconds",ms as f64/1000.),SequenceStep::Command{action}=>{let c=cfg.get_value();let label=c.devices().find(|(_,d)|d.id==action.device).and_then(|(_,d)|c.resolve_integration(&d.integration)).and_then(|i|couch_model::buttons::functions(&i).iter().find(|f|f.0==action.command).map(|f|f.1.to_string())).unwrap_or(action.command);format!("{} · {label}",super::device_name(&c,&action.device))}};
+                    let label=match step {SequenceStep::Delay{ms}=>format!("Wait {:.1} seconds",ms as f64/1000.),SequenceStep::Command{action}=>{let c=cfg.get_value();let label=c.devices().find(|(_,d)|d.id==action.device).and_then(|(_,d)|c.resolve_integration(&d.integration)).and_then(|i|couch_model::buttons::functions(&i).iter().find(|f|f.0==action.command).map(|f|f.1.to_string())).or_else(||super::device_commands::value_label(&action.command)).unwrap_or(action.command);format!("{} · {label}",super::device_name(&c,&action.device))}};
                     let modify=move |operation:i32|{let mut a=base.get_value();let steps=if on{&mut a.setup.on}else{&mut a.setup.off};match operation{-1 if index>0=>steps.swap(index,index-1),1 if index+1<steps.len()=>steps.swap(index,index+1),0=>{steps.remove(index);},_=>return}save(a);};
                     view!{<li class="activity-sequence-step" draggable="true" on:dragstart=move |_|dragged.set(Some(index)) on:dragover=move |ev|ev.prevent_default() on:drop=move |ev|{
                         ev.prevent_default();if let Some(from)=dragged.get_untracked(){let mut a=base.get_value();let steps=if on{&mut a.setup.on}else{&mut a.setup.off};if from<steps.len()&&index<steps.len(){let step=steps.remove(from);steps.insert(index,step);save(a);}}dragged.set(None);
@@ -180,9 +181,15 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         let c = cfg.get_value();
         let functions=ir_commands.choices(&c,&device,dynamic.get());
         let filter = editing.search.get().to_lowercase();
-        functions.into_iter().filter(|(_,label)|label.to_lowercase().contains(&filter)).map(|(command,label)|{
+        // A level needs the number below, so it is a control here rather than a catalog row.
+        let levels:Vec<_>=super::device_commands::levels(&c,&device).into_iter().filter(|(_,label)|label.to_lowercase().contains(&filter)).collect();
+        let rows=functions.into_iter().filter(|(_,label)|label.to_lowercase().contains(&filter)).map(|(command,label)|{
             let id=device.id.clone();view!{<button class="activity-command" disabled=move ||app.busy.get() on:click=move |_|add(SequenceStep::Command{action:Action::new(id.clone(),command.clone())})><span>{label}</span><span aria-hidden="true">"＋"</span></button>}
-        }).collect_view().into_any()
+        }).collect_view();
+        let level_rows=levels.into_iter().map(|(kind,label)|{
+            let id=device.id.clone();view!{<button class="activity-command" disabled=move ||app.busy.get() on:click=move |_|add(SequenceStep::Command{action:Action::new(id.clone(),format!("{kind}:{}",level.get_untracked()))})><span>{move ||format!("{label} · set to {}%",level.get())}</span><span aria-hidden="true">"＋"</span></button>}
+        }).collect_view();
+        view!{{rows}{level_rows}}.into_any()
     };
     view!{
         <section class="card activity-sequences"><h2>"On & off sequences"</h2><p class="dim">"On runs once when you start. Off runs when you end the activity. Returning to Couch leaves the activity running."</p>
@@ -195,7 +202,8 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
                 {config.devices().filter(|(_,d)|activity.setup.devices.contains(&d.id)).map(|(r,d)|view!{<option value=d.id.to_string()>{format!("{} · {}",d.name,r.name)}</option>}).collect_view()}
             </select></label>
             <input class="activity-command-search" type="search" aria-label="Search sequence commands" placeholder="Search commands…" prop:value=move ||editing.search.get() on:input=move |ev|editing.search.set(event_target_value(&ev))/>
-            <div class="activity-command-list">{commands}</div><p class="dim">{move ||[status.get(),ir_commands.status()].into_iter().filter(|s|!s.is_empty()).collect::<Vec<_>>().join(" ")}</p>
+            <div class="activity-command-list">{commands}</div>
+            <label class="field"><span class="label">"Level (%)"</span><input type="number" aria-label="Level percent" min="0" max="100" prop:value=move ||level.get().to_string() on:input=move |ev|{if let Ok(v)=event_target_value(&ev).parse::<i32>(){level.set(v.clamp(0,100));}}/></label><p class="dim">{move ||[status.get(),ir_commands.status()].into_iter().filter(|s|!s.is_empty()).collect::<Vec<_>>().join(" ")}</p>
             <h3>"Add a delay"</h3><label class="field"><span class="label">"Milliseconds"</span><input type="number" aria-label="Delay milliseconds" min="1" max="30000" prop:value=move ||delay.get().to_string() on:input=move |ev|{if let Ok(ms)=event_target_value(&ev).parse(){delay.set(ms);}}/></label>
             <button class="ghost" disabled=move ||app.busy.get() || !(1..=30000).contains(&delay.get()) on:click=move |_|add(SequenceStep::Delay{ms:delay.get_untracked()})>"＋ Add delay"</button>
         </aside>

@@ -390,7 +390,7 @@ pub(crate) fn execute_with_input(
     // level read back for the volume card; everything else reports nothing.
     let sound = matches!(
         command,
-        F::VolumeUp | F::VolumeDown | F::Mute | F::MuteOn | F::MuteOff
+        F::VolumeUp | F::VolumeDown | F::Volume(_) | F::Mute | F::MuteOn | F::MuteOff
     );
     let name = device.name.clone();
     let integration = config
@@ -416,10 +416,12 @@ pub(crate) fn execute_with_input(
                     couch_sonos::Client::connect(address).map_err(|e| e.to_string())?,
                 );
             }
-            let result = sonos
-                .get(&host)
-                .expect("just inserted")
-                .command_if_current(&command.id(), current);
+            let client = sonos.get(&host).expect("just inserted");
+            let result = match command {
+                // One absolute write: no preparatory read to go stale between.
+                F::Volume(percent) => client.set_volume(percent),
+                _ => client.command_if_current(&command.id(), current),
+            };
             if result.as_ref().is_err_and(|e| session_is_suspect(e)) {
                 sonos.remove(&host);
             }
@@ -567,6 +569,7 @@ pub(crate) fn execute_with_input(
                 F::Mute => c
                     .call("Application.SetMute", json!({"mute":"toggle"}))
                     .map(|_| ()),
+                F::Volume(percent) => c.set_volume(i64::from(percent)).map(|_| ()),
                 _ => {
                     let p = c
                         .playback()
@@ -652,6 +655,12 @@ pub(crate) fn execute_with_input(
             let c = couch_hue::settings::Settings::load(&connections::file(id, "hue"))
                 .and_then(|s| s.client())
                 .map_err(|e| e.to_string())?;
+            if let F::Dim(percent) = command {
+                return c
+                    .command(raw, couch_hue::Command::Brightness(percent))
+                    .map(|_| Outcome::default())
+                    .map_err(|e| e.to_string());
+            }
             let on = match command {
                 F::On => true,
                 F::Off => false,
@@ -667,6 +676,19 @@ pub(crate) fn execute_with_input(
         }
         Integration::HomeAssistant { entity_id } => {
             let (c, raw) = connections::ha(&entity_id)?;
+            // One entity domain per device kind, each with its own service set.
+            if let F::Position(percent) = command {
+                return c
+                    .cover_command(&raw, couch_ha::CoverCommand::Position(percent))
+                    .map(|_| Outcome::default())
+                    .map_err(|e| e.to_string());
+            }
+            if let F::Dim(percent) = command {
+                return c
+                    .command(&raw, couch_ha::Command::Brightness(percent))
+                    .map(|_| Outcome::default())
+                    .map_err(|e| e.to_string());
+            }
             let on = match command {
                 F::On => true,
                 F::Off => false,

@@ -413,7 +413,7 @@ mod tests {
     fn a_step_command_the_executor_cannot_parse_is_rejected() {
         let mut living = room("living", "Living room");
         living.devices.push(Device::new(Id::new("lamp"), "Lamp", DeviceKind::Light));
-        for (command, valid) in [("on", true), ("toggle", true), ("dim:30", false), ("bright", false)] {
+        for (command, valid) in [("on", true), ("toggle", true), ("dim:30", true), ("dim:101", false), ("dim:", false), ("bright", false)] {
             let steps = vec![Action::new(Id::new("lamp"), command)];
             let cfg = Config {
                 rooms: vec![living.clone()],

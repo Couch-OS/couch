@@ -41,6 +41,11 @@ pub enum Function {
     Toggle,
     Input(String),
     App(String),
+    /// A percentage, 0..=100: brightness, absolute volume, cover position.
+    /// Carried in the id (`dim:30`) because no fixed variant can hold a level.
+    Dim(u8),
+    Volume(u8),
+    Position(u8),
 }
 impl Function {
     pub fn parse(value: &str) -> Option<Self> {
@@ -49,6 +54,15 @@ impl Function {
         }
         if let Some(id) = value.strip_prefix("app:").filter(|s| valid_id(s) || crate::valid_app_url(s)) {
             return Some(Self::App(id.into()));
+        }
+        if let Some(p) = percent(value, "dim:") {
+            return Some(Self::Dim(p));
+        }
+        if let Some(p) = percent(value, "volume:") {
+            return Some(Self::Volume(p));
+        }
+        if let Some(p) = percent(value, "position:") {
+            return Some(Self::Position(p));
         }
         Some(match value {
             "up" => Self::Up,
@@ -90,6 +104,9 @@ impl Function {
         match self {
             Self::Input(id) => format!("input:{id}"),
             Self::App(id) => format!("app:{id}"),
+            Self::Dim(p) => format!("dim:{p}"),
+            Self::Volume(p) => format!("volume:{p}"),
+            Self::Position(p) => format!("position:{p}"),
             _ => match self {
                 Self::Up => "up",
                 Self::Down => "down",
@@ -143,6 +160,16 @@ impl Function {
                 _ => false,
             },
             Self::App(id) => if matches!(integration, Integration::AndroidTv) { crate::valid_app_url(id) } else { matches!(integration, Integration::WebOs | Integration::AppleTv | Integration::Tizen) && valid_id(id) },
+            // Not catalog rows: a picker has to collect the number, so the
+            // table lives here. Listed only where a client sets the level
+            // today, and only for the Home Assistant domain that has it.
+            Self::Dim(_) => match integration {
+                Integration::Hue { .. } => true,
+                Integration::HomeAssistant { entity_id } => crate::buttons::ha_domain(entity_id) == "light",
+                _ => false,
+            },
+            Self::Volume(_) => matches!(integration, Integration::Sonos { .. } | Integration::Kodi { .. } | Integration::WebOs),
+            Self::Position(_) => matches!(integration, Integration::HomeAssistant { entity_id } if crate::buttons::ha_domain(entity_id) == "cover"),
             _ => crate::buttons::functions(integration)
                 .iter()
                 .any(|f| f.0 == self.id()),
@@ -171,6 +198,18 @@ impl Function {
 /// Mirrors `couch_tizen::INPUTS`; kept here so the wasm build stays free of
 /// the client crates.
 pub const TIZEN_INPUTS: &[&str] = &["tv", "hdmi", "hdmi1", "hdmi2", "hdmi3", "hdmi4"];
+/// `dim:030` and `dim:+5` are refused so a rendered id parses back to the same
+/// value; `dim:` and `dim:101` are not levels at all.
+fn percent(value: &str, prefix: &str) -> Option<u8> {
+    let digits = value.strip_prefix(prefix)?;
+    if digits.is_empty()
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+    {
+        return None;
+    }
+    digits.parse::<u8>().ok().filter(|p| *p <= 100)
+}
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -217,5 +256,56 @@ mod tests {
             }));
         assert!(Function::parse("input:BD\rMV98").is_none());
         assert!(Function::parse("arbitrary-rpc").is_none());
+    }
+    #[test]
+    fn levels_round_trip_and_refuse_anything_that_is_not_a_percentage() {
+        for (id, expected) in [
+            ("dim:0", Function::Dim(0)),
+            ("dim:100", Function::Dim(100)),
+            ("volume:20", Function::Volume(20)),
+            ("position:7", Function::Position(7)),
+        ] {
+            let parsed = Function::parse(id).unwrap();
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.id(), id);
+            assert!(!parsed.repeatable());
+        }
+        for id in [
+            "dim:", "dim:101", "volume:101", "position:255", "dim:256", "dim:1000", "dim:-5",
+            "dim:+5", "dim:030", "dim: 30", "dim:3 0", "dim:30%", "dim:thirty", "dim", "level:30",
+        ] {
+            assert!(Function::parse(id).is_none(), "{id}");
+        }
+    }
+    #[test]
+    fn levels_are_offered_only_where_a_client_sets_one() {
+        let ha = |entity: &str| Integration::HomeAssistant { entity_id: entity.into() };
+        for (function, integration, supported) in [
+            (Function::Dim(30), Integration::Hue { light_id: "id".into() }, true),
+            (Function::Dim(30), ha("light.office"), true),
+            (Function::Dim(30), ha("ha-one/light.office"), true),
+            (Function::Dim(30), ha("cover.office"), false),
+            (Function::Dim(30), ha("climate.office"), false),
+            (Function::Dim(30), Integration::WebOs, false),
+            (Function::Position(30), ha("cover.office"), true),
+            (Function::Position(30), ha("ha-one/cover.office"), true),
+            (Function::Position(30), ha("light.office"), false),
+            (Function::Position(30), Integration::Sonos { host: "192.0.2.1".into() }, false),
+            (Function::Volume(30), Integration::Sonos { host: "192.0.2.1".into() }, true),
+            (Function::Volume(30), Integration::Kodi { host: "h".into(), port: 9090 }, true),
+            (Function::Volume(30), Integration::WebOs, true),
+            // Denon sets volume in dB, not percent, so there is nothing to send.
+            (Function::Volume(30), Integration::Denon { host: "h".into(), port: 23 }, false),
+            (Function::Volume(30), ha("light.office"), false),
+            (Function::Volume(30), Integration::Ir { codeset: "tv".into() }, false),
+        ] {
+            assert_eq!(
+                function.supports(&integration),
+                supported,
+                "{} on {}",
+                function.id(),
+                integration.via()
+            );
+        }
     }
 }

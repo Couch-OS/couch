@@ -90,6 +90,17 @@ impl Button {
         })
     }
 }
+/// The entity's domain: saved devices carry `<connection_id>/<entity_id>`, and
+/// `validate::valid_ha_resource` has already tied each domain to one DeviceKind.
+pub(crate) fn ha_domain(entity_id: &str) -> &str {
+    entity_id
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .next()
+        .unwrap_or("")
+}
 /// Deliberately finite: never accept arbitrary RPC or shell commands in mappings.
 pub fn functions(integration: &Integration) -> &'static [(&'static str, &'static str)] {
     match integration {

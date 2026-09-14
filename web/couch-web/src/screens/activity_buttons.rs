@@ -44,6 +44,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
     let gesture = RwSignal::new(Gesture::Short);
     let device = RwSignal::new(String::new());
     let query = RwSignal::new(String::new());
+    let level = RwSignal::new(50i32);
     let dynamic = RwSignal::new(Vec::<(String, String)>::new());
     let discovery = RwSignal::new(String::new());
     let dialog = NodeRef::<leptos::html::Dialog>::new();
@@ -240,6 +241,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
             <label class="field">"Device"<select aria-label="Filter commands by device" prop:value=move ||device.get() on:change=move |e|device.set(event_target_value(&e))>
                 <option value="">"All devices"</option>{options.into_iter().map(|(id,name)|view!{<option value=id>{name}</option>}).collect_view()}
             </select></label>
+            <label class="field">"Level (%)"<input type="number" aria-label="Level percent" min="0" max="100" prop:value=move ||level.get().to_string() on:input=move |e|{if let Ok(v)=event_target_value(&e).parse::<i32>(){level.set(v.clamp(0,100));}}/></label>
             <div class="mapping-reset-actions">
                 <button disabled=move ||app.busy.get() on:click=move |_|save(None)>"Use activity default"</button>
                 <button disabled=move ||app.busy.get() on:click=move |_|save(Some(None))>"Do nothing"</button>
@@ -251,14 +253,22 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
                     let cfg=config.get_value(); let filter=device.get(); let search=query.get().to_lowercase();
                     let mut groups=Vec::new();
                     for (room,d) in cfg.devices().filter(|(_,d)|filter.is_empty()||d.id.as_str()==filter) {
+                        let matches=|id:&str,name:&str|format!("{} {} {id} {name}",room.name,d.name).to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ").contains(&search);
                         let mut choices=ir_commands.choices(&cfg,d,if !filter.is_empty(){dynamic.get()}else{Vec::new()});
-                        choices.retain(|(id,name)|format!("{} {} {id} {name}",room.name,d.name).to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ").contains(&search));
-                        if choices.is_empty(){continue;}
+                        choices.retain(|(id,name)|matches(id,name));
+                        // A level needs the number above, so it is a control here rather than a catalog row.
+                        let levels:Vec<_>=super::device_commands::levels(&cfg,d).into_iter().filter(|(kind,label)|matches(kind,label)).collect();
+                        if choices.is_empty()&&levels.is_empty(){continue;}
                         let device_id=d.id.clone();
+                        let level_device=d.id.clone();
                         groups.push(view! {<section class="command-group"><h3>{d.name.clone()}<span>{room.name.clone()}</span></h3>
                             {choices.into_iter().map(move |(id,name)| {
                                 let action=Action::new(device_id.clone(),id);
                                 view!{<button class="command-option" disabled=move ||app.busy.get() on:click=move |_|save(Some(Some(action.clone())))><span>{name}</span><span aria-hidden="true">"＋"</span></button>}
+                            }).collect_view()}
+                            {levels.into_iter().map(move |(kind,label)| {
+                                let id=level_device.clone();
+                                view!{<button class="command-option" disabled=move ||app.busy.get() on:click=move |_|save(Some(Some(Action::new(id.clone(),format!("{kind}:{}",level.get_untracked())))))><span>{move ||format!("{label} · set to {}%",level.get())}</span><span aria-hidden="true">"＋"</span></button>}
                             }).collect_view()}
                         </section>}.into_any());
                     }
@@ -295,6 +305,7 @@ fn mapping_label(
                         .find(|f| f.0 == a.command)
                         .map(|f| f.1.to_string())
                 })
+                .or_else(|| super::device_commands::value_label(&a.command))
                 .unwrap_or_else(|| {
                     a.command
                         .replace("input:", "Input · ")
