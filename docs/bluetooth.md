@@ -195,13 +195,16 @@ Userland (this repo):
 - [x] Add `bluez` (and `bluez-deprecated` for `hciconfig`/`hcitool`) to the
       image package list (`tools/provision-alpine.sh`; takes effect in the next image).
 - [x] Bridge daemon between `/dev/vhci` and `/dev/stpbt` (`clients/couch-bt`).
-- [ ] Spike acceptance: `hciconfig hci0 up` succeeds, `btmgmt info` reports
-      LE, `hcitool lescan` sees nearby advertisers.
+- [x] Spike acceptance (2026-09-14): `hciconfig hci0 up`, `hcitool lescan` sees
+      advertisers. (Alpine bluez has no `btmgmt`; used `bluetoothctl`/`hciconfig`.)
 - [ ] Program `bluetooth_mac` from the identity record at bring-up.
-- [ ] HID-over-GATT peripheral: GATT HID service, report map for keyboard and
-      consumer control, advertising driven through raw HCI.
-- [ ] First pairing with a real TV or Apple TV; record which pairing method
-      each target accepts.
+- [x] HID-over-GATT peripheral (2026-09-14, `clients/couch-bt-hid`): GATT HID
+      service via bluetoothd GattManager1, keyboard + consumer-control report
+      map, advertising driven through raw HCI.
+- [x] First pairing with a real TV (2026-09-14): just-works pairing accepted;
+      after connect, a consumer volume-up report changed the TV volume. Paired
+      with the synthetic controller address 00:00:46:65:80:01 (set-BD_ADDR not
+      needed for this TV). Record other targets as they are tried.
 - [ ] Bond store keyed per activity; disconnect-and-redirect on switch.
 - [ ] GUI: pair-new-device flow and per-activity target picker.
 - [ ] Power validation: BT idle current unplugged, per
