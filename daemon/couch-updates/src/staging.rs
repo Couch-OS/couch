@@ -69,6 +69,12 @@ fn allowed(name: &str) -> bool {
     }
     REQUIRED.contains(&name)
         || name == "fbcon"
+        // A further Couch binary at the top level, so a later release can add
+        // one without every deployed updater refusing the whole bundle. Only
+        // updaters from this rule on accept it: a bundle carrying one is not
+        // installable by older remotes, which is why the bridge daemon ships
+        // in the boot ramdisk for now (docs/bluetooth.md).
+        || (name.starts_with("couch-") && !name.contains('/') && !name.contains(".."))
         || name.strip_prefix("www/").is_some_and(|rest| {
             !rest.starts_with('.')
                 && (rest.starts_with("cgi-bin/")
@@ -510,6 +516,26 @@ mod tests {
         }
         m.files.pop();
         assert!(inventory(&m).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_further_couch_binary_is_accepted_only_at_the_top_level_and_executable() {
+        let (root, m, _) = fixture();
+        let extra = |path: &str, mode: u32| {
+            let mut m = m.clone();
+            m.files.push(File {
+                path: path.into(),
+                size: 4,
+                sha256: "b".repeat(64),
+                mode,
+            });
+            inventory(&m).is_ok()
+        };
+        assert!(extra("couch-bt-bridge", 0o755));
+        assert!(!extra("couch-bt-bridge", 0o644));
+        assert!(!extra("bin/couch-bt-bridge", 0o755));
+        assert!(!extra("couch-../shadow", 0o755));
+        assert!(!extra("bridge", 0o755));
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

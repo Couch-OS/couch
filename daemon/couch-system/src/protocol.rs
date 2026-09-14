@@ -32,6 +32,12 @@ pub enum Request {
     },
     SshAvailable,
     SshAuto,
+    /// Start or stop the Bluetooth bridge (and with it the radio).
+    Bluetooth {
+        enabled: bool,
+    },
+    /// At boot: start the bridge if the saved setting says so.
+    BluetoothAuto,
     EnrollKey {
         key: String,
     },

@@ -291,6 +291,8 @@ export component App inherits Window {
     in-out property <string> wifi-ssid: "";
     in-out property <bool> ssh-on: false;
     in-out property <bool> ssh-available: false;
+    in-out property <string> bt-state: "off";  // off, starting, on, error
+    in-out property <bool> bt-available: false;
     // Updates section of the settings menu; mirrored from the system service.
     in-out property <string> update-installed;
     in-out property <string> update-channel;
@@ -333,8 +335,9 @@ export component App inherits Window {
     in-out property <image> wifi-setup-qr;
     in-out property <bool> wifi-setup-has-qr: false;
     callback setting-toggle-ssh();
+    callback setting-toggle-bluetooth();
     // Which tier the settings menu shows (0 root, 1 display, 2 wifi, 3 ssh,
-    // 4 updates, 5 network, 6 power),
+    // 4 updates, 5 network, 6 power, 7 bluetooth),
     // owned here so the host can slide between them. Enter and leave are asks.
     in-out property <int> settings-panel: 0;
     callback settings-enter(int);
@@ -626,6 +629,8 @@ export component App inherits Window {
         wifi-level: root.wifi-level;
         ssh-on: root.ssh-on;
         ssh-available: root.ssh-available;
+        bt-state: root.bt-state;
+        bt-available: root.bt-available;
         update-installed: root.update-installed;
         update-channel: root.update-channel;
         update-summary: root.update-summary;
@@ -654,6 +659,7 @@ export component App inherits Window {
         change-wifi => { root.setting-change-wifi(); }
         recovery-wifi => { root.setting-recovery-wifi(); }
         toggle-ssh => { root.setting-toggle-ssh(); }
+        toggle-bluetooth => { root.setting-toggle-bluetooth(); }
         enter(n) => { root.settings-enter(n); }
         leave => { root.settings-leave(); }
     }

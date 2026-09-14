@@ -1,0 +1,19 @@
+[package]
+name = "couch-bt-hid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Couch as a Bluetooth LE HID peripheral (keyboard + consumer control) via BlueZ/GATT"
+
+# Talks to bluetoothd over the system D-Bus and (next) runs a GATT server.
+# zbus is pure Rust (no libdbus C, unlike the `dbus`/bluer stack), so this still
+# links static musl with rust-lld and no cross sysroot, like the other clients.
+# A separate binary from couch-bt-bridge: the bridge stays minimal and always
+# on; this runs only while Bluetooth is advertising or connected.
+[dependencies]
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "time", "signal", "sync"] }
+
+[[bin]]
+name = "couch-bt-hid"
+path = "src/main.rs"

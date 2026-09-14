@@ -390,6 +390,19 @@ pub(crate) fn execute_with_input(
             Ok(Outcome { volume })
         }
         Integration::Ir { .. } => Err(format!("No IR code assigned to {}", command.id())),
+        // The remote is the HID peripheral: one datagram with the function's
+        // id to the HID daemon, which turns it into a consumer-control report
+        // for the TV paired to it. No connection state to keep here.
+        Integration::BluetoothTv => {
+            let socket = ["/tmp/couch-bt-hid.sock", "/mnt/alpine/tmp/couch-bt-hid.sock"]
+                .into_iter()
+                .find(|p| std::path::Path::new(p).exists())
+                .ok_or("Turn Bluetooth on in Settings first")?;
+            std::os::unix::net::UnixDatagram::unbound()
+                .and_then(|s| s.send_to(command.id().as_bytes(), socket))
+                .map_err(|_| "Bluetooth is not running; turn it on in Settings")?;
+            Ok(Outcome::default())
+        }
         Integration::AndroidTv | Integration::AppleTv | Integration::Tizen => {
             let kind = match integration {
                 Integration::AppleTv => "appletv",

@@ -4,7 +4,7 @@
 
 ```sh
 tools/build-wmt-properties.sh
-tools/build-release.sh   # couch-gui, couch-confd, couch-system, couch-sonos, couch-coreelec
+tools/build-release.sh   # couch-gui, couch-confd, couch-system, couch-sonos, couch-coreelec, couch-bt-bridge
 python3 tools/release/runtime_inventory.py build/alpine-staging-input.json build/runtime-payload
 python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json \
   build/offline-armv7 build/packaged-runtime
@@ -19,6 +19,8 @@ python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json
 | GUI, configuration server, boot console | `couch-gui` (built with `tools/build-gui.sh`), `couch-confd` (`tools/build-webui.sh`), `couch-system`, `fbcon`; little-endian ARM32 ELF, no dynamic-loader/library requirement. The GUI and daemon builds compile in the Sonos developer key from `build/sonos-api-key` when present ([sonos.md](sonos.md#release-builds)) |
 | CoreELEC control | `couch-coreelec`, built in the clients workspace; static ARM32 ELF installed at `/opt/couch/couch-coreelec` |
 | Sonos LAN control | `couch-sonos`, built with `tools/build-sonos.sh`; static ARM32 ELF installed at `/opt/couch/couch-sonos` |
+| Bluetooth HID daemon | `couch-bt-hid`, built in the clients workspace (`-p couch-bt-hid`); static ARM32 ELF. The BLE HID peripheral: registers the HID GATT app with bluetoothd (zbus) and advertises over raw HCI. Started, with dbus + bluetoothd + the bridge, by the system service's Bluetooth toggle (`couch_system::bluetooth`, all under one `chroot /mnt/alpine`). Needs `dbus` and `bluez` in the image. A copy also rides in the boot ramdisk (`/extra/couch-bt-hid`) with the bridge, and the system service copies both into shared `/tmp` when the runtime lacks them, so a runtime bundle can stay within the strict allowlist of updaters before .142 |
+| Bluetooth bridge | `couch-bt-bridge`, built in the clients workspace (`-p couch-bt`); static ARM32 ELF at `/opt/couch/couch-bt-bridge`. In the runtime bundle from .143 (updaters from .142 accept extra top-level `couch-*` executables); a copy also rides in the boot ramdisk (`/extra/couch-bt-bridge`) as a fallback for the first Bluetooth-capable image. The system service starts it only on the Bluetooth toggle, looking beside itself (the runtime slot) first, then `/extra`, then `/opt/couch`; a whole-file lock keeps it a singleton |
 | Runtime scripts | `stage2.sh`, `runtime-boot.sh`, `hardware-init.sh`, `gui-start.sh`, `system.sh`, `confd.sh`, `setup-mode.sh`, `portal.sh`, `wifi-conf.sh`, `station.sh` |
 | Recovery portal | `www/index.html` and exactly `cgi-bin/{save,setpw,scan,enroll}` |
 | Readable notices | Lato/Inter OFL and Lucide ISC notices under `/opt/couch/licenses` |

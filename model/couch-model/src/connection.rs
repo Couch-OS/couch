@@ -22,6 +22,8 @@ pub enum Provider {
     AndroidTv,
     AppleTv,
     Tizen,
+    /// The remote as a Bluetooth HID peripheral; TVs pair to it.
+    BluetoothTv,
     UnifiProtect,
     /// A Matter fabric this remote administers; devices are commissioned
     /// onto it with a pairing code and identified by node ID and endpoint.
@@ -41,6 +43,7 @@ impl Provider {
             Self::AndroidTv => "android-tv",
             Self::AppleTv => "apple-tv",
             Self::Tizen => "tizen",
+            Self::BluetoothTv => "bluetooth-tv",
             Self::UnifiProtect => "unifi-protect",
             Self::Matter => "matter",
             Self::Ir => "ir",
@@ -58,6 +61,7 @@ impl Provider {
             Self::AndroidTv => "Android / Google TV",
             Self::AppleTv => "Apple TV",
             Self::Tizen => "Samsung Tizen",
+            Self::BluetoothTv => "Bluetooth TV",
             Self::UnifiProtect => "UniFi Protect",
             Self::Matter => "Matter",
             Self::Ir => "Infrared",
@@ -103,6 +107,7 @@ impl Config {
             Provider::AndroidTv => Integration::AndroidTv,
             Provider::AppleTv => Integration::AppleTv,
             Provider::Tizen => Integration::Tizen,
+            Provider::BluetoothTv => Integration::BluetoothTv,
             Provider::UnifiProtect => Integration::UnifiProtect { camera_id: alloc::format!("{connection_id}/{resource_id}") },
             Provider::Matter => Integration::Matter { device: alloc::format!("{connection_id}/{resource_id}") },
             Provider::Ir => Integration::Ir {
