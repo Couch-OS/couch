@@ -1,7 +1,5 @@
 //! Private AirPlay pairing, deliberately separate from Companion credentials.
 use super::{Credentials, Error, Result, Settings};
-#[cfg(unix)]
-use std::io::Write;
 use std::{io::Read, path::Path};
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,32 +41,15 @@ impl StoredConnection {
     }
     #[cfg(unix)]
     pub fn save(&self, path: &Path) -> Result<()> {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::PermissionsExt;
         self.validate()?;
+        // The AirPlay pairing gets its own directory, and the directory's mode
+        // is the guard the file's 0600 leans on.
         let parent = path.parent().ok_or(Error::Configuration)?;
         std::fs::create_dir_all(parent).map_err(|_| Error::Configuration)?;
         std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
             .map_err(|_| Error::Configuration)?;
-        let tmp = path.with_extension(format!("{}.new", std::process::id()));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|_| Error::Configuration)?;
-        let result = (|| {
-            file.write_all(&serde_json::to_vec(self).map_err(|_| Error::Configuration)?)
-                .map_err(|_| Error::Configuration)?;
-            file.sync_all().map_err(|_| Error::Configuration)?;
-            std::fs::rename(&tmp, path).map_err(|_| Error::Configuration)?;
-            std::fs::File::open(parent)
-                .and_then(|f| f.sync_all())
-                .map_err(|_| Error::Configuration)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(tmp);
-        }
-        result
+        couch_sdk::save_private(path, self).map_err(|_| Error::Configuration)
     }
 }
 #[cfg(all(test, unix))]

@@ -5,12 +5,7 @@ use couch_ir::{
     tx::{self, Irtx},
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    io::{Read, Write},
-    os::unix::fs::OpenOptionsExt,
-    path::Path,
-};
+use std::{fs, io::Read, path::Path};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Method {
@@ -72,27 +67,12 @@ impl PowerSettings {
     }
     pub fn save(&self, credentials: &Path, url: &str) -> Result<(), String> {
         self.validate()?;
-        let destination = credentials.with_file_name("webos-power.json");
-        let temporary = destination.with_extension(format!("{}.new", std::process::id()));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|_| "Cannot create TV power settings")?;
-        let result = (|| -> std::io::Result<()> {
-            file.write_all(&serde_json::to_vec(&Saved {
-                url: url.into(),
-                settings: self.clone(),
-            })?)?;
-            file.sync_all()?;
-            fs::rename(&temporary, &destination)?;
-            fs::File::open(destination.parent().unwrap())?.sync_all()
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temporary);
-        }
-        result.map_err(|_| "Cannot save TV power settings".into())
+        let saved = Saved {
+            url: url.into(),
+            settings: self.clone(),
+        };
+        couch_sdk::save_private(&credentials.with_file_name("webos-power.json"), &saved)
+            .map_err(|_| "Cannot save TV power settings".into())
     }
     pub fn message(&self, button: &str) -> Result<Message, String> {
         self.validate()?;

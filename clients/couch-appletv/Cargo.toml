@@ -6,6 +6,7 @@ license.workspace = true
 description = "Apple TV Companion pairing and control for Couch"
 
 [dependencies]
+couch-sdk = { path = "../couch-sdk" }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 hkdf = "0.12"

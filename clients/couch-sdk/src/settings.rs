@@ -3,10 +3,10 @@
 //! Every existing client stores its credentials in
 //! `connections/<connection-id>/<prefix>-connection.json` beside `config.json`,
 //! mode 0600, and writes it through a temporary file so a crashed save cannot
-//! leave a truncated credential behind. That code is currently copied by hand
-//! into `couch-denon`, `couch-ha`, `couch-hue`, `couch-kodi` and `couch-webos`.
-//! It is here once so a new client does not copy it a sixth time, and
-//! `couch-denon` now calls it rather than keeping its own.
+//! leave a truncated credential behind. That code was copied by hand into nine
+//! places, eight of them naming the temporary file after the process alone, so
+//! two saves in one process collided and surfaced as an invalid connection.
+//! Every one of them now calls this, and a new client copies nothing.
 
 use std::{
     fs,
@@ -50,12 +50,25 @@ pub fn load_private<T: DeserializeOwned>(path: &Path) -> std::io::Result<T> {
 /// Typed `io::Result` for the same reason as [`load_private`]: the caller
 /// decides what a storage failure means to its user.
 pub fn save_private<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    save_private_bytes(path, &serde_json::to_vec(value)?)
+}
+
+/// The same write for a caller that has already produced the bytes, because it
+/// serialises with its own formatting. `couch-matter` writes pretty JSON a
+/// person is expected to read.
+pub fn save_private_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "no parent directory")
     })?;
+    // A bare relative filename has an empty parent, which is this directory.
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
     let (temporary, mut file) = open_temporary(path)?;
     let result = (|| -> std::io::Result<()> {
-        file.write_all(&serde_json::to_vec(value)?)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;
         fs::File::open(parent)?.sync_all()

@@ -499,6 +499,7 @@ name = "couch-appletv"
 version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
+ "couch-sdk",
  "ed25519-dalek",
  "hkdf",
  "num-bigint",
@@ -537,6 +538,7 @@ dependencies = [
  "couch-appletv",
  "couch-denon",
  "couch-kodi",
+ "couch-sdk",
  "couch-tizen",
  "couch-webos",
  "libc",
@@ -576,6 +578,7 @@ dependencies = [
 name = "couch-ha"
 version = "0.1.0"
 dependencies = [
+ "couch-sdk",
  "serde",
  "serde_json",
  "tiny_http",
@@ -608,6 +611,7 @@ dependencies = [
 name = "couch-kodi"
 version = "0.1.0"
 dependencies = [
+ "couch-sdk",
  "serde",
  "serde_json",
 ]
@@ -617,6 +621,7 @@ name = "couch-matter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "couch-sdk",
  "matc",
  "rand 0.8.8",
  "serde",

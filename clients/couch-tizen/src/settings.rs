@@ -1,7 +1,7 @@
 //! Per-TV pairing material, kept outside exportable house configuration.
 use crate::{endpoint, Error, Result};
 use serde::{Deserialize, Serialize};
-use std::{fs, io::Write, os::unix::fs::OpenOptionsExt, path::Path};
+use std::{fs, path::Path};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// `wss://IP:8002/` (token authenticated) or `ws://IP:8001/` (legacy, no token).
@@ -74,27 +74,6 @@ impl Settings {
     }
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let temporary = path.with_extension(format!("{}.new", std::process::id()));
-        // Only remove a temporary file we actually created.
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|_| Error::Configuration)?;
-        let result = (|| -> std::io::Result<()> {
-            file.write_all(&serde_json::to_vec(self)?)?;
-            file.sync_all()?;
-            fs::rename(&temporary, path)?;
-            fs::File::open(parent)?.sync_all()
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result.map_err(|_| Error::Configuration)
+        couch_sdk::save_private(path, self).map_err(|_| Error::Configuration)
     }
 }
