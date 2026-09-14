@@ -1,7 +1,9 @@
 # Bluetooth and BLE
 
-Status as of 2026-09-12: **Bluetooth does not work on Couch, on either kernel,
-and it has never been exercised.** This document records what exists, what is
+Status as of 2026-09-14: **Bluetooth does not work on Couch, on either kernel,
+and it has never been exercised.** The bridge daemon, kernel config and image
+package changes for the first spike are on this branch, see the
+[implementation plan](#implementation-plan-branch-bluetooth-rebased-onto-dev-2026-09-14). This document records what exists, what is
 missing, the intended path to a BLE HID remote with per-activity pairings, and
 the staging checklist. Kernel-side tasks are mirrored in the kernel tree at
 `Documentation/couch/bluetooth.md` on the `bluetooth` branch of
@@ -71,20 +73,77 @@ for multi-device keyboards applies here:
 - Pairing a new device is a GUI flow: undirected connectable advertising for a
   bounded time, then store the bond and offer it in the activity editor.
 
+## Implementation plan (branch `bluetooth`, rebased onto `dev` 2026-09-14)
+
+The first milestone is the spike: prove the radio through Linux's virtual HCI
+device with BlueZ on top. Everything below it is blocked on one thing that
+cannot ship as a runtime update: a kernel with `CONFIG_BT` and
+`CONFIG_BT_HCIVHCI`, which means a new OS image. This branch prepares each
+side so the image, when built, has something to run.
+
+**What is on this branch**
+
+- `clients/couch-bt`: `couch-bt-bridge`, the daemon that shuttles H4 packets
+  between `/dev/vhci` and `/dev/stpbt`. It reassembles the STP side's byte
+  stream into whole frames (vhci requires one packet per write), creates the
+  virtual controller explicitly (events written before it exists are
+  refused), handles the STP whole-chip reset errnos (88 waits, 99 reopens),
+  and can send the set-address vendor command first so `hci0` carries the
+  owner's recorded `bluetooth_mac`. The opcode defaults to MediaTek's 0xFC1A
+  and is a flag because the HA100 has not confirmed it. Host-testable: the
+  framer and the pump are exercised with socket pairs standing in for the two
+  devices. Static musl, one dependency (`libc`, for `poll`), like
+  `couch-voice`.
+- `kernel/couch-ha100.config`: `CONFIG_BT=y`, `CONFIG_BT_HCIVHCI=y`, every
+  other Bluetooth profile and transport explicitly off. This changes the
+  config hash `kernel/release-pin.json` pins, so a Bluetooth kernel is a new
+  candidate through `docs/kernel-release-candidate.md`, not a drop-in. Run
+  `olddefconfig` on Ollie before the first build; the symbols listed exist in
+  this tree (`net/bluetooth/Kconfig`, `drivers/bluetooth/Kconfig`). The
+  kernel repository's `bluetooth` branch carries the same task list in
+  `Documentation/couch/bluetooth.md`; it is not checked out on Ollie yet
+  (`git fetch couch bluetooth` there).
+- `tools/provision-alpine.sh`: `bluez` and `bluez-deprecated` join the image
+  package list, for `bluetoothd`, `btmgmt`, `hciconfig` and `hcitool`.
+
+**Milestones**
+
+1. *Spike image.* Build the kernel candidate with the config above, provision
+   an Alpine root with the new package list, add `couch-bt-bridge` to the
+   runtime payload (`tools/build-release.sh`, `tools/release/runtime_inventory.py`
+   and the stage script list it beside `couch-sonos`), and start it from
+   `stage2/gui-start.sh` guarded on `/dev/vhci` and `/dev/stpbt` both existing.
+   Acceptance: `hciconfig hci0 up`, `btmgmt info` reports LE, `hcitool lescan`
+   sees nearby advertisers, and the bridge log shows the set-address command
+   answered (or names the opcode that must replace 0xFC1A).
+2. *Power and coexistence.* BT idle current unplugged per
+   `docs/ha100-power-validation.md`; Wi-Fi throughput with the BT function on.
+3. *HID over GATT.* A second daemon (or the same one grown) that registers the
+   HID service with BlueZ over D-Bus, with the keyboard and consumer-control
+   report map, and drives advertising through raw HCI since 3.18 has no
+   `Add Advertising` management command. First pairing with a real TV; record
+   which pairing method each target accepts.
+4. *Switching.* One bond per target, an activity references its bonded
+   address, and an activity switch disconnects and directed-advertises to the
+   new target. GUI: pair-new-device flow and per-activity target picker.
+5. *Proper driver.* Replace the bridge with an in-kernel `hci_dev` over STP,
+   per the kernel repository's task list, once the spike has proven the radio.
+
 ## Staging checklist
 
 Kernel (couch-kernel `bluetooth` branch, built on Ollie):
 
-- [ ] `CONFIG_BT=y`, `CONFIG_BT_HCIVHCI=y` in `couch-ha100.config`; keep
-      `BT_RFCOMM`, `BT_BNEP`, `BT_HIDP` off unless a profile needs them.
+- [x] `CONFIG_BT=y`, `CONFIG_BT_HCIVHCI=y` in `couch-ha100.config`; keep
+      `BT_RFCOMM`, `BT_BNEP`, `BT_HIDP` off unless a profile needs them
+      (on this branch; the candidate still needs building and re-pinning).
 - [ ] Build `normal`, confirm `/dev/vhci` and `/dev/stpbt` both appear.
 - [ ] Later: in-kernel STP HCI driver replacing the bridge daemon.
 
 Userland (this repo):
 
-- [ ] Add `bluez` (and `bluez-deprecated` for `hciconfig`/`hcitool`) to the
-      image package list.
-- [ ] Bridge daemon between `/dev/vhci` and `/dev/stpbt`.
+- [x] Add `bluez` (and `bluez-deprecated` for `hciconfig`/`hcitool`) to the
+      image package list (`tools/provision-alpine.sh`; takes effect in the next image).
+- [x] Bridge daemon between `/dev/vhci` and `/dev/stpbt` (`clients/couch-bt`).
 - [ ] Spike acceptance: `hciconfig hci0 up` succeeds, `btmgmt info` reports
       LE, `hcitool lescan` sees nearby advertisers.
 - [ ] Program `bluetooth_mac` from the identity record at bring-up.

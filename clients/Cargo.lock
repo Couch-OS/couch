@@ -374,6 +374,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "couch-bt"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "couch-control"
 version = "0.1.0"
 dependencies = [

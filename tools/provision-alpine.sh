@@ -27,7 +27,7 @@ MNT=/data/local/tmp/alp
 # undebuggable here.
 # Everything the device needs to reach a network on its own, plus the portal
 # that configures it when it cannot.
-PKGS="wpa_supplicant openssh hostapd dnsmasq iw tzdata"
+PKGS="wpa_supplicant openssh hostapd dnsmasq iw tzdata bluez bluez-deprecated"
 # Hand-fetched fallback set: just enough to bring WiFi up if there is no network
 # during provisioning. apk fetch --recursive builds the real closure below.
 SEED="wpa_supplicant libnl3 dbus-libs pcsc-lite-libs"
