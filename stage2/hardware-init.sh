@@ -17,6 +17,12 @@ mark() { $BB echo "[$($BB cut -d. -f1 /proc/uptime)s] $2" | $BB dd of=$LOG bs=51
 echo "= stage2 running from $(dirname "$0")"
 [ -e /dev/mmcblk0p13 ] || $BB mknod /dev/mmcblk0p13 b 179 13 2>/dev/null
 
+# IPv4-only device: disable IPv6 before any interface comes up, so nothing
+# acquires a v6 address (all + default cover interfaces created later).
+for f in all default; do
+    $BB echo 1 > /proc/sys/net/ipv6/conf/$f/disable_ipv6 2>/dev/null
+done
+
 # The custom IR driver is a misc device; stock firmware used major 243.
 # Resolve the registered device number instead of retaining the cpio's stock
 # node (which may now refer to an unrelated character driver).
@@ -266,10 +272,18 @@ if [ "$WIFI" = "1" ]; then
         # Run dhcp inside the chroot: busybox udhcpc does nothing without
         # /usr/share/udhcpc/default.script, and Alpine ships a maintained one.
         # Run from the initramfs it takes the lease and never applies it, which
-        # looks exactly like dhcp failing.
+        # looks exactly like dhcp failing. Keep udhcpc running (backgrounded,
+        # not -q) so it renews the lease and re-acquires after a link bounce;
+        # the one-shot form left the remote with no IPv4 once the lease dropped.
         if [ "$ST" = "COMPLETED" ]; then
-            $BB chroot $A /sbin/udhcpc -i wlan0 -n -q -t 10 >/tmp/dhcp.log 2>&1
-            IP=$($BB ifconfig wlan0 2>/dev/null | $BB sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+            $BB chroot $A /sbin/udhcpc -i wlan0 -t 10 >/tmp/dhcp.log 2>&1 &
+            IP=""
+            n=0
+            while [ $n -lt 12 ]; do
+                IP=$($BB ifconfig wlan0 2>/dev/null | $BB sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+                [ -n "$IP" ] && break
+                $BB sleep 1; n=$((n+1))
+            done
             if [ -n "$IP" ]; then
                 # Root telnet, no password, on the LAN. Fine on a bench, not
                 # something to ship - sshd with an enrolled key is the shipped
@@ -281,6 +295,28 @@ if [ "$WIFI" = "1" ]; then
             fi
         fi
         mark $((BASE+6)) "S6 assoc=$ST ip=${IP:-none}"
+        # The combo chip's whole-chip reset (a firmware assert, or Bluetooth
+        # coming up at the wrong moment) bounces wlan0: the driver flushes the
+        # address and re-associates, but udhcpc holds its 24 h lease and never
+        # notices. Watch for "link up, no IPv4" and make udhcpc start over
+        # (release, then renew = a fresh discover). One loop for the boot;
+        # station.sh restarts udhcpc on a network change and this keeps
+        # working because it looks the pid up each time.
+        ( while :; do
+            $BB sleep 5
+            [ "$($BB cat /sys/class/net/wlan0/carrier 2>/dev/null)" = 1 ] || continue
+            $BB ip -4 addr show wlan0 2>/dev/null | $BB grep -q "inet " && continue
+            $BB sleep 5
+            $BB ip -4 addr show wlan0 2>/dev/null | $BB grep -q "inet " && continue
+            P=$($BB pidof udhcpc)
+            if [ -n "$P" ]; then
+                echo "= wlan0 up without IPv4; restarting dhcp" >> /tmp/dhcp.log
+                kill -USR2 $P; $BB sleep 1; kill -USR1 $P
+            else
+                $BB chroot $A /sbin/udhcpc -i wlan0 -t 10 >>/tmp/dhcp.log 2>&1 &
+            fi
+            $BB sleep 20
+        done ) </dev/null >/dev/null 2>&1 &
     fi
 
 

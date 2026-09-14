@@ -1,0 +1,18 @@
+[package]
+name = "couch-bt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bluetooth bring-up for Couch: the virtual-HCI bridge to the MediaTek STP transport"
+
+# One dependency, and only for `poll`. Like couch-voice, this crate binds no C
+# library: the device's clients are static musl binaries linked with rust-lld
+# and no cross sysroot, which rules out BlueZ's libbluetooth and every
+# Bluetooth crate that wraps it. Everything here is bytes on two file
+# descriptors, which the standard library and one syscall cover.
+[dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "couch-bt-bridge"
+path = "src/main.rs"

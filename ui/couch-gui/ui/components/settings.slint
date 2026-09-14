@@ -76,6 +76,8 @@ export component Settings inherits Rectangle {
     // SSH.
     in property <bool> ssh-on;
     in property <bool> ssh-available;          // a key or password is enrolled
+    in property <string> bt-state;             // off, starting, on, error
+    in property <bool> bt-available;           // the kernel has Bluetooth at all
     // Updates. The host mirrors the system service's status here.
     in property <string> update-installed;
     in property <string> update-channel;       // "Stable" / "Alpha"
@@ -103,6 +105,7 @@ export component Settings inherits Rectangle {
     callback change-wifi();
     callback recovery-wifi();
     callback toggle-ssh();
+    callback toggle-bluetooth();
     callback update-check();
     callback update-install();
     callback update-restart();
@@ -116,7 +119,8 @@ export component Settings inherits Rectangle {
 
     public function take-focus() { fs.focus(); }
 
-    // 0 root, 1 display, 2 wifi, 3 ssh, 4 updates, 5 network, 6 power. Set by
+    // 0 root, 1 display, 2 wifi, 3 ssh, 4 updates, 5 network, 6 power,
+    // 7 bluetooth. Set by
     // the host so the change can be slid to; the cursor resets whenever it
     // moves. Panel numbers are stable ids; the root list has its own order.
     in property <int> panel: 0;
@@ -130,8 +134,8 @@ export component Settings inherits Rectangle {
     property <length> row-h: 72px;
     property <length> gap: 10px;
     property <length> pitch: root.row-h + root.gap;
-    property <[string]> sections: ["Display", "Wi-Fi", "Network", "SSH", "Updates", "Power"];
-    property <[int]> section-panels: [1, 2, 5, 3, 4, 6];
+    property <[string]> sections: ["Display", "Wi-Fi", "Bluetooth", "Network", "SSH", "Updates", "Power"];
+    property <[int]> section-panels: [1, 2, 7, 5, 3, 4, 6];
 
     // Rows per panel, for wrapping the cursor.
     function row-count() -> int {
@@ -143,7 +147,7 @@ export component Settings inherits Rectangle {
         }
         if (root.panel == 5) { return 5; }   // address, gateway, dns, mac, web
         if (root.panel == 6) { return 3; }   // off, restart, recovery
-        return 1;                            // ssh toggle
+        return 1;                            // ssh toggle, bluetooth toggle
     }
 
     // True where left/right change a value rather than doing nothing.
@@ -182,6 +186,7 @@ export component Settings inherits Rectangle {
             return;
         }
         if (root.panel == 3) { root.toggle-ssh(); return; }
+        if (root.panel == 7) { root.toggle-bluetooth(); return; }
         if (root.panel == 4) {
             if (root.sel == 2) { root.update-check(); }
             else if (root.sel == 3) {
@@ -230,6 +235,7 @@ export component Settings inherits Rectangle {
                 : root.panel == 1 ? "DISPLAY"
                 : root.panel == 2 ? "WI-FI"
                 : root.panel == 3 ? "SSH"
+                : root.panel == 7 ? "BLUETOOTH"
                 : root.panel == 5 ? "NETWORK"
                 : root.panel == 6 ? "POWER" : "UPDATES";
             font-size: 15px;
@@ -293,6 +299,21 @@ export component Settings inherits Rectangle {
                 SettingsRow {
                     title: "SSH access";
                     value: !root.ssh-available ? "unset" : root.ssh-on ? "ON" : "OFF";
+                    stepper: false;
+                }
+            }
+
+            // Bluetooth: a single toggle. The stack takes a few seconds to come
+            // up, and the row says so while it does.
+            if root.panel == 7: VerticalLayout {
+                spacing: root.gap;
+                SettingsRow {
+                    title: "Bluetooth";
+                    value: !root.bt-available ? "no kernel support"
+                        : root.bt-state == "on" ? "ON"
+                        : root.bt-state == "starting" ? "STARTING…"
+                        : root.bt-state == "error" ? "FAILED"
+                        : "OFF";
                     stepper: false;
                 }
             }

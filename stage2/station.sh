@@ -12,3 +12,6 @@ $BB sh "$(dirname "$0")/wifi-conf.sh" /dev/null /tmp/wpa.conf >/dev/null
 $BB rm -f /tmp/wpa/wlan0
 $BB chroot "$A" /sbin/ip link set wlan0 up
 $BB chroot "$A" /sbin/wpa_supplicant -i wlan0 -Dnl80211 -c /tmp/wpa.conf -B
+# Persistent DHCP so the lease renews and re-acquires; it keeps retrying until
+# wlan0 associates. Without this a network change leaves wlan0 with no IPv4.
+$BB chroot "$A" /bin/sh -c 'killall udhcpc 2>/dev/null; /sbin/udhcpc -i wlan0 -t 10 >/tmp/dhcp.log 2>&1 &' 

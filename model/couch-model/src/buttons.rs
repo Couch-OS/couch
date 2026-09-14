@@ -196,6 +196,33 @@ pub fn functions(integration: &Integration) -> &'static [(&'static str, &'static
             ("rewind", "Rewind"),
             ("fast-forward", "Fast forward"),
         ],
+        // Bluetooth: HID consumer-control usages, one per key. Which ones a
+        // TV honours varies by make; power is the toggle usage and only
+        // reaches a TV that is on (an off TV has no Bluetooth link to wake).
+        Integration::BluetoothTv => &[
+            ("up", "Up"),
+            ("down", "Down"),
+            ("left", "Left"),
+            ("right", "Right"),
+            ("ok", "OK / select"),
+            ("back", "Back"),
+            ("home", "Home"),
+            ("menu", "Menu"),
+            ("power-off", "Power key (toggle)"),
+            ("volume-up", "Volume up"),
+            ("volume-down", "Volume down"),
+            ("mute", "Toggle mute"),
+            ("channel-up", "Channel up"),
+            ("channel-down", "Channel down"),
+            ("play", "Play"),
+            ("pause", "Pause"),
+            ("play-pause", "Play / pause"),
+            ("stop", "Stop"),
+            ("next", "Next"),
+            ("previous", "Previous"),
+            ("rewind", "Rewind"),
+            ("fast-forward", "Fast forward"),
+        ],
         Integration::WebOs => &[
             ("up", "Up"),
             ("down", "Down"),

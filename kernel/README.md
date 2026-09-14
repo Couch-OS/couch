@@ -125,7 +125,7 @@ network.
 | touchscreen (`tlsc6x`) | **no** - not in any public tree, not yet ported | yes |
 | IR transmit (`mt_irtx`) | **no** - `irtx/mt6580/` absent from the tree | yes |
 | keypad backlight LEDs | GPIO case patched; `X15_S90_LEDS` proper fix pending | yes |
-| Bluetooth, GPS, FM | built in, never exercised | never exercised |
+| Bluetooth, GPS, FM | built in, never exercised; see [Bluetooth](../docs/bluetooth.md) | never exercised |
 
 Three traps that each looked like a hang, all handled in `initramfs/init` and
 `stage2/stage2.sh` now, documented here because they will come back with the

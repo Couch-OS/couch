@@ -7,7 +7,9 @@
 `clients/couch-ha` is a Rust library and CLI for Home Assistant light discovery,
 state, on/off and brightness. It uses bounded blocking HTTP requests in a worker,
 with connection reuse and verified HTTPS through ureq/rustls. It neither records
-voice nor depends on the existing `couch-voice` Assist client.
+voice nor depends on the existing `couch-voice` Assist client. The remote's
+microphone key does: it streams to the Assist pipeline of the first saved Home
+Assistant connection, using this connection's URL and token, see `docs/voice.md`.
 
 ## Configure and test
 

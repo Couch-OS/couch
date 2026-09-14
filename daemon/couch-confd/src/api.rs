@@ -588,7 +588,7 @@ impl Api {
                 "schema_version": SCHEMA_VERSION,
                 "icons": ALL_ICONS.iter().map(|i| i.name()).collect::<Vec<_>>(),
                 "device_kinds": ALL_DEVICE_KINDS.iter().map(|k| k.name()).collect::<Vec<_>>(),
-                "integrations": ["none", "kodi", "home-assistant", "hue", "web-os", "denon", "sonos", "ir"],
+                "integrations": ["none", "kodi", "home-assistant", "hue", "web-os", "android-tv", "apple-tv", "tizen", "bluetooth-tv", "denon", "sonos", "matter", "unifi-protect", "ir"],
                 "activity_kinds": ["audio", "video"],
             }),
         )

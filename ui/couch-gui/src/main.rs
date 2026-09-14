@@ -488,6 +488,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The panel is a touchscreen too. Slint does the hit testing once the
     // pointer events are fed in, so this is only a translation layer.
     let mut mic = mic::Mic::new();
+    // The result card after a voice run stays up until this instant.
+    let mut mic_result_until: Option<u64> = None;
     // Push to talk, with a latch. Hold the key and it records while held;
     // tap it and it stays on until the next tap. The button is small and the
     // thing being dictated is a sentence, so insisting on a hold would be a
@@ -655,6 +657,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sett.borrow_mut().ssh = on;
             system::save_settings(&sett.borrow());
             toast(if on { "SSH on".into() } else { "SSH off".into() }, 3);
+        });
+    }
+    // Bringing the Bluetooth stack up takes seconds, so the toggle hands the
+    // request to a thread and the once-a-second tick applies the outcome; the
+    // row shows "starting" from the service's state file meanwhile.
+    let (bt_tx, bt_rx) = std::sync::mpsc::channel::<(bool, Result<(), String>)>();
+    {
+        let (weak, toast) = (app.as_weak(), toast.clone());
+        app.on_setting_toggle_bluetooth(move || {
+            let Some(app) = weak.upgrade() else { return };
+            if !system::bluetooth_available() {
+                toast(
+                    "This kernel has no Bluetooth; install the current boot image".into(),
+                    4,
+                );
+                return;
+            }
+            if system::bluetooth_state() == "starting" {
+                toast("Bluetooth is starting".into(), 2);
+                return;
+            }
+            let want = !system::bluetooth_running();
+            app.set_bt_state(if want { "starting" } else { "off" }.into());
+            let tx = bt_tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send((want, system::bluetooth_set(want)));
+            });
         });
     }
     {
@@ -860,7 +889,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // microphone and nothing else, so there is no screen on which it
             // means something different.
             match physical_input.microphone(press.mic, now_monotonic_us(), mic.recording()) {
-                input::MicAction::Start => mic.start(),
+                input::MicAction::Start => {
+                    // With the keyboard up the words are for its field; anywhere
+                    // else they are a request to the house.
+                    let target = if app.get_keyboard_shown() { mic::Target::Dictation } else { mic::Target::Assistant };
+                    mic_result_until = None;
+                    app.set_mic_result_shown(false);
+                    app.set_mic_target(if target == mic::Target::Dictation { "keyboard" } else { "assistant" }.into());
+                    app.set_mic_heard("".into());
+                    app.set_mic_said("".into());
+                    app.set_mic_detail("".into());
+                    mic.start(target, connections::ha_assist());
+                }
                 input::MicAction::Stop => mic.stop(),
                 input::MicAction::None => {},
             }
@@ -927,6 +967,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if mic.recording() {
             app.set_mic_level(mic.meter());
+        }
+        if mic.recording() || app.get_mic_result_shown() {
+            let progress = mic.progress();
+            if let Some(phase) = progress.phase {
+                if app.get_mic_phase() != phase.name() {
+                    app.set_mic_phase(phase.name().into());
+                    app.set_mic_phase_label(phase.label().into());
+                }
+            }
+            if app.get_mic_heard() != progress.heard.as_str() { app.set_mic_heard(progress.heard.as_str().into()); }
+            if app.get_mic_said() != progress.said.as_str() { app.set_mic_said(progress.said.as_str().into()); }
+            if app.get_mic_detail() != progress.detail.as_str() { app.set_mic_detail(progress.detail.as_str().into()); }
+        }
+        if let Some(outcome) = mic.take_outcome() {
+            let now = now_monotonic_us();
+            match outcome {
+                mic::Outcome::Dictated(words) => {
+                    if app.get_keyboard_shown() {
+                        app.invoke_dictate(words.as_str().into());
+                        // The words are in the field; a short card confirms it.
+                        mic_result_until = Some(now + 1_500_000);
+                    } else {
+                        // The keyboard went away while the run finished: say
+                        // what was heard rather than lose it silently.
+                        app.set_mic_detail("The keyboard closed; nothing was entered.".into());
+                        mic_result_until = Some(now + 5_000_000);
+                    }
+                    app.set_mic_result_shown(true);
+                }
+                mic::Outcome::Answered { .. } => {
+                    mic_result_until = Some(now + 7_000_000);
+                    app.set_mic_result_shown(true);
+                }
+                mic::Outcome::Failed(reason) => {
+                    app.set_mic_detail(reason.into());
+                    mic_result_until = Some(now + 5_000_000);
+                    app.set_mic_result_shown(true);
+                }
+                mic::Outcome::NoAssistant => {
+                    // The recording went to the scratch file; the detail says
+                    // what to configure.
+                    mic_result_until = Some(now + 5_000_000);
+                    app.set_mic_result_shown(true);
+                }
+            }
+        }
+        if mic_result_until.is_some_and(|t| now_monotonic_us() >= t) {
+            mic_result_until = None;
+            app.set_mic_result_shown(false);
         }
         physical_input.sync_microphone(mic.recording());
         if app.get_mic_latched() != physical_input.latched() {
@@ -1033,6 +1122,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Device state changes in seconds, not frames.
         if now - last_tick > 1_000_000 {
             last_tick = now;
+            // The Bluetooth toggle's outcome, and its state while it settles.
+            if let Ok((want, result)) = bt_rx.try_recv() {
+                match result {
+                    Ok(()) => {
+                        settings.borrow_mut().bluetooth = want;
+                        system::save_settings(&settings.borrow());
+                        toast(
+                            if want { "Bluetooth on".into() } else { "Bluetooth off".into() },
+                            3,
+                        );
+                    }
+                    Err(error) => toast(error, 5),
+                }
+            }
+            if app.get_settings_shown() {
+                app.set_bt_state(system::bluetooth_state().into());
+            }
+            // The key LEDs follow the screen: lit only while it is awake and
+            // the setting wants them. Something outside this process lights
+            // them now and then with the screen off (seen on the HA100), so
+            // the state is re-asserted every second rather than only on
+            // transitions, and a correction is logged with the state it found.
+            {
+                let want = settings.borrow().keys
+                    && standby == Standby::Active
+                    && !app.get_dock_clock_shown();
+                if let Some(found) = Panel::enforce_keys(want) {
+                    println!(
+                        "couch-gui: key backlight was {} while {:?}{}; set {}",
+                        if found { "on" } else { "off" },
+                        standby,
+                        if app.get_dock_clock_shown() { " (dock clock)" } else { "" },
+                        if want { "on" } else { "off" }
+                    );
+                }
+            }
             // Another writer (the web UI) changed the settings file: apply
             // what differs from what this process last applied or saved.
             let seen_now = couch_system::ui_settings::modified(&couch_system::ui_settings::path());
@@ -1128,7 +1253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Standby. Anything a person is looking at or waiting on holds
             // the panel awake and restarts the clock; otherwise it dims, then
             // powers down, on the two idle timers.
-            let hold = app.get_activity_busy() || app.get_activity_keep_awake() || app.get_pair_shown() || mic.recording() || app.get_setup_mode() || app.get_wifi_setup_shown() || app.get_keyboard_shown();
+            let hold = app.get_activity_busy() || app.get_activity_keep_awake() || app.get_pair_shown() || mic.recording() || app.get_mic_result_shown() || app.get_setup_mode() || app.get_wifi_setup_shown() || app.get_keyboard_shown();
             let mut idle = now.saturating_sub(last_input);
             // The panel is meant to be showing something in every state but
             // Off. If the driver says it is asleep anyway - it has happened,

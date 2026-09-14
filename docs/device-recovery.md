@@ -59,6 +59,25 @@ the flag itself once the GUI is healthy. Recovery also brings Wi-Fi up with the
 base runtime, so the remote is reachable at its usual address but without the
 web UI (`COUCH_NO_UI`).
 
+### Restoring the previous boot image
+
+A [boot image update](runtime-updates.md#boot-image-updates) saves the whole
+previous `boot` partition to `/opt/couch/boot/previous.img` before it writes.
+If the new kernel boots but the GUI never becomes healthy, init's gate lands in
+recovery by itself; if it dies before init, hold **Back** while powering on.
+From the recovery serial shell, confirm the saved image is a boot image and
+put it back:
+
+```sh
+head -c 8 /mnt/alpine/opt/couch/boot/previous.img       # expect ANDROID!
+cat /mnt/alpine/opt/couch/boot/previous.json
+dd if=/mnt/alpine/opt/couch/boot/previous.img of=/dev/mmcblk0p8 bs=1M conv=fsync
+dd if=/dev/zero of=/dev/mmcblk0p10 bs=512 count=1 conv=notrunc; sync; reboot -f
+```
+
+The next check offers the same boot image again, because the partition no
+longer carries it; leave it uninstalled until the kernel is fixed.
+
 If neither slot boots, use the reviewed MTK download-mode recovery workflow
 with that device's verified originals. Do not improvise raw writes from the
 reference partition numbers. The [installer workflow](installer-wifi-wizard.md)

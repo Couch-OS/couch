@@ -23,7 +23,7 @@ pub fn overview(app: App, config: &Config) -> AnyView {
     view! {
         <div class="hero"><p class="eyebrow">"MAKE IT YOUR REMOTE"</p><h1>"A home that makes sense."</h1>
         <p>"Add the things you control, decide what they do together, then arrange your remote’s screens."</p></div>
-        <section class="notice"><strong>"Your remote’s configuration"</strong><p>"Rooms and their screen order update on the remote. Home Assistant and Philips Hue lights support on/off and brightness. Hue rooms support grouped on/off, and imported Hue scenes can be activated from the home and room scene lists. Kodi activities open full-screen playback controls with artwork, seeking, chapters and audio tracks. Activity startup commands and custom device-step scenes are not executed yet."</p></section>
+        <section class="notice"><strong>"Your remote’s configuration"</strong><p>{format!("{} rooms · {} devices · {} areas", config.rooms.len(), config.devices().count(), config.areas.len())}</p></section>
         <h2 class="section">"Set up your remote"</h2>
         <div class="destination-grid">
             {destination(app, Route::Connections, "01 · Connections".into(), "Add your Kodi players, Home Assistant server, Hue bridge or infrared connection.".into())}
@@ -67,6 +67,7 @@ pub fn connection_summary(integration: &Integration) -> String {
         Integration::Matter { device } => format!("Matter · {device}"),
         Integration::AppleTv => "Apple TV".into(),
         Integration::Tizen => "Samsung Tizen TV".into(),
+        Integration::BluetoothTv => "Bluetooth TV".into(),
         Integration::None => "Not configured".into(),
         Integration::Kodi { host, port } => format!("Kodi · {host}:{port}"),
         Integration::Hue { light_id } => format!("Philips Hue · {light_id}"),

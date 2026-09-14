@@ -44,6 +44,7 @@ fn ssh_available() -> bool {
 /// The page's picture of the device settings, choices included so the page
 /// needs no copy of the tables.
 fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
+    let state = ui_settings::bluetooth_state();
     serde_json::json!({
         "brightness": settings.brightness,
         "keys": settings.keys,
@@ -56,6 +57,16 @@ fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
             "enabled": settings.ssh,
             "running": ui_settings::sshd_running(),
         },
+        "bluetooth": {
+            "available": ui_settings::bluetooth_available(),
+            "enabled": settings.bluetooth,
+            "running": state == ui_settings::BluetoothState::On,
+            "state": state.word(),
+            "detail": match &state {
+                ui_settings::BluetoothState::Error(error) => error.as_str(),
+                _ => "",
+            },
+        },
     })
 }
 
@@ -66,7 +77,10 @@ pub(super) fn device(method: &str, body: &[u8]) -> Reply {
         "GET" => Reply::json(200, &device_view(&current, available)),
         "PUT" => {
             let Ok(wanted) = serde_json::from_slice::<Settings>(body) else {
-                return Reply::error(400, "Send brightness, keys, dim_index, off_index and ssh");
+                return Reply::error(
+                    400,
+                    "Send brightness, keys, dim_index, off_index, ssh and bluetooth",
+                );
             };
             if wanted.brightness % 10 != 0 || !(10..=100).contains(&wanted.brightness) {
                 return Reply::error(400, "Brightness is 10 to 100, in tens");
@@ -83,6 +97,13 @@ pub(super) fn device(method: &str, body: &[u8]) -> Reply {
             if wanted.ssh != current.ssh {
                 if let Err(error) = client::action(Request::Ssh {
                     enabled: wanted.ssh,
+                }) {
+                    return Reply::error(409, &error);
+                }
+            }
+            if wanted.bluetooth != current.bluetooth {
+                if let Err(error) = client::action(Request::Bluetooth {
+                    enabled: wanted.bluetooth,
                 }) {
                     return Reply::error(409, &error);
                 }

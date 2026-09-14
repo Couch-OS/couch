@@ -162,7 +162,7 @@ fn discovery_card(app: App, connection: &Connection, room: &Id, value: Value) ->
 }
 fn manual(app: App, connection: Connection, room: Id) -> AnyView {
     if connection.provider == Provider::Ir { return super::infrared::device_setup(app, room, None); }
-    let television = matches!(connection.provider, Provider::WebOs | Provider::AndroidTv | Provider::AppleTv | Provider::Tizen);
+    let television = matches!(connection.provider, Provider::WebOs | Provider::AndroidTv | Provider::AppleTv | Provider::Tizen | Provider::BluetoothTv);
     let receiver = matches!(connection.provider, Provider::Denon { .. } | Provider::Sonos { .. });
     let existing = assigned(app, &connection, "");
     let name = RwSignal::new(connection.name.clone());

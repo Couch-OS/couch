@@ -187,6 +187,10 @@ pub enum Integration {
     AndroidTv,
     AppleTv,
     Tizen,
+    /// A TV paired to the remote itself over Bluetooth LE: the remote is a
+    /// HID keyboard/consumer-control peripheral, so keys go straight to the
+    /// TV with no address or credentials; pairing happens on the TV.
+    BluetoothTv,
     UnifiProtect { camera_id: String },
     // Resolved form only: `<connection_id>/<node_id>/<endpoint>`. Saved devices
     // refer to the Matter connection with `<node_id>/<endpoint>` as resource ID.
@@ -217,6 +221,7 @@ impl Integration {
             Integration::AndroidTv => "android-tv",
             Integration::AppleTv => "apple-tv",
             Integration::Tizen => "tizen",
+            Integration::BluetoothTv => "bluetooth-tv",
             Integration::UnifiProtect { .. } => "unifi-protect",
             Integration::Matter { .. } => "matter",
             Integration::HomeAssistant { .. } => "home-assistant",

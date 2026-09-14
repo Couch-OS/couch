@@ -32,6 +32,10 @@ elif [ "$SETUP_MODE" = local ]; then
     : > /tmp/couch.onboarding
 fi
 [ -n "$IP" ] && "$SYSTEM" ssh-start >>/tmp/system.log 2>&1
+# Bluetooth is NOT started here. Wi-Fi and Bluetooth share one combo radio and
+# transport; powering Bluetooth on while Wi-Fi is still coming up contends for
+# it and can reset the whole chip, dropping Wi-Fi. The Settings/web toggle
+# starts it live, by which time Wi-Fi is already associated. See docs/bluetooth.md.
 
 # Recovery runs this script for its connectivity alone. It has no UI to start,
 # and stopping here leaves the USB serial shell and sshd in charge - which is

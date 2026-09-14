@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{io::Read, path::Path, time::Duration};
 const API: &str = "https://api.github.com/repos/dangerouslaser/couch/releases?per_page=100";
-const PREFIX: &str = "https://github.com/dangerouslaser/couch/releases/download/";
+pub(crate) const PREFIX: &str = "https://github.com/dangerouslaser/couch/releases/download/";
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
@@ -110,7 +110,7 @@ pub(crate) fn fetch(url: &str, limit: u64) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn verify(bytes: &[u8], key: &[u8], expected: &str) -> Result<Manifest> {
+pub(crate) fn verify(bytes: &[u8], key: &[u8], expected: &str) -> Result<Manifest> {
     let envelope: SignedManifest =
         serde_json::from_slice(bytes).map_err(|_| "Invalid signed update manifest")?;
     let key: [u8; 32] = key.try_into().map_err(|_| "Invalid update trust key")?;
@@ -132,10 +132,11 @@ fn verify(bytes: &[u8], key: &[u8], expected: &str) -> Result<Manifest> {
         || m.size > 128 * 1024 * 1024
         || m.sha256.len() != 64
         || decode_hex(&m.sha256).is_err()
+        || !matches!(m.kind.as_str(), "runtime" | "boot")
         || m.url
             != format!(
-                "{PREFIX}{}/couch-{}-ha100-runtime.tar.gz",
-                m.version, m.version
+                "{PREFIX}{}/couch-{}-ha100-{}.tar.gz",
+                m.version, m.version, m.kind
             )
     {
         return Err("Update does not match this remote or selected release".into());
@@ -148,16 +149,62 @@ fn verify(bytes: &[u8], key: &[u8], expected: &str) -> Result<Manifest> {
     }
     Ok(m)
 }
-pub(crate) fn discover(
-    channel: Channel,
-    installed: &str,
-    key_path: &Path,
-) -> Result<Option<Manifest>> {
+/// What one check found: a newer runtime on the channel, and the boot payload
+/// published with the installed version, if there is one. The boot payload is
+/// only ever the installed release's own: the updater that understands it is
+/// the one that runtime shipped, so the runtime always goes first.
+pub(crate) struct Offers {
+    pub runtime: Option<Manifest>,
+    pub boot: Option<Manifest>,
+}
+/// A signed manifest asset on a release, as the listing describes it.
+struct Listed {
+    tag: String,
+    url: String,
+    size: u64,
+    digest: String,
+}
+fn listed(release: &serde_json::Value, tag: &str, name: &str) -> Result<Option<Listed>> {
+    let Some(asset) = release["assets"]
+        .as_array()
+        .and_then(|a| a.iter().find(|a| a["name"] == name))
+    else {
+        return Ok(None);
+    };
+    let url = format!("{PREFIX}{tag}/{name}");
+    if asset["browser_download_url"] != url {
+        return Ok(None);
+    }
+    let size = asset["size"]
+        .as_u64()
+        .filter(|n| *n > 0 && *n <= 256 * 1024)
+        .ok_or("Invalid update manifest size")?;
+    let digest = asset["digest"]
+        .as_str()
+        .and_then(|s| s.strip_prefix("sha256:"))
+        .ok_or("Update manifest has no asset digest")?
+        .to_owned();
+    Ok(Some(Listed {
+        tag: tag.to_owned(),
+        url,
+        size,
+        digest,
+    }))
+}
+fn fetch_manifest(item: &Listed, key: &[u8]) -> Result<Manifest> {
+    let bytes = fetch(&item.url, item.size)?;
+    if bytes.len() as u64 != item.size || digest(&bytes) != item.digest {
+        return Err("Update manifest digest mismatch".into());
+    }
+    verify(&bytes, key, &item.tag)
+}
+pub(crate) fn discover(channel: Channel, installed: &str, key_path: &Path) -> Result<Offers> {
     let bytes = fetch(API, 4 * 1024 * 1024)?;
     let releases: Vec<serde_json::Value> =
         serde_json::from_slice(&bytes).map_err(|_| "Invalid release listing")?;
     let current = version(installed);
     let mut candidates = Vec::new();
+    let mut boot = None;
     for release in releases {
         if release["draft"] != false {
             continue;
@@ -166,49 +213,42 @@ pub(crate) fn discover(
             continue;
         };
         let Some(v) = version(tag) else { continue };
+        if release["prerelease"].as_bool() != Some(!v.pre.is_empty()) {
+            continue;
+        }
+        if tag == installed {
+            boot = listed(&release, tag, &format!("couch-{tag}-ha100-boot.json"))?;
+            continue;
+        }
         if current.as_ref().is_some_and(|c| v <= *c) {
             continue;
         }
         if !accepts(channel, &v) {
             continue;
         }
-        if release["prerelease"].as_bool() != Some(!v.pre.is_empty()) {
-            continue;
+        if let Some(item) = listed(&release, tag, &format!("couch-{tag}-ha100-update.json"))? {
+            candidates.push((v, item));
         }
-        let name = format!("couch-{tag}-ha100-update.json");
-        let Some(asset) = release["assets"]
-            .as_array()
-            .and_then(|a| a.iter().find(|a| a["name"] == name))
-        else {
-            continue;
-        };
-        let url = format!("{PREFIX}{tag}/{name}");
-        if asset["browser_download_url"] != url {
-            continue;
-        }
-        let size = asset["size"]
-            .as_u64()
-            .filter(|n| *n > 0 && *n <= 256 * 1024)
-            .ok_or("Invalid update manifest size")?;
-        let digest = asset["digest"]
-            .as_str()
-            .and_then(|s| s.strip_prefix("sha256:"))
-            .ok_or("Update manifest has no asset digest")?
-            .to_owned();
-        candidates.push((v, tag.to_owned(), url, size, digest));
     }
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
-    let Some((_, tag, url, size, sha)) = candidates.first() else {
-        return Ok(None);
-    };
+    let runtime = candidates.into_iter().next().map(|(_, item)| item);
+    if runtime.is_none() && boot.is_none() {
+        return Ok(Offers {
+            runtime: None,
+            boot: None,
+        });
+    }
     let key = std::fs::read_to_string(key_path)
         .map_err(|_| "This build has no update signing key configured")?;
     let key = decode_hex(key.trim())?;
-    let bytes = fetch(url, *size)?;
-    if bytes.len() as u64 != *size || digest(&bytes) != *sha {
-        return Err("Update manifest digest mismatch".into());
-    }
-    verify(&bytes, &key, tag).map(Some)
+    let runtime = runtime
+        .map(|item| fetch_manifest(&item, &key))
+        .transpose()?;
+    let boot = boot
+        .map(|item| fetch_manifest(&item, &key))
+        .transpose()?
+        .filter(|m| m.kind == "boot");
+    Ok(Offers { runtime, boot })
 }
 
 #[cfg(test)]
