@@ -32,6 +32,8 @@ elif [ "$SETUP_MODE" = local ]; then
     : > /tmp/couch.onboarding
 fi
 [ -n "$IP" ] && "$SYSTEM" ssh-start >>/tmp/system.log 2>&1
+# Bluetooth follows its saved setting; on a kernel without it this is a no-op.
+"$SYSTEM" bluetooth-start >>/tmp/system.log 2>&1
 
 # Recovery runs this script for its connectivity alone. It has no UI to start,
 # and stopping here leaves the USB serial shell and sshd in charge - which is

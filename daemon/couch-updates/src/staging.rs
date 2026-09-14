@@ -17,6 +17,7 @@ const REQUIRED: &[&str] = &[
     "couch-system",
     "couch-sonos",
     "couch-coreelec",
+    "couch-bt-bridge",
     "couch-wmt-properties.so",
     "stage2.sh",
     "hardware-init.sh",

@@ -118,10 +118,12 @@ are `apk add`ed over SSH on the development remote meanwhile.
    creates `hci0`, `hciconfig hci0 up`, `btmgmt info` reports LE,
    `hcitool lescan` sees nearby advertisers, and the bridge log shows the
    set-address command answered (or names the opcode that must replace 0xFC1A).
-   Only after that: `couch-bt-bridge` joins the runtime payload
-   (`tools/build-release.sh`, `tools/release/runtime_inventory.py`, the stage
-   script) and `stage2/gui-start.sh` starts it guarded on both devices
-   existing, and the kernel goes through the candidate checks for promotion.
+   Done 2026-09-14 (`hci0` up, LE scan sees advertisers). Since then
+   `couch-bt-bridge` is in the runtime payload and the system service starts
+   and stops it for the **Bluetooth** toggle in Settings and on the web UI's
+   remote page (`Request::Bluetooth`, `couch-system bluetooth-start` at boot
+   from `stage2.sh`, setting `bluetooth=` in `settings.conf`, off by default).
+   The kernel still has to go through the candidate checks before promotion.
 2. *Power and coexistence.* BT idle current unplugged per
    `docs/ha100-power-validation.md`; Wi-Fi throughput with the BT function on.
 3. *HID over GATT.* A second daemon (or the same one grown) that registers the

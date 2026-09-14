@@ -4,7 +4,7 @@
 
 ```sh
 tools/build-wmt-properties.sh
-tools/build-release.sh   # couch-gui, couch-confd, couch-system, couch-sonos, couch-coreelec
+tools/build-release.sh   # couch-gui, couch-confd, couch-system, couch-sonos, couch-coreelec, couch-bt-bridge
 python3 tools/release/runtime_inventory.py build/alpine-staging-input.json build/runtime-payload
 python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json \
   build/offline-armv7 build/packaged-runtime
@@ -19,6 +19,7 @@ python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json
 | GUI, configuration server, boot console | `couch-gui` (built with `tools/build-gui.sh`), `couch-confd` (`tools/build-webui.sh`), `couch-system`, `fbcon`; little-endian ARM32 ELF, no dynamic-loader/library requirement. The GUI and daemon builds compile in the Sonos developer key from `build/sonos-api-key` when present ([sonos.md](sonos.md#release-builds)) |
 | CoreELEC control | `couch-coreelec`, built in the clients workspace; static ARM32 ELF installed at `/opt/couch/couch-coreelec` |
 | Sonos LAN control | `couch-sonos`, built with `tools/build-sonos.sh`; static ARM32 ELF installed at `/opt/couch/couch-sonos` |
+| Bluetooth bridge | `couch-bt-bridge`, built in the clients workspace (`-p couch-bt`); static ARM32 ELF installed at `/opt/couch/couch-bt-bridge`, started by the system service only while the Bluetooth setting is on and the kernel has `/dev/vhci` and `/dev/stpbt` |
 | Runtime scripts | `stage2.sh`, `runtime-boot.sh`, `hardware-init.sh`, `gui-start.sh`, `system.sh`, `confd.sh`, `setup-mode.sh`, `portal.sh`, `wifi-conf.sh`, `station.sh` |
 | Recovery portal | `www/index.html` and exactly `cgi-bin/{save,setpw,scan,enroll}` |
 | Readable notices | Lato/Inter OFL and Lucide ISC notices under `/opt/couch/licenses` |

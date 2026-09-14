@@ -197,3 +197,17 @@ pub fn ssh_start() -> bool {
 pub fn ssh_stop() -> bool {
     couch_system::client::action(couch_system::protocol::Request::Ssh { enabled: false }).is_ok()
 }
+
+// Bluetooth is the bridge process: running means the radio is on. Only a
+// kernel carrying the Bluetooth core offers it (both device nodes present).
+pub fn bluetooth_available() -> bool {
+    couch_system::ui_settings::bluetooth_available()
+}
+pub fn bluetooth_running() -> bool {
+    couch_system::ui_settings::bridge_running()
+}
+/// Start or stop the bridge through the system service; the error is the
+/// service's own sentence, for the toast.
+pub fn bluetooth_set(enabled: bool) -> Result<(), String> {
+    couch_system::client::action(couch_system::protocol::Request::Bluetooth { enabled })
+}

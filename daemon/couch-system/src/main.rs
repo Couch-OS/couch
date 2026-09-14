@@ -25,7 +25,10 @@ fn main() {
         Some("cgi") => cgi::run(),
         Some("hotspot") => couch_system::client::action(couch_system::protocol::Request::Hotspot),
         Some("ssh-start") => couch_system::client::action(couch_system::protocol::Request::SshAuto),
-        _ => Err("Usage: couch-system serve | cgi | hotspot | ssh-start".into()),
+        Some("bluetooth-start") => {
+            couch_system::client::action(couch_system::protocol::Request::BluetoothAuto)
+        }
+        _ => Err("Usage: couch-system serve | cgi | hotspot | ssh-start | bluetooth-start".into()),
     };
     if let Err(error) = result {
         eprintln!("couch-system: {error}");

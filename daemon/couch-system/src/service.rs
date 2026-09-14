@@ -252,6 +252,13 @@ fn handle_updates(
         }
         Request::Hotspot => protocol::write(&Reply::Done(helper("portal.sh")), &mut stream),
         Request::SshAuto => protocol::write(&Reply::Done(crate::access::ssh_auto()), &mut stream),
+        Request::Bluetooth { enabled } => protocol::write(
+            &Reply::Done(couch_system::bluetooth::set(enabled)),
+            &mut stream,
+        ),
+        Request::BluetoothAuto => {
+            protocol::write(&Reply::Done(couch_system::bluetooth::auto()), &mut stream)
+        }
         Request::Ssh { enabled } => {
             protocol::write(&Reply::Done(crate::access::ssh(enabled)), &mut stream)
         }

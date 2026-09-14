@@ -660,6 +660,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     {
+        let (weak, sett, toast) = (app.as_weak(), settings.clone(), toast.clone());
+        app.on_setting_toggle_bluetooth(move || {
+            let Some(app) = weak.upgrade() else { return };
+            if !system::bluetooth_available() {
+                toast(
+                    "This kernel has no Bluetooth; install the current boot image".into(),
+                    4,
+                );
+                return;
+            }
+            let want = !system::bluetooth_running();
+            match system::bluetooth_set(want) {
+                Ok(()) => {
+                    app.set_bt_on(want);
+                    sett.borrow_mut().bluetooth = want;
+                    system::save_settings(&sett.borrow());
+                    toast(
+                        if want {
+                            "Bluetooth on".into()
+                        } else {
+                            "Bluetooth off".into()
+                        },
+                        3,
+                    );
+                }
+                Err(error) => {
+                    app.set_bt_on(system::bluetooth_running());
+                    toast(error, 5);
+                }
+            }
+        });
+    }
+    {
         let ask = ask.clone();
         app.on_settings_enter(move |n| ask(Intent::SettingsEnter(n)));
     }
@@ -1145,6 +1178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if fresh.ssh != previous.ssh {
                         app.set_ssh_on(system::ssh_running());
+                        app.set_bt_on(system::bluetooth_running());
                     }
                     *settings.borrow_mut() = fresh;
                 }

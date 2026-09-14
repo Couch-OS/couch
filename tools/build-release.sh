@@ -26,12 +26,15 @@ echo '= couch-sonos'
 tools/build-sonos.sh
 echo '= couch-coreelec'
 (cd clients && cargo build --locked --release --target "$TARGET" -p couch-coreelec)
+echo '= couch-bt-bridge'
+(cd clients && cargo build --locked --release --target "$TARGET" -p couch-bt)
 
 echo '= release binaries'
 for bin in ui/target/$TARGET/release/couch-gui \
     daemon/target/$TARGET/release/couch-confd \
     daemon/target/$TARGET/release/couch-system \
     clients/target/$TARGET/release/couch-sonos \
-    clients/target/$TARGET/release/couch-coreelec; do
+    clients/target/$TARGET/release/couch-coreelec \
+    clients/target/$TARGET/release/couch-bt-bridge; do
     printf '%s (%s bytes)\n' "$bin" "$(wc -c < "$bin" | tr -d ' ')"
 done

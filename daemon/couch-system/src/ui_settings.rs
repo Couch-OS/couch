@@ -1,5 +1,5 @@
 //! The remote's own settings: brightness, key backlight, the two standby
-//! timeouts and whether SSH should run.
+//! timeouts, and whether SSH and Bluetooth should run.
 //!
 //! One small file, `/opt/couch/settings.conf`, written atomically and read
 //! leniently. It lives here rather than in the GUI so the web UI's daemon can
@@ -32,6 +32,11 @@ pub struct Settings {
     /// keeps it; couch-system reads it at boot. Only meaningful when a key or
     /// password is enrolled.
     pub ssh: bool,
+    /// Whether the Bluetooth bridge should run (the radio is on exactly while
+    /// it does). Off by default: it costs power and only a kernel with the
+    /// Bluetooth core can honour it. Absent from older files.
+    #[serde(default)]
+    pub bluetooth: bool,
 }
 
 impl Settings {
@@ -45,6 +50,7 @@ impl Settings {
             dim_index: 1,
             off_index: 3,
             ssh,
+            bluetooth: false,
         }
     }
     /// Every field within its range; the file and the web API both go
@@ -64,12 +70,13 @@ impl Settings {
     /// The file's text, one `key=value` per line.
     pub fn render(&self) -> String {
         format!(
-            "brightness={}\nkeys={}\ndim={}\noff={}\nssh={}\n",
+            "brightness={}\nkeys={}\ndim={}\noff={}\nssh={}\nbluetooth={}\n",
             self.brightness,
             u8::from(self.keys),
             self.dim_index,
             self.off_index,
-            u8::from(self.ssh)
+            u8::from(self.ssh),
+            u8::from(self.bluetooth)
         )
     }
     /// The file's text over `defaults`: unknown keys and unparsable values
@@ -99,6 +106,7 @@ impl Settings {
                     }
                 }
                 "ssh" => s.ssh = v == "1",
+                "bluetooth" => s.bluetooth = v == "1",
                 _ => {}
             }
         }
@@ -137,11 +145,23 @@ pub fn save_to(path: &Path, settings: &Settings) -> std::io::Result<()> {
 
 /// Whether sshd is running: the process list, which both roots share.
 pub fn sshd_running() -> bool {
+    process_running("sshd")
+}
+/// Whether the Bluetooth bridge is running, and with it the radio.
+pub fn bridge_running() -> bool {
+    process_running("couch-bt-bridge")
+}
+/// Whether this kernel can do Bluetooth at all: the virtual HCI driver and
+/// the MediaTek transport both present. Older boot images have neither.
+pub fn bluetooth_available() -> bool {
+    Path::new("/dev/vhci").exists() && Path::new("/dev/stpbt").exists()
+}
+fn process_running(comm: &str) -> bool {
     std::fs::read_dir("/proc")
         .map(|dir| {
             dir.filter_map(|e| e.ok()).any(|e| {
                 std::fs::read_to_string(e.path().join("comm"))
-                    .map(|c| c.trim() == "sshd")
+                    .map(|c| c.trim() == comm)
                     .unwrap_or(false)
             })
         })
@@ -165,6 +185,7 @@ mod tests {
             dim_index: 4,
             off_index: 5,
             ssh: true,
+            bluetooth: true,
         };
         assert_eq!(Settings::parse(&s.render(), Settings::defaults(false)), s);
         // A file from before `keys` existed: keys keep the default (lit).
@@ -177,7 +198,8 @@ mod tests {
                 keys: true,
                 dim_index: 2,
                 off_index: 0,
-                ssh: false
+                ssh: false,
+                bluetooth: false,
             }
         );
         // Junk and out-of-range values clamp or fall back rather than fail.

@@ -1,6 +1,6 @@
 //! The remote's own settings on the web: what its Settings menu shows, mirrored.
 //!
-//! Display and keys, SSH, network and power. The daemon reads and writes the
+//! Display and keys, SSH, Bluetooth, network and power. The daemon reads and writes the
 //! same file the remote does, so a change here shows up on the remote within
 //! a second, and the remote's menu changes show up here on reload.
 use crate::{api, ui, App};
@@ -9,6 +9,12 @@ use serde::Deserialize;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 struct Ssh {
+    available: bool,
+    enabled: bool,
+    running: bool,
+}
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+struct Bluetooth {
     available: bool,
     enabled: bool,
     running: bool,
@@ -24,6 +30,8 @@ struct Device {
     #[serde(default)]
     off_choices: Vec<String>,
     ssh: Ssh,
+    #[serde(default)]
+    bluetooth: Bluetooth,
 }
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 struct Network {
@@ -76,6 +84,7 @@ pub fn sections(app: App) -> AnyView {
             let body = serde_json::json!({
                 "brightness": next.brightness, "keys": next.keys,
                 "dim_index": next.dim_index, "off_index": next.off_index, "ssh": next.ssh.enabled,
+                "bluetooth": next.bluetooth.enabled,
             });
             match api::ha("PUT", "/api/remote/device", Some(body)).await {
                 Ok(v) => {
@@ -144,6 +153,10 @@ pub fn sections(app: App) -> AnyView {
         {ui::section("SSH", Some("Enrol a key or password from the remote's setup page first; without one there is nobody to let in."), view! {
             <label><input type="checkbox" disabled=move || !device.get().ssh.available prop:checked=move || device.get().ssh.enabled on:change=move |e| { let mut d = device.get_untracked(); d.ssh.enabled = event_target_checked(&e); save(d); }/>"SSH access"</label>
             <p class="dim">{move || { let s = device.get().ssh; if !s.available { "Nothing enrolled".to_string() } else if s.running { "sshd is running".into() } else { "sshd is stopped".into() } }}</p>
+        }.into_any())}
+        {ui::section("Bluetooth", Some("The radio is on while the bridge runs. Needs the current boot image; older kernels have no Bluetooth."), view! {
+            <label><input type="checkbox" disabled=move || !device.get().bluetooth.available prop:checked=move || device.get().bluetooth.enabled on:change=move |e| { let mut d = device.get_untracked(); d.bluetooth.enabled = event_target_checked(&e); save(d); }/>"Bluetooth"</label>
+            <p class="dim">{move || { let b = device.get().bluetooth; if !b.available { "No kernel support".to_string() } else if b.running { "Radio on (hci0 up)".into() } else { "Radio off".into() } }}</p>
         }.into_any())}
         {ui::section("Network", None, view! {
             <dl class="facts">
