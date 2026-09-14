@@ -6,6 +6,8 @@ struct Status {
     installed: String,
     channel: String,
     available: Option<String>,
+    #[serde(default)]
+    kind: String,
     notes: String,
     phase: String,
     message: String,
@@ -73,9 +75,11 @@ pub fn notification(app: App) -> AnyView {
             timer.clear();
         }
     });
-    view! { {move ||value.get().available.map(|version|view!{
-        <div class="banner" role="status"><span>{format!("Couch {version} is available")}</span><button class="link" on:click=move |_|app.go(Route::Updates)>"Review update"</button></div>
-    })} }.into_any()
+    view! { {move ||value.get().available.map(|version|{
+        let text = if value.get_untracked().kind == "boot" { format!("A boot image for Couch {version} is available") } else { format!("Couch {version} is available") };
+        view!{
+        <div class="banner" role="status"><span>{text}</span><button class="link" on:click=move |_|app.go(Route::Updates)>"Review update"</button></div>
+    }})} }.into_any()
 }
 pub fn screen(app: App) -> AnyView {
     let value = RwSignal::new(Status::default());
@@ -96,18 +100,18 @@ pub fn screen(app: App) -> AnyView {
         {ui::page_header(app,"Software updates".into(),None)}
         <p class="lead">"Review new Couch builds and choose when to install them."</p>
         <section class="card"><h2>"Installed build"</h2><p>{move ||value.get().installed}</p>
-        <p class="dim">"This updater installs Couch apps and services. Kernel and Alpine upgrades use the OS installer."</p>
+        <p class="dim">"This updater installs Couch apps and services, and boot images (kernel and boot ramdisk) published with the installed build. Alpine upgrades use the OS installer."</p>
         <label class="field">"Release channel"<select aria-label="Release channel" prop:value=move ||value.get().channel on:change=move |e|request(app,value,error,"PUT","/api/updates/settings",serde_json::json!({"channel":event_target_value(&e),"automatic_checks":value.get_untracked().automatic_checks}))><option value="stable">"Stable"</option><option value="alpha">"Alpha · testing builds"</option><option value="dev">"Dev · every build from the dev branch"</option></select></label>
         <label><input type="checkbox" prop:checked=move ||value.get().automatic_checks on:change=move |e|request(app,value,error,"PUT","/api/updates/settings",serde_json::json!({"channel":value.get_untracked().channel,"automatic_checks":event_target_checked(&e)}))/>"Check for updates when I open the web UI"</label>
         <p class="dim">"Checks run at most once every six hours. Updates are installed only when you choose."</p>
         <button class="ghost" disabled=move ||matches!(value.get().phase.as_str(),"checking"|"downloading"|"verifying"|"ready") on:click=move |_|request(app,value,error,"POST","/api/updates/check",serde_json::json!({"automatic":false}))>"Check now"</button>
         </section>
-        <section class="card"><h2>{move ||value.get().available.map(|v|format!("Available: {v}")).unwrap_or_else(||"Update status".into())}</h2>
+        <section class="card"><h2>{move ||value.get().available.map(|v|if value.get_untracked().kind=="boot"{format!("Boot image available: {v}")}else{format!("Available: {v}")}).unwrap_or_else(||"Update status".into())}</h2>
         <p role="status" aria-live="polite">{move ||value.get().message}</p><p>{move ||value.get().notes}</p>
-        {move ||value.get().can_install.then(||view!{<button class="primary" on:click=move |_|request(app,value,error,"POST","/api/updates/install",serde_json::json!({"version":value.get_untracked().available}))>"Download & verify update"</button>})}
+        {move ||value.get().can_install.then(||view!{<button class="primary" on:click=move |_|request(app,value,error,"POST","/api/updates/install",serde_json::json!({"version":value.get_untracked().available}))>{if value.get_untracked().kind=="boot"{"Download & verify boot image"}else{"Download & verify update"}}</button>})}
         {move ||(value.get().phase=="ready").then(||view!{
-            <p>"The update is ready. Your connections, Wi-Fi and settings will be kept. Keep the remote charged while it restarts."</p>
-            <label><input type="checkbox" prop:checked=move ||confirm.get() on:change=move |e|confirm.set(event_target_checked(&e))/>"Restart the remote and apply this update"</label>
+            {if value.get_untracked().kind=="boot" { view!{<p>"The boot image is ready. Installing writes the new kernel and boot ramdisk to the boot partition and restarts; the previous image is saved on the remote. Keep the remote charged and do not power it off until it is back."</p>}.into_any() } else { view!{<p>"The update is ready. Your connections, Wi-Fi and settings will be kept. Keep the remote charged while it restarts."</p>}.into_any() }}
+            <label><input type="checkbox" prop:checked=move ||confirm.get() on:change=move |e|confirm.set(event_target_checked(&e))/>{if value.get_untracked().kind=="boot"{"Write the boot image and restart the remote"}else{"Restart the remote and apply this update"}}</label>
             <button class="primary" disabled=move ||!confirm.get() on:click=move |_|{confirm.set(false);request(app,value,error,"POST","/api/updates/restart",serde_json::json!({"confirm":true}));}>"Install & restart"</button>
         })}
         <p role="alert">{move ||error.get()}</p>

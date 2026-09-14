@@ -32,11 +32,13 @@ fn run() -> Result<(), String> {
         seed.fill(0);
         return Ok(());
     }
-    if args.len() != 5 {
-        return Err("Usage: couch-updates keygen PRIVATE_SEED | couch-updates CLEAN_RUNTIME VERSION PRIVATE_SEED NEW_OUTPUT".into());
+    let boot = args.get(1).map(String::as_str) == Some("boot");
+    if args.len() != if boot { 7 } else { 5 } {
+        return Err("Usage: couch-updates keygen PRIVATE_SEED | couch-updates CLEAN_RUNTIME VERSION PRIVATE_SEED NEW_OUTPUT | couch-updates boot BOOT_PAYLOAD CLEAN_RUNTIME VERSION PRIVATE_SEED NEW_OUTPUT".into());
     }
+    let seed_path = if boot { &args[5] } else { &args[3] };
     let encoded =
-        std::fs::read_to_string(&args[3]).map_err(|_| "Could not read private signing seed")?;
+        std::fs::read_to_string(seed_path).map_err(|_| "Could not read private signing seed")?;
     let encoded = encoded.trim();
     if encoded.len() != 64 || !encoded.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Signing seed must contain 32 hexadecimal bytes".into());
@@ -46,7 +48,17 @@ fn run() -> Result<(), String> {
         *byte = u8::from_str_radix(&encoded[2 * i..2 * i + 2], 16)
             .map_err(|_| "Invalid signing seed")?;
     }
-    let result = couch_updates::bundle(Path::new(&args[1]), &args[2], &seed, Path::new(&args[4]));
+    let result = if boot {
+        couch_updates::bundle_boot(
+            Path::new(&args[2]),
+            Path::new(&args[3]),
+            &args[4],
+            &seed,
+            Path::new(&args[6]),
+        )
+    } else {
+        couch_updates::bundle(Path::new(&args[1]), &args[2], &seed, Path::new(&args[4]))
+    };
     seed.fill(0);
     println!("Public update key: {}", result?);
     Ok(())
