@@ -48,8 +48,8 @@ pub fn render(app: App, route: Route) -> AnyView {
     match route {
         Route::Overview => keyed(app, overview::overview),
         Route::Rooms => overview::rooms(app),
-        Route::Connections => keyed(app, overview::connections),
-        Route::Connection(id) => keyed(app, move |app, c| connections::detail(app, c, &id)),
+        Route::Connections => overview::connections(app),
+        Route::Connection(id) => connections::detail(app, id),
         Route::Settings => keyed(app, remote::screen),
         Route::Updates => updates::screen(app),
         Route::Areas => keyed(app, areas::list),

@@ -93,6 +93,6 @@ pub fn connection_summary(integration: &Integration) -> String {
     }
 }
 
-pub fn connections(app: App, config: &Config) -> AnyView {
-    super::connections::screen(app, config)
+pub fn connections(app: App) -> AnyView {
+    super::connections::screen(app)
 }
