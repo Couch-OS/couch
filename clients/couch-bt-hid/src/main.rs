@@ -362,6 +362,29 @@ async fn register_advertisement(conn: &Connection) -> bool {
 /// Set an adapter property, waiting out the window where bluetoothd has not
 /// exported hci0 yet (UnknownObject): a bluetoothd that outlived a bridge
 /// restart re-adds the adapter a few seconds after the new hci0 appears.
+
+/// Call a bluetoothd method, waiting out `org.bluez.Error.Busy`: bluetoothd
+/// answers that while it resets the adapter (the backported core does that
+/// once at setup, and after a whole-chip reset) and a moment later succeeds.
+async fn call_when_free<B>(proxy: &Proxy<'_>, method: &str, body: &B) -> zbus::Result<()>
+where
+    B: zbus::zvariant::DynamicType + zbus::export::serde::Serialize + Sync,
+{
+    let mut attempt = 0;
+    loop {
+        match proxy.call_method(method, body).await {
+            Ok(_) => return Ok(()),
+            Err(zbus::Error::MethodError(name, _, _))
+                if attempt < 20 && name.as_str() == "org.bluez.Error.Busy" =>
+            {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 async fn set_adapter(conn: &Connection, prop: &str, value: Value<'_>) -> zbus::Result<()> {
     let props = Proxy::new(
         conn,
@@ -600,12 +623,8 @@ async fn main() -> zbus::Result<()> {
     // Register the pairing agent.
     let agent_mgr = Proxy::new(&conn, "org.bluez", "/org/bluez", "org.bluez.AgentManager1").await?;
     let agent_path = ObjectPath::try_from(AGENT_PATH)?;
-    agent_mgr
-        .call_method("RegisterAgent", &(&agent_path, "NoInputNoOutput"))
-        .await?;
-    agent_mgr
-        .call_method("RequestDefaultAgent", &(&agent_path,))
-        .await?;
+    call_when_free(&agent_mgr, "RegisterAgent", &(&agent_path, "NoInputNoOutput")).await?;
+    call_when_free(&agent_mgr, "RequestDefaultAgent", &(&agent_path,)).await?;
 
     // Register the GATT application.
     let gatt_mgr = Proxy::new(&conn, "org.bluez", ADAPTER, "org.bluez.GattManager1").await?;
@@ -613,23 +632,8 @@ async fn main() -> zbus::Result<()> {
     // bluetoothd answers Busy while it is resetting the adapter (the
     // backported core does that once at setup, and after a whole-chip reset);
     // registering a moment later succeeds, so wait it out rather than die.
-    let mut attempt = 0;
-    loop {
-        let options: HashMap<String, Value> = HashMap::new();
-        match gatt_mgr
-            .call_method("RegisterApplication", &(&app_path, options))
-            .await
-        {
-            Ok(_) => break,
-            Err(zbus::Error::MethodError(name, _, _))
-                if attempt < 20 && name.as_str() == "org.bluez.Error.Busy" =>
-            {
-                attempt += 1;
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    let options: HashMap<String, Value> = HashMap::new();
+    call_when_free(&gatt_mgr, "RegisterApplication", &(&app_path, options)).await?;
     println!("couch-bt-hid: HID GATT application registered");
 
     // Advertise. Preferably through bluetoothd, which then owns advertising and

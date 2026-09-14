@@ -123,10 +123,15 @@ fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
     if drained > 0 {
         log(&format!("discarded {drained} bytes of bring-up chatter from the radio"));
     }
-    let reset = h4::command(0x0c03, &[]);
+    // Read Local Version, not HCI Reset: the firmware takes a while to come
+    // back from a Reset and does not acknowledge STP frames meanwhile, so a
+    // Reset here followed at once by the core's own Reset (the first thing a
+    // 4.x core sends a new controller) is exactly the back-to-back pair that
+    // timed out at the transport. A read leaves the core's Reset as the only one.
+    let probe = h4::command(0x1001, &[]);
     let mut framer = h4::Framer::default();
     for attempt in 1..=5u32 {
-        if let Err(e) = stpbt.write_all(&reset) {
+        if let Err(e) = stpbt.write_all(&probe) {
             log(&format!("readiness probe not sent: {e}"));
         }
         let deadline = Instant::now() + Duration::from_millis(1000);
@@ -135,10 +140,10 @@ fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
                 Ok(n) if n > 0 => {
                     if let Ok(frames) = framer.push(&buf[..n]) {
                         if frames.iter().any(|f| {
-                            f.len() >= 7 && f[0] == h4::EVENT && f[1] == 0x0e && f[4] == 0x03 && f[5] == 0x0c
+                            f.len() >= 7 && f[0] == h4::EVENT && f[1] == 0x0e && f[4] == 0x01 && f[5] == 0x10
                         }) {
                             if attempt > 1 {
-                                log(&format!("radio answered HCI Reset on try {attempt}"));
+                                log(&format!("radio answered the readiness probe on try {attempt}"));
                             }
                             return true;
                         }
@@ -155,7 +160,7 @@ fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
             }
         }
     }
-    log("radio never answered HCI Reset; creating the controller anyway");
+    log("radio never answered the readiness probe; creating the controller anyway");
     false
 }
 
