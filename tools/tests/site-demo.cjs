@@ -2,6 +2,20 @@
 const {chromium}=require('playwright');
 const assert=require('node:assert/strict');
 const tmp=require('node:os').tmpdir();
+// The 12.8 MB WASM demo is not fetched on page load. It arrives when the poster
+// button is pressed, or when the device scrolls into view on a wide viewport
+// without reduced motion or data saving. Wait for whichever applies.
+async function startDemo(page,{click=false}={}){
+ if(click) await page.locator('#demo-load').click();
+ let frame;
+ for(let attempt=0;attempt<200 && !frame;attempt++){
+  frame=page.frames().find(f=>f.url().includes('preview.html'));
+  if(!frame) await page.waitForTimeout(50);
+ }
+ assert.ok(frame,'the demo frame loads once the demo is requested');
+ await frame.waitForFunction(()=>!!window.couchDemo,{},{timeout:120000});
+ return frame;
+}
 async function verifyNativeDisplayScale() {
  // Playwright's deviceScaleFactor emulation does not reproduce native
  // ResizeObserver physical sizes. Set Chromium's display scale instead.
@@ -10,8 +24,8 @@ async function verifyNativeDisplayScale() {
   try {
    const page = await browser.newPage({viewport:null,reducedMotion:'reduce'});
    await page.goto(process.env.SITE_URL || 'http://127.0.0.1:8098/');
-   const frame = page.frames().find(f=>f.url().includes('preview.html'));
-   await frame.waitForFunction(()=>!!window.couchDemo,{},{timeout:120000});
+   assert.equal(await page.locator('#demo-poster').isVisible(),true,'the demo waits behind its poster');
+   const frame = await startDemo(page,{click:true});
    await page.waitForTimeout(300);
    assert.equal(await page.evaluate(()=>devicePixelRatio),density,'real parent display density');
    const framebuffer = () => frame.locator('#canvas').evaluate(c=>({width:c.width,height:c.height}));
@@ -32,9 +46,9 @@ async function verifyNativeDisplayScale() {
  const page=await browser.newPage({viewport:{width:1440,height:1100}}),errors=[],requests=[];
  page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>requests.push(r.url()));
  await page.goto(process.env.SITE_URL||'http://127.0.0.1:8098/');
- const frame=page.frames().find(f=>f.url().includes('preview.html'));
- await frame.waitForFunction(()=>!!window.couchDemo,{},{timeout:120000});
+ const frame=await startDemo(page);
  await page.locator('#demo-loading').waitFor({state:'hidden'});await page.waitForTimeout(300);
+ assert.equal(await page.locator('#demo-poster').isVisible(),false,'a wide viewport loads the demo on its own');
  const state=()=>frame.evaluate(()=>window.couchDemo.state());
  const button=async(name)=>{const control=page.locator(`[data-remote="${name}"]`);if(await control.count()){await control.click();}else{await frame.locator('canvas').focus();await page.keyboard.press({ok:'Enter',up:'ArrowUp',down:'ArrowDown','volume-up':'+','channel-up':'PageUp'}[name]);}await page.waitForTimeout(550);};
  const touch=async(x,y)=>{const box=await page.locator('#slint-demo').boundingBox();await page.mouse.click(box.x+x*box.width/480,box.y+y*box.height/800);await page.waitForTimeout(550);};
@@ -63,7 +77,7 @@ async function verifyNativeDisplayScale() {
  const autoPage=await browser.newPage({viewport:{width:1440,height:1100}});
  autoPage.on('pageerror',e=>errors.push(e.message));
  await autoPage.goto(process.env.SITE_URL||'http://127.0.0.1:8098/');
- const autoFrame=autoPage.frames().find(f=>f.url().includes('preview.html'));
+ const autoFrame=await startDemo(autoPage);
  await autoFrame.waitForFunction(()=>window.couchDemo?.state().player,{},{timeout:45000});
  assert.equal(await autoPage.locator('.device-shell').getAttribute('data-autoplay'),'running');
  const autoBox=await autoPage.locator('#slint-demo').boundingBox();
@@ -75,10 +89,17 @@ async function verifyNativeDisplayScale() {
  assert.deepEqual(await autoFrame.evaluate(()=>window.couchDemo.state()),stopped,'tour remains stopped after touch');
  await autoPage.close();
  const quiet=await browser.newPage({viewport:{width:1440,height:1100},reducedMotion:'reduce'});
+ const quietRequests=[];
+ quiet.on('request',r=>quietRequests.push(r.url()));
  await quiet.goto(process.env.SITE_URL||'http://127.0.0.1:8098/');
+ await quiet.waitForTimeout(1500);
+ assert.equal(await quiet.locator('#demo-poster').isVisible(),true,'reduced motion never loads the demo uninvited');
+ assert.deepEqual(quietRequests.filter(url=>/preview\.html|couch_preview/.test(url)),[],'no WASM before the demo is requested');
+ assert.equal(await quiet.locator('.copy').first().isVisible(),true,'the page works with the demo unloaded');
+ await startDemo(quiet,{click:true});
  await quiet.locator('#demo-loading').waitFor({state:'hidden',timeout:120000});await quiet.waitForTimeout(3000);
  assert.notEqual(await quiet.locator('.device-shell').getAttribute('data-autoplay'),'running');
  await quiet.close();
  assert.deepEqual(errors,[]);assert.ok(requests.every(url=>url.startsWith(new URL(page.url()).origin)),'demo contacts no external devices');
- console.log('PASS: production Slint canvas, room selection/scroll, light toggles, brightness toast, scenes, cinema/pause/chapters, long Back, Home, sleep/wake, responsive sizing, automatic tour/cancel, reduced motion, no external requests.');
+ console.log('PASS: production Slint canvas, room selection/scroll, light toggles, brightness toast, scenes, cinema/pause/chapters, long Back, Home, sleep/wake, responsive sizing, automatic tour/cancel, reduced motion holds the demo behind its poster, click to load, no external requests.');
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exit(1)});
