@@ -11,7 +11,6 @@
 use std::{
     fs,
     io::Write,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -122,12 +121,16 @@ fn temporary_path(path: &Path) -> PathBuf {
 fn open_temporary(path: &Path) -> std::io::Result<(PathBuf, fs::File)> {
     for _ in 0..16 {
         let temporary = temporary_path(path);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Owner-only from the first byte. The installer builds this crate for
+        // Windows hosts too, where there is no mode to set; the device is Linux.
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
             Ok(file) => return Ok((temporary, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -184,7 +187,6 @@ pub trait ClientSettings: Serialize + DeserializeOwned + Sized {
 mod tests {
     use super::*;
     use serde::Deserialize;
-    use std::os::unix::fs::PermissionsExt;
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct Example {
@@ -211,10 +213,14 @@ mod tests {
             token: "secret".into(),
         };
         good.save(&path).unwrap();
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         let before = fs::read(&path).unwrap();
         let bad = Example {
             host: String::new(),
