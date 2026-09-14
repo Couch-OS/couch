@@ -1,4 +1,6 @@
-//! One-way IR device controls. All filesystem and transmitter I/O stays on the worker.
+//! One-way device controls: infrared, and Bluetooth HID (the remote is the
+//! peripheral, the TV paired to it gets consumer-control keys). All
+//! filesystem and transmitter I/O stays on the worker.
 use super::{Command, Details, Event, Work};
 use couch_model::{commands::Function, Action, Integration};
 use couch_webos::Button;
@@ -62,7 +64,9 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     let id = work
         .connection
         .strip_prefix("ir:")
+        .or_else(|| work.connection.strip_prefix("bt:"))
         .ok_or("Missing IR device")?;
+    let bluetooth = work.connection.starts_with("bt:");
     let config = work.config.as_ref().ok_or("Configuration unavailable")?;
     let current = || request_current(work, active, crate::connections::config().as_ref());
     if !current() {
@@ -72,28 +76,35 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         .devices()
         .find(|(_, d)| d.id.as_str() == id)
         .ok_or("IR device was removed")?;
-    let codeset = device
-        .effective_ir_codeset(config)
-        .ok_or("Selected device has no infrared commands")?;
-    let integration = Integration::Ir {
-        codeset: codeset.into(),
-    };
-    let codes =
-        couch_ir::codeset::load(&crate::home::path("ir"), codeset).map_err(|e| e.to_string())?;
-    let choices = codes
-        .entries
-        .iter()
-        .filter_map(|entry| {
-            let f = Function::parse(&entry.button)?;
-            f.supports(&integration).then(|| {
-                (
-                    format!("ir:{}", f.id()),
-                    entry.button.replace('-', " "),
-                    "Send infrared command".into(),
-                )
+    let choices = if bluetooth {
+        couch_model::buttons::functions(&Integration::BluetoothTv)
+            .iter()
+            .map(|(id, label)| (format!("ir:{id}"), (*label).to_owned(), "Send over Bluetooth".into()))
+            .collect()
+    } else {
+        let codeset = device
+            .effective_ir_codeset(config)
+            .ok_or("Selected device has no infrared commands")?;
+        let integration = Integration::Ir {
+            codeset: codeset.into(),
+        };
+        let codes = couch_ir::codeset::load(&crate::home::path("ir"), codeset)
+            .map_err(|e| e.to_string())?;
+        codes
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let f = Function::parse(&entry.button)?;
+                f.supports(&integration).then(|| {
+                    (
+                        format!("ir:{}", f.id()),
+                        entry.button.replace('-', " "),
+                        "Send infrared command".into(),
+                    )
+                })
             })
-        })
-        .collect();
+            .collect()
+    };
     let command = function(&work.action)?;
     if !current() {
         return Ok(None);
@@ -111,7 +122,9 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         if !current() {
             return Ok(None);
         }
-        "IR command sent · No device feedback"
+        if bluetooth { "Key sent over Bluetooth · No device feedback" } else { "IR command sent · No device feedback" }
+    } else if bluetooth {
+        "Bluetooth · No device feedback"
     } else {
         "Infrared · No device feedback"
     };
@@ -119,7 +132,7 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         generation: work.generation,
         status: Ok(status.into()),
         details: Some(Details {
-            source: "Infrared controls".into(),
+            source: if bluetooth { "Bluetooth controls" } else { "Infrared controls" }.into(),
             choices,
             ..Details::default()
         }),

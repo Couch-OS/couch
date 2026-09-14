@@ -35,9 +35,11 @@ Physical dock detection should be checked against the real charging indicator.
 
 The **Remote settings** page mirrors the remote's own Settings menu below the
 clock and wake options: **Display & keys** (brightness, keypad backlight, dim
-and screen-off timeouts), **Bluetooth** (one toggle: the radio is on while the
-bridge daemon runs, and the row says "no kernel support" on a boot image
-without `/dev/vhci` and `/dev/stpbt`), **SSH**, **Network** (read-only) and **Power**. The
+and screen-off timeouts), **Bluetooth** (one toggle that brings up the whole stack;
+the row says "Starting the Bluetooth stack…" for the few seconds that takes,
+then that the remote is advertising as Couch Remote, and "no kernel support"
+on a boot image without `/dev/vhci` and `/dev/stpbt`; see
+[Bluetooth TV](bluetooth-tv.md)), **SSH**, **Network** (read-only) and **Power**. The
 daemon reads and writes the same file the remote does
 (`/opt/couch/settings.conf`, owned by `couch-system`'s `ui_settings`), and the
 remote notices a change to it within a second and applies it, so the two

@@ -1,11 +1,17 @@
 # Bluetooth and BLE
 
-Status as of 2026-09-14: **Bluetooth does not work on Couch, on either kernel,
-and it has never been exercised.** The bridge daemon, kernel config and image
-package changes for the first spike are on this branch, see the
-[implementation plan](#implementation-plan-branch-bluetooth-rebased-onto-dev-2026-09-14). This document records what exists, what is
-missing, the intended path to a BLE HID remote with per-activity pairings, and
-the staging checklist. Kernel-side tasks are mirrored in the kernel tree at
+Status as of 2026-09-14 (end of day): **the remote is a working BLE HID
+remote.** The Bluetooth kernel (`CONFIG_BT` + `CONFIG_BT_HCIVHCI`, unified
+kernel `06b21c74`) ships as a boot payload; the toggle under Settings brings
+up bridge, dbus, bluetoothd and `couch-bt-hid`; a real TV paired to "Couch
+Remote" and took volume keys; and a **Bluetooth TV** connection/device routes
+the remote's mapped buttons and the one-way TV screen over Bluetooth
+([user guide](bluetooth-tv.md)). Idle Bluetooth has no measurable power or
+Wi-Fi cost. Still open: per-activity bonds, the vendor set-address command,
+and an in-kernel HCI driver. The sections below are the design record: "what
+exists today" describes the starting point, the
+[implementation plan](#implementation-plan-branch-bluetooth-rebased-onto-dev-2026-09-14)
+and [staging checklist](#staging-checklist) what was done. Kernel-side tasks are mirrored in the kernel tree at
 `Documentation/couch/bluetooth.md` on the `bluetooth` branch of
 [dangerouslaser/couch-kernel](https://github.com/dangerouslaser/couch-kernel).
 
@@ -185,9 +191,9 @@ Kernel (couch-kernel `bluetooth` branch, built on Ollie):
       `BT_RFCOMM`, `BT_BNEP`, `BT_HIDP` off unless a profile needs them
       (on this branch; the candidate still needs building and re-pinning).
 - [x] Build `normal` (Ollie `out-bluetooth`, 2026-09-14; pinned on this branch).
-- [ ] First boot on the HA100 through the `.140.dev` boot image; confirm
-      `/dev/vhci` and `/dev/stpbt` both appear and Wi-Fi, IR, display and
-      keys behave as on the pinned kernel.
+- [x] First boot on the HA100 through the `.140.dev` boot image; `/dev/vhci`
+      and `/dev/stpbt` both appear; Wi-Fi, IR, display, keys and keypad wake
+      validated on the unified kernel (`06b21c74`, `.144.dev`).
 - [ ] Later: in-kernel STP HCI driver replacing the bridge daemon.
 
 Userland (this repo):
@@ -205,10 +211,17 @@ Userland (this repo):
       after connect, a consumer volume-up report changed the TV volume. Paired
       with the synthetic controller address 00:00:46:65:80:01 (set-BD_ADDR not
       needed for this TV). Record other targets as they are tried.
+- [x] Toggle brings up the whole stack (`couch_system::bluetooth`), publishes
+      starting/on/off/error in `/tmp/couch-bt.state`; the GUI row, web page
+      and API show it (`.145.dev`, `.147`).
+- [x] Key routing: `Provider::BluetoothTv` / `Integration::BluetoothTv`; the
+      GUI's mapped-button executor and the one-way TV screen send the
+      function id as a datagram to `/tmp/couch-bt-hid.sock`.
+- [x] Power validation (2026-09-14, `.144.dev`, unplugged, screen off):
+      ~110 mA idle with or without Bluetooth on; Wi-Fi throughput unchanged
+      with Bluetooth on and idle, halved only during a continuous LE scan.
 - [ ] Bond store keyed per activity; disconnect-and-redirect on switch.
-- [ ] GUI: pair-new-device flow and per-activity target picker.
-- [ ] Power validation: BT idle current unplugged, per
-      `docs/ha100-power-validation.md`.
+- [ ] Re-advertise immediately on disconnect (today: every 15 s).
 
 ## Open questions
 

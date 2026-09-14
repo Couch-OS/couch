@@ -58,13 +58,24 @@ const REPORT_MAP_BYTES: &[u8] = &[
     0x75, 0x10, 0x95, 0x01, 0x81, 0x00, 0xc0,
 ];
 
+/// Key words to HID consumer-page usages. Both the short test words and the
+/// model's function ids (what the GUI sends for a mapped button) are accepted.
 fn consumer_usage(cmd: &str) -> Option<u16> {
     Some(match cmd {
-        "vol+" | "volup" => 0x00e9,
-        "vol-" | "voldown" => 0x00ea,
-        "mute" => 0x00e2,
-        "power" => 0x0030,
-        "play" | "playpause" => 0x00cd,
+        "vol+" | "volup" | "volume-up" => 0x00e9,
+        "vol-" | "voldown" | "volume-down" => 0x00ea,
+        "mute" | "mute-on" | "mute-off" => 0x00e2,
+        "power" | "power-off" | "power-on" | "toggle" => 0x0030,
+        "play" => 0x00b0,
+        "pause" => 0x00b1,
+        "playpause" | "play-pause" => 0x00cd,
+        "stop" => 0x00b7,
+        "next" => 0x00b5,
+        "prev" | "previous" => 0x00b6,
+        "rew" | "rewind" => 0x00b4,
+        "ff" | "fast-forward" => 0x00b3,
+        "chan+" | "channel-up" => 0x009c,
+        "chan-" | "channel-down" => 0x009d,
         "menu" => 0x0040,
         "ok" | "select" => 0x0041,
         "up" => 0x0042,

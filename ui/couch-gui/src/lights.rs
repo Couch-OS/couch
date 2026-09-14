@@ -1020,6 +1020,7 @@ pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Op
         Integration::AndroidTv => couch_model::Provider::AndroidTv,
         Integration::AppleTv => couch_model::Provider::AppleTv,
         Integration::Tizen => couch_model::Provider::Tizen,
+        Integration::BluetoothTv => return Some(format!("bt:{device_id}")),
         Integration::Ir { .. } => return Some(format!("ir:{device_id}")),
         _ => return None,
     };

@@ -459,7 +459,7 @@ fn worker(rx: mpsc::Receiver<Work>, tx: mpsc::SyncSender<Event>, active: Arc<Ato
             {
                 continue;
             }
-            if !w.connection.starts_with("ir:") {
+            if !one_way(&w.connection) {
                 if let (Some(device), Some(config), Ok(Some(function))) =
                     (&w.device, &w.config, infrared::function(&w.action))
                 {
@@ -499,7 +499,7 @@ fn worker(rx: mpsc::Receiver<Work>, tx: mpsc::SyncSender<Event>, active: Arc<Ato
                 }
                 continue;
             }
-            if w.connection.starts_with("ir:") {
+            if one_way(&w.connection) {
                 let result = infrared::run(&w, &active);
                 match result {
                     Ok(Some(event)) => {
@@ -760,6 +760,11 @@ impl ViewPresentation {
         app.set_tv_status(self.status.clone());
     }
 }
+/// One-way targets: infrared and Bluetooth HID devices give no feedback, so
+/// they share the command-list screen.
+fn one_way(connection: &str) -> bool {
+    connection.starts_with("ir:") || connection.starts_with("bt:")
+}
 fn resolve_target(
     config: Option<&couch_model::Config>,
     requested: &str,
@@ -786,6 +791,9 @@ fn resolve_target(
     }
     if matches!(integration,Some(couch_model::Integration::Sonos{..})) {
         return Ok((format!("sonos:{id}"),Some(id.into())));
+    }
+    if matches!(integration, Some(couch_model::Integration::BluetoothTv)) {
+        return Ok((format!("bt:{id}"), Some(id.into())));
     }
     let provider = match integration {
         Some(couch_model::Integration::AndroidTv) => couch_model::Provider::AndroidTv,
@@ -937,7 +945,8 @@ impl Controller {
                         .is_some_and(|c| c.provider == couch_model::Provider::AppleTv)
                 });
                 app.set_tv_sonos(connection.starts_with("sonos:"));
-                app.set_tv_ir(connection.starts_with("ir:"));
+                app.set_tv_ir(one_way(connection));
+                let bluetooth = connection.starts_with("bt:");
                 let tizen = crate::connections::config().is_some_and(|c| {
                     c.connection(&couch_model::Id::new(connection))
                         .is_some_and(|c| c.provider == couch_model::Provider::Tizen)
@@ -967,7 +976,9 @@ impl Controller {
                 app.set_tv_panel(0);
                 app.set_tv_title(name.into());
                 app.set_tv_status(
-                    if app.get_tv_ir() {
+                    if bluetooth {
+                        "Bluetooth · No device feedback"
+                    } else if app.get_tv_ir() {
                         "Infrared · No device feedback"
                     } else {
                         if app.get_tv_sonos() {"Connecting to Sonos…"} else {"Connecting to TV…"}
@@ -992,7 +1003,7 @@ impl Controller {
             if ["inputs", "apps", "picture", "sound", "commands"].contains(&action) {
                 if app.get_tv_sonos() { app.set_tv_error("Sonos has no TV inputs or apps".into()); continue; }
                 if app.get_tv_ir() && action != "commands" {
-                    app.set_tv_error("Infrared devices do not report apps or settings".into());
+                    app.set_tv_error("This device does not report apps or settings".into());
                     continue;
                 }
                 if (app.get_tv_android() || app.get_tv_apple() || app.get_tv_tizen()) && action != "apps" {

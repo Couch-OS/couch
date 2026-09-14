@@ -162,6 +162,7 @@ impl Pages {
                                     | couch_model::Integration::AndroidTv
                                     | couch_model::Integration::AppleTv
                                     | couch_model::Integration::Tizen
+                                    | couch_model::Integration::BluetoothTv
                     )
                 })
         }));
