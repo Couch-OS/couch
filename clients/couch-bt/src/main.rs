@@ -102,9 +102,29 @@ fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
     let settle = if std::path::Path::new(first_open).exists() { 600 } else { 2000 };
     let _ = std::fs::write(first_open, b"");
     std::thread::sleep(Duration::from_millis(settle));
+    // WMT keeps talking to the firmware for a while after the first open
+    // (vendor command completes, hardware-error events); anything we send
+    // into that collides with it. Discard what arrives until the transport
+    // has been quiet for a second, bounded so a chatty radio cannot stall us.
+    let quiet_for = Duration::from_millis(1000);
+    let drain_until = Instant::now() + Duration::from_millis(8000);
+    let mut last = Instant::now();
+    let mut drained = 0usize;
+    let mut buf = [0u8; h4::MAX_FRAME];
+    while Instant::now() < drain_until && last.elapsed() < quiet_for {
+        match stpbt.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                drained += n;
+                last = Instant::now();
+            }
+            _ => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    if drained > 0 {
+        log(&format!("discarded {drained} bytes of bring-up chatter from the radio"));
+    }
     let reset = h4::command(0x0c03, &[]);
     let mut framer = h4::Framer::default();
-    let mut buf = [0u8; h4::MAX_FRAME];
     for attempt in 1..=5u32 {
         if let Err(e) = stpbt.write_all(&reset) {
             log(&format!("readiness probe not sent: {e}"));
