@@ -1,12 +1,16 @@
 import hashlib
 import os
 from pathlib import Path
-import pty
 import re
+import sys
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+
+if sys.platform == 'win32':
+    raise unittest.SkipTest('The recovery serial shell is a POSIX tty path; Windows never runs it')
+import pty
 
 import serial_ram_upload as upload
 

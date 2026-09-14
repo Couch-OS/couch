@@ -1,5 +1,4 @@
 import errno
-import fcntl
 import os
 import plistlib
 import struct
@@ -11,6 +10,7 @@ import unittest
 
 if sys.platform == 'win32':
     raise unittest.SkipTest('The macOS callout transport needs termios; Windows never selects it')
+import fcntl
 import termios
 
 from couch_install import InstallError
