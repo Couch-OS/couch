@@ -24,13 +24,6 @@ GUI="$(dirname "$0")/couch-gui"
 # to pass here: a variable set in this loop's environment could never be
 # cleared again without killing the loop.
 [ -f /tmp/couch.setup ] && echo "= couch-gui starting in setup mode"
-# Claim the boot. init arms a 15-minute dead-man timer that reboots unless
-# /tmp/stay exists - the bring-up safety net, so a build that never gets this
-# far falls back to Android. The tools claim it over serial when they boot
-# the device; a self-boot had nobody to do it and rebooted at 906s, twice in
-# one evening. Getting here means the rootfs, WiFi and the GUI are all in
-# hand, which is what "claimed" was always meant to mean.
-touch /tmp/stay
 # Hold a three-core hotplug floor. The keypad and touch EINT interrupts land
 # only on CPU 0, and their handlers run 46-62ms in hard-IRQ with interrupts
 # off (see README): whatever runs on CPU 0 during a key press stalls for that
@@ -86,6 +79,15 @@ if [ -x "$GUI" ]; then
         $BB sleep 2
       done ) &
     echo "= couch-gui started"
+    # Claim the boot. init arms a 15-minute dead-man timer that reboots unless
+    # /tmp/stay exists - the bring-up safety net, so a build that never gets
+    # this far falls back to Android. The tools claim it over serial when they
+    # boot the device; a self-boot had nobody to do it and rebooted at 906s,
+    # twice in one evening. Inside this branch because "claimed" means the
+    # rootfs, WiFi and the GUI are all in hand: touched ahead of the -x test, a
+    # runtime with no couch-gui disarmed the dead-man and was then left to
+    # init's 150s health gate instead of falling back to Android.
+    touch /tmp/stay
     # The GUI owns the panel from here, so the rest of the boot narration goes
     # to the log instead of on top of it. fbcon cannot be relied on to stop by
     # itself: stage1 resolves $FBCON before /mnt/alpine is mounted, so it always
