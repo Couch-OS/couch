@@ -13,10 +13,10 @@
     "Inherits the ea122a39 candidate: LG B4 volume, button backlight GPIO58 isolation, GUI heartbeat/recovery BCB/USB serial",
     "Bluetooth: /dev/vhci + /dev/stpbt present, hci0 up, LE scan (single-bridge spike, 2026-09-14)",
     "Keypad wake quirk: keys, key backlight, and wake-from-standby on a key press unchanged (HA100, 2026-09-14)",
-    "Bluetooth on alongside Wi-Fi with the singleton bridge: Wi-Fi stayed up, no whole-chip reset (HA100, 2026-09-14)"
+    "Bluetooth on alongside Wi-Fi with the singleton bridge: Wi-Fi stayed up, no whole-chip reset (HA100, 2026-09-14)",
+    "IR working while charging, and after undocked display standby/wake (HA100, 2026-09-14)"
   ],
   "pending": [
-    "IR after undocked display standby and wake; IR while charging (carryover from ea122a39; unaffected by keypad-wake)",
     "Clean installer image and recovery validation; release signing and corresponding-source/license review"
   ]
 }
