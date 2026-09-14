@@ -110,3 +110,20 @@
 /* The contribute path: links inside body copy need their own underline. */
 .project-contribute a{text-decoration:underline;text-underline-offset:4px}
 .project-contribute a:hover{color:#755299}
+
+/* What to buy and what the installer needs, immediately above the commands. */
+.hardware{position:relative;padding-top:54px;padding-bottom:4px;display:grid;grid-template-columns:.85fr 2fr;gap:65px}
+.hardware:before{content:"";position:absolute;top:0;left:6vw;right:6vw;border-top:1px solid var(--line)}
+.hardware>*{min-width:0}
+.hardware-body{display:grid;gap:24px}
+.hardware-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:30px}
+.hardware-grid article{border-top:1px solid var(--line);padding-top:20px;min-width:0}
+.hardware-grid h3{font-size:18px;letter-spacing:-.5px;font-weight:600;margin:0 0 12px}
+.hardware-grid p{font-size:13px;line-height:1.8;color:var(--muted);margin:0}
+.hardware-grid code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--ink);overflow-wrap:anywhere}
+.hardware-foot{font-size:12px;line-height:1.8;color:var(--muted);margin:0}
+.hardware-foot a{text-decoration:underline;text-underline-offset:4px}
+.hardware-foot a:hover{color:#755299}
+@media(min-width:1500px){.hardware:before{left:84px;right:84px}}
+@media(max-width:1000px){.hardware{grid-template-columns:1fr;gap:26px}.hardware-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:850px){.hardware{padding-top:36px;gap:18px}.hardware-grid{grid-template-columns:1fr;gap:24px}}
