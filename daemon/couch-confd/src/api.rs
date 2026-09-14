@@ -173,13 +173,21 @@ struct Reply {
 
 impl Reply {
     fn json(status: u16, value: &impl Serialize) -> Reply {
-        Reply {
+        Reply::rendered(
             status,
-            body: serde_json::to_vec(value).unwrap_or_else(|e| {
+            serde_json::to_vec(value).unwrap_or_else(|e| {
                 // Serialising our own types cannot fail in practice, but a
                 // panic here would take the worker thread with it.
                 format!("{{\"error\":\"cannot serialise response: {e}\"}}").into_bytes()
             }),
+        )
+    }
+
+    /// A JSON body that is already rendered, for a reply held as bytes.
+    fn rendered(status: u16, body: Vec<u8>) -> Reply {
+        Reply {
+            status,
+            body,
             content_type: "application/json",
             revision: None,
             created: None,

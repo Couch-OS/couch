@@ -1,8 +1,14 @@
 //! Offline, source-attributed IR library. Browsing/importing/saving never emits IR.
 use super::{parse, Reply};
 use couch_ir::codeset::{self, Codeset, Entry};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, path::Path, sync::OnceLock};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::OnceLock,
+};
 
 fn canonical(entry: &Entry) -> String {
     if let Some(raw) = &entry.raw {
@@ -194,61 +200,156 @@ fn flipper(text: &str) -> Result<Value, String> {
     }
     Ok(json!({"commands":commands,"text":lines.join("\n") + "\n","physically_verified":false}))
 }
-fn official_catalog() -> Value {
-    serde_json::from_str(include_str!("../../assets/ir/official-index.json"))
-        .expect("embedded official IR index")
+/// One catalogued codeset. The two bundled datasets differ only in where the
+/// Flipper source text lives: inline for the small CC0 subset, packed for the
+/// official index. Typed rather than kept as `Value`, and borrowed from the
+/// embedded JSON where the field has no escapes, because the official index is
+/// 3.3 MB and a `Value` tree of 5,477 objects costs tens of megabytes resident
+/// on a device with 1 GB and no swap.
+#[derive(Deserialize, Serialize)]
+struct Listed<'a> {
+    #[serde(borrow)]
+    id: Cow<'a, str>,
+    #[serde(borrow)]
+    brand: Cow<'a, str>,
+    #[serde(borrow)]
+    device_type: Cow<'a, str>,
+    #[serde(borrow)]
+    model: Cow<'a, str>,
+    #[serde(borrow)]
+    path: Cow<'a, str>,
+    #[serde(borrow)]
+    source_url: Cow<'a, str>,
+    #[serde(borrow)]
+    license: Cow<'a, str>,
+    #[serde(borrow)]
+    blob_sha1: Cow<'a, str>,
+    #[serde(borrow)]
+    sha256: Cow<'a, str>,
+    /// Only the CC0 subset records the commit that introduced the file.
+    #[serde(borrow, default, skip_serializing_if = "Option::is_none")]
+    introduced_commit: Option<Cow<'a, str>>,
+    /// The official index ships these; the subset is counted once at load.
+    #[serde(default)]
+    commands_count: usize,
+    #[serde(default)]
+    supported_commands: usize,
+    #[serde(default)]
+    supported: bool,
+    /// Where the Flipper source is: inline, or a gzip slice of the pack. Both
+    /// are how a detail reply is produced, never part of one.
+    #[serde(borrow, default, skip_serializing)]
+    text: Cow<'a, str>,
+    #[serde(default, skip_serializing)]
+    offset: usize,
+    #[serde(default, skip_serializing)]
+    length: usize,
 }
-fn detail(item: &Value) -> Result<Value, String> {
+#[derive(Deserialize)]
+struct Index<'a> {
+    source: Value,
+    #[serde(borrow)]
+    codesets: Vec<Listed<'a>>,
+}
+/// What the browse list shows per codeset; the rest of `Listed` is only in a
+/// detail reply.
+#[derive(Serialize)]
+struct Summary<'a> {
+    id: &'a str,
+    brand: &'a str,
+    device_type: &'a str,
+    model: &'a str,
+    commands_count: usize,
+    supported_commands: usize,
+    supported: bool,
+}
+struct Catalog {
+    sets: Vec<Listed<'static>>,
+    /// `GET /api/ir/catalog` rendered once, without its closing brace. The only
+    /// part of that reply that can change while the daemon runs is whether
+    /// `/dev/irtx` is there, so the route appends that one field and nothing
+    /// walks 5,477 codesets per request.
+    browse: String,
+}
+fn detail(set: &Listed) -> Result<Value, String> {
     use std::io::Read;
-    if let (Some(offset), Some(length)) = (item["offset"].as_u64(), item["length"].as_u64()) {
+    let text = if set.length > 0 {
         let packed = include_bytes!("../../assets/ir/official-data.irpack");
-        let end = offset.checked_add(length).ok_or("Invalid catalog offset")?;
+        let end = set
+            .offset
+            .checked_add(set.length)
+            .ok_or("Invalid catalog offset")?;
         let bytes = packed
-            .get(offset as usize..end as usize)
+            .get(set.offset..end)
             .ok_or("Invalid catalog offset")?;
         let mut text = String::new();
         flate2::read::GzDecoder::new(bytes)
             .take(256 * 1024 + 1)
             .read_to_string(&mut text)
             .map_err(|e| e.to_string())?;
-        let preview = flipper(&text)?;
-        let mut value = item.clone();
-        value["text"] = preview["text"].clone();
-        value["commands"] = preview["commands"].clone();
-        value["physically_verified"] = json!(false);
-        value.as_object_mut().unwrap().remove("offset");
-        value.as_object_mut().unwrap().remove("length");
-        return Ok(value);
-    }
-    Ok(item.clone())
+        Cow::Owned(text)
+    } else {
+        Cow::Borrowed(set.text.as_ref())
+    };
+    let preview = flipper(&text)?;
+    let mut value = serde_json::to_value(set).map_err(|e| e.to_string())?;
+    value["text"] = preview["text"].clone();
+    value["commands"] = preview["commands"].clone();
+    value["physically_verified"] = json!(false);
+    Ok(value)
 }
-
-fn catalog() -> &'static Value {
-    static CATALOG: OnceLock<Value> = OnceLock::new();
+fn browse(sets: &[Listed], subset: &Value, official: &Value) -> String {
+    #[derive(Serialize)]
+    struct Browse<'a> {
+        source: Value,
+        sources: [&'a Value; 2],
+        codesets: Vec<Summary<'a>>,
+        brands: BTreeSet<&'a str>,
+        device_types: BTreeSet<&'a str>,
+    }
+    let mut body = serde_json::to_string(&Browse {
+        source: json!({"name":"Couch IR library · Flipper Devices + Flipper-IRDB", "license":"MIT + CC0-1.0", "url":"https://github.com/flipperdevices/IRDB", "license_text":include_str!("../../assets/ir/LICENSE-Flipper-MIT.txt")}),
+        sources: [subset, official],
+        codesets: sets
+            .iter()
+            .map(|set| Summary {
+                id: &set.id,
+                brand: &set.brand,
+                device_type: &set.device_type,
+                model: &set.model,
+                commands_count: set.commands_count,
+                supported_commands: set.supported_commands,
+                supported: set.supported,
+            })
+            .collect(),
+        brands: sets.iter().map(|set| set.brand.as_ref()).collect(),
+        device_types: sets.iter().map(|set| set.device_type.as_ref()).collect(),
+    })
+    .expect("catalog summary");
+    body.pop();
+    body
+}
+fn catalog() -> &'static Catalog {
+    static CATALOG: OnceLock<Catalog> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        let mut value: Value = serde_json::from_str(include_str!("../../assets/ir/catalog.json"))
-            .expect("embedded IR catalog");
-        for item in value["codesets"].as_array_mut().unwrap() {
-            let preview =
-                flipper(item["text"].as_str().unwrap()).expect("validated catalog source");
-            item["text"] = preview["text"].clone();
-            item["commands"] = preview["commands"].clone();
-            item["physically_verified"] = json!(false);
-            item["commands_count"] = json!(item["commands"].as_array().unwrap().len());
-            let supported = item["commands"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|c| c["supported"] == true)
-                .count();
-            item["supported_commands"] = json!(supported);
-            item["supported"] = json!(supported > 0);
+        let subset: Index<'static> =
+            serde_json::from_str(include_str!("../../assets/ir/catalog.json"))
+                .expect("embedded IR catalog");
+        let official: Index<'static> =
+            serde_json::from_str(include_str!("../../assets/ir/official-index.json"))
+                .expect("embedded official IR index");
+        let mut sets = subset.codesets;
+        for set in &mut sets {
+            // The subset ships its source text, not the counts the list shows.
+            let preview = flipper(&set.text).expect("validated catalog source");
+            let commands = preview["commands"].as_array().unwrap();
+            set.commands_count = commands.len();
+            set.supported_commands = commands.iter().filter(|c| c["supported"] == true).count();
+            set.supported = set.supported_commands > 0;
         }
-        let official = official_catalog();
-        value["sources"] = json!([value["source"], official["source"]]);
-        value["source"] = json!({"name":"Couch IR library · Flipper Devices + Flipper-IRDB", "license":"MIT + CC0-1.0", "url":"https://github.com/flipperdevices/IRDB", "license_text":include_str!("../../assets/ir/LICENSE-Flipper-MIT.txt")});
-        value["codesets"].as_array_mut().unwrap().extend(official["codesets"].as_array().unwrap().iter().cloned());
-        value
+        sets.extend(official.codesets);
+        let browse = browse(&sets, &subset.source, &official.source);
+        Catalog { sets, browse }
     })
 }
 pub(super) fn installed(directory: &Path, id: &str) -> Result<Value, String> {
@@ -332,46 +433,20 @@ pub(super) fn route(method: &str, path: &[&str], body: &[u8], directory: &Path) 
     let result: Result<Value, String> = match (method, path) {
         ("GET", ["catalog"]) => {
             use std::os::unix::fs::FileTypeExt;
-            let full = catalog();
-            let items = full["codesets"].as_array().unwrap();
-            let summaries = items
-                .iter()
-                .map(|item| {
-                    let mut summary = serde_json::Map::new();
-                    for key in [
-                        "id",
-                        "brand",
-                        "device_type",
-                        "model",
-                        "commands_count",
-                        "supported_commands",
-                        "supported",
-                    ] {
-                        summary.insert(key.into(), item[key].clone());
-                    }
-                    Value::Object(summary)
-                })
-                .collect::<Vec<_>>();
-            let mut value =
-                json!({"source":full["source"],"sources":full["sources"],"codesets":summaries});
-            for (key, field) in [("brands", "brand"), ("device_types", "device_type")] {
-                let unique = items
-                    .iter()
-                    .filter_map(|v| v[field].as_str())
-                    .collect::<std::collections::BTreeSet<_>>();
-                value[key] = json!(unique);
-            }
-            value["blaster_available"] =
-                json!(std::fs::metadata("/dev/irtx").is_ok_and(|m| m.file_type().is_char_device()));
-            Ok(value)
+            let cached = &catalog().browse;
+            let mut body = String::with_capacity(cached.len() + 32);
+            body.push_str(cached);
+            body.push_str(
+                if std::fs::metadata("/dev/irtx").is_ok_and(|m| m.file_type().is_char_device()) {
+                    ",\"blaster_available\":true}"
+                } else {
+                    ",\"blaster_available\":false}"
+                },
+            );
+            return Reply::rendered(200, body.into_bytes());
         }
-        ("GET", ["catalog", id]) => match catalog()["codesets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|v| v["id"] == *id)
-        {
-            Some(v) => detail(v),
+        ("GET", ["catalog", id]) => match catalog().sets.iter().find(|set| set.id == **id) {
+            Some(set) => detail(set),
             None => return Reply::error(404, "Codeset not found"),
         },
         ("POST", ["import"]) => {
@@ -495,37 +570,45 @@ mod tests {
     }
     #[test]
     fn all_bundled_sources_parse_with_unique_ids_and_verified_hash_fields() {
-        let value = catalog();
-        let items = value["codesets"].as_array().unwrap();
-        assert!(items.len() >= 40);
+        let sets = &catalog().sets;
+        assert!(sets.len() >= 40);
         let mut ids = std::collections::HashSet::new();
-        for item in items {
-            assert!(ids.insert(item["id"].as_str().unwrap()));
-            assert!(["CC0-1.0", "MIT"].contains(&item["license"].as_str().unwrap()));
-            let detailed = detail(item).unwrap_or_else(|e| panic!("{}: {e}", item["path"]));
+        for set in sets {
+            assert!(ids.insert(set.id.as_ref()));
+            assert!(["CC0-1.0", "MIT"].contains(&set.license.as_ref()));
+            let detailed = detail(set).unwrap_or_else(|e| panic!("{}: {e}", set.path));
+            let commands = detailed["commands"].as_array().unwrap();
+            assert_eq!(commands.len(), set.commands_count, "{}", set.path);
             assert_eq!(
-                detailed["commands"].as_array().unwrap().len() as u64,
-                item["commands_count"].as_u64().unwrap(),
+                commands.iter().filter(|c| c["supported"] == true).count(),
+                set.supported_commands,
                 "{}",
-                item["path"]
-            );
-            assert_eq!(
-                detailed["commands"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|c| c["supported"] == true)
-                    .count() as u64,
-                item["supported_commands"].as_u64().unwrap(),
-                "{}",
-                item["path"]
+                set.path
             );
             assert_eq!(detailed["physically_verified"], false);
-            assert_eq!(item["sha256"].as_str().unwrap().len(), 64);
-            if item["supported"] == true {
+            assert_eq!(set.sha256.len(), 64);
+            // A detail reply carries the catalogue fields and nothing internal.
+            assert!(detailed.get("offset").is_none() && detailed.get("length").is_none());
+            if set.supported {
                 parsed(detailed["text"].as_str().unwrap()).unwrap();
             }
         }
+    }
+    #[test]
+    fn the_browse_reply_is_built_once_and_only_says_more_about_the_blaster() {
+        let reply = route("GET", &["catalog"], b"", Path::new("/nonexistent-ir"));
+        let value: Value = serde_json::from_slice(&reply.body).unwrap();
+        let sets = &catalog().sets;
+        assert_eq!(value["codesets"].as_array().unwrap().len(), sets.len());
+        assert_eq!(value["codesets"][0]["id"], sets[0].id.as_ref());
+        assert_eq!(value["codesets"][0].as_object().unwrap().len(), 7);
+        assert!(value["blaster_available"].is_boolean());
+        assert!(value["brands"].as_array().unwrap().len() > 100);
+        assert_eq!(value["sources"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            route("GET", &["catalog"], b"", Path::new("/nonexistent-ir")).body,
+            reply.body
+        );
     }
     #[test]
     fn saved_codesets_round_trip_atomically_without_traversal_or_symlink_reads() {
