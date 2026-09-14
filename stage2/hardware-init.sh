@@ -78,9 +78,12 @@ done
                           $BB ln -s /vendor/firmware /etc/firmware 2>/dev/null; }
 echo "= nodes: ttyMT2 $([ -e /dev/ttyMT2 ] && echo ok || echo MISSING), /system/vendor $([ -e /system/vendor ] && echo ok || echo MISSING)"
 mark $((BASE+1)) "S1 vendor=$VSRC bundle=$BUNDLE mods=$($BB ls /vendor/lib/modules 2>/dev/null | $BB wc -l)"
-$BB mount -t tmpfs tmpfs /dev/__properties__ 2>/dev/null
-( cd /dev/__properties__ && $BB tar xzf "$PROPS" 2>/dev/null )
-echo "= /system $([ -x /system/bin/linker ] && echo ok || echo FAIL)  /vendor $([ -d /vendor/lib/modules ] && echo ok || echo FAIL)  props $($BB ls /dev/__properties__ | $BB wc -l)"
+# No property area is mounted or restored here, deliberately: the wmt detection
+# below has to run without one (see the ordering note further down), and $PROPS
+# is not even assigned until after the loader. This used to be a tmpfs plus a
+# "tar xzf" of an empty variable, which unpacked nothing and then reported
+# "props 0" as if it had measured the restore the comment forbids.
+echo "= /system $([ -x /system/bin/linker ] && echo ok || echo FAIL)  /vendor $([ -d /vendor/lib/modules ] && echo ok || echo FAIL)"
 
 # Expose the Android tree inside the chroot for interactive debugging.
 A=/mnt/alpine
