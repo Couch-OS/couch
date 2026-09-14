@@ -65,6 +65,54 @@ fn env_secs(name: &str, default: u64) -> u64 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+/// A screen sitting over the hub. One list, because it was written out by hand
+/// three times with 12, 10 and 7 terms and the two short ones were wrong: the
+/// menu key opened settings over the thermostat and the camera, and a
+/// configuration revision rebuilt the hub models under an open screen.
+///
+/// The order is the order the Back key resolves them, so the device screens
+/// come first: a chooser or a keyboard over a TV screen does not take Back
+/// away from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Overlay {
+    /// An activity sequence is running, and its card is over everything.
+    Activity,
+    Camera,
+    Thermostat,
+    Tv,
+    Player,
+    Room,
+    WifiSetup,
+    Settings,
+    Keyboard,
+    Chooser,
+    Pair,
+    Setup,
+    Recording,
+}
+impl Overlay {
+    /// A device screen: one with something to close, and a Back context.
+    fn device(self) -> bool {
+        matches!(self, Overlay::Camera | Overlay::Thermostat | Overlay::Tv | Overlay::Player)
+    }
+}
+fn overlay(app: &App) -> Option<Overlay> {
+    Some(if app.get_activity_busy() { Overlay::Activity }
+        else if app.get_camera_shown() { Overlay::Camera }
+        else if app.get_thermostat_shown() { Overlay::Thermostat }
+        else if app.get_tv_shown() { Overlay::Tv }
+        else if app.get_player_shown() { Overlay::Player }
+        else if app.get_light_shown() { Overlay::Room }
+        else if app.get_wifi_setup_shown() { Overlay::WifiSetup }
+        else if app.get_settings_shown() { Overlay::Settings }
+        else if app.get_keyboard_shown() { Overlay::Keyboard }
+        else if app.get_chooser_shown() { Overlay::Chooser }
+        else if app.get_pair_shown() { Overlay::Pair }
+        else if app.get_setup_mode() { Overlay::Setup }
+        else if app.get_recording() { Overlay::Recording }
+        else { return None })
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The UI is left on the default affinity deliberately, not pinned off
     // CPU 0. The input EINT interrupts fire only on CPU 0 and freeze it for
@@ -764,19 +812,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut back_hold = input::BackHold::default();
-    let exit_device = |app: &App| {
-        if app.get_activity_busy() {
-            app.invoke_cancel_activity();
-        } else if app.get_camera_shown() {
-            app.invoke_close_camera();
-        } else if app.get_thermostat_shown() {
-            app.invoke_thermostat_action("close".into(),0);
-        } else if app.get_tv_shown() {
-            app.invoke_tv_action("close".into());
-        } else if app.get_player_shown() {
+    let exit_device = |app: &App| match overlay(app) {
+        Some(Overlay::Activity) => app.invoke_cancel_activity(),
+        Some(Overlay::Camera) => app.invoke_close_camera(),
+        Some(Overlay::Thermostat) => app.invoke_thermostat_action("close".into(),0),
+        Some(Overlay::Tv) => app.invoke_tv_action("close".into()),
+        Some(Overlay::Player) => {
             app.set_player_panel(0);
             app.invoke_player_action("back".into(), 0.);
         }
+        _ => {}
     };
     loop {
         if motion.poll(wake_on_lift && standby != Standby::Active && now_monotonic_us() >= lift_resume_at) {
@@ -789,9 +834,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             manual_sleep = false;
             println!("couch-gui: standby: wake on lift");
         }
-        let back_context = if app.get_activity_busy() { "activity-sequence".into() } else if app.get_camera_shown() || app.get_tv_shown() || app.get_player_shown() || app.get_thermostat_shown() {
-            format!("{}:{}:{}:{}:{}", app.get_camera_shown(), app.get_tv_shown(), app.get_player_shown(), app.get_thermostat_shown(), app.get_active_activity())
-        } else { String::new() };
+        let back_context = match overlay(&app) {
+            Some(Overlay::Activity) => "activity-sequence".into(),
+            Some(screen) if screen.device() => format!("{screen:?}:{}", app.get_active_activity()),
+            _ => String::new(),
+        };
         back_hold.context(back_context);
         if back_hold.poll(now_monotonic_us()) { exit_device(&app); }
         let replay = button_controls.next_replay();
@@ -876,10 +923,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // press is a down edge here (releases returned above), and these
             // keys never repeat, so one press is one action.
             if !press.repeat && !press.released && !replayed {
-                let on_hub = !app.get_tv_shown() && !app.get_player_shown() && !app.get_light_shown()
-                    && !app.get_thermostat_shown() && !app.get_camera_shown() && !app.get_wifi_setup_shown()
-                    && !app.get_settings_shown() && !app.get_keyboard_shown() && !app.get_chooser_shown()
-                    && !app.get_pair_shown() && !app.get_setup_mode() && !app.get_recording();
+                let on_hub = overlay(&app).is_none();
                 let plan = couch_model::buttons::Button::from_evdev(press.code)
                     .filter(|b| on_hub && b.is_shortcut())
                     .and_then(|b| connections::config().and_then(|c| shortcuts::plan(&c, &areas.borrow(), current.get(), b).map(|p| (c, p))));
@@ -1075,12 +1119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // over. The state it shows - the SSID, whether SSH is up - is asked for
         // here, at open time rather than on the tick; the SSH pair comes back
         // from a thread because those two reads can block.
-            let on_home = !app.get_tv_shown() && !app.get_player_shown() && !app.get_light_shown() && !app.get_wifi_setup_shown() && !app.get_settings_shown()
-                && !app.get_keyboard_shown()
-                && !app.get_chooser_shown()
-                && !app.get_pair_shown()
-                && !app.get_setup_mode()
-                && !app.get_recording();
+        let on_home = overlay(&app).is_none();
         if physical_input.settings_hold_due(now, on_home) {
             ssh_probe();
             ask(Intent::OpenSettings);
@@ -1247,7 +1286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 home::apply_accent(&app,accent);
                 // Appearance updates in overlays too; defer home navigation changes
                 // until returning home so an open device control remains in place.
-                if !app.get_tv_shown() && !app.get_player_shown() && !app.get_light_shown() && !app.get_wifi_setup_shown() && !app.get_keyboard_shown() && !app.get_settings_shown() && !app.get_chooser_shown() {
+                if overlay(&app).is_none() {
                     loaded_home = raw; *areas.borrow_mut() = saved;
                     current.set(0); app.set_area_dots(ModelRc::new(VecModel::from(vec![true;areas.borrow().len()])));
                     put_front(&app,0);
@@ -1486,6 +1525,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             in_sum = 0;
             in_max = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    /// Every screen that can sit over the hub, and the value it reports. The
+    /// list is the point: an omission from it was the bug this replaced.
+    #[test]
+    fn each_screen_over_the_hub_is_named_and_the_bare_hub_is_none() {
+        // One process may install one Slint platform, and another test already
+        // installs one; this test asks for its own run.
+        if std::env::var_os("COUCH_TEST_OVERLAY").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "overlay_tests::each_screen_over_the_hub_is_named_and_the_bare_hub_is_none",
+                ])
+                .env("COUCH_TEST_OVERLAY", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        struct Platform;
+        impl slint::platform::Platform for Platform {
+            fn duration_since_start(&self) -> Duration { Duration::ZERO }
+            fn create_window_adapter(&self) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+                Ok(slint::platform::software_renderer::MinimalSoftwareWindow::new(
+                    slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
+                ))
+            }
+        }
+        slint::platform::set_platform(Box::new(Platform)).unwrap();
+        let app = App::new().unwrap();
+        assert_eq!(overlay(&app), None);
+        let cases: Vec<(Box<dyn Fn(&App, bool)>, Overlay)> = vec![
+            (Box::new(|a: &App, v| a.set_activity_busy(v)), Overlay::Activity),
+            (Box::new(|a: &App, v| a.set_camera_shown(v)), Overlay::Camera),
+            (Box::new(|a: &App, v| a.set_thermostat_shown(v)), Overlay::Thermostat),
+            (Box::new(|a: &App, v| a.set_tv_shown(v)), Overlay::Tv),
+            (Box::new(|a: &App, v| a.set_player_shown(v)), Overlay::Player),
+            (Box::new(|a: &App, v| a.set_light_shown(v)), Overlay::Room),
+            (Box::new(|a: &App, v| a.set_wifi_setup_shown(v)), Overlay::WifiSetup),
+            (Box::new(|a: &App, v| a.set_settings_shown(v)), Overlay::Settings),
+            (Box::new(|a: &App, v| a.set_keyboard_shown(v)), Overlay::Keyboard),
+            (Box::new(|a: &App, v| a.set_chooser_shown(v)), Overlay::Chooser),
+            (Box::new(|a: &App, v| a.set_pair_shown(v)), Overlay::Pair),
+            (Box::new(|a: &App, v| a.set_setup_mode(v)), Overlay::Setup),
+            (Box::new(|a: &App, v| a.set_recording(v)), Overlay::Recording),
+        ];
+        // Each one alone closes the menu-key gate and the reload gate, which
+        // is exactly what the thermostat and the camera used not to do.
+        for (set, expected) in &cases {
+            set(&app, true);
+            assert_eq!(overlay(&app), Some(*expected));
+            set(&app, false);
+            assert_eq!(overlay(&app), None);
+        }
+        // A keyboard over a TV screen leaves Back with the TV.
+        app.set_tv_shown(true);
+        app.set_keyboard_shown(true);
+        assert_eq!(overlay(&app), Some(Overlay::Tv));
+        assert!(overlay(&app).is_some_and(Overlay::device));
+        assert!(!Overlay::Keyboard.device());
     }
 }
 
