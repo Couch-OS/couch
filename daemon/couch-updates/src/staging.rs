@@ -51,7 +51,7 @@ pub(crate) fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     result.map_err(|_| "Could not persist update state".into())
 }
-fn id(value: &str) -> bool {
+pub(crate) fn id(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
@@ -82,7 +82,7 @@ fn allowed(name: &str) -> bool {
         })
         || name.starts_with("licenses/") && name.ends_with(".txt")
 }
-fn inventory(m: &Manifest) -> Result<BTreeMap<String, &File>> {
+pub(crate) fn inventory(m: &Manifest) -> Result<BTreeMap<String, &File>> {
     if m.kind != "runtime" || !m.installable || m.files.len() > 256 {
         return Err("Unsupported update type".into());
     }
@@ -131,7 +131,7 @@ fn unpack(root: &Path, m: &Manifest, bytes: &[u8]) -> Result<()> {
         .map_err(|_| "Could not secure runtime slots")?;
     let target = slots.join(&m.sha256);
     if target.exists() {
-        return verify_files(&target, m);
+        return verify_files(&target, &files);
     }
     let work = slots.join(format!(".staging-{}", std::process::id()));
     // The service serializes staging. Only this private, fixed temporary path is
@@ -141,61 +141,7 @@ fn unpack(root: &Path, m: &Manifest, bytes: &[u8]) -> Result<()> {
     }
     fs::create_dir(&work).map_err(|_| "Could not create staging directory")?;
     let result = (|| -> Result<()> {
-        let decoder = flate2::read::GzDecoder::new(bytes).take(MAX_TOTAL + 1024 * 1024);
-        let mut archive = tar::Archive::new(decoder);
-        let mut seen = BTreeSet::new();
-        for entry in archive.entries().map_err(|_| "Invalid update archive")? {
-            let mut entry = entry.map_err(|_| "Invalid update archive entry")?;
-            // Bundle format contains regular files only, with explicit parent creation.
-            if !entry.header().entry_type().is_file() {
-                return Err("Links and special files are forbidden in updates".into());
-            }
-            let name = entry
-                .path()
-                .map_err(|_| "Invalid update path")?
-                .to_str()
-                .ok_or("Invalid update path encoding")?
-                .to_owned();
-            let item = files.get(&name).ok_or("Unlisted update file")?;
-            if !seen.insert(name.clone()) || entry.size() != item.size {
-                return Err("Duplicate file or wrong update file size".into());
-            }
-            let path = work.join(&name);
-            let parent = path.parent().unwrap();
-            fs::create_dir_all(parent).map_err(|_| "Could not stage update directory")?;
-            let mut output = fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(item.mode)
-                .open(&path)
-                .map_err(|_| "Could not stage update file")?;
-            let mut hash = Sha256::new();
-            let mut count = 0u64;
-            let mut buf = [0u8; 65536];
-            loop {
-                let n = entry.read(&mut buf).map_err(|_| "Truncated update")?;
-                if n == 0 {
-                    break;
-                }
-                output
-                    .write_all(&buf[..n])
-                    .map_err(|_| "Not enough space to stage update")?;
-                hash.update(&buf[..n]);
-                count += n as u64;
-            }
-            if count != item.size || release::hex(&hash.finalize()) != item.sha256 {
-                return Err("Runtime file digest mismatch".into());
-            }
-            output
-                .sync_all()
-                .map_err(|_| "Could not flush update file")?;
-            fs::File::open(parent)
-                .and_then(|f| f.sync_all())
-                .map_err(|_| "Could not flush update directory")?;
-        }
-        if seen.len() != files.len() {
-            return Err("Update archive is incomplete".into());
-        }
+        extract(&work, &files, bytes)?;
         let build: serde_json::Value = serde_json::from_slice(
             &fs::read(work.join("build.json")).map_err(|_| "Missing build identity")?,
         )
@@ -218,8 +164,68 @@ fn unpack(root: &Path, m: &Manifest, bytes: &[u8]) -> Result<()> {
     }
     result
 }
-fn verify_files(slot: &Path, m: &Manifest) -> Result<()> {
-    for f in inventory(m)?.values() {
+/// Unpack a signed archive's listed regular files into `work`, checking each
+/// against the manifest as it streams. Shared by runtime slots and boot payloads.
+pub(crate) fn extract(work: &Path, files: &BTreeMap<String, &File>, bytes: &[u8]) -> Result<()> {
+    let decoder = flate2::read::GzDecoder::new(bytes).take(MAX_TOTAL + 1024 * 1024);
+    let mut archive = tar::Archive::new(decoder);
+    let mut seen = BTreeSet::new();
+    for entry in archive.entries().map_err(|_| "Invalid update archive")? {
+        let mut entry = entry.map_err(|_| "Invalid update archive entry")?;
+        // Bundle format contains regular files only, with explicit parent creation.
+        if !entry.header().entry_type().is_file() {
+            return Err("Links and special files are forbidden in updates".into());
+        }
+        let name = entry
+            .path()
+            .map_err(|_| "Invalid update path")?
+            .to_str()
+            .ok_or("Invalid update path encoding")?
+            .to_owned();
+        let item = files.get(&name).ok_or("Unlisted update file")?;
+        if !seen.insert(name.clone()) || entry.size() != item.size {
+            return Err("Duplicate file or wrong update file size".into());
+        }
+        let path = work.join(&name);
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent).map_err(|_| "Could not stage update directory")?;
+        let mut output = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(item.mode)
+            .open(&path)
+            .map_err(|_| "Could not stage update file")?;
+        let mut hash = Sha256::new();
+        let mut count = 0u64;
+        let mut buf = [0u8; 65536];
+        loop {
+            let n = entry.read(&mut buf).map_err(|_| "Truncated update")?;
+            if n == 0 {
+                break;
+            }
+            output
+                .write_all(&buf[..n])
+                .map_err(|_| "Not enough space to stage update")?;
+            hash.update(&buf[..n]);
+            count += n as u64;
+        }
+        if count != item.size || release::hex(&hash.finalize()) != item.sha256 {
+            return Err("Update file digest mismatch".into());
+        }
+        output
+            .sync_all()
+            .map_err(|_| "Could not flush update file")?;
+        fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| "Could not flush update directory")?;
+    }
+    if seen.len() != files.len() {
+        return Err("Update archive is incomplete".into());
+    }
+    Ok(())
+}
+pub(crate) fn verify_files(slot: &Path, files: &BTreeMap<String, &File>) -> Result<()> {
+    for f in files.values() {
         let path = slot.join(&f.path);
         let meta = fs::symlink_metadata(&path).map_err(|_| "Staged update file missing")?;
         if !meta.is_file() || meta.len() != f.size || meta.permissions().mode() & 0o777 != f.mode {
@@ -261,7 +267,7 @@ pub fn activate(root: &Path) -> Result<()> {
         return Err("Staged manifest changed".into());
     }
     crate::baseline::check(root, &m)?;
-    verify_files(&slot, &m)?;
+    verify_files(&slot, &inventory(&m)?)?;
     let previous = match fs::read_link(runtime.join("current")) {
         Ok(path) => {
             let s = path

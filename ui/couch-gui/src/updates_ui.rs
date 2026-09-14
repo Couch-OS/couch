@@ -191,12 +191,17 @@ impl Controller {
                     if !self.status.as_ref().is_some_and(|s| s.phase == "ready") {
                         continue;
                     }
+                    let boot = self.status.as_ref().is_some_and(|s| s.kind == "boot");
                     if self.armed_until.is_some_and(|until| Instant::now() < until) {
                         self.armed_until = None;
                         app.set_update_armed(false);
                         self.say(
                             app,
-                            "Restarting to apply the update…",
+                            if boot {
+                                "Writing the boot image and restarting…"
+                            } else {
+                                "Restarting to apply the update…"
+                            },
                             Duration::from_secs(120),
                         );
                         self.send(Request::UpdateRestart);
@@ -205,7 +210,11 @@ impl Controller {
                         app.set_update_armed(true);
                         self.say(
                             app,
-                            "Press OK again to restart. Your connections, Wi-Fi and settings are kept; keep the remote charged.",
+                            if boot {
+                                "Press OK again to write the new kernel to the boot partition and restart. The previous image is kept; keep the remote charged and do not power it off."
+                            } else {
+                                "Press OK again to restart. Your connections, Wi-Fi and settings are kept; keep the remote charged."
+                            },
                             ARM,
                         );
                     }
@@ -264,6 +273,7 @@ fn summary(s: &Status, busy: bool) -> String {
         "ready" => "Ready to install".into(),
         "error" => "Failed".into(),
         _ => match &s.available {
+            Some(version) if s.kind == "boot" => format!("Boot image {} available", short(version)),
             Some(version) => format!("{} available", short(version)),
             None if busy => "Working…".into(),
             None => "Up to date".into(),
@@ -383,6 +393,11 @@ mod tests {
             installed: "v0.1.0-alpha.20260913.121".into(),
             channel: Channel::Alpha,
             available: available.map(str::to_owned),
+            kind: if available.is_some() {
+                "runtime".into()
+            } else {
+                String::new()
+            },
             notes: String::new(),
             phase: phase.into(),
             message: String::new(),
@@ -398,6 +413,9 @@ mod tests {
             summary(&status("idle", Some("v0.1.0-alpha.20260913.122")), false),
             ".122 available"
         );
+        let mut boot = status("idle", Some("v0.1.0-alpha.20260913.121"));
+        boot.kind = "boot".into();
+        assert_eq!(summary(&boot, false), "Boot image .121 available");
         assert_eq!(
             summary(&status("idle", Some("v0.2.0")), false),
             "v0.2.0 available"

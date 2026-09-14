@@ -22,10 +22,12 @@ to the root system service over the same control socket the web UI's daemon
 uses, on a worker thread, and re-reads the status every two seconds while the
 section is open. Nothing is downloaded or installed without a press.
 
-This first updater replaces Couch applications, Sonos CLI, services, and their
-runtime scripts, including the CoreELEC client. It does not upgrade Alpine, the kernel, boot/recovery images,
-or the stable update bootstrap; use the OS installer for those. It preserves
-`config.json`, saved Wi-Fi, SSH enrollment, and per-device data.
+This updater replaces Couch applications, Sonos CLI, services, and their
+runtime scripts, including the CoreELEC client, and it can write a signed
+[boot image](#boot-image-updates) (kernel and boot ramdisk) published with the
+installed build. It does not upgrade Alpine, the recovery image or the stable
+update bootstrap; use the OS installer for those. It preserves `config.json`,
+saved Wi-Fi, SSH enrollment, and per-device data.
 
 ## Installation and recovery
 
@@ -62,6 +64,42 @@ journal; the updater reclaims only its stale temporary symlink.
 Completed slots are retained; automatic slot garbage collection is not yet
 implemented. Do not manually remove the active or previous slot.
 
+## Boot image updates
+
+A release may also carry `couch-VERSION-ha100-boot.tar.gz` with its own signed
+`couch-VERSION-ha100-boot.json` (`kind: "boot"`). The archive holds exactly the
+owner-neutral boot payload `tools/release/prepare_public_boot.py` exports: the
+source-built `zImage` and the clean `boot.cpio.gz`, no Android header, no device
+tree, no stock bytes. A check offers it only when no newer runtime is available
+on the channel, only for the release whose runtime is installed (the updater
+that understands it is the one that runtime shipped), and only while the boot
+partition does not already carry that kernel and ramdisk byte for byte. So a
+release with both assets installs in two steps: the runtime first, then, after
+its reboot, the boot image the same Updates page now offers.
+
+Download and verification stage the two files under `/opt/couch/boot/slots/<sha256>`
+with the same digest checks as runtime slots and the same OS baseline gate.
+**Install & restart** then does on the remote what the installer does on the
+host: it reads the whole 16 MiB `boot` partition, keeps that image's header
+page (lk's load addresses and command line) and its appended device tree,
+splices the new zImage and ramdisk in, recomputes the Android image ID, saves
+the previous partition contents to `/opt/couch/boot/previous.img` (with
+`previous.json` naming what was replaced), writes the new image, drops the page
+cache and reads the partition back before it counts as applied. A readback
+mismatch writes the saved image back and reports it. Nothing is written when the
+partition does not parse as an Android boot image, when the staged files differ
+from their manifest, or when the baseline differs. `installed.json` records the
+version and digests written.
+
+What protects the boot after that is the existing one: init arms `boot-recovery`
+before anything can hang and clears it only after a healthy GUI, so a kernel
+that boots but never gets there lands in recovery on its own. A kernel that
+dies before init cannot arm anything and loops on the bad image; that needs the
+physical route, hold **Back** while powering on, and then the saved image, see
+[restoring the previous boot image](device-recovery.md#restoring-the-previous-boot-image).
+The boot payload is not a runtime slot: there is no automatic rollback to
+`previous.img`, and the recovery partition is never written by an update.
+
 ## Publishing
 
 Build the current web bundle, ARM daemon/GUI and Sonos client, then assemble the
@@ -85,7 +123,21 @@ cargo run --manifest-path daemon/Cargo.toml -p couch-updates -- \
 
 The publisher emits `couch-VERSION-ha100-runtime.tar.gz` and
 `couch-VERSION-ha100-update.json`. Attach both to the matching versioned GitHub
-release in `dangerouslaser/couch`; mark alpha tags as prereleases. Publishing is
+release in `dangerouslaser/couch`; mark alpha tags as prereleases.
+
+A boot payload is signed from the public boot directory and the clean runtime of
+the same version (for the OS baseline it is bound to):
+
+```sh
+cargo run --manifest-path daemon/Cargo.toml -p couch-updates -- \
+  boot PUBLIC_BOOT_DIR CLEAN_RUNTIME v0.1.0-alpha.1 /private/path/runtime.seed NEW_OUTPUT
+```
+
+It emits `couch-VERSION-ha100-boot.tar.gz` and `couch-VERSION-ha100-boot.json`;
+attach both to the same release as the runtime pair. The manifest notes carry
+the kernel commit from the payload's `boot.json`. Only publish a boot payload
+whose kernel has booted the HA100 from a flashed image; the updater checks
+signatures and digests, not whether a kernel works. Publishing is
 separate from packaging. The client examines the most recent 100 releases and
 requires GitHub's SHA-256 asset digest on the manifest as well as its publisher
 signature. Existing installer assets alone are not runtime updates.
