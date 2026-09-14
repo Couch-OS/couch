@@ -44,6 +44,7 @@ fn ssh_available() -> bool {
 /// The page's picture of the device settings, choices included so the page
 /// needs no copy of the tables.
 fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
+    let state = ui_settings::bluetooth_state();
     serde_json::json!({
         "brightness": settings.brightness,
         "keys": settings.keys,
@@ -59,7 +60,12 @@ fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
         "bluetooth": {
             "available": ui_settings::bluetooth_available(),
             "enabled": settings.bluetooth,
-            "running": ui_settings::hid_running(),
+            "running": state == ui_settings::BluetoothState::On,
+            "state": state.word(),
+            "detail": match &state {
+                ui_settings::BluetoothState::Error(error) => error.as_str(),
+                _ => "",
+            },
         },
     })
 }

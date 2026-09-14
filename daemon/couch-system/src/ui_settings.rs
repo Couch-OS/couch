@@ -155,6 +155,52 @@ pub fn bridge_running() -> bool {
 pub fn hid_running() -> bool {
     process_running("couch-bt-hid")
 }
+/// Where the Bluetooth stack is between off and on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BluetoothState {
+    Off,
+    /// The service is bringing the stack up; a few seconds.
+    Starting,
+    On,
+    /// The last attempt failed, with the service's sentence.
+    Error(String),
+}
+impl BluetoothState {
+    pub fn word(&self) -> &'static str {
+        match self {
+            BluetoothState::Off => "off",
+            BluetoothState::Starting => "starting",
+            BluetoothState::On => "on",
+            BluetoothState::Error(_) => "error",
+        }
+    }
+}
+/// The stack's state: the processes are the truth for on and off, and the
+/// service's state file adds "starting" and the last error in between. A
+/// "starting" older than the bring-up could take is a crashed attempt, so it
+/// reads as off rather than spinning forever.
+pub fn bluetooth_state() -> BluetoothState {
+    if hid_running() {
+        return BluetoothState::On;
+    }
+    let path = Path::new(crate::bluetooth::STATE_FILE);
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return BluetoothState::Off;
+    };
+    let fresh = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < std::time::Duration::from_secs(40));
+    let text = text.trim();
+    if text == "starting" && fresh {
+        BluetoothState::Starting
+    } else if let Some(error) = text.strip_prefix("error ") {
+        BluetoothState::Error(error.trim().to_owned())
+    } else {
+        BluetoothState::Off
+    }
+}
 /// Whether this kernel can do Bluetooth at all: the virtual HCI driver and
 /// the MediaTek transport both present. Older boot images have neither.
 pub fn bluetooth_available() -> bool {

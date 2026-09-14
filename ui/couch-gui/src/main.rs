@@ -659,8 +659,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             toast(if on { "SSH on".into() } else { "SSH off".into() }, 3);
         });
     }
+    // Bringing the Bluetooth stack up takes seconds, so the toggle hands the
+    // request to a thread and the once-a-second tick applies the outcome; the
+    // row shows "starting" from the service's state file meanwhile.
+    let (bt_tx, bt_rx) = std::sync::mpsc::channel::<(bool, Result<(), String>)>();
     {
-        let (weak, sett, toast) = (app.as_weak(), settings.clone(), toast.clone());
+        let (weak, toast) = (app.as_weak(), toast.clone());
         app.on_setting_toggle_bluetooth(move || {
             let Some(app) = weak.upgrade() else { return };
             if !system::bluetooth_available() {
@@ -670,26 +674,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 return;
             }
-            let want = !system::bluetooth_running();
-            match system::bluetooth_set(want) {
-                Ok(()) => {
-                    app.set_bt_on(want);
-                    sett.borrow_mut().bluetooth = want;
-                    system::save_settings(&sett.borrow());
-                    toast(
-                        if want {
-                            "Bluetooth on".into()
-                        } else {
-                            "Bluetooth off".into()
-                        },
-                        3,
-                    );
-                }
-                Err(error) => {
-                    app.set_bt_on(system::bluetooth_running());
-                    toast(error, 5);
-                }
+            if system::bluetooth_state() == "starting" {
+                toast("Bluetooth is starting".into(), 2);
+                return;
             }
+            let want = !system::bluetooth_running();
+            app.set_bt_state(if want { "starting" } else { "off" }.into());
+            let tx = bt_tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send((want, system::bluetooth_set(want)));
+            });
         });
     }
     {
@@ -1128,6 +1122,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Device state changes in seconds, not frames.
         if now - last_tick > 1_000_000 {
             last_tick = now;
+            // The Bluetooth toggle's outcome, and its state while it settles.
+            if let Ok((want, result)) = bt_rx.try_recv() {
+                match result {
+                    Ok(()) => {
+                        settings.borrow_mut().bluetooth = want;
+                        system::save_settings(&settings.borrow());
+                        toast(
+                            if want { "Bluetooth on".into() } else { "Bluetooth off".into() },
+                            3,
+                        );
+                    }
+                    Err(error) => toast(error, 5),
+                }
+            }
+            if app.get_settings_shown() {
+                app.set_bt_state(system::bluetooth_state().into());
+            }
             // The key LEDs follow the screen: lit only while it is awake and
             // the setting wants them. Something outside this process lights
             // them now and then with the screen off (seen on the HA100), so
@@ -1178,7 +1189,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if fresh.ssh != previous.ssh {
                         app.set_ssh_on(system::ssh_running());
-                        app.set_bt_on(system::bluetooth_running());
                     }
                     *settings.borrow_mut() = fresh;
                 }

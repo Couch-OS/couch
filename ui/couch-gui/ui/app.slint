@@ -291,7 +291,7 @@ export component App inherits Window {
     in-out property <string> wifi-ssid: "";
     in-out property <bool> ssh-on: false;
     in-out property <bool> ssh-available: false;
-    in-out property <bool> bt-on: false;
+    in-out property <string> bt-state: "off";  // off, starting, on, error
     in-out property <bool> bt-available: false;
     // Updates section of the settings menu; mirrored from the system service.
     in-out property <string> update-installed;
@@ -629,7 +629,7 @@ export component App inherits Window {
         wifi-level: root.wifi-level;
         ssh-on: root.ssh-on;
         ssh-available: root.ssh-available;
-        bt-on: root.bt-on;
+        bt-state: root.bt-state;
         bt-available: root.bt-available;
         update-installed: root.update-installed;
         update-channel: root.update-channel;

@@ -38,13 +38,16 @@ def clean_ramdisk(root, role):
         shutil.copyfile(root / 'build/fbcon', tree / 'extra/fbcon')
         if role == 'boot':
             shutil.copyfile(root / 'initramfs/boot-health.sh', tree / 'extra/boot-health.sh')
-            # The Bluetooth bridge travels with the kernel that gives it /dev/vhci:
-            # deployed runtime updaters refuse bundles with new binaries, the
-            # boot payload is the one thing only Bluetooth-capable images get.
-            bridge = root / 'clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-bridge'
-            arm_static(regular(bridge))
-            shutil.copyfile(bridge, tree / 'extra/couch-bt-bridge')
-            (tree / 'extra/couch-bt-bridge').chmod(0o755)
+            # The Bluetooth binaries travel with the kernel that gives them
+            # /dev/vhci: runtime updaters before .142 refuse bundles with new
+            # binaries, so until every remote runs a tolerant updater the boot
+            # payload is the one thing only Bluetooth-capable images get, and
+            # couch-system falls back to /extra when the runtime lacks them.
+            for name in ('couch-bt-bridge', 'couch-bt-hid'):
+                binary = root / 'clients/target/armv7-unknown-linux-musleabihf/release' / name
+                arm_static(regular(binary))
+                shutil.copyfile(binary, tree / 'extra' / name)
+                (tree / 'extra' / name).chmod(0o755)
         subprocess.run([sys.executable, str(root / 'tools/mkcpio.py'), str(tree), str(tree / 'ramdisk.cpio')], check=True, stdout=subprocess.DEVNULL)
         raw = (tree / 'ramdisk.cpio').read_bytes()
         entries = cpio_files(raw)
@@ -52,6 +55,7 @@ def clean_ramdisk(root, role):
         if role == 'boot':
             expected.add('extra/boot-health.sh')
             expected.add('extra/couch-bt-bridge')
+            expected.add('extra/couch-bt-hid')
         payloads = {name for name, content in entries.items() if content}
         require(payloads == expected, 'Unexpected payload file in clean ramdisk')
         ramdisk = gzip.compress(raw, compresslevel=9, mtime=0)

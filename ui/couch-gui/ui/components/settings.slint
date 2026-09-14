@@ -76,7 +76,7 @@ export component Settings inherits Rectangle {
     // SSH.
     in property <bool> ssh-on;
     in property <bool> ssh-available;          // a key or password is enrolled
-    in property <bool> bt-on;                  // the bridge is running: radio on
+    in property <string> bt-state;             // off, starting, on, error
     in property <bool> bt-available;           // the kernel has Bluetooth at all
     // Updates. The host mirrors the system service's status here.
     in property <string> update-installed;
@@ -303,12 +303,17 @@ export component Settings inherits Rectangle {
                 }
             }
 
-            // Bluetooth: a single toggle. The radio is on while the bridge runs.
+            // Bluetooth: a single toggle. The stack takes a few seconds to come
+            // up, and the row says so while it does.
             if root.panel == 7: VerticalLayout {
                 spacing: root.gap;
                 SettingsRow {
                     title: "Bluetooth";
-                    value: !root.bt-available ? "no kernel support" : root.bt-on ? "ON" : "OFF";
+                    value: !root.bt-available ? "no kernel support"
+                        : root.bt-state == "on" ? "ON"
+                        : root.bt-state == "starting" ? "STARTING…"
+                        : root.bt-state == "error" ? "FAILED"
+                        : "OFF";
                     stepper: false;
                 }
             }

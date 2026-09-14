@@ -18,6 +18,10 @@ struct Bluetooth {
     available: bool,
     enabled: bool,
     running: bool,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    detail: String,
 }
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 struct Device {
@@ -154,9 +158,9 @@ pub fn sections(app: App) -> AnyView {
             <label><input type="checkbox" disabled=move || !device.get().ssh.available prop:checked=move || device.get().ssh.enabled on:change=move |e| { let mut d = device.get_untracked(); d.ssh.enabled = event_target_checked(&e); save(d); }/>"SSH access"</label>
             <p class="dim">{move || { let s = device.get().ssh; if !s.available { "Nothing enrolled".to_string() } else if s.running { "sshd is running".into() } else { "sshd is stopped".into() } }}</p>
         }.into_any())}
-        {ui::section("Bluetooth", Some("The radio is on while the bridge runs. Needs the current boot image; older kernels have no Bluetooth."), view! {
-            <label><input type="checkbox" disabled=move || !device.get().bluetooth.available prop:checked=move || device.get().bluetooth.enabled on:change=move |e| { let mut d = device.get_untracked(); d.bluetooth.enabled = event_target_checked(&e); save(d); }/>"Bluetooth"</label>
-            <p class="dim">{move || { let b = device.get().bluetooth; if !b.available { "No kernel support".to_string() } else if b.running { "Radio on (hci0 up)".into() } else { "Radio off".into() } }}</p>
+        {ui::section("Bluetooth", Some("The remote advertises as \"Couch Remote\" while this is on; pair it from the TV's Bluetooth menu. Needs the current boot image; older kernels have no Bluetooth."), view! {
+            <label><input type="checkbox" disabled=move || { let b = device.get().bluetooth; !b.available || b.state == "starting" } prop:checked=move || device.get().bluetooth.enabled on:change=move |e| { let mut d = device.get_untracked(); d.bluetooth.enabled = event_target_checked(&e); save(d); }/>"Bluetooth"</label>
+            <p class="dim">{move || { let b = device.get().bluetooth; if !b.available { "No kernel support".to_string() } else if b.running { "On: advertising as Couch Remote".into() } else if b.state == "starting" { "Starting the Bluetooth stack…".into() } else if b.state == "error" { format!("Failed: {}", b.detail) } else { "Off".into() } }}</p>
         }.into_any())}
         {ui::section("Network", None, view! {
             <dl class="facts">

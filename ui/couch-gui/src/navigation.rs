@@ -126,7 +126,7 @@ impl<F: Fn(&App, usize)> Navigator<F> {
                 app.set_ssh_available(system::ssh_available());
                 app.set_ssh_on(system::ssh_running());
                 app.set_bt_available(system::bluetooth_available());
-                app.set_bt_on(system::bluetooth_running());
+                app.set_bt_state(system::bluetooth_state().into());
                 screen.snapshot();
                 app.set_settings_panel(0);
                 app.set_settings_shown(true);
