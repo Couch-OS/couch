@@ -91,8 +91,39 @@ fn wait_for(what: impl Fn() -> bool, steps: u32, step: Duration) -> bool {
     what()
 }
 
+/// Stop in order: the HID daemon, then bluetoothd (which powers the adapter
+/// down over HCI, through the bridge), then the bridge. Killing all three at
+/// once left the MediaTek transport with a half-sent command and the next
+/// open of /dev/stpbt failed with ENODEV for a while.
+fn stop_stack(bridge: bool) -> Result<(), String> {
+    kill_comm(&["couch-bt-hid"])?;
+    kill_comm(&["bluetoothd"])?;
+    wait_for(
+        || !process_running("bluetoothd"),
+        20,
+        Duration::from_millis(100),
+    );
+    if bridge {
+        kill_comm(&["couch-bt-bridge"])?;
+        wait_for(
+            || !crate::ui_settings::bridge_running(),
+            20,
+            Duration::from_millis(100),
+        );
+    }
+    Ok(())
+}
+
+fn process_running(comm: &str) -> bool {
+    std::fs::read_dir("/proc").is_ok_and(|dir| {
+        dir.filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit())))
+            .any(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == comm))
+    })
+}
+
 fn down() -> Result<(), String> {
-    let result = kill_comm(&["couch-bt-hid", "bluetoothd", "couch-bt-bridge"]);
+    let result = stop_stack(true);
     publish("off");
     result
 }
@@ -110,16 +141,31 @@ fn up() -> Result<(), String> {
     // A bluetoothd or HID daemon left over from an earlier bridge holds stale
     // adapter state; when the bridge has to be (re)started, start them fresh.
     if !crate::ui_settings::bridge_running() {
-        kill_comm(&["couch-bt-hid", "bluetoothd"])?;
-        thread::sleep(Duration::from_millis(300));
+        stop_stack(false)?;
     }
     // Bridge first: opening the transport powers the radio and creates hci0.
-    alpine_sh(&format!(
-        "for p in /proc/[0-9]*; do [ \"$(cat $p/comm 2>/dev/null)\" = couch-bt-bridge ] && exit 0; done; \
-         setsid {base}/couch-bt-bridge </dev/null >/tmp/couch-bt-bridge.log 2>&1 &"
-    ))?;
-    if !wait_for(|| Path::new(HCI0).exists(), 30, Duration::from_millis(200)) {
-        return Err("Bluetooth started but no controller appeared".into());
+    // WMT occasionally refuses the open right after a power-off (ENODEV) and
+    // the bridge exits; a second try a moment later succeeds.
+    let mut attempt = 0;
+    loop {
+        alpine_sh(&format!(
+            "for p in /proc/[0-9]*; do [ \"$(cat $p/comm 2>/dev/null)\" = couch-bt-bridge ] && exit 0; done; \
+             setsid {base}/couch-bt-bridge </dev/null >/tmp/couch-bt-bridge.log 2>&1 &"
+        ))?;
+        if wait_for(
+            || Path::new(HCI0).exists() && crate::ui_settings::bridge_running(),
+            30,
+            Duration::from_millis(200),
+        ) {
+            break;
+        }
+        attempt += 1;
+        if attempt >= 4 || crate::ui_settings::bridge_running() {
+            return Err(
+                "Bluetooth started but no controller appeared; see /tmp/couch-bt-bridge.log".into(),
+            );
+        }
+        thread::sleep(Duration::from_millis(1500));
     }
     // dbus, then bluetoothd, then the HID daemon. The HID daemon waits for
     // bluetoothd's adapter itself, so the three start back to back.
@@ -137,7 +183,11 @@ fn up() -> Result<(), String> {
     alpine_sh(&format!(
         "pidof couch-bt-hid >/dev/null || setsid {base}/couch-bt-hid </dev/null >/tmp/couch-bt-hid.log 2>&1 &"
     ))?;
-    if wait_for(crate::ui_settings::hid_running, 30, Duration::from_millis(100)) {
+    if wait_for(
+        || crate::ui_settings::hid_running() && crate::ui_settings::bridge_running(),
+        30,
+        Duration::from_millis(100),
+    ) {
         return Ok(());
     }
     Err("Bluetooth started but the HID service did not come up; see /tmp/couch-bt-hid.log".into())

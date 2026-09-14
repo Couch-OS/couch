@@ -180,7 +180,7 @@ impl BluetoothState {
 /// "starting" older than the bring-up could take is a crashed attempt, so it
 /// reads as off rather than spinning forever.
 pub fn bluetooth_state() -> BluetoothState {
-    if hid_running() {
+    if hid_running() && bridge_running() {
         return BluetoothState::On;
     }
     let path = Path::new(crate::bluetooth::STATE_FILE);
