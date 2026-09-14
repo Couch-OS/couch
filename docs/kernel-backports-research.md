@@ -509,3 +509,36 @@ the 3.18 core and fix the two things that actually hurt, in userspace:
 That fallback is a day of work, has no kernel risk, and leaves the backports
 route open. It is also the sensible thing to do *first* if the BLE remote needs
 to be solid before the next release, regardless of what the experiment shows.
+
+## Results (2026-09-14, branch `bluetooth-backports`)
+
+All three gates passed on the dev remote the same evening the plan was written.
+
+- **Gate 1.** `backports-4.4.2-1` builds against our tree with GCC 4.9 after one
+  shim patch: `backport-include/linux/cred.h` redefines `current_user_ns()` as
+  the pre-3.8 macro whenever the name is not a macro, and on 3.18 it is an
+  inline function; the shim is now guarded on `LINUX_VERSION_CODE < 3.8`. The
+  patch lives on Ollie at `~/backports/0001-cred-shim-3.18.patch`. `CPTCFG_BT`
+  only appears in the backports config once the base carries
+  `CONFIG_CRYPTO_CMAC=y`, so the module build is really a gate-2 step.
+- **Gate 2.** Kernel candidate `out-bt44` (`CONFIG_BT` and `BT_HCIVHCI` off,
+  `CRYPTO_CMAC=y`, zImage `d5ba1966`, config `f3d45767`) boots; the stripped
+  modules (compat 19 KB, bluetooth 600 KB, hci_vhci 11 KB, vermagic
+  `3.18.79-couch-normal-g06b21c74526c`) load from the boot ramdisk's `/extra`,
+  `/dev/vhci` needs `mknod c 10 137` (mdev only runs at boot), the bridge opens
+  the radio and `hci0` comes up. `couch_system::bluetooth` does the loading and
+  the node at toggle time; `prepare_boot_candidates.clean_ramdisk` ships the
+  three modules from `build/backports/` when present.
+- **Gate 3.** bluetoothd 5.79 exports `org.bluez.LEAdvertisingManager1` with
+  `SupportedInstances` 5. Five toggle cycles in a row came up clean with the
+  stack on in about 1.5 s and no transport errors; Wi-Fi unaffected.
+- **One gotcha.** About 300 ms after `BT_open` the MediaTek firmware raises an
+  HCI Hardware Error (code 0x02) during the 4.4 core's own setup pass, and the
+  4.4 core (unlike 3.18, which only logged it) resets the device. bluetoothd
+  powering the adapter on inside that reset made every init command time out
+  once. The service now waits 3 s after `hci0` appears when `hci_vhci` is a
+  module. Finding which init command provokes the event is open.
+- Shipped as `.152.dev` (runtime + boot payload) for the dev remote. Still to
+  do before this can be a candidate: `couch-bt-hid` registering an
+  `LEAdvertisement1` (in progress), the disconnect/re-advertise acceptance, a
+  full hardware round, and re-pinning as a normal candidate.
