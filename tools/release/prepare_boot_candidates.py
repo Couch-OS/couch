@@ -27,6 +27,9 @@ def kernel(image):
     return split_dtb(image[page:page+size])[0]
 
 
+MODULES = ('compat.ko', 'bluetooth.ko', 'hci_vhci.ko')
+
+
 def clean_ramdisk(root, role):
     require(role in ("boot", "recovery"), "Unknown ramdisk role")
     init = 'initramfs/init' if role == 'boot' else 'recovery/init'
@@ -48,6 +51,13 @@ def clean_ramdisk(root, role):
                 arm_static(regular(binary))
                 shutil.copyfile(binary, tree / 'extra' / name)
                 (tree / 'extra' / name).chmod(0o755)
+            # A kernel built without the in-tree Bluetooth core carries the
+            # backported 4.4 core as modules; they must match this exact
+            # kernel (MODVERSIONS), so they travel in the same boot payload.
+            for name in MODULES:
+                module = root / 'build/backports' / name
+                if module.is_file():
+                    shutil.copyfile(module, tree / 'extra' / name)
         subprocess.run([sys.executable, str(root / 'tools/mkcpio.py'), str(tree), str(tree / 'ramdisk.cpio')], check=True, stdout=subprocess.DEVNULL)
         raw = (tree / 'ramdisk.cpio').read_bytes()
         entries = cpio_files(raw)
@@ -56,13 +66,8 @@ def clean_ramdisk(root, role):
             expected.add('extra/boot-health.sh')
             expected.add('extra/couch-bt-bridge')
             expected.add('extra/couch-bt-hid')
-            # A kernel built without the in-tree Bluetooth core carries the
-            # backported 4.4 core as modules; they must match this exact
-            # kernel (MODVERSIONS), so they travel in the same boot payload.
-            for name in ('compat.ko', 'bluetooth.ko', 'hci_vhci.ko'):
-                module = root / 'build/backports' / name
-                if module.is_file():
-                    shutil.copyfile(module, tree / 'extra' / name)
+            for name in MODULES:
+                if (root / 'build/backports' / name).is_file():
                     expected.add('extra/' + name)
         payloads = {name for name, content in entries.items() if content}
         require(payloads == expected, 'Unexpected payload file in clean ramdisk')
