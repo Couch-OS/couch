@@ -1,10 +1,8 @@
 //! Hue certificates name the bridge ID, not its IP. Trust on first pairing,
-//! then pin the exact certificate. TLS handshake signatures are always checked.
-use rustls::{
-    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-    pki_types::{CertificateDer, ServerName, UnixTime},
-    ClientConfig, ClientConnection, StreamOwned,
-};
+//! then pin the exact certificate (`couch_sdk::tls::Pin`, shared with the TV
+//! clients). What is local to Hue is the ureq transport underneath it.
+use couch_sdk::tls::Pin;
+use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, StreamOwned};
 use std::{
     io::{Read, Write},
     sync::{Arc, Mutex},
@@ -16,65 +14,6 @@ use ureq::unversioned::{
         TransportAdapter,
     },
 };
-#[derive(Debug)]
-struct Pin {
-    certificate: Arc<Mutex<Vec<u8>>>,
-}
-impl ServerCertVerifier for Pin {
-    fn verify_server_cert(
-        &self,
-        cert: &CertificateDer<'_>,
-        _: &[CertificateDer<'_>],
-        _: &ServerName<'_>,
-        _: &[u8],
-        _: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        let mut pin = self
-            .certificate
-            .lock()
-            .map_err(|_| rustls::Error::General("Certificate lock failed".into()))?;
-        if pin.is_empty() {
-            *pin = cert.as_ref().to_vec();
-        }
-        if pin.as_slice() != cert.as_ref() {
-            return Err(rustls::Error::General(
-                "Hue bridge certificate changed; pair again".into(),
-            ));
-        }
-        Ok(ServerCertVerified::assertion())
-    }
-    fn verify_tls12_signature(
-        &self,
-        m: &[u8],
-        c: &CertificateDer<'_>,
-        s: &rustls::DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            m,
-            c,
-            s,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
-        )
-    }
-    fn verify_tls13_signature(
-        &self,
-        m: &[u8],
-        c: &CertificateDer<'_>,
-        s: &rustls::DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            m,
-            c,
-            s,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
-        )
-    }
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::ring::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
-    }
-}
 #[derive(Debug)]
 struct PinnedConnector(Arc<ClientConfig>, bool);
 impl<In: Transport> Connector<In> for PinnedConnector {
@@ -142,13 +81,11 @@ pub fn stream_agent(certificate: Arc<Mutex<Vec<u8>>>) -> ureq::Agent {
     make_agent(certificate, true)
 }
 fn make_agent(certificate: Arc<Mutex<Vec<u8>>>, stream: bool) -> ureq::Agent {
-    let tls =
-        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .expect("TLS versions")
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(Pin { certificate }))
-            .with_no_client_auth();
+    let tls = couch_sdk::tls::pinned_client_config(Arc::new(Pin::new(
+        certificate,
+        "Hue bridge certificate changed; pair again",
+    )))
+    .expect("TLS versions");
     let cfg = ureq::Agent::config_builder()
         .timeout_global(if stream {
             None
@@ -166,36 +103,6 @@ fn make_agent(certificate: Arc<Mutex<Vec<u8>>>, stream: bool) -> ureq::Agent {
         DefaultResolver::default(),
     )
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn changed_certificate_is_rejected() {
-        let pin = Pin {
-            certificate: Arc::new(Mutex::new(vec![1, 2, 3])),
-        };
-        let name = ServerName::try_from("bridge").unwrap();
-        assert!(pin
-            .verify_server_cert(
-                &CertificateDer::from(vec![1, 2, 3]),
-                &[],
-                &name,
-                &[],
-                UnixTime::since_unix_epoch(std::time::Duration::ZERO)
-            )
-            .is_ok());
-        assert!(pin
-            .verify_server_cert(
-                &CertificateDer::from(vec![1, 2, 4]),
-                &[],
-                &name,
-                &[],
-                UnixTime::since_unix_epoch(std::time::Duration::ZERO)
-            )
-            .is_err());
-    }
-}
-
 impl std::fmt::Debug for PinnedTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PinnedTransport").finish_non_exhaustive()

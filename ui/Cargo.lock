@@ -961,6 +961,7 @@ dependencies = [
 name = "couch-androidtv"
 version = "0.1.0"
 dependencies = [
+ "couch-sdk",
  "prost",
  "rand 0.8.8",
  "rcgen",
@@ -1064,6 +1065,7 @@ name = "couch-hue"
 version = "0.1.0"
 dependencies = [
  "couch-ha",
+ "couch-sdk",
  "rustls",
  "serde",
  "serde_json",
@@ -1110,6 +1112,7 @@ name = "couch-sdk"
 version = "0.1.0"
 dependencies = [
  "couch-model",
+ "rustls",
  "serde",
  "serde_json",
 ]
@@ -1140,6 +1143,7 @@ name = "couch-tizen"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "couch-sdk",
  "rustls",
  "serde",
  "serde_json",
@@ -1152,6 +1156,7 @@ name = "couch-unifi-protect"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "couch-sdk",
  "libc",
  "rustls",
  "serde",
@@ -1193,6 +1198,7 @@ name = "couch-webos"
 version = "0.1.0"
 dependencies = [
  "couch-ir",
+ "couch-sdk",
  "rustls",
  "serde",
  "serde_json",

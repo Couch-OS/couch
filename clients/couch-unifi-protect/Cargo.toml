@@ -6,6 +6,7 @@ license.workspace = true
 description = "Read-only UniFi Protect camera, snapshot and RTSPS discovery for Couch"
 
 [dependencies]
+couch-sdk = { path = "../couch-sdk", features = ["tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "=3.4.1", default-features = false, features = ["rustls"] }
