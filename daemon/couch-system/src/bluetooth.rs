@@ -82,7 +82,7 @@ fn wait_for(what: impl Fn() -> bool, steps: u32, step: Duration) -> bool {
 
 fn down() -> Result<(), String> {
     let result = alpine_sh(
-        "pkill -f couch-bt-hid 2>/dev/null; pkill bluetoothd 2>/dev/null; \
+        "pkill -x couch-bt-hid 2>/dev/null; pkill -x bluetoothd 2>/dev/null; \
          for p in /proc/[0-9]*; do [ \"$(cat $p/comm 2>/dev/null)\" = couch-bt-bridge ] && kill \"$(basename $p)\" 2>/dev/null; done; true",
     );
     publish("off");
@@ -99,6 +99,11 @@ fn up() -> Result<(), String> {
         return Ok(());
     }
     let base = base().ok_or("couch-bt-hid is not part of this runtime")?;
+    // A bluetoothd or HID daemon left over from an earlier bridge holds stale
+    // adapter state; when the bridge has to be (re)started, start them fresh.
+    if !crate::ui_settings::bridge_running() {
+        alpine_sh("pkill -x couch-bt-hid 2>/dev/null; pkill -x bluetoothd 2>/dev/null; true")?;
+    }
     // Bridge first: opening the transport powers the radio and creates hci0.
     alpine_sh(&format!(
         "for p in /proc/[0-9]*; do [ \"$(cat $p/comm 2>/dev/null)\" = couch-bt-bridge ] && exit 0; done; \

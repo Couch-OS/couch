@@ -255,6 +255,9 @@ fn start_advertising() -> std::io::Result<bool> {
     hci("0x000A", &["01"])
 }
 
+/// Set an adapter property, waiting out the window where bluetoothd has not
+/// exported hci0 yet (UnknownObject): a bluetoothd that outlived a bridge
+/// restart re-adds the adapter a few seconds after the new hci0 appears.
 async fn set_adapter(conn: &Connection, prop: &str, value: Value<'_>) -> zbus::Result<()> {
     let props = Proxy::new(
         conn,
@@ -263,10 +266,22 @@ async fn set_adapter(conn: &Connection, prop: &str, value: Value<'_>) -> zbus::R
         "org.freedesktop.DBus.Properties",
     )
     .await?;
-    props
-        .call_method("Set", &("org.bluez.Adapter1", prop, value))
-        .await?;
-    Ok(())
+    let mut attempt = 0;
+    loop {
+        match props
+            .call_method("Set", &("org.bluez.Adapter1", prop, &value))
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(zbus::Error::MethodError(name, _, _))
+                if attempt < 20 && name.as_str() == "org.freedesktop.DBus.Error.UnknownObject" =>
+            {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Push a report: set the characteristic's value and emit the change, which
@@ -301,8 +316,8 @@ async fn connect() -> zbus::Result<Connection> {
 /// Wait until bluetoothd owns org.bluez and the adapter answers, so the
 /// one-time registrations below do not race a cold-starting bluetoothd (which
 /// otherwise fails the toggle: the radio is up but the HID service is not).
-async fn wait_for_adapter(conn: &Connection) {
-    for _ in 0..40 {
+async fn wait_for_adapter(conn: &Connection) -> bool {
+    for _ in 0..60 {
         if let Ok(props) = Proxy::new(
             conn,
             "org.bluez",
@@ -316,11 +331,12 @@ async fn wait_for_adapter(conn: &Connection) {
                 .await
                 .is_ok()
             {
-                return;
+                return true;
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+    false
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -463,7 +479,10 @@ async fn main() -> zbus::Result<()> {
         .await?;
 
     // Wait for bluetoothd to be ready before the one-time registrations.
-    wait_for_adapter(&conn).await;
+    if !wait_for_adapter(&conn).await {
+        eprintln!("couch-bt-hid: bluetoothd never exported hci0; giving up");
+        std::process::exit(2);
+    }
 
     // Adapter up and pairable.
     set_adapter(&conn, "Powered", Value::from(true)).await?;
