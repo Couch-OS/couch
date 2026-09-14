@@ -46,8 +46,14 @@
         <div class="device-shell" aria-label="Interactive Couch remote">
           <div class="device-face">
             <div class="slint-screen" id="demo" role="region" aria-label="Couch Slint screen">
-              <iframe id="slint-demo" src="preview.html" title="Couch touchscreen with example devices" scrolling="no"></iframe>
-              <div id="demo-loading" role="status">Loading couch.</div>
+              <iframe id="slint-demo" data-src="preview.html" title="Couch touchscreen with example devices" scrolling="no" loading="lazy"></iframe>
+              <div id="demo-poster">
+                <p>Interactive demo</p>
+                <p class="demo-poster-note">The remote’s own interface, compiled to WebAssembly. About 13 MB.</p>
+                <button id="demo-load" type="button">Load the demo</button>
+                <noscript><p class="demo-poster-note">It needs JavaScript.</p></noscript>
+              </div>
+              <div id="demo-loading" role="status" hidden>Loading couch.</div>
               <button id="demo-sleep" hidden aria-label="Wake screen"></button>
             </div>
             <div class="device-buttons" role="group" aria-label="Physical remote controls">

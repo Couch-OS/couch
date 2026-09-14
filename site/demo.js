@@ -5,7 +5,9 @@
   const shell = document.querySelector('.device-shell');
   const sleep = document.querySelector('#demo-sleep');
   const loading = document.querySelector('#demo-loading');
-  let ready = false, asleep = false, state = {}, interacted = false;
+  const poster = document.querySelector('#demo-poster');
+  const loadButton = document.querySelector('#demo-load');
+  let ready = false, asleep = false, state = {}, interacted = false, loaded = false;
   let visible = false, tourTimer, tourIndex = 0;
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   const scale = () => { frame.style.transform = `scale(${screen.clientWidth / 480})`; };
@@ -16,7 +18,19 @@
     if (name==='power' && !state.player) { asleep=true; sleep.hidden=false; return; }
     frame.contentWindow.postMessage({couchPreview:'button',name},location.origin);
   };
-  const stopTour = () => {
+  // The screen is 12.8 MB of WebAssembly. Fetch it when someone asks for it,
+  // or when it scrolls into view on a wide viewport that has not asked for
+  // reduced motion or data saving; a phone visitor gets the poster instead.
+  const load = () => {
+    if (loaded) return;
+    loaded=true;poster.hidden=true;loading.hidden=false;frame.src=frame.dataset.src;
+  };
+  const mayAutoload = () => innerWidth>=850 && !reducedMotion.matches && !navigator.connection?.saveData;
+  loadButton.addEventListener('click',load);
+  // Asking for the demo is not an interaction with the device: the walkthrough
+  // still runs for anyone who pressed the poster button.
+  const stopTour = event => {
+    if (event?.target instanceof Element && event.target.closest('#demo-poster')) return;
     interacted=true;clearTimeout(tourTimer);shell.dataset.autoplay='stopped';
     shell.querySelectorAll('.tour-pressed').forEach(b=>b.classList.remove('tour-pressed'));
   };
@@ -42,7 +56,7 @@
     clearTimeout(tourTimer);
     if(ready && !interacted && !reducedMotion.matches) tourTimer=setTimeout(step,2200);
   };
-  new IntersectionObserver(entries=>{visible=entries[0].isIntersecting;},{threshold:.25}).observe(shell);
+  new IntersectionObserver(entries=>{visible=entries[0].isIntersecting;if(visible && mayAutoload())load();},{threshold:.25}).observe(shell);
   reducedMotion.addEventListener('change',()=>{if(reducedMotion.matches){clearTimeout(tourTimer);}else{scheduleTour();}});
   shell.addEventListener('pointerdown',stopTour,{capture:true});
   shell.addEventListener('keydown',stopTour,{capture:true});
