@@ -47,14 +47,14 @@ pub fn provide_editor_state() {
 pub fn render(app: App, route: Route) -> AnyView {
     match route {
         Route::Overview => keyed(app, overview::overview),
-        Route::Rooms => keyed(app, overview::rooms),
+        Route::Rooms => overview::rooms(app),
         Route::Connections => keyed(app, overview::connections),
         Route::Connection(id) => keyed(app, move |app, c| connections::detail(app, c, &id)),
         Route::Settings => keyed(app, remote::screen),
         Route::Updates => updates::screen(app),
         Route::Areas => keyed(app, areas::list),
         Route::Area(id) => keyed(app, move |app, c| areas::detail(app, c, &id)),
-        Route::Room(id) => keyed(app, move |app, c| rooms::detail(app, c, &id)),
+        Route::Room(id) => rooms::detail(app, id),
         Route::Scene(id) => keyed(app, move |app, c| scenes::detail(app, c, &id)),
         Route::Activities => keyed(app, activities::list),
         Route::Activity(id) => keyed(app, move |app, c| activities::detail(app, c, &id)),
@@ -62,12 +62,13 @@ pub fn render(app: App, route: Route) -> AnyView {
     }
 }
 
-/// A screen that still reads the whole document when it is built.
+/// A screen, or one block of a converted screen, that still reads the whole
+/// document when it is built.
 ///
 /// It is thrown away and drawn again whenever the revision changes, which is
 /// what every screen did before the slices existed. Converting a screen means
 /// reading the slices it draws inside its own closures and dropping this.
-fn keyed(app: App, draw: impl Fn(App, &Config) -> AnyView + Send + Sync + 'static) -> AnyView {
+pub fn keyed(app: App, draw: impl Fn(App, &Config) -> AnyView + Send + Sync + 'static) -> AnyView {
     view! {
         {move || {
             app.revision.track();
@@ -223,6 +224,51 @@ pub fn reorder_buttons(
                 aria-label="Move down"
                 disabled=down.is_none()
                 on:click=move |_| if let Some(next) = down.clone() { commit(next) }
+            >"↓"</button>
+        </span>
+    }
+    .into_any()
+}
+
+/// The ids of a collection, as their own memo: what a keyed `<For>` iterates.
+///
+/// It only changes when something is added, removed or reordered, so editing
+/// one row never makes the list diff itself, let alone rebuild its siblings.
+pub fn ids<T: Send + Sync + 'static>(slice: Memo<Vec<T>>, id: fn(&T) -> &Id) -> Memo<Vec<Id>> {
+    Memo::new(move |_| slice.with(|items| items.iter().map(|item| id(item).clone()).collect()))
+}
+
+/// [`reorder_buttons`] for a row inside a keyed `<For>`.
+///
+/// The row does not know its index - that is the point of keying by id - so
+/// the buttons find their own place in the order and enable themselves. Moving
+/// a neighbour then updates two buttons instead of rebuilding the list.
+pub fn reorder_in(
+    order: Memo<Vec<Id>>,
+    id: Id,
+    commit: impl Fn(Vec<Id>) + Clone + Send + Sync + 'static,
+) -> AnyView {
+    let id = StoredValue::new(id);
+    let step = move |delta: isize| {
+        order.with(|list| {
+            let at = id.with_value(|id| list.iter().position(|other| other == id))?;
+            moved(list, at, delta)
+        })
+    };
+    let up_commit = commit.clone();
+    view! {
+        <span class="reorder">
+            <button
+                class="icon"
+                aria-label="Move up"
+                disabled=move || step(-1).is_none()
+                on:click=move |_| if let Some(next) = step(-1) { up_commit(next) }
+            >"↑"</button>
+            <button
+                class="icon"
+                aria-label="Move down"
+                disabled=move || step(1).is_none()
+                on:click=move |_| if let Some(next) = step(1) { commit(next) }
             >"↓"</button>
         </span>
     }

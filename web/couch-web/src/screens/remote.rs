@@ -25,7 +25,7 @@ pub fn screen(app: App, config: &Config) -> AnyView {
         }
     });
     view! {
-        {ui::page_header(app,"Remote settings".into(),None)}
+        {ui::page_header(app,"Remote settings",None)}
         <p class="lead">"Personalize this remote’s clock, wake behavior, dock display and appearance, and change what its own Settings menu shows: display, keys, SSH, network and power."</p>
         <section class="card"><h2>"Clock & wake"</h2>
         <label class="field">"Timezone"<select aria-label="Timezone" prop:value=move ||timezone.get() on:change=move |e|timezone.set(event_target_value(&e))><option value="">"Follow system timezone"</option>{move ||zones.get().into_iter().map(|z|view!{<option selected=timezone.get_untracked()==z value=z.clone()>{z.replace('_'," ")}</option>}).collect_view()}</select></label>

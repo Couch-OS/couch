@@ -33,7 +33,7 @@ pub fn screen(app: App, config: &Config) -> AnyView {
     .into_iter()
     .collect();
     view!{
-        {ui::page_header(app,"Connections".into(),None)}
+        {ui::page_header(app,"Connections",None)}
         <p class="lead">"Connections tell Couch how to reach your TVs, speakers, servers and bridges. Open one to change its address, pair it or test it. Add devices and assign their infrared commands in Rooms & devices."</p>
         <p class="notice">"Using infrared? Open a device in Rooms & devices and choose Add IR commands. No infrared connection is needed."</p>
         <h2 class="section">"Saved connections" <span class="count">{ui_count(existing.len())}</span></h2>

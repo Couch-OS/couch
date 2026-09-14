@@ -53,7 +53,7 @@ pub fn list(app: App, config: &Config) -> AnyView {
         </button> }
     }).collect_view();
     view! {
-        {ui::page_header(app,"Activities".into(),None)}
+        {ui::page_header(app,"Activities",None)}
         <p class="dim pad-x">"Bring devices together for something you do. Choose what turns on, what turns off, and how the remote controls it."</p>
         <div class="activity-cards">{rows}</div>
         {config.activities.is_empty().then(||ui::empty("Create your first activity, such as Watch TV."))}

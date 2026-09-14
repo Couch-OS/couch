@@ -106,7 +106,7 @@ pub fn screen(app: App) -> AnyView {
         }
     });
     view! {
-        {ui::page_header(app,"Software updates".into(),None)}
+        {ui::page_header(app,"Software updates",None)}
         <p class="lead">"Review new Couch builds and choose when to install them."</p>
         <section class="card"><h2>"Installed build"</h2><p>{move ||value.get().installed}</p>
         {move ||(!value.get().boot_version.is_empty()).then(||{let v=value.get();let kernel=if v.boot_kernel.is_empty(){String::new()}else{format!(" · kernel {}",v.boot_kernel)};view!{<p>"Boot image: "{v.boot_version}{kernel}</p>}})}
