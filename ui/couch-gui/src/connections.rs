@@ -56,6 +56,25 @@ pub fn ha(resource: &str) -> Result<(couch_ha::HomeAssistant, String), String> {
         .map_err(|e| e.to_string())?;
     Ok((client, raw.into()))
 }
+/// Where speech goes: the first saved Home Assistant connection's host, port
+/// and token, or why there is none. The token is read from the connection's
+/// own file, never from the config the web UI edits.
+pub fn ha_assist() -> Result<crate::mic::Endpoint, String> {
+    let ids = ids(Provider::HomeAssistant);
+    let Some(id) = ids.first() else {
+        return Err("Add a Home Assistant connection in the web UI to use voice".into());
+    };
+    if config().is_some_and(|c| {
+        !c.connections
+            .iter()
+            .any(|v| v.provider == Provider::HomeAssistant)
+    }) {
+        return Err("Add a Home Assistant connection in the web UI to use voice".into());
+    }
+    let settings = couch_ha::settings::Settings::load(&file(id, "ha"))
+        .map_err(|_| "The Home Assistant connection has no saved URL and token yet".to_string())?;
+    crate::mic::Endpoint::from_url(&settings.url, &settings.token)
+}
 pub fn ha_lights() -> Vec<couch_ha::Light> {
     ids(Provider::HomeAssistant)
         .into_iter()
@@ -184,7 +203,10 @@ impl MatterFleet {
     }
     pub fn lights(&self) -> Vec<couch_ha::Light> {
         let ids = ids(Provider::Matter);
-        self.controllers.lock().unwrap().retain(|id, _| ids.contains(id));
+        self.controllers
+            .lock()
+            .unwrap()
+            .retain(|id, _| ids.contains(id));
         let mut lights = vec![];
         for id in ids {
             if let Ok(controller) = self.get(&id) {
@@ -202,7 +224,10 @@ impl MatterFleet {
             Some(false) => couch_matter::Command::On,
             None => return Err("This device is unavailable".into()),
         };
-        controller.command(raw, command).map(|l| Self::light(id, l)).map_err(|e| e.to_string())
+        controller
+            .command(raw, command)
+            .map(|l| Self::light(id, l))
+            .map_err(|e| e.to_string())
     }
     pub fn brightness(&self, resource: &str, percent: u8) -> Result<couch_ha::Light, String> {
         let (id, raw) = split(resource);

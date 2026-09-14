@@ -268,6 +268,12 @@ export component App inherits Window {
     in-out property <string> keyboard-title: "ENTER TEXT";
     in-out property <string> keyboard-placeholder: "";
     in-out property <bool> keyboard-password: false;
+    // The field's text, two-way with the keyboard while it is up, so dictated
+    // words can be appended to what was typed.
+    in-out property <string> keyboard-text;
+    public function dictate(words: string) {
+        root.keyboard-text = root.keyboard-text == "" ? words : root.keyboard-text + " " + words;
+    }
     callback keyboard-accepted(string);
     callback keyboard-cancelled();
     public function open-keyboard() { root.keyboard-shown = true; }
@@ -346,6 +352,15 @@ export component App inherits Window {
     in-out property <bool> recording: false;
     in-out property <float> mic-level: 0;
     in-out property <bool> mic-latched: false;
+    // The voice run's progress and, for a moment after the microphone closes,
+    // its result. The host fills these from the capture thread's reports.
+    in-out property <bool> mic-result-shown: false;
+    in-out property <string> mic-phase: "listening";
+    in-out property <string> mic-phase-label: "LISTENING";
+    in-out property <string> mic-target: "assistant";
+    in-out property <string> mic-heard;
+    in-out property <string> mic-said;
+    in-out property <string> mic-detail;
 
     // --- pairing --------------------------------------------------------------
     // A browser is asking to pair; the digits live only here and on that
@@ -588,6 +603,7 @@ export component App inherits Window {
         title: root.keyboard-title;
         placeholder: root.keyboard-placeholder;
         password: root.keyboard-password;
+        text <=> root.keyboard-text;
         accepted(t) => { root.keyboard-shown = false; fs.focus(); root.keyboard-accepted(t); }
         cancelled => { root.keyboard-shown = false; fs.focus(); root.keyboard-cancelled(); }
     }
@@ -645,9 +661,16 @@ export component App inherits Window {
     MicOverlay {
         x: 0px; y: 0px;
         width: root.width; height: root.height;
-        shown: root.recording;
+        shown: root.recording || root.mic-result-shown;
+        recording: root.recording;
         level: root.mic-level;
         latched: root.mic-latched;
+        phase: root.mic-phase;
+        phase-label: root.mic-phase-label;
+        target: root.mic-target;
+        heard: root.mic-heard;
+        said: root.mic-said;
+        detail: root.mic-detail;
     }
 
     PairOverlay {
