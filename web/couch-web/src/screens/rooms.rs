@@ -237,7 +237,7 @@ fn room_activities(app: App, room: StoredValue<Id>) -> AnyView {
                 app.run(api::post("/api/activities",json!({"name":name,"room":room.get_value()})));
             })}
             {move ||(!elsewhere.with(Vec::is_empty)).then(|| {
-                let options=elsewhere.with(|all|all.iter().map(|a|(a.id.to_string(),format!("{} · {}",a.name,app.room(a.room.clone()).get_untracked().map(|r|r.name).unwrap_or("Unknown room".into())))).collect());
+                let options=elsewhere.with(|all|all.iter().map(|a|(a.id.to_string(),format!("{} · {}",a.name,match super::room_name(app,&a.room){name if name.is_empty()=>"Unknown room".into(),name=>name}))).collect());
                 super::pick_row(options, "Move an existing activity here", move |id| {
                     if let Some(mut next)=elsewhere.with_untracked(|all|all.iter().find(|a|a.id.as_str()==id).cloned()) {
                         next.room=room.get_value();

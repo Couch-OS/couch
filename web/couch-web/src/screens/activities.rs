@@ -67,7 +67,7 @@ pub fn list(app: App) -> AnyView {
             let activity=app.activity(id.clone());
             let open=id.clone();
             let detail=move ||activity.get().map(|a|{
-                let room=app.room(a.room.clone()).get_untracked().map(|r|r.name).unwrap_or_default();
+                let room=super::room_name(app,&a.room);
                 format!("{room} · {} devices · {} on / {} off steps",members(&a).len(),a.setup.on.len(),a.setup.off.len())
             }).unwrap_or_default();
             view! { <button class="activity-card" on:click=move |_| {tab.set("setup".into());app.go(Route::Activity(open.clone()));}>

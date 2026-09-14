@@ -238,6 +238,21 @@ pub fn ids<T: Send + Sync + 'static>(slice: Memo<Vec<T>>, id: fn(&T) -> &Id) -> 
     Memo::new(move |_| slice.with(|items| items.iter().map(|item| id(item).clone()).collect()))
 }
 
+/// A room's name, read from the slice.
+///
+/// Call this from inside a closure rather than `App::room`, which allocates a
+/// memo: one per lookup per recomputation is a leak the screen only gives back
+/// when it unmounts.
+pub fn room_name(app: App, id: &Id) -> String {
+    app.rooms.with(|rooms| {
+        rooms
+            .iter()
+            .find(|r| &r.id == id)
+            .map(|r| r.name.clone())
+            .unwrap_or_default()
+    })
+}
+
 /// [`device_name`] read from the slices instead of from a document.
 pub fn device_label(app: App, id: &Id) -> String {
     device_place(app, id.clone())()
