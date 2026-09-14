@@ -178,9 +178,62 @@ pub mod bridge {
         pub resyncs: u64,
     }
 
-    /// One direction's file, opened as the bridge needs it.
+    /// One direction's file, opened non-blocking. The pump polls before every
+    /// read; a *blocking* read that arrives mid whole-chip-reset parks the
+    /// process in an uninterruptible wait (D state) still holding the radio,
+    /// which is how a stuck bridge took Wi-Fi down with it on the shared combo
+    /// chip. Non-blocking, such a read returns EWOULDBLOCK and the pump backs
+    /// off or exits cleanly, releasing the transport.
     pub fn open_device(path: &str) -> io::Result<File> {
-        OpenOptions::new().read(true).write(true).open(path)
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+    }
+
+    /// Write one whole frame, backing off rather than tearing the bridge down
+    /// when the transport is momentarily full. `/dev/stpbt` returns ENOSPC when
+    /// its STP transmit queue has no room ("native program should not call
+    /// BT_write with no delay") and a non-blocking fd can report EWOULDBLOCK;
+    /// both are transient. The whole-chip-reset errnos are passed back so the
+    /// caller can reopen. Dying on ENOSPC, as the bridge used to, is what let
+    /// the STP link wedge and escalate to a chip reset that also reset Wi-Fi.
+    fn write_frame(f: &mut File, buf: &[u8], log: &mut dyn FnMut(&str)) -> io::Result<()> {
+        let step = Duration::from_millis(5);
+        let limit = Duration::from_millis(500);
+        let mut waited = Duration::ZERO;
+        loop {
+            match f.write(buf) {
+                Ok(n) if n == buf.len() => return Ok(()),
+                Ok(n) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        format!("wrote {n} of {} bytes", buf.len()),
+                    ))
+                }
+                Err(e)
+                    if e.raw_os_error() == Some(STP_RESET_START)
+                        || e.raw_os_error() == Some(STP_RESET_END) =>
+                {
+                    return Err(e)
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.raw_os_error() == Some(libc::ENOSPC) =>
+                {
+                    if waited >= limit {
+                        log("transport stayed full; dropping this frame");
+                        return Err(e);
+                    }
+                    std::thread::sleep(step);
+                    waited += step;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// Wait until either file is readable. `timeout` bounds the wait so a
@@ -238,7 +291,7 @@ pub mod bridge {
                         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "vhci closed"))
                     }
                     Ok(n) => {
-                        controller.write_all(&host_buf[..n])?;
+                        write_frame(controller, &host_buf[..n], &mut *log)?;
                         counters.to_controller += 1;
                     }
                     Err(e)
@@ -255,7 +308,7 @@ pub mod bridge {
                     Ok(n) => match framer.push(&ctl_buf[..n]) {
                         Ok(frames) => {
                             for frame in frames {
-                                host.write_all(&frame)?;
+                                write_frame(host, &frame, &mut *log)?;
                                 counters.to_host += 1;
                             }
                         }

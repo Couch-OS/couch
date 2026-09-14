@@ -118,16 +118,28 @@ are `apk add`ed over SSH on the development remote meanwhile.
    creates `hci0`, `hciconfig hci0 up`, `btmgmt info` reports LE,
    `hcitool lescan` sees nearby advertisers, and the bridge log shows the
    set-address command answered (or names the opcode that must replace 0xFC1A).
-   Done 2026-09-14 (`hci0` up, LE scan sees advertisers). Since then the
-   system service starts and stops `couch-bt-bridge` for the **Bluetooth**
-   toggle in Settings and on the web UI's remote page (`Request::Bluetooth`,
-   `couch-system bluetooth-start` at boot from `stage2.sh`, setting
-   `bluetooth=` in `settings.conf`, off by default). The bridge travels in the
-   boot ramdisk (`/extra/couch-bt-bridge`) rather than the runtime bundle:
-   updaters before .142 refuse a bundle with a name they do not list, and the
-   boot payload is exactly what only Bluetooth-capable images receive. Once
-   every remote runs a .142+ updater it can move into the runtime. The kernel
-   still has to go through the candidate checks before promotion.
+   Done 2026-09-14 (`hci0` up, LE scan sees advertisers). The system service
+   starts and stops `couch-bt-bridge` for the **Bluetooth** toggle in Settings
+   and on the web UI's remote page (`Request::Bluetooth`, setting `bluetooth=`
+   in `settings.conf`, off by default).
+
+   **Wi-Fi and Bluetooth share one combo radio and STP transport.** The first
+   spike that took Wi-Fi down (2026-09-14) did so because the bridge was not a
+   singleton and started at boot racing Wi-Fi: two bridges on the un-guarded
+   `/dev/stpbt` desynced STP, which hit its retry limit and reset the whole
+   chip, dropping Wi-Fi. The fixes (all userspace): the bridge takes a
+   whole-file lock so only one ever runs; it opens the devices non-blocking and
+   backs off on a full transport (ENOSPC) instead of dying and wedging in an
+   uninterruptible read; and it is no longer started from `stage2.sh` at boot,
+   only by the toggle, by which time Wi-Fi is up. No kernel change was needed;
+   stock Android runs both together on this chip. The bridge ships in the
+   runtime bundle from .143 (updaters from .142 accept extra top-level
+   `couch-*` executables), with a copy in the boot ramdisk as a fallback; the
+   service prefers the runtime copy, so bridge fixes are runtime-only updates.
+   The kernel still has to go through the candidate checks before promotion.
+
+   Follow-up hardening: if a chip reset ever does fire, re-run DHCP on `wlan0`
+   so Wi-Fi re-associates without a reboot.
 2. *Power and coexistence.* BT idle current unplugged per
    `docs/ha100-power-validation.md`; Wi-Fi throughput with the BT function on.
 3. *HID over GATT.* A second daemon (or the same one grown) that registers the

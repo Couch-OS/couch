@@ -14,11 +14,31 @@
 //! over, unless `--once` was given. Runs as root, like everything on the
 //! remote; no network, no files beyond the two devices.
 use std::io::Write;
+use std::os::unix::io::AsRawFd;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use couch_bt::bridge::{open_device, pump, Counters, STP_RESET_END};
+use couch_bt::bridge::{open_device, pump, Counters, STP_RESET_END, STP_RESET_START};
 use couch_bt::h4;
+
+/// Only one bridge may ever hold the radio. The vendor `/dev/stpbt` has no
+/// open guard: a second open re-powers Bluetooth and creates a second virtual
+/// controller, and the two desync the STP link until it resets the whole combo
+/// chip, taking Wi-Fi with it. A whole-file lock makes a second instance a
+/// no-op.
+fn singleton() -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .mode(0o644)
+        .open("/tmp/couch-bt-bridge.lock")?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(lock)
+}
 
 struct Args {
     vhci: String,
@@ -73,6 +93,20 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let _lock = match singleton() {
+        Ok(lock) => lock,
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            log("another couch-bt-bridge already holds the radio; nothing to do");
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            eprintln!("couch-bt-bridge: cannot take the singleton lock: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    // A run of resets with no traffic between them means the chip is unhappy;
+    // stop reopening so the bridge cannot hold the shared radio down.
+    let mut resets: u32 = 0;
     loop {
         let mut vhci = match open_device(&args.vhci) {
             Ok(f) => f,
@@ -121,11 +155,21 @@ fn main() -> ExitCode {
                 log(&format!("stopped: {counters:?}"));
                 return ExitCode::SUCCESS;
             }
-            Err(e) if e.raw_os_error() == Some(STP_RESET_END) && !args.once => {
-                log("controller reports whole-chip reset ended; reopening");
+            Err(e)
+                if matches!(e.raw_os_error(), Some(STP_RESET_START | STP_RESET_END))
+                    && !args.once =>
+            {
+                resets += 1;
+                if resets > 5 {
+                    eprintln!(
+                        "couch-bt-bridge: chip reset {resets} times without recovering; giving up"
+                    );
+                    return ExitCode::from(1);
+                }
+                log("controller reports whole-chip reset; letting WMT settle before reopening");
                 drop(stpbt);
                 drop(vhci);
-                std::thread::sleep(Duration::from_millis(500));
+                std::thread::sleep(Duration::from_secs(2));
             }
             Err(e) => {
                 eprintln!("couch-bt-bridge: stopped: {e}");
