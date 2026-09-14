@@ -1095,6 +1095,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Device state changes in seconds, not frames.
         if now - last_tick > 1_000_000 {
             last_tick = now;
+            // The key LEDs follow the screen: lit only while it is awake and
+            // the setting wants them. Something outside this process lights
+            // them now and then with the screen off (seen on the HA100), so
+            // the state is re-asserted every second rather than only on
+            // transitions, and a correction is logged with the state it found.
+            {
+                let want = settings.borrow().keys
+                    && standby == Standby::Active
+                    && !app.get_dock_clock_shown();
+                if let Some(found) = Panel::enforce_keys(want) {
+                    println!(
+                        "couch-gui: key backlight was {} while {:?}{}; set {}",
+                        if found { "on" } else { "off" },
+                        standby,
+                        if app.get_dock_clock_shown() { " (dock clock)" } else { "" },
+                        if want { "on" } else { "off" }
+                    );
+                }
+            }
             // Another writer (the web UI) changed the settings file: apply
             // what differs from what this process last applied or saved.
             let seen_now = couch_system::ui_settings::modified(&couch_system::ui_settings::path());

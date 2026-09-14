@@ -292,6 +292,27 @@ impl Panel {
             if lit { "255\n" } else { "0\n" },
         );
     }
+    /// What the key LED node holds right now, if it can be read.
+    fn keys_lit() -> Option<bool> {
+        std::fs::read_to_string("/sys/class/leds/button-backlight/brightness")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .map(|v| v > 0)
+    }
+    /// Hold the key LEDs to `lit`, correcting a state that changed under us.
+    /// The GUI only writes the node on its own transitions, and something
+    /// else - the keypad driver on a key press, most likely - can light it
+    /// while the screen is off. Called once a second; returns the state that
+    /// was found when a correction was needed, so the log can say so.
+    pub fn enforce_keys(lit: bool) -> Option<bool> {
+        match Self::keys_lit() {
+            Some(found) if found != lit => {
+                Self::set_keys(lit);
+                Some(found)
+            }
+            _ => None,
+        }
+    }
     pub fn set_backlight(level: u8) {
         const LCD: &str = "/sys/class/leds/lcd-backlight/brightness";
         let held: Option<u8> = std::fs::read_to_string(LCD)
