@@ -6,9 +6,10 @@
 //!   * registers a standard HID-over-GATT application (Device Information,
 //!     Battery, and HID with a keyboard + consumer-control report map) with
 //!     bluetoothd's GattManager1, so a bonded TV can use it;
-//!   * advertises as "Couch Remote" over **raw HCI**, because this 3.18 kernel
-//!     predates the MGMT Add Advertising command and bluetoothd exposes no
-//!     LEAdvertisingManager1;
+//!   * advertises as "Couch Remote" through bluetoothd's LEAdvertisingManager1
+//!     where the kernel's Bluetooth core is new enough to have it (the MGMT
+//!     advertising commands are 4.1), and over **raw HCI** on the stock 3.18
+//!     core, which has neither them nor the manager;
 //!   * turns short text commands on a Unix datagram socket
 //!     (`couch_bt_hid::SOCKET_PATH`) into HID input-report notifications.
 //!
@@ -27,6 +28,8 @@ use zbus::{interface, Connection, Proxy};
 const ADAPTER: &str = "/org/bluez/hci0";
 const AGENT_PATH: &str = "/couch/hid/agent";
 const APP: &str = "/couch/hid/app";
+const ADV_PATH: &str = "/couch/hid/adv0";
+const ADV_MANAGER: &str = "org.bluez.LEAdvertisingManager1";
 
 fn uuid16(x: u16) -> String {
     format!("0000{x:04x}-0000-1000-8000-00805f9b34fb")
@@ -44,6 +47,12 @@ const BATTERY_SERVICE: u16 = 0x180f;
 const BATTERY_LEVEL: u16 = 0x2a19;
 const DEVICE_INFO_SERVICE: u16 = 0x180a;
 const PNP_ID: u16 = 0x2a50;
+
+// What we advertise. Both advertising paths below build from these, because a
+// TV bonds against what it saw: a name or appearance that differs between the
+// two is a remote the TV stops recognising when the kernel changes.
+const ADV_NAME: &str = "Couch Remote";
+const ADV_APPEARANCE: u16 = 0x03c1; // HID keyboard
 
 const KEYBOARD_ID: u8 = 1;
 const CONSUMER_ID: u8 = 2;
@@ -168,6 +177,54 @@ impl Agent {
     async fn cancel(&self) {}
 }
 
+/// The managed advertisement: an LEAdvertisement1 object bluetoothd reads once
+/// at RegisterAdvertisement and then owns. Carries the same fields the raw
+/// commands write by hand - general-discoverable flags, the HID service UUID,
+/// the appearance and the name.
+struct Advertisement {
+    local_name: String,
+    appearance: u16,
+    service_uuids: Vec<String>,
+}
+
+fn advertisement() -> Advertisement {
+    Advertisement {
+        local_name: ADV_NAME.to_string(),
+        appearance: ADV_APPEARANCE,
+        service_uuids: vec![uuid16(HID_SERVICE)],
+    }
+}
+
+#[interface(name = "org.bluez.LEAdvertisement1")]
+impl Advertisement {
+    /// Connectable undirected advertising: the ADV_IND the raw path asks for.
+    #[zbus(property, name = "Type")]
+    fn type_(&self) -> String {
+        "peripheral".to_string()
+    }
+    #[zbus(property, name = "ServiceUUIDs")]
+    fn service_uuids(&self) -> Vec<String> {
+        self.service_uuids.clone()
+    }
+    #[zbus(property)]
+    fn local_name(&self) -> String {
+        self.local_name.clone()
+    }
+    #[zbus(property)]
+    fn appearance(&self) -> u16 {
+        self.appearance
+    }
+    /// General discoverable, i.e. the raw path's flags byte 0x06. No Includes:
+    /// the raw advert carries no TX power and the two must stay equivalent.
+    #[zbus(property)]
+    fn discoverable(&self) -> bool {
+        true
+    }
+    /// bluetoothd calls this when it drops the advertisement (adapter down, or
+    /// our own unregister). Nothing of ours to tear down.
+    async fn release(&self) {}
+}
+
 fn owned(path: &str) -> OwnedObjectPath {
     ObjectPath::try_from(path).unwrap().into()
 }
@@ -182,14 +239,45 @@ fn char_obj(uuid: u16, service: &str, flags: &[&str], value: Vec<u8>) -> GattCha
     }
 }
 
-/// Send one HCI command through hcitool. Raw HCI is the only advertising path on
-/// this kernel; hcitool ships in bluez-deprecated.
-fn hci(ocf: &str, bytes: &[&str]) -> std::io::Result<bool> {
+/// Send one HCI command through hcitool. Raw HCI is the advertising path on a
+/// kernel with no advertising manager; hcitool ships in bluez-deprecated.
+fn hci<S: AsRef<std::ffi::OsStr>>(ocf: &str, bytes: &[S]) -> std::io::Result<bool> {
     let status = Command::new("hcitool")
         .args(["-i", "hci0", "cmd", "0x08", ocf])
         .args(bytes)
         .status()?;
     Ok(status.success())
+}
+
+fn hex(b: u8) -> String {
+    format!("{b:02X}")
+}
+
+/// LE Set Advertising Data: significant length, then Flags(0x06), the 16-bit
+/// HID service UUID and the appearance, zero-padded to the command's 31 bytes.
+fn adv_data() -> Vec<String> {
+    let [uuid_lo, uuid_hi] = HID_SERVICE.to_le_bytes();
+    let [app_lo, app_hi] = ADV_APPEARANCE.to_le_bytes();
+    #[rustfmt::skip]
+    let mut adv = vec![
+        hex(11),                                        // significant length
+        hex(2), hex(0x01), hex(0x06),                   // flags: general discoverable
+        hex(3), hex(0x03), hex(uuid_lo), hex(uuid_hi),  // complete 16-bit UUID list
+        hex(3), hex(0x19), hex(app_lo), hex(app_hi),    // appearance
+    ];
+    adv.resize(32, hex(0));
+    adv
+}
+
+/// LE Set Scan Response Data: the name as the complete local name. It rides in
+/// the scan response because the advertisement above is already full enough.
+fn scan_rsp_data() -> Vec<String> {
+    let name = ADV_NAME.as_bytes();
+    let len = name.len() as u8;
+    let mut rsp = vec![hex(len + 2), hex(len + 1), hex(0x09)];
+    rsp.extend(name.iter().map(|b| hex(*b)));
+    rsp.resize(32, hex(0));
+    rsp
 }
 
 /// Build the LE advertising commands: connectable ADV_IND, flags + HID service
@@ -202,31 +290,73 @@ fn start_advertising() -> std::io::Result<bool> {
     if !hci("0x0006", &params)? {
         return Ok(false);
     }
-    // LE Set Advertising Data: len, then Flags(0x06), 16-bit UUID 0x1812,
-    // Appearance 0x03C1, zero-padded to 31 bytes.
-    let mut adv = vec![
-        "0B", "02", "01", "06", "03", "03", "12", "18", "03", "19", "C1", "03",
-    ];
-    while adv.len() < 32 {
-        adv.push("00");
-    }
-    if !hci("0x0008", &adv)? {
+    if !hci("0x0008", &adv_data())? {
         return Ok(false);
     }
-    // LE Set Scan Response Data: "Couch Remote" as the complete local name.
-    let name = [
-        "43", "6F", "75", "63", "68", "20", "52", "65", "6D", "6F", "74", "65",
-    ];
-    let mut rsp = vec!["0E", "0D", "09"];
-    rsp.extend_from_slice(&name);
-    while rsp.len() < 32 {
-        rsp.push("00");
-    }
-    if !hci("0x0009", &rsp)? {
+    if !hci("0x0009", &scan_rsp_data())? {
         return Ok(false);
     }
     // LE Set Advertise Enable.
     hci("0x000A", &["01"])
+}
+
+/// Hand advertising to bluetoothd, which only exports LEAdvertisingManager1
+/// when the kernel's Bluetooth core has the MGMT advertising commands (4.1;
+/// see docs/kernel-backports-research.md). Worth preferring: on the 3.18 core
+/// the kernel stops advertising on connect and re-enables nothing that mgmt
+/// did not start, and any bluetoothd action overwrites our advertising data.
+/// Returns false when the caller must fall back to the raw-HCI path.
+async fn register_advertisement(conn: &Connection) -> bool {
+    let props = match Proxy::new(
+        conn,
+        "org.bluez",
+        ADAPTER,
+        "org.freedesktop.DBus.Properties",
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("couch-bt-hid: no properties proxy for the adapter: {e}");
+            return false;
+        }
+    };
+    // A property read is the cheapest way to ask whether the interface is
+    // there at all; an error means it is not, which is the 3.18 core and not a
+    // failure. The value is bluetoothd's business, we register one instance.
+    if props
+        .call_method("Get", &(ADV_MANAGER, "SupportedInstances"))
+        .await
+        .is_err()
+    {
+        println!("couch-bt-hid: no {ADV_MANAGER} on this kernel");
+        return false;
+    }
+    if let Err(e) = conn.object_server().at(ADV_PATH, advertisement()).await {
+        eprintln!("couch-bt-hid: could not export the advertisement: {e}");
+        return false;
+    }
+    let Ok(mgr) = Proxy::new(conn, "org.bluez", ADAPTER, ADV_MANAGER).await else {
+        return false;
+    };
+    let Ok(path) = ObjectPath::try_from(ADV_PATH) else {
+        return false;
+    };
+    let options: HashMap<String, Value> = HashMap::new();
+    if let Err(e) = mgr
+        .call_method("RegisterAdvertisement", &(&path, options))
+        .await
+    {
+        // Non-fatal: a manager that refuses the advertisement still leaves the
+        // raw path, so this is a fallback and not a dead daemon.
+        eprintln!("couch-bt-hid: RegisterAdvertisement failed: {e}");
+        let _ = conn
+            .object_server()
+            .remove::<Advertisement, _>(ADV_PATH)
+            .await;
+        return false;
+    }
+    true
 }
 
 /// Set an adapter property, waiting out the window where bluetoothd has not
@@ -486,11 +616,18 @@ async fn main() -> zbus::Result<()> {
         .await?;
     println!("couch-bt-hid: HID GATT application registered");
 
-    // Advertise over raw HCI (no LEAdvertisingManager1 on this kernel).
-    match start_advertising() {
-        Ok(true) => println!("couch-bt-hid: advertising as \"Couch Remote\" (raw HCI)"),
-        Ok(false) => eprintln!("couch-bt-hid: an advertising HCI command was rejected"),
-        Err(e) => eprintln!("couch-bt-hid: could not run hcitool for advertising: {e}"),
+    // Advertise. Preferably through bluetoothd, which then owns advertising and
+    // restores it after a disconnect by itself; raw HCI where there is no
+    // manager to hand it to.
+    let managed = register_advertisement(&conn).await;
+    if managed {
+        println!("couch-bt-hid: advertising as \"{ADV_NAME}\" (LEAdvertisingManager1)");
+    } else {
+        match start_advertising() {
+            Ok(true) => println!("couch-bt-hid: advertising as \"{ADV_NAME}\" (raw HCI)"),
+            Ok(false) => eprintln!("couch-bt-hid: an advertising HCI command was rejected"),
+            Err(e) => eprintln!("couch-bt-hid: could not run hcitool for advertising: {e}"),
+        }
     }
 
     // Key injection socket. bind() honours the umask, which is whatever
@@ -506,10 +643,12 @@ async fn main() -> zbus::Result<()> {
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
-            _ = readvertise.tick() => {
-                // Cheap re-enable; the controller stops advertising on connect,
-                // so this brings us back within 15s of a disconnect. Ignored
-                // (command disallowed) while a link is up.
+            _ = readvertise.tick(), if !managed => {
+                // Raw path only. Cheap re-enable; the controller stops
+                // advertising on connect and this kernel re-enables nothing it
+                // did not start itself, so this brings us back within 15s of a
+                // disconnect. Ignored (command disallowed) while a link is up.
+                // A managed advertisement needs none of it.
                 let _ = hci("0x000A", &["01"]);
             }
             r = socket.recv(&mut buf) => {
@@ -528,4 +667,55 @@ async fn main() -> zbus::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bytes(data: &[String]) -> Vec<u8> {
+        data.iter()
+            .map(|h| u8::from_str_radix(h, 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn the_managed_advertisement_says_what_the_raw_one_says() {
+        // A TV that bonded against the raw advert has to keep finding us when
+        // the kernel gains an advertising manager, so name, HID service UUID,
+        // appearance and discoverability must match on both paths.
+        let adv = advertisement();
+        assert_eq!(adv.local_name, ADV_NAME);
+        assert_eq!(adv.service_uuids, vec![uuid16(HID_SERVICE)]);
+        assert_eq!(adv.appearance, ADV_APPEARANCE);
+        assert_eq!(adv.type_(), "peripheral");
+        assert!(adv.discoverable());
+
+        let raw = bytes(&adv_data());
+        assert_eq!(&raw[1..4], [0x02, 0x01, 0x06]); // flags: general discoverable
+        assert_eq!(&raw[4..8], [0x03, 0x03, 0x12, 0x18]); // HID service UUID, LE
+        assert_eq!(&raw[8..12], [0x03, 0x19, 0xc1, 0x03]); // appearance, LE
+        let rsp = bytes(&scan_rsp_data());
+        assert_eq!(rsp[2], 0x09); // complete local name
+        assert_eq!(&rsp[3..3 + ADV_NAME.len()], ADV_NAME.as_bytes());
+    }
+
+    #[test]
+    fn the_raw_advertising_data_fits_its_hci_command() {
+        // Both commands are one significant-length byte then exactly 31 bytes,
+        // and the length has to cover whole AD structures: a controller reading
+        // past the last one rejects the command and we advertise nothing.
+        for data in [adv_data(), scan_rsp_data()] {
+            let raw = bytes(&data);
+            assert_eq!(raw.len(), 32);
+            let significant = raw[0] as usize;
+            assert!(significant <= 31);
+            let mut i = 1;
+            while i < 1 + significant {
+                i += 1 + raw[i] as usize;
+            }
+            assert_eq!(i, 1 + significant, "AD structures overrun the length byte");
+            assert!(raw[1 + significant..].iter().all(|b| *b == 0));
+        }
+    }
 }
