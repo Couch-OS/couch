@@ -30,6 +30,7 @@ use std::{
 enum Command {
     Key(Button),
     Volume(bool),
+    SetVolume(u8),
     Channel(bool),
     Mute(bool),
     ToggleMute,
@@ -99,6 +100,7 @@ fn execute(c: &mut Client, action: &Command) -> couch_control::Result<()> {
         Command::Key(key) => c.button(*key),
         Command::Volume(true) => c.volume_up(),
         Command::Volume(false) => c.volume_down(),
+        Command::SetVolume(percent) => c.set_volume(*percent),
         Command::Channel(up) => c.channel(*up),
         Command::Mute(on) => c.mute(*on),
         Command::Power => c.power_off(),
@@ -1603,6 +1605,7 @@ pub(crate) fn mapped_command(
         F::PowerOff => Command::Power,
         F::VolumeUp => Command::Volume(true),
         F::VolumeDown => Command::Volume(false),
+        F::Volume(percent) => Command::SetVolume(*percent),
         F::Mute => Command::ToggleMute,
         F::ChannelUp => Command::Channel(true),
         F::ChannelDown => Command::Channel(false),

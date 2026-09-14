@@ -18,7 +18,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         let items=page.widgets.iter().enumerate().map(|(widget_index,widget)| {
             let label=widget.label.clone();let action=widget.action.clone();
             let device=config.devices().find(|(_,d)|d.id==action.device).map(|(_,d)|d.name.clone()).unwrap_or_default();
-            let function=config.devices().find(|(_,d)|d.id==action.device).and_then(|(_,d)|config.resolve_integration(&d.integration)).and_then(|i|couch_model::buttons::functions(&i).iter().find(|f|f.0==action.command).map(|f|f.1.to_string())).unwrap_or(action.command);
+            let function=config.devices().find(|(_,d)|d.id==action.device).and_then(|(_,d)|config.resolve_integration(&d.integration)).and_then(|i|couch_model::buttons::functions(&i).iter().find(|f|f.0==action.command).map(|f|f.1.to_string())).or_else(||super::device_commands::value_label(&action.command)).unwrap_or(action.command);
             view!{<div class="custom-widget-editor">
                 <div class="custom-widget-heading"><strong>{format!("Button {}",widget_index+1)}</strong><span>{format!("{device} · {function}")}</span></div>
                 {ui::text_field("Button label",label,"Play / pause",move |label|{let mut a=base.get_value();a.setup.pages[index].widgets[widget_index].label=label;save(a);})}

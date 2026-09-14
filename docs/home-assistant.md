@@ -46,6 +46,22 @@ Redirects and environment proxies are disabled. Requests have a five-second
 limit and responses a 4 MiB cap; tokens and upstream bodies are excluded from
 error messages. Call this client outside the Slint rendering thread.
 
+## Blinds and thermostats on a key
+
+Cover and climate entities added as `Blind` and `Thermostat` devices are
+bindable, not only openable on their own screen. Covers offer **Open**,
+**Close**, **Stop** and a **Position** level (`position:70`); thermostats offer
+each HVAC mode (`mode:off`, `mode:heat`, `mode:cool`, `mode:heat_cool`,
+`mode:auto`, `mode:dry`, `mode:fan_only`) and **Warmer** / **Cooler**, which
+shift the target by the entity's own advertised increment, read back first.
+Lights additionally offer a **Brightness** level (`dim:30`).
+
+The catalog follows the entity domain, so a light never offers `open` and a
+thermostat never offers `on`. Home Assistant refuses a mode or a motion the
+entity does not advertise and nothing is inferred locally: an entity without
+`set_cover_position` rejects a position rather than approximating it. Cover and
+climate button mappings have not been exercised against real hardware.
+
 ## Validation and current scope
 
 Nine client tests cover discovery, service payloads, zero brightness, unavailable

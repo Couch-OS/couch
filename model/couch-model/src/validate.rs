@@ -413,7 +413,7 @@ mod tests {
     fn a_step_command_the_executor_cannot_parse_is_rejected() {
         let mut living = room("living", "Living room");
         living.devices.push(Device::new(Id::new("lamp"), "Lamp", DeviceKind::Light));
-        for (command, valid) in [("on", true), ("toggle", true), ("dim:30", false), ("bright", false)] {
+        for (command, valid) in [("on", true), ("toggle", true), ("dim:30", true), ("dim:101", false), ("dim:", false), ("bright", false)] {
             let steps = vec![Action::new(Id::new("lamp"), command)];
             let cfg = Config {
                 rooms: vec![living.clone()],
@@ -438,6 +438,57 @@ mod tests {
                 assert_eq!(at, ["scenes[0].steps[0]", "activities[0].steps[0]"], "{command}");
                 assert!(problems.iter().all(|p| p.message.contains(command)), "{command}");
             }
+        }
+    }
+
+    #[test]
+    fn home_assistant_blinds_and_thermostats_can_be_bound_to_a_key() {
+        let mut living = room("living", "Living room");
+        for (id, name, kind, entity) in [
+            ("blind", "Blind", DeviceKind::Blind, "cover.office"),
+            ("stat", "Thermostat", DeviceKind::Thermostat, "climate.office"),
+        ] {
+            living.devices.push(Device::new(Id::new(id), name, kind).with_integration(
+                crate::Integration::Connection { connection_id: Id::new("ha"), resource_id: entity.to_string() },
+            ));
+        }
+        let base = Config {
+            connections: vec![crate::Connection { id: Id::new("ha"), name: "HA".to_string(), provider: crate::Provider::HomeAssistant }],
+            rooms: vec![living],
+            activities: vec![crate::Activity {
+                setup: Default::default(),
+                id: Id::new("a"),
+                name: "A".to_string(),
+                kind: Default::default(),
+                room: Id::new("living"),
+                source: None,
+                buttons: vec![],
+                steps: vec![],
+            }],
+            ..Config::default()
+        };
+        for (device, command, valid) in [
+            ("blind", "open", true),
+            ("blind", "close", true),
+            ("blind", "stop", true),
+            ("blind", "position:70", true),
+            ("blind", "position:101", false),
+            ("blind", "mode:heat", false),
+            ("blind", "on", false),
+            ("stat", "mode:heat", true),
+            ("stat", "mode:off", true),
+            ("stat", "temperature-up", true),
+            ("stat", "temperature-down", true),
+            ("stat", "open", false),
+            ("stat", "dim:30", false),
+        ] {
+            let mut config = base.clone();
+            config.activities[0].buttons = vec![crate::buttons::Binding {
+                button: crate::buttons::Button::Lights,
+                gesture: crate::buttons::Gesture::Short,
+                action: Some(Action::new(Id::new(device), command)),
+            }];
+            assert_eq!(config.validate().is_ok(), valid, "{device} {command}");
         }
     }
 
