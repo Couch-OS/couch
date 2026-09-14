@@ -6,6 +6,12 @@ on:
       # change to any of them has to be able to trigger it.
       - 'tools/installer/**'
       - 'tools/release/**'
+      # The published release tag is copied into these three by
+      # tools/release/bump_release.py, so a hand edit to one of them has to be
+      # able to reach the literal check in the stage job below.
+      - 'README.md'
+      - 'docs/installer.md'
+      - 'site/index.html'
       - '.github/workflows/installer-native-host.yml'
   workflow_dispatch:
     inputs:
@@ -94,6 +100,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      # Cheap and first: the install commands a reader copies must all name the
+      # tag in tools/release/current-release.txt.
+      - name: Check the published release literals
+        run: python3 tools/release/bump_release.py --check
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
