@@ -56,8 +56,8 @@ pub fn render(app: App, route: Route) -> AnyView {
         Route::Area(id) => keyed(app, move |app, c| areas::detail(app, c, &id)),
         Route::Room(id) => rooms::detail(app, id),
         Route::Scene(id) => keyed(app, move |app, c| scenes::detail(app, c, &id)),
-        Route::Activities => keyed(app, activities::list),
-        Route::Activity(id) => keyed(app, move |app, c| activities::detail(app, c, &id)),
+        Route::Activities => activities::list(app),
+        Route::Activity(id) => activities::detail(app, id),
         Route::NotFound => gone(app, "That page does not exist."),
     }
 }
@@ -236,6 +236,27 @@ pub fn reorder_buttons(
 /// one row never makes the list diff itself, let alone rebuild its siblings.
 pub fn ids<T: Send + Sync + 'static>(slice: Memo<Vec<T>>, id: fn(&T) -> &Id) -> Memo<Vec<Id>> {
     Memo::new(move |_| slice.with(|items| items.iter().map(|item| id(item).clone()).collect()))
+}
+
+/// A device's own name and the name of the room it is in, read reactively.
+///
+/// The pair every picker labels a device with. Both halves come from their own
+/// slice, so a room rename updates the label without the row being rebuilt.
+pub fn device_place(app: App, id: Id) -> impl Fn() -> Option<(String, String)> + Copy {
+    let id = StoredValue::new(id);
+    move || {
+        let (room, name) = app.devices.with(|all| {
+            id.with_value(|id| {
+                all.iter()
+                    .find(|(_, d)| &d.id == id)
+                    .map(|(room, d)| (room.clone(), d.name.clone()))
+            })
+        })?;
+        let room = app
+            .rooms
+            .with(|rooms| rooms.iter().find(|r| r.id == room).map(|r| r.name.clone()))?;
+        Some((name, room))
+    }
 }
 
 /// [`reorder_buttons`] for a row inside a keyed `<For>`.
