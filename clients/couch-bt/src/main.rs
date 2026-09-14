@@ -95,7 +95,13 @@ fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
     // sent in that window times out at STP level, which the driver escalates
     // into a whole-chip reset (taking Wi-Fi down with it). Half a second is
     // well past the longest gap seen on the HA100.
-    std::thread::sleep(Duration::from_millis(600));
+    // The first function-on after boot is slower still (the firmware patch
+    // goes down with it) and a probe at 600 ms still provoked one reset; the
+    // marker lives in /tmp, which is emptied by every boot.
+    let first_open = "/tmp/couch-bt-opened-once";
+    let settle = if std::path::Path::new(first_open).exists() { 600 } else { 2000 };
+    let _ = std::fs::write(first_open, b"");
+    std::thread::sleep(Duration::from_millis(settle));
     let reset = h4::command(0x0c03, &[]);
     let mut framer = h4::Framer::default();
     let mut buf = [0u8; h4::MAX_FRAME];

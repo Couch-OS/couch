@@ -542,3 +542,15 @@ All three gates passed on the dev remote the same evening the plan was written.
   do before this can be a candidate: `couch-bt-hid` registering an
   `LEAdvertisement1` (in progress), the disconnect/re-advertise acceptance, a
   full hardware round, and re-pinning as a normal candidate.
+- **Transport timing (the real fragility).** The MediaTek STP layer says
+  "ready" before the firmware acknowledges frames; a frame written in that
+  window times out at STP level and the driver escalates to a whole-chip reset
+  (Wi-Fi drops with it). The 3.18 core never hit this because nothing was sent
+  until bluetoothd powered the adapter seconds later; the 4.4 core sends its
+  setup pass the instant the controller exists. `couch-bt-bridge` now waits
+  after `BT_open` (2 s on the first open after boot, 600 ms after that), then
+  probes with HCI Reset until a Command Complete returns, and only then creates
+  the virtual controller. `couch-bt-hid` retries `RegisterApplication` on
+  `org.bluez.Error.Busy` (bluetoothd resetting the adapter). With those, eight
+  consecutive toggle cycles came up clean with `LEAdvertisingManager1`-managed
+  advertising (`ActiveInstances` 1) and no chip reset.
