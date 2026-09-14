@@ -26,15 +26,19 @@ export component RoomDevices inherits Rectangle {
     property <length> row-h: (root.rows-h - (root.visible-rows - 1) * root.row-gap) / root.visible-rows;
     property <length> pitch: root.row-h + root.row-gap;
     property <length> scroll-goal: 0px;
-    property <length> ring-y: 0px;
+    property <length> max-scroll: max(0px, root.items.length * root.pitch - root.row-gap - root.rows-h);
+    // The scenes card, read once by the layout below and once by the ring
+    // arithmetic, so the two cannot disagree.
+    property <length> scenes-card-h: 74px;
+    property <length> scenes-y: root.height - 96px;
     property <bool> anim: false;
-    animate scroll, ring-y { duration: root.anim ? 160ms : 0ms; easing: ease-out; }
+    animate scroll { duration: root.anim ? 160ms : 0ms; easing: ease-out; }
     changed items => {
         root.index = 0;
         root.anim = false;
         root.scroll-goal = 0px;
         root.scroll = 0px;
-        root.ring-y = 0px;
+        root.place-ring();
     }
     changed shown => { root.ok-down = false; }
     changed index => { root.follow-focus(true); }
@@ -47,17 +51,64 @@ export component RoomDevices inherits Rectangle {
     function follow-focus(animate-ring: bool) {
         root.anim = animate-ring;
         if (root.index < root.items.length) {
-            if (root.index * root.pitch < root.scroll-goal) {
-                root.scroll-goal = root.index * root.pitch;
-            }
-            if (root.index * root.pitch + root.row-h > root.scroll-goal + root.rows-h) {
-                root.scroll-goal = root.index * root.pitch + root.row-h - root.rows-h;
-            }
-            root.scroll = root.scroll-goal;
-            root.ring-y = root.index * root.pitch;
+            root.row-into-view(root.index * root.pitch);
+        }
+        root.place-ring();
+    }
+    // Minimal scrolling: move only far enough to bring the focused row fully
+    // into the window, and not at all while it is already there. The scenes
+    // card is furniture under the window rather than a row in it, so a wrap
+    // onto it leaves the rows where they are and only the ring travels - the
+    // areas list wraps onto its own scenes row the same way.
+    function row-into-view(row-y: length) {
+        if (row-y < root.scroll-goal) {
+            root.scroll-goal = row-y;
+        } else if (row-y + root.row-h > root.scroll-goal + root.rows-h) {
+            root.scroll-goal = min(root.max-scroll, row-y + root.row-h - root.rows-h);
+        } else {
+            return;
+        }
+        root.scroll = root.scroll-goal;
+    }
+    // Where the ring goes, in page space, set here and only here. Taken off
+    // the scroll's destination rather than its animating value, so the two
+    // share one curve instead of chasing each other: the ring used to live in
+    // the scrolling content and stopped being set at all once focus left the
+    // rows, which is what sent it back to the top on the way out of scenes.
+    function place-ring() {
+        if (root.index >= root.items.length) {
+            fs.ring-y = root.scenes-y;
+            fs.ring-h = root.scenes-card-h;
+            fs.ring-r = Theme.r-card;
+        } else {
+            // 6px is the outline's bleed, which the window and its content are
+            // both inset by; arithmetic, not read back off the laid-out boxes.
+            fs.ring-y = Theme.pad-top + 6px + root.index * root.pitch - root.scroll-goal;
+            fs.ring-h = root.row-h;
+            fs.ring-r = root.items[root.index].activity ? Theme.r-card : Theme.r-row;
         }
     }
     public function take-focus() { keys.focus(); }
+    /// The window's destination and where the ring is now, for the room
+    /// navigation test. Functions rather than out properties: a binding on
+    /// either would make a reader of the ring's geometry, and every frame of
+    /// a move would repaint whatever read it (docs/slint-notes.md).
+    public function scroll-destination() -> length { return root.scroll-goal; }
+    public function ring-position() -> length { return fs.ring-y; }
+    // One ring for the whole page rather than one per section, and its
+    // geometry on a zero-size element so that moving it cannot dirty the root
+    // that paints the background. Set imperatively, because a bound property
+    // reads its `animate` duration a frame late - both reasons are the area
+    // pane's, in docs/slint-notes.md.
+    fs := Rectangle {
+        width: 0px;
+        height: 0px;
+        property <length> ring-y: Theme.pad-top + 6px;
+        property <length> ring-h: 90px;
+        property <length> ring-r: Theme.r-row;
+        // The scrolling curve, so the outline stays on its moving row.
+        animate ring-y, ring-h { duration: root.anim ? 160ms : 0ms; easing: ease-out; }
+    }
     background: Theme.bg;
     list := Rectangle {
         x: Theme.pad-side - 6px; y: Theme.pad-top;
@@ -120,26 +171,24 @@ export component RoomDevices inherits Rectangle {
                     }
                 }
             }
-            if root.items.length > 0 && root.index < root.items.length: Rectangle {
-                x: 0px; y: root.ring-y; width: parent.width; height: root.row-h;
-                background: transparent;
-                FocusRing {
-                    focused: true;
-                    radius-inner: root.items[root.index].activity ? Theme.r-card : Theme.r-row;
-                    box-width: parent.width; box-height: parent.height;
-                }
-            }
         }
     }
     Text { x: 20px; y: parent.height - 188px; width: parent.width - 40px; height: 48px; text: root.detail; color: Theme.text-secondary; font-size: 16px; wrap: word-wrap; }
     Text { x: Theme.pad-side; y: parent.height - 128px; text: "SCENES"; color: Theme.text-secondary; font-size: 15px; letter-spacing: 1.8px; }
     Rectangle {
-        x: Theme.pad-side; y: parent.height - 96px; width: parent.width - 2 * Theme.pad-side; height: 74px;
+        x: Theme.pad-side; y: root.scenes-y; width: parent.width - 2 * Theme.pad-side; height: root.scenes-card-h;
         background: Theme.surface; border-width: 1px; border-color: Theme.border; border-radius: Theme.r-card;
         Text { x: 18px; y: 0px; width: parent.width - 70px; height: parent.height; vertical-alignment: center; text: root.scene-label; overflow: elide; color: Theme.text; font-size: 21px; }
         Image { x: parent.width - 40px; y: 26px; width: 22px; height: 22px; source: @image-url("../../../../assets/lucide/arrow-big-right.svg"); colorize: Theme.text-secondary; }
         TouchArea { clicked => { root.index=root.items.length; root.open-scenes(); } }
-        FocusRing { focused: root.index == root.items.length; box-width: parent.width; box-height: parent.height; radius-inner: Theme.r-card; }
+    }
+    // Drawn last so it is never behind a card, and outside the clipped window
+    // so a scroll and a focus move do not have to be reconciled - ring-y is in
+    // page space with the scroll already taken off.
+    Rectangle {
+        x: Theme.pad-side; y: fs.ring-y; width: parent.width - 2 * Theme.pad-side; height: fs.ring-h;
+        background: transparent;
+        FocusRing { focused: true; radius-inner: fs.ring-r; box-width: parent.width; box-height: parent.height; }
     }
     keys := FocusScope {
         enabled: root.shown;

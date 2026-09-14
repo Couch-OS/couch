@@ -1642,6 +1642,114 @@ mod overlay_tests {
 }
 
 #[cfg(test)]
+mod room_nav_tests {
+    use super::*;
+
+    /// A room's rows and its scenes card are one ring of stops, and a wrap
+    /// between the two ends of it is one motion: the window scrolls to the end
+    /// of the rows under an outline that travels straight there. The outline
+    /// used to live in the scrolling content and stopped being placed at all
+    /// once focus left the rows, so coming back off the scenes card put it at
+    /// the top of the list and then slid it down behind the scroll.
+    #[test]
+    fn wrapping_off_the_scenes_card_scrolls_without_sending_the_ring_to_the_top() {
+        // One process may install one Slint platform, and another test already
+        // installs one; this test asks for its own run.
+        if std::env::var_os("COUCH_TEST_ROOMNAV").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "room_nav_tests::wrapping_off_the_scenes_card_scrolls_without_sending_the_ring_to_the_top",
+                ])
+                .env("COUCH_TEST_ROOMNAV", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        // A clock the test winds by hand: every animation here is read at a
+        // tick this chose, not at wall time.
+        struct Platform(Rc<Cell<Duration>>);
+        impl slint::platform::Platform for Platform {
+            fn duration_since_start(&self) -> Duration { self.0.get() }
+            fn create_window_adapter(&self) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+                Ok(slint::platform::software_renderer::MinimalSoftwareWindow::new(
+                    slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
+                ))
+            }
+        }
+        let clock = Rc::new(Cell::new(Duration::ZERO));
+        slint::platform::set_platform(Box::new(Platform(clock.clone()))).unwrap();
+        let app = App::new().unwrap();
+        app.window().set_size(PhysicalSize::new(480, 800));
+        // Change handlers run from update_timers_and_animations, and an
+        // animation starts at the tick that call last set.
+        let tick = |ms: u64| {
+            clock.set(Duration::from_millis(ms));
+            slint::platform::update_timers_and_animations();
+        };
+        let press_up = || {
+            let key: SharedString = slint::platform::Key::UpArrow.into();
+            app.window().dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+            app.window().dispatch_event(WindowEvent::KeyReleased { text: key });
+        };
+
+        // Twelve rows into a five-row window, so the list has somewhere to go.
+        app.set_light_items(ModelRc::new(VecModel::from(
+            (0..12)
+                .map(|i| ChoiceItem { title: format!("Device {i}").into(), ..Default::default() })
+                .collect::<Vec<_>>(),
+        )));
+        app.set_light_shown(true);
+        tick(0);
+        app.invoke_focus_light();
+        assert_eq!(app.get_light_index(), 0);
+        assert_eq!(app.invoke_room_scroll_destination(), 0.0);
+        let top_row = app.invoke_room_ring_position();
+
+        // Up at the top of the list wraps onto the scenes card. That card is
+        // furniture below the window rather than a row in it, so the rows stay
+        // where they are and only the outline travels - as the areas list does.
+        press_up();
+        tick(10);
+        assert_eq!(app.get_light_index(), 12);
+        assert_eq!(app.invoke_room_scroll_destination(), 0.0);
+        tick(300);
+        let scenes_card = app.invoke_room_ring_position();
+        assert!(scenes_card > top_row + 400.0, "{scenes_card} is not the footer");
+
+        // Up again takes the last row. Now the window does scroll, and the
+        // outline has to arrive with it rather than ahead of it.
+        press_up();
+        tick(310);
+        assert_eq!(app.get_light_index(), 11);
+        let scrolled = app.invoke_room_scroll_destination();
+        assert!(scrolled > 0.0, "the window did not scroll to the last row");
+        let mut trail = vec![];
+        for ms in [310, 350, 390, 430, 470, 530] {
+            tick(ms);
+            trail.push(app.invoke_room_ring_position());
+        }
+        let landed = *trail.last().unwrap();
+        assert!(landed > top_row + 100.0 && landed < scenes_card, "{landed} is not the last row");
+        for pair in trail.windows(2) {
+            assert!(pair[1] <= pair[0] + 0.5, "the ring turned back: {trail:?}");
+        }
+        // The whole journey stays between the two cards: no frame of it is
+        // spent at the top of the list.
+        assert!(
+            trail.iter().all(|y| *y >= landed - 0.5 && *y <= scenes_card + 0.5),
+            "the ring left the gap between the last row and the scenes card: {trail:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod standby_tests {
     use super::*;
 
