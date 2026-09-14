@@ -127,6 +127,17 @@ pub fn icon_select_signal(
 /// the wasm event loop and looks like the browser, not the app, and a dialog
 /// component is a lot of machinery for "are you sure".
 pub fn danger_button(label: &'static str, confirm: impl Fn() + 'static) -> AnyView {
+    confirm_button(label, "Confirm delete", confirm)
+}
+
+/// A button that asks once more: the first click arms it and shows
+/// `armed_label`, the second within focus performs `confirm`; blurring
+/// disarms. One control for deletes and for the remote's power actions.
+pub fn confirm_button(
+    label: &'static str,
+    armed_label: &'static str,
+    confirm: impl Fn() + 'static,
+) -> AnyView {
     let armed = RwSignal::new(false);
     view! {
         <button
@@ -143,7 +154,7 @@ pub fn danger_button(label: &'static str, confirm: impl Fn() + 'static) -> AnyVi
             }
             on:blur=move |_| armed.set(false)
         >
-            {move || if armed.get() { "Confirm delete".to_string() } else { label.to_string() }}
+            {move || if armed.get() { armed_label.to_string() } else { label.to_string() }}
         </button>
     }
     .into_any()

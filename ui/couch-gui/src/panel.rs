@@ -131,6 +131,10 @@ pub struct Panel {
     blanked: bool,
 }
 
+/// Keypad backlight policy, see `Panel::set_keys_policy`. Defaults keep the
+/// keys lit at the full-brightness level until the settings are loaded.
+static KEYS_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static KEYS_ACTIVE_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(255);
 impl Panel {
     pub fn open() -> std::io::Result<Self> {
         let fb = File::options().read(true).write(true).open("/dev/fb0")?;
@@ -269,6 +273,25 @@ impl Panel {
     /// until something wrote a different value. Writing a neighbour first
     /// when the node already holds the target defeats that, at the cost of a
     /// second driver call only in the case that would otherwise be stuck.
+    /// Whether the keypad backlight is wanted at all, and the level that means
+    /// "awake": the keys are lit only for that level, never while dimmed.
+    pub fn set_keys_policy(enabled: bool, active_level: u8) {
+        KEYS_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+        KEYS_ACTIVE_LEVEL.store(active_level, std::sync::atomic::Ordering::Relaxed);
+        let keys = enabled && active_level > 0 && Self::current_backlight() == Some(active_level);
+        Self::set_keys(keys);
+    }
+    fn current_backlight() -> Option<u8> {
+        std::fs::read_to_string("/sys/class/leds/lcd-backlight/brightness")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    }
+    fn set_keys(lit: bool) {
+        let _ = std::fs::write(
+            "/sys/class/leds/button-backlight/brightness",
+            if lit { "255\n" } else { "0\n" },
+        );
+    }
     pub fn set_backlight(level: u8) {
         const LCD: &str = "/sys/class/leds/lcd-backlight/brightness";
         let held: Option<u8> = std::fs::read_to_string(LCD)
@@ -281,8 +304,11 @@ impl Panel {
         if let Err(e) = std::fs::write(LCD, format!("{level}\n")) {
             println!("couch-gui: backlight {level}: {e}");
         }
-        let keys = if level == 255 { "255\n" } else { "0\n" };
-        let _ = std::fs::write("/sys/class/leds/button-backlight/brightness", keys);
+        // The key LEDs are a GPIO, lit or not: lit while the screen is at its
+        // awake level and the setting wants them, dark while dimmed or off.
+        let awake = KEYS_ACTIVE_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
+        let wanted = KEYS_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
+        Self::set_keys(wanted && level > 0 && level == awake);
     }
 
     /// The backlight, delivered for certain: a neighbouring value first, then

@@ -319,6 +319,9 @@ impl Api {
             ("GET", ["diagnostics", "control"]) => Reply::json(200, &couch_control::metrics()),
             ("GET", ["config"]) => self.with(|s| Reply::json(200, s.config()).at(s.revision())),
             ("GET", ["remote", "timezones"]) => Reply::json(200, &remote::timezones()),
+            ("GET" | "PUT", ["remote", "device"]) => remote::device(&method, &body),
+            ("GET", ["remote", "network"]) => remote::network(),
+            ("POST", ["remote", "power"]) => remote::power(&body),
             ("PUT", ["remote"]) => {
                 let settings: couch_model::RemoteSettings = match parse(&body) {Ok(value)=>value,Err(reply)=>return reply};
                 if !settings.timezone.is_empty() && !remote::timezones().contains(&settings.timezone) { return Reply::error(400,"Choose an installed IANA timezone"); }
@@ -497,6 +500,7 @@ impl Api {
                     "version": env!("CARGO_PKG_VERSION"),
                     "schema_version": SCHEMA_VERSION,
                     "authenticated": false,
+                    "local_name": crate::local_name::status(),
                 }),
             );
         }
@@ -511,6 +515,7 @@ impl Api {
                     "config_path": s.path().display().to_string(),
                     "revision": s.revision(),
                     "embedded_assets": self.assets.count(),
+                    "local_name": crate::local_name::status(),
                 }),
             )
             .at(s.revision())

@@ -38,7 +38,7 @@ export component Thermostat inherits Rectangle {
         Image { x:22px; y:31px; width:30px; height:30px; source:@image-url("../../../../assets/lucide/sliders-horizontal.svg"); colorize:Theme.accent; }
         Text { x:70px; y:17px; width:parent.width - 126px; height:26px; text:"Mode"; font-size:18px; color:Theme.text-secondary; }
         Text { x:70px; y:49px; width:parent.width - 126px; height:28px; text:root.mode; font-size:23px; font-weight:600; color:Theme.text; }
-        Image { x:parent.width - 42px; y:35px; width:24px; height:24px; source:@image-url("../../../../assets/lucide/chevron-right.svg"); colorize:Theme.text-secondary; }
+        Image { x:parent.width - 42px; y:35px; width:24px; height:24px; source:@image-url("../../../../assets/lucide/arrow-big-right.svg"); colorize:Theme.text-secondary; }
         TouchArea { clicked => { root.action("modes",0); } }
     }
     Text { x:36px; y:679px; width:parent.width - 72px; height:85px; text:root.detail; font-size:19px; color:Theme.text-secondary; wrap:word-wrap; horizontal-alignment:center; }

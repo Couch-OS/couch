@@ -31,10 +31,40 @@ Validation includes browser save/reload, timezone path traversal rejection and
 an on-device mount-namespace fixture for charging, time format changes and wake.
 Physical dock detection should be checked against the real charging indicator.
 
+## The remote's settings on the web
+
+The **Remote settings** page mirrors the remote's own Settings menu below the
+clock and wake options: **Display & keys** (brightness, keypad backlight, dim
+and screen-off timeouts), **SSH**, **Network** (read-only) and **Power**. The
+daemon reads and writes the same file the remote does
+(`/opt/couch/settings.conf`, owned by `couch-system`'s `ui_settings`), and the
+remote notices a change to it within a second and applies it, so the two
+never disagree for long. Clock, wake and appearance stay web-only. The
+endpoints are in [the web UI guide](webui.md).
+
+## Network on the remote
+
+The remote's own Settings menu (hold Menu on the home screen) has a
+**Network** section after Wi-Fi. It is read-only: the address and prefix
+length, the gateway, up to two DNS servers, the Wi-Fi MAC, and the web UI's
+address (`http://couch.local`, with the plain address beside it as the
+fallback). It is read from the kernel's own tables (`/proc/net/route`, the
+resolver file, sysfs) every two seconds while the panel is up; nothing is run.
+
+## Power on the remote
+
+The **Power** section at the end of the menu has three rows: **Power off**,
+**Restart** and **Restart into recovery**. The first two act on one OK.
+Recovery takes two presses within six seconds, because it leaves the remote
+on a screen with no UI: recovery brings up Wi-Fi, SSH and a USB shell and
+stays there until the flag is cleared, see [device recovery](device-recovery.md).
+The rows ask the root system service (`Power { action }`), which answers,
+waits a second, and for recovery writes the same `boot-recovery` marker init
+uses into the bootloader control block before `reboot -f`.
+
 ## Updates on the remote
 
-The remote's own Settings menu (hold Menu on the home screen) has an
-**Updates** section beside Display, Wi-Fi and SSH. It shows the installed
+The Settings menu also has an **Updates** section. It shows the installed
 build and the release channel, checks for updates, downloads and verifies an
 offered build, and installs it with a two-press restart. It drives the same
 system service the web UI's Updates page does; see
