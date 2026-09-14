@@ -26,6 +26,12 @@ not-yet-validated Wi-Fi stock-restore feature).
 - **#7 firmware-watch auto-PR** no longer writes a half-update that fails its own
   validation; it commits a `firmware-drift-report.md` drift notice (a green,
   reviewable PR) naming the three coupled pins a maintainer must update together.
+- **Debug supervisor `killall` and `$BB wait`** (deferred items 2 and 3) are
+  closed: the fixed `killall` runs on both ways out of the worker loop, so a
+  `supplicant-socket-timeout` no longer leaves a supplicant holding the control
+  socket into the next generation, and `wait` is the shell builtin it always
+  was, so the worker is reaped and `worker_exit` reports what it did instead of
+  BusyBox's 127 for a missing applet.
 
 ## Deferred (not on the hardware-validated install path)
 
@@ -34,23 +40,15 @@ not-yet-validated Wi-Fi stock-restore feature).
    from this PR driving a *pre-PR* stage image would still have that stage reject
    an unknown key; a stage capability flag in the status JSON would let the host
    gate on it. Low risk while host and stage ship together.
-2. **Debug supervisor `killall` on the normal retry path.** `killall
-   wpa_supplicant` runs only in the worker-still-alive branch; after a
-   `supplicant-socket-timeout` (which intentionally leaves the blocked supplicant
-   alive) the next generation can race two supplicants for the control socket.
-   Debug-stage only.
-3. **`$BB wait` is not a BusyBox applet.** `debug-supervisor` calls
-   `$BB wait "$worker"`; `wait` is an ash builtin, so `result` is always 127 and
-   the `worker_exit` lifecycle field always reads "failure". Cosmetic, debug-only.
-4. **Stage debug `lifecycle` made mandatory without a `debug_protocol` bump.** A
+2. **Stage debug `lifecycle` made mandatory without a `debug_protocol` bump.** A
    still-running pre-PR debug stage now errors in `lifecycle_summary` instead of
    degrading to read-only diagnostics.
-5. **`debug_late_watch` can append a prior generation's record** into the next
+3. **`debug_late_watch` can append a prior generation's record** into the next
    generation's bounded debug log after a retry. Debug-only log hygiene.
-6. **firmware-watch.yml: `import firmware_restore` needs `sys.path`.** Under
+4. **firmware-watch.yml: `import firmware_restore` needs `sys.path`.** Under
    `shell: python` the step runs from a temp dir, so the import fails; the watcher
    never detects drift.
-7. **firmware-watch.yml: the auto-PR edits only `archive.*`,** which
+5. **firmware-watch.yml: the auto-PR edits only `archive.*`,** which
    `firmware_restore.load()` then rejects against the official runtime pin, so the
    generated PR fails its own validation.
 8. **firmware-watch.yml: the fetched OTA is not checked for ZIP magic,** so a
