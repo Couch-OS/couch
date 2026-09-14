@@ -610,10 +610,26 @@ async fn main() -> zbus::Result<()> {
     // Register the GATT application.
     let gatt_mgr = Proxy::new(&conn, "org.bluez", ADAPTER, "org.bluez.GattManager1").await?;
     let app_path = ObjectPath::try_from(APP)?;
-    let options: HashMap<String, Value> = HashMap::new();
-    gatt_mgr
-        .call_method("RegisterApplication", &(&app_path, options))
-        .await?;
+    // bluetoothd answers Busy while it is resetting the adapter (the
+    // backported core does that once at setup, and after a whole-chip reset);
+    // registering a moment later succeeds, so wait it out rather than die.
+    let mut attempt = 0;
+    loop {
+        let options: HashMap<String, Value> = HashMap::new();
+        match gatt_mgr
+            .call_method("RegisterApplication", &(&app_path, options))
+            .await
+        {
+            Ok(_) => break,
+            Err(zbus::Error::MethodError(name, _, _))
+                if attempt < 20 && name.as_str() == "org.bluez.Error.Busy" =>
+            {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
     println!("couch-bt-hid: HID GATT application registered");
 
     // Advertise. Preferably through bluetoothd, which then owns advertising and

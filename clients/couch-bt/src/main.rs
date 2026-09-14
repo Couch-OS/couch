@@ -90,14 +90,20 @@ fn log(line: &str) {
 /// its setup pass the instant the controller exists. So probe with HCI Reset
 /// and only create the controller once a Command Complete comes back.
 fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
+    // Nothing may be written for a moment after BT_open: the STP layer
+    // reports "ready" before the firmware acknowledges frames, and a frame
+    // sent in that window times out at STP level, which the driver escalates
+    // into a whole-chip reset (taking Wi-Fi down with it). Half a second is
+    // well past the longest gap seen on the HA100.
+    std::thread::sleep(Duration::from_millis(600));
     let reset = h4::command(0x0c03, &[]);
     let mut framer = h4::Framer::default();
     let mut buf = [0u8; h4::MAX_FRAME];
-    for attempt in 1..=10u32 {
+    for attempt in 1..=5u32 {
         if let Err(e) = stpbt.write_all(&reset) {
             log(&format!("readiness probe not sent: {e}"));
         }
-        let deadline = Instant::now() + Duration::from_millis(400);
+        let deadline = Instant::now() + Duration::from_millis(1000);
         while Instant::now() < deadline {
             match stpbt.read(&mut buf) {
                 Ok(n) if n > 0 => {
