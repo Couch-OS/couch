@@ -18,8 +18,12 @@ pub fn magic_packet(mac: &str) -> Option<[u8; 102]> {
         *b = u8::from_str_radix(&compact[i * 2..i * 2 + 2], 16).ok()?;
     }
     let mut packet = [0xff; 102];
-    for chunk in packet[6..].chunks_exact_mut(6) {
-        chunk.copy_from_slice(&address)
+    // Sixteen copies of the address after the six 0xff sync bytes. An index
+    // loop rather than chunks_exact_mut: the stable clippy in CI flags the
+    // constant chunk size and the replacement it suggests needs a newer
+    // toolchain than the one the release host pins.
+    for i in 0..16 {
+        packet[6 + i * 6..12 + i * 6].copy_from_slice(&address);
     }
     Some(packet)
 }
