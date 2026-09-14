@@ -47,15 +47,24 @@ candidate is, so the release list stays readable.
 
 ## Promoting to `main`
 
-1. Open a pull request from `dev` to `main` titled for the batch, listing the
+1. On `dev`, before the promotion pull request, run
+   `python3 tools/release/bump_release.py v0.1.0-alpha.<date>.<n>` with the tag
+   the promotion will carry, and commit the result. The tag lives once, in
+   `tools/release/current-release.txt`; the script writes it there and rewrites
+   every install command that names it, in `README.md`, `docs/installer.md` and
+   `site/index.html`, including the copy buttons' invisible `data-copy`
+   duplicates. Do not edit those literals by hand: CI runs
+   `bump_release.py --check` and fails if any of them disagrees.
+2. Open a pull request from `dev` to `main` titled for the batch, listing the
    feature pull requests it carries. Merge it with a merge commit.
-2. Tag the merge commit `v0.1.0-alpha.<date>.<n>` (the `<n>` after the last
-   dev build) and publish the full prerelease: runtime archive and manifest,
-   corresponding source, `SHA256SUMS`, notes that name the changes since the
-   previous promotion and what was validated on hardware.
-3. Delete the dev prereleases the promotion supersedes. Remotes on Dev move to
+3. Tag the merge commit `v0.1.0-alpha.<date>.<n>` (the `<n>` after the last
+   dev build, and the tag step 1 wrote) and publish the full prerelease:
+   runtime archive and manifest, corresponding source, `SHA256SUMS`, notes that
+   name the changes since the previous promotion and what was validated on
+   hardware.
+4. Delete the dev prereleases the promotion supersedes. Remotes on Dev move to
    the promotion on their next check because it sorts above the dev builds.
-4. Bring `dev` back in line: `git checkout dev && git merge --ff-only main`
+5. Bring `dev` back in line: `git checkout dev && git merge --ff-only main`
    (the promotion merge is the only new commit on `main`, so this is always a
    fast-forward).
 
