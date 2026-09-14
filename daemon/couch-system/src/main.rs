@@ -28,7 +28,18 @@ fn main() {
         Some("bluetooth-start") => {
             couch_system::client::action(couch_system::protocol::Request::BluetoothAuto)
         }
-        _ => Err("Usage: couch-system serve | cgi | hotspot | ssh-start | bluetooth-start".into()),
+        // Any request as JSON, reply as JSON: the bench and SSH way to drive the
+        // service (updates, Bluetooth, power) without the GUI. Same socket and
+        // the same authorization as the GUI: root on the device.
+        Some("request") => (|| -> Result<(), String> {
+            let json = std::env::args().nth(2).ok_or("Usage: couch-system request '<json>'")?;
+            let request: couch_system::protocol::Request =
+                serde_json::from_str(&json).map_err(|e| format!("Invalid request: {e}"))?;
+            let reply = couch_system::client::call(request)?;
+            println!("{}", serde_json::to_string(&reply).map_err(|e| e.to_string())?);
+            Ok(())
+        })(),
+        _ => Err("Usage: couch-system serve | cgi | hotspot | ssh-start | bluetooth-start | request '<json>'".into()),
     };
     if let Err(error) = result {
         eprintln!("couch-system: {error}");

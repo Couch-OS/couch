@@ -295,6 +295,28 @@ if [ "$WIFI" = "1" ]; then
             fi
         fi
         mark $((BASE+6)) "S6 assoc=$ST ip=${IP:-none}"
+        # The combo chip's whole-chip reset (a firmware assert, or Bluetooth
+        # coming up at the wrong moment) bounces wlan0: the driver flushes the
+        # address and re-associates, but udhcpc holds its 24 h lease and never
+        # notices. Watch for "link up, no IPv4" and make udhcpc start over
+        # (release, then renew = a fresh discover). One loop for the boot;
+        # station.sh restarts udhcpc on a network change and this keeps
+        # working because it looks the pid up each time.
+        ( while :; do
+            $BB sleep 5
+            [ "$($BB cat /sys/class/net/wlan0/carrier 2>/dev/null)" = 1 ] || continue
+            $BB ip -4 addr show wlan0 2>/dev/null | $BB grep -q "inet " && continue
+            $BB sleep 5
+            $BB ip -4 addr show wlan0 2>/dev/null | $BB grep -q "inet " && continue
+            P=$($BB pidof udhcpc)
+            if [ -n "$P" ]; then
+                echo "= wlan0 up without IPv4; restarting dhcp" >> /tmp/dhcp.log
+                kill -USR2 $P; $BB sleep 1; kill -USR1 $P
+            else
+                $BB chroot $A /sbin/udhcpc -i wlan0 -t 10 >>/tmp/dhcp.log 2>&1 &
+            fi
+            $BB sleep 20
+        done ) </dev/null >/dev/null 2>&1 &
     fi
 
 
