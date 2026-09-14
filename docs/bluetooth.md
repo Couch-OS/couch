@@ -153,7 +153,20 @@ are `apk add`ed over SSH on the development remote meanwhile.
    Wi-Fi only under sustained BT activity. A HID peripheral advertises and holds
    a low-rate connection rather than scanning, so its expected impact is small;
    confirm once HID lands, and prefer duty-cycled advertising over any scanning.
-3. *HID over GATT.* A second daemon (or the same one grown) that registers the
+3. *HID over GATT.* **In progress (`clients/couch-bt-hid`, 2026-09-14).** A
+   separate daemon on zbus (bluer was rejected: it needs libdbus, a C lib).
+   It registers a HID-over-GATT application (Device Information, Battery, and
+   HID with a keyboard + consumer-control report map) via bluetoothd's
+   GattManager1, runs a just-works agent, and advertises "Couch Remote" over
+   raw HCI (this 3.18 kernel has no MGMT advertising, so LE Set Advertising
+   Parameters/Data/Enable go out through hcitool). Confirmed on the .144 remote:
+   the app registers, all advertising commands return success, the daemon
+   advertises. Remaining: first real TV pairing (the controller address is the
+   synthetic 00:00:46:65:80:01 until the set-BD_ADDR vendor command is
+   confirmed), sending a key on connect, then wiring startup (dbus + bluetoothd
+   + bridge + this daemon behind the toggle; add dbus to the OS image) and a
+   dev build. Original notes:
+   A second daemon (or the same one grown) that registers the
    HID service with BlueZ over D-Bus, with the keyboard and consumer-control
    report map, and drives advertising through raw HCI since 3.18 has no
    `Add Advertising` management command. First pairing with a real TV; record
