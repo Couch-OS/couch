@@ -18,6 +18,26 @@ echo "= starting setup portal on $AP_SSID ($AP_IP)"
 echo "$AP_SSID" > /tmp/portal.ssid          # couch-gui puts this in the QR
 : > /tmp/couch.setup                        # ... and shows the setup screen
 
+# From the killall below until the portal is actually serving, the device has
+# neither a station nor a working AP. Every failure in between used to be a
+# bare "exit 1", which left the radio in AP mode with no supplicant, no leases
+# (hostapd up, dnsmasq down advertises an SSID that hands out nothing) and
+# /tmp/couch.setup still telling the GUI to show a join QR: no way back onto
+# the home network and no way onto the setup one either. Roll back instead.
+# The success path sets PORTAL_UP=1, and cleanup then leaves everything alone.
+# Only a pid recorded by this run is ever signalled, so drop a stale file now.
+PORTAL_UP=0
+$BB rm -f /tmp/portal-httpd.pid
+cleanup() {
+    [ "$PORTAL_UP" = 1 ] && return
+    echo "= setup portal failed, restoring station mode"
+    [ -s /tmp/portal-httpd.pid ] && kill "$($BB cat /tmp/portal-httpd.pid)" 2>/dev/null
+    $BB rm -f /tmp/portal-httpd.pid /tmp/couch.setup
+    $BB chroot $A /bin/sh -c 'killall hostapd dnsmasq 2>/dev/null'
+    $BB sh "$(dirname "$0")/station.sh" >/dev/null 2>&1
+}
+trap cleanup EXIT
+
 # Scan BEFORE switching to AP mode, so the portal has a list to show the moment
 # it loads rather than making every user wait through a scan.
 # "-c /dev/null" gives wpa_supplicant no ctrl_interface at all, so wpa_cli has
@@ -134,6 +154,12 @@ $BB chmod 755 $A/opt/couch/busybox 2>/dev/null
 # tty in particular) wedges the CGI handlers and takes the shell with them.
 $BB chroot $A /opt/couch/busybox httpd -p 80 -h /tmp/couch-portal-www \
     -c /tmp/couch-portal-www/httpd.conf >/dev/null 2>&1 || exit 1
+# httpd daemonizes, and as a multi-call binary it keeps argv[0] "busybox", so
+# pidof and killall never match it - which is why the station.sh path below
+# stopped hostapd and dnsmasq but left the web server running on the home LAN
+# after a join, with cgi-bin/scan answering any client on it. Record the pid so
+# cleanup() and station.sh can stop it. /tmp is shared with the chroot.
+$BB pgrep -f "httpd -p 80 -h /tmp/couch-portal-www" | $BB head -1 > /tmp/portal-httpd.pid
 
 # Report what is actually listening, not what we think we started: every one of
 # these three has failed silently at some point.
@@ -153,6 +179,9 @@ echo "= hostapd=$(say hostapd)  dnsmasq=$(say dnsmasq)  httpd=$([ "${WEB:-0}" -g
     echo ""
 } > /tmp/portal.banner
 $BB cat /tmp/portal.banner
+
+# Serving: from here the trap leaves hostapd, dnsmasq and httpd running.
+PORTAL_UP=1
 
 # The portal is the only way into a device with no known network, so it stays
 # up until setup succeeds. PORTAL_TIMEOUT can still bound it for testing.
