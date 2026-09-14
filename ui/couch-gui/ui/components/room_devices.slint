@@ -137,7 +137,7 @@ export component RoomDevices inherits Rectangle {
         x: Theme.pad-side; y: parent.height - 96px; width: parent.width - 2 * Theme.pad-side; height: 74px;
         background: Theme.surface; border-width: 1px; border-color: Theme.border; border-radius: Theme.r-card;
         Text { x: 18px; y: 0px; width: parent.width - 70px; height: parent.height; vertical-alignment: center; text: root.scene-label; overflow: elide; color: Theme.text; font-size: 21px; }
-        Image { x: parent.width - 36px; y: 28px; width: 18px; height: 18px; source: @image-url("../../assets/chevron-right.png"); colorize: Theme.text-secondary; }
+        Image { x: parent.width - 40px; y: 26px; width: 22px; height: 22px; source: @image-url("../../../../assets/lucide/arrow-big-right.svg"); colorize: Theme.text-secondary; }
         TouchArea { clicked => { root.index=root.items.length; root.open-scenes(); } }
         FocusRing { focused: root.index == root.items.length; box-width: parent.width; box-height: parent.height; radius-inner: Theme.r-card; }
     }

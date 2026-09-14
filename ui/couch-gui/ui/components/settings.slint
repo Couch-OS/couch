@@ -2,11 +2,13 @@ import { Theme } from "../theme.slint";
 import { FocusRing } from "focus_ring.slint";
 
 // One labelled row with a value on the right. `stepper` draws the value between
-// chevrons, the cue that left and right change it.
+// Lucide's big left and right arrows, the cue that left and right change it;
+// `arrow` draws one big right arrow, the cue that OK opens or runs the row.
 component SettingsRow inherits Rectangle {
     in property <string> title;
     in property <string> value;
     in property <bool> stepper: true;
+    in property <bool> arrow: false;
 
     height: 72px;
     background: Theme.surface;
@@ -27,23 +29,19 @@ component SettingsRow inherits Rectangle {
             color: Theme.text;
             overflow: elide;
         }
-        if root.stepper: Text {
-            vertical-alignment: center;
-            text: "<";
-            font-size: 21px;
-            color: Theme.text-tertiary;
+        if root.stepper: VerticalLayout {
+            alignment: center;
+            Image { width: 24px; height: 24px; source: @image-url("../../../../assets/lucide/arrow-big-left.svg"); colorize: Theme.text-tertiary; }
         }
-        Text {
+        if root.value != "": Text {
             vertical-alignment: center;
             text: root.value;
             font-size: 21px;
             color: Theme.accent;
         }
-        if root.stepper: Text {
-            vertical-alignment: center;
-            text: ">";
-            font-size: 21px;
-            color: Theme.text-tertiary;
+        if root.stepper || root.arrow: VerticalLayout {
+            alignment: center;
+            Image { width: 24px; height: 24px; source: @image-url("../../../../assets/lucide/arrow-big-right.svg"); colorize: root.stepper ? Theme.text-tertiary : Theme.accent; }
         }
     }
 }
@@ -260,11 +258,9 @@ export component Settings inherits Rectangle {
                             font-weight: 600;
                             color: Theme.text;
                         }
-                        Text {
-                            vertical-alignment: center;
-                            text: ">";
-                            font-size: 26px;
-                            color: Theme.text-tertiary;
+                        VerticalLayout {
+                            alignment: center;
+                            Image { width: 26px; height: 26px; source: @image-url("../../../../assets/lucide/arrow-big-right.svg"); colorize: Theme.text-tertiary; }
                         }
                     }
                 }
@@ -287,8 +283,8 @@ export component Settings inherits Rectangle {
                     value: root.wifi-level == 0 ? "" : root.wifi-signal;
                     stepper: false;
                 }
-                SettingsRow { title: "Change network"; value: ">"; stepper: false; }
-                SettingsRow { title: "Recovery hotspot"; value: ">"; stepper: false; }
+                SettingsRow { title: "Change network"; arrow: true; stepper: false; }
+                SettingsRow { title: "Recovery hotspot"; arrow: true; stepper: false; }
             }
 
             // SSH: a single toggle.
@@ -314,7 +310,8 @@ export component Settings inherits Rectangle {
                 // to be until "Install & restart" takes its place.
                 if root.update-can-install || root.update-busy || root.update-ready: SettingsRow {
                     title: root.update-ready ? "Install & restart" : root.update-busy ? "Working…" : "Download & verify";
-                    value: root.update-ready ? (root.update-armed ? "OK again" : ">") : root.update-busy ? root.update-summary : ">";
+                    value: root.update-ready ? (root.update-armed ? "OK again" : "") : root.update-busy ? root.update-summary : "";
+                    arrow: !root.update-busy && !(root.update-ready && root.update-armed);
                     stepper: false;
                 }
                 Text {
@@ -340,9 +337,9 @@ export component Settings inherits Rectangle {
             // Power: three actions, and the service's answer underneath.
             if root.panel == 6: VerticalLayout {
                 spacing: root.gap;
-                SettingsRow { title: "Power off"; value: ">"; stepper: false; }
-                SettingsRow { title: "Restart"; value: ">"; stepper: false; }
-                SettingsRow { title: "Restart into recovery"; value: root.power-armed ? "OK again" : ">"; stepper: false; }
+                SettingsRow { title: "Power off"; arrow: true; stepper: false; }
+                SettingsRow { title: "Restart"; arrow: true; stepper: false; }
+                SettingsRow { title: "Restart into recovery"; value: root.power-armed ? "OK again" : ""; arrow: !root.power-armed; stepper: false; }
                 Text {
                     text: root.power-message;
                     font-size: 15px;
