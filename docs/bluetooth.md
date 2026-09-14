@@ -66,6 +66,11 @@ driver only offers a character device. Two ways to close the gap:
   pairing, which TVs and streaming boxes generally accept. Verify per target.
 - The controller comes up without a programmed address unless we write the
   recorded `bluetooth_mac` with a vendor command after power-on.
+- Whether a newer Bluetooth core could be backported onto this 3.18 base, and
+  what it would cost, is surveyed in
+  [kernel backports research](kernel-backports-research.md) (`Add Advertising`
+  is 4.1, not 4.2; `backports-4.4.2-1` is the last release that carries
+  Bluetooth at all).
 
 ## Multi-device switching design
 
