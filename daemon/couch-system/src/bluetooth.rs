@@ -70,6 +70,17 @@ fn alpine_sh(script: &str) -> Result<(), String> {
     }
 }
 
+/// Kill every process whose comm is one of NAMES, by walking /proc: busybox
+/// pkill matches argv[0] (a full path for bluetoothd) and `-f` matches the
+/// helper's own `sh -c` line, so neither is usable here.
+fn kill_comm(names: &[&str]) -> Result<(), String> {
+    let script = format!(
+        "for p in /proc/[0-9]*; do c=$(cat $p/comm 2>/dev/null); case \"$c\" in {}) kill \"${{p#/proc/}}\" 2>/dev/null;; esac; done; true",
+        names.join("|")
+    );
+    alpine_sh(&script)
+}
+
 fn wait_for(what: impl Fn() -> bool, steps: u32, step: Duration) -> bool {
     for _ in 0..steps {
         if what() {
@@ -81,10 +92,7 @@ fn wait_for(what: impl Fn() -> bool, steps: u32, step: Duration) -> bool {
 }
 
 fn down() -> Result<(), String> {
-    let result = alpine_sh(
-        "pkill -x couch-bt-hid 2>/dev/null; pkill -x bluetoothd 2>/dev/null; \
-         for p in /proc/[0-9]*; do [ \"$(cat $p/comm 2>/dev/null)\" = couch-bt-bridge ] && kill \"$(basename $p)\" 2>/dev/null; done; true",
-    );
+    let result = kill_comm(&["couch-bt-hid", "bluetoothd", "couch-bt-bridge"]);
     publish("off");
     result
 }
@@ -102,7 +110,8 @@ fn up() -> Result<(), String> {
     // A bluetoothd or HID daemon left over from an earlier bridge holds stale
     // adapter state; when the bridge has to be (re)started, start them fresh.
     if !crate::ui_settings::bridge_running() {
-        alpine_sh("pkill -x couch-bt-hid 2>/dev/null; pkill -x bluetoothd 2>/dev/null; true")?;
+        kill_comm(&["couch-bt-hid", "bluetoothd"])?;
+        thread::sleep(Duration::from_millis(300));
     }
     // Bridge first: opening the transport powers the radio and creates hci0.
     alpine_sh(&format!(

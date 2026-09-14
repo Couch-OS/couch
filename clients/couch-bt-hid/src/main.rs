@@ -481,6 +481,10 @@ async fn main() -> zbus::Result<()> {
     // Wait for bluetoothd to be ready before the one-time registrations.
     if !wait_for_adapter(&conn).await {
         eprintln!("couch-bt-hid: bluetoothd never exported hci0; giving up");
+        let _ = std::fs::write(
+            "/tmp/couch-bt.state",
+            "error Bluetooth started but bluetoothd never saw the controller; turn it off and on again\n",
+        );
         std::process::exit(2);
     }
 
