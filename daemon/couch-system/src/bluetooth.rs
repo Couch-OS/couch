@@ -249,7 +249,15 @@ pub fn set(enabled: bool) -> Result<(), String> {
         return down();
     }
     publish("starting");
-    match up() {
+    // One retry from a clean stop: the first open after boot occasionally
+    // leaves the controller stuck in its setup pass with nothing in the logs,
+    // and a second open has always come up. Cheaper than making the user do it.
+    let result = up().or_else(|first| {
+        let _ = stop_stack(true);
+        thread::sleep(Duration::from_secs(2));
+        up().map_err(|second| format!("{second} (first try: {first})"))
+    });
+    match result {
         Ok(()) => {
             publish("on");
             Ok(())
