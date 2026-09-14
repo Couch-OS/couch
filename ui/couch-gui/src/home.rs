@@ -114,6 +114,33 @@ mod tests {
         assert_eq!(room_power([].into_iter()), -1);
     }
     #[test]
+    fn the_state_plan_resolves_every_device_once_and_names_the_integrations() {
+        let config: Config = serde_json::from_value(serde_json::json!({"schema_version":1,
+            "connections":[{"id":"h","name":"Hue","provider":{"kind":"hue"}},
+                {"id":"a","name":"HA","provider":{"kind":"home-assistant"}}],
+            "rooms":[{"id":"r","name":"Room","devices":[
+                {"id":"l","name":"Lamp","kind":"light","integration":{"via":"connection","connection_id":"h","resource_id":"3"}},
+                {"id":"s","name":"Strip","kind":"light","integration":{"via":"connection","connection_id":"a","resource_id":"light.strip"}},
+                {"id":"t","name":"TV","kind":"tv"}]}]}))
+        .unwrap();
+        let plan = Plan::build(&config);
+        assert!(plan.has_hue && plan.has_ha);
+        assert_eq!(plan.rooms.len(), 1);
+        assert_eq!(plan.rooms[0].0, config.rooms[0].id);
+        assert_eq!(
+            plan.rooms[0].1,
+            vec![
+                Source::Hue("h/3".into()),
+                Source::Ha("a/light.strip".into()),
+                Source::Unknown
+            ]
+        );
+        let mut empty = config.clone();
+        empty.rooms[0].devices.clear();
+        let plan = Plan::build(&empty);
+        assert!(!plan.has_hue && !plan.has_ha);
+    }
+    #[test]
     fn every_room_is_reachable_without_configured_areas() {
         let mut config = Config::seed();
         config.areas.clear();
@@ -128,6 +155,17 @@ mod tests {
                 .map(|r| r.id.clone())
                 .collect::<Vec<_>>()
         );
+    }
+    /// The hub's fallback when there is no configuration at all: the panel
+    /// says so, and every index the shell keeps stays valid behind it.
+    #[test]
+    fn an_empty_configuration_still_projects_one_reachable_area() {
+        let areas = project(&Config::default());
+        assert_eq!(areas.len(), 1);
+        assert!(areas[0].id.is_none());
+        assert!(areas[0].rooms.is_empty());
+        assert!(areas[0].scenes.is_empty());
+        assert!(areas[0].activities.is_empty());
     }
     #[test]
     fn configured_screens_keep_their_room_order() {
@@ -169,9 +207,53 @@ fn room_power(states: impl Iterator<Item = Option<bool>>) -> i32 {
         -1
     }
 }
+/// Where one device's on/off is read from. Anything else stays unknown: an
+/// unreadable device must not let the rest of a room speak for it.
+#[derive(Debug, PartialEq)]
+enum Source {
+    Hue(String),
+    Ha(String),
+    Unknown,
+}
+/// What a state pass needs from the configuration, derived once per snapshot
+/// rather than on every pass: whether the house has either integration at all,
+/// and each room's devices already resolved to their state key.
+#[derive(Debug, Default, PartialEq)]
+struct Plan {
+    has_hue: bool,
+    has_ha: bool,
+    rooms: Vec<(Id, Vec<Source>)>,
+}
+impl Plan {
+    fn build(config: &Config) -> Self {
+        let mut plan = Plan::default();
+        for room in &config.rooms {
+            let sources = room
+                .devices
+                .iter()
+                .map(|d| match config.resolve_integration(&d.integration) {
+                    Some(couch_model::Integration::Hue { light_id }) => {
+                        plan.has_hue = true;
+                        Source::Hue(light_id)
+                    }
+                    Some(couch_model::Integration::HomeAssistant { entity_id }) => {
+                        plan.has_ha = true;
+                        Source::Ha(entity_id)
+                    }
+                    _ => Source::Unknown,
+                })
+                .collect();
+            plan.rooms.push((room.id.clone(), sources));
+        }
+        plan
+    }
+}
 pub struct RoomMonitor {
     rx: std::sync::mpsc::Receiver<std::collections::HashMap<Id, i32>>,
     latest: std::collections::HashMap<Id, i32>,
+    /// The area the rows were last written for; a page change has to write
+    /// them again even when no new map arrived.
+    shown: usize,
 }
 impl RoomMonitor {
     pub fn new(hue: std::sync::Arc<crate::connections::HueFleet>) -> Self {
@@ -183,32 +265,25 @@ impl RoomMonitor {
         std::thread::spawn(move || {
             let mut ha_states = HashMap::new();
             let mut ha_at = Instant::now() - Duration::from_secs(5);
+            // The snapshot the plan was built from. The watcher re-reads and
+            // validates config.json when its stat changes; this loop is a
+            // state poll and must not read or parse the file at all.
+            let (mut seen, mut plan) = (0, Plan::default());
             loop {
-                let config = std::fs::read(path("config.json"))
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<Config>(&bytes).ok());
                 let mut powers = HashMap::new();
-                if let Some(config) = config {
-                    let has_ha = config.devices().any(|(_, d)| {
-                        matches!(
-                            config.resolve_integration(&d.integration),
-                            Some(couch_model::Integration::HomeAssistant { .. })
-                        )
-                    });
-                    if has_ha && ha_at.elapsed() >= Duration::from_secs(5) {
+                if let Some(snapshot) = crate::config_snapshot::current() {
+                    if snapshot.serial != seen {
+                        seen = snapshot.serial;
+                        plan = Plan::build(&snapshot.config);
+                    }
+                    if plan.has_ha && ha_at.elapsed() >= Duration::from_secs(5) {
                         ha_states = crate::connections::ha_lights()
                             .into_iter()
                             .map(|s| (s.entity_id, s.on))
                             .collect();
                         ha_at = Instant::now();
                     }
-                    let has_hue = config.devices().any(|(_, d)| {
-                        matches!(
-                            config.resolve_integration(&d.integration),
-                            Some(couch_model::Integration::Hue { .. })
-                        )
-                    });
-                    let hue_states: HashMap<_, _> = if has_hue {
+                    let hue_states: HashMap<_, _> = if plan.has_hue {
                         hue.lights()
                             .unwrap_or_default()
                             .into_iter()
@@ -217,19 +292,13 @@ impl RoomMonitor {
                     } else {
                         HashMap::new()
                     };
-                    for room in &config.rooms {
+                    for (room, sources) in &plan.rooms {
                         powers.insert(
-                            room.id.clone(),
-                            room_power(room.devices.iter().map(|d| {
-                                match config.resolve_integration(&d.integration) {
-                                    Some(couch_model::Integration::Hue { light_id }) => {
-                                        hue_states.get(&light_id).copied().flatten()
-                                    }
-                                    Some(couch_model::Integration::HomeAssistant { entity_id }) => {
-                                        ha_states.get(&entity_id).copied().flatten()
-                                    }
-                                    _ => None,
-                                }
+                            room.clone(),
+                            room_power(sources.iter().map(|s| match s {
+                                Source::Hue(id) => hue_states.get(id).copied().flatten(),
+                                Source::Ha(id) => ha_states.get(id).copied().flatten(),
+                                Source::Unknown => None,
                             })),
                         );
                     }
@@ -244,13 +313,22 @@ impl RoomMonitor {
         Self {
             rx,
             latest: Default::default(),
+            shown: usize::MAX,
         }
     }
     pub fn poll(&mut self, app: &crate::App, areas: &mut [Area], current: usize) {
         use slint::Model;
+        let mut arrived = false;
         while let Ok(latest) = self.rx.try_recv() {
             self.latest = latest;
+            arrived = true;
         }
+        // Walking every area's every room costs the same whether or not
+        // anything moved, and this runs at the main loop's rate.
+        if !arrived && current == self.shown {
+            return;
+        }
+        self.shown = current;
         let model = app.get_rooms();
         let rows = model.as_any().downcast_ref::<slint::VecModel<RoomRow>>();
         for (area_index, area) in areas.iter_mut().enumerate() {

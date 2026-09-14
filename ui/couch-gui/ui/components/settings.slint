@@ -76,6 +76,7 @@ export component Settings inherits Rectangle {
     // SSH.
     in property <bool> ssh-on;
     in property <bool> ssh-available;          // a key or password is enrolled
+    in property <bool> ssh-busy;               // switching, on a thread
     in property <string> bt-state;             // off, starting, on, error
     in property <bool> bt-available;           // the kernel has Bluetooth at all
     // Updates. The host mirrors the system service's status here.
@@ -298,7 +299,9 @@ export component Settings inherits Rectangle {
                 spacing: root.gap;
                 SettingsRow {
                     title: "SSH access";
-                    value: !root.ssh-available ? "unset" : root.ssh-on ? "ON" : "OFF";
+                    value: !root.ssh-available ? "unset"
+                        : root.ssh-busy ? (root.ssh-on ? "STARTING…" : "STOPPING…")
+                        : root.ssh-on ? "ON" : "OFF";
                     stepper: false;
                 }
             }
