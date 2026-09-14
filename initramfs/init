@@ -187,6 +187,9 @@ main() {
     $BB echo 255 > /sys/class/leds/button-backlight/brightness 2>/dev/null
     $BB sleep 5
   done ) &
+# So the runtime can stop it by pid rather than by guessing its shape
+# (stage2/gui-start.sh). /tmp is shared with the rootfs.
+echo $! > /tmp/backlight-keeper.pid
 mark $((BASE+0)) "S0 init entered"
 
 # Everything the console itself depends on has to be up before the pipeline

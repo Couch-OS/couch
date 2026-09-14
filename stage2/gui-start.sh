@@ -44,13 +44,39 @@ touch /tmp/stay
 # init keeps a loop that rewrites 255 to both backlights every five seconds -
 # a bring-up habit from when the panel seemed to switch itself off (it does
 # not; measured, an unattended level holds). The GUI owns brightness now, so
-# the loop is stopped: it is the child of init whose own child is a `sleep 5`.
-# One pass over /proc rather than one per pair: this core is slow.
-for p in /proc/[0-9]*; do
-    echo "$(basename $p) $(awk '{print $4}' $p/stat 2>/dev/null) $(tr '\0' ' ' < $p/cmdline 2>/dev/null | cut -c1-40)"
-done > /tmp/ptab
-KEEPER=$(awk 'NR==FNR{pp[$1]=$2; next} /sleep 5/{if (pp[pp[$1]]==1) print pp[$1]}' /tmp/ptab /tmp/ptab | head -1)
-[ -n "$KEEPER" ] && kill "$KEEPER" 2>/dev/null && echo "= stopped init's backlight keeper (pid $KEEPER)"
+# the loop is stopped. init records its pid in /tmp/backlight-keeper.pid on
+# images from #135 on; older images are found by shape: the child of init
+# whose own child is a `sleep 5`. That shape only exists while the loop is
+# inside its sleep, so a single scan could land in the gap between sleeps and
+# miss it - and a missed keeper relights the key LEDs every five seconds with
+# the screen off (the LCD write does nothing to a powered-down panel, so only
+# the keys showed it). Scan until found, then confirm it is gone.
+keeper_scan() {
+    for p in /proc/[0-9]*; do
+        echo "$(basename $p) $(awk '{print $4}' $p/stat 2>/dev/null) $(tr '\0' ' ' < $p/cmdline 2>/dev/null | cut -c1-40)"
+    done > /tmp/ptab
+    awk 'NR==FNR{pp[$1]=$2; next} /sleep 5/{if (pp[pp[$1]]==1) print pp[$1]}' /tmp/ptab /tmp/ptab | head -1
+}
+KEEPER=$($BB cat /tmp/backlight-keeper.pid 2>/dev/null)
+[ -n "$KEEPER" ] && [ -d "/proc/$KEEPER" ] || KEEPER=
+n=0
+while [ -z "$KEEPER" ] && [ "$n" -lt 12 ]; do
+    KEEPER=$(keeper_scan)
+    [ -n "$KEEPER" ] || $BB sleep 0.5
+    n=$((n+1))
+done
+if [ -n "$KEEPER" ]; then
+    kill "$KEEPER" 2>/dev/null
+    $BB sleep 0.2
+    if [ -d "/proc/$KEEPER" ]; then
+        kill -9 "$KEEPER" 2>/dev/null
+        echo "= init's backlight keeper (pid $KEEPER) needed SIGKILL"
+    else
+        echo "= stopped init's backlight keeper (pid $KEEPER)"
+    fi
+else
+    echo "= init's backlight keeper not found after $n scans; the key LEDs may relight every 5 s"
+fi
 [ -w /proc/hps/num_base_perf_serv ] && echo 3 > /proc/hps/num_base_perf_serv
 for c in 1 2; do [ -w /sys/devices/system/cpu/cpu$c/online ] && echo 1 > /sys/devices/system/cpu/cpu$c/online; done
 if [ -x "$GUI" ]; then
