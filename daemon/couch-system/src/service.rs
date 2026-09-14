@@ -210,7 +210,22 @@ fn handle_updates(
         }
         Request::UpdateRestart => {
             let result = if updates.ready() {
-                couch_updates::activate(std::path::Path::new("/mnt/alpine/opt/couch"))
+                couch_updates::activate(std::path::Path::new("/mnt/alpine/opt/couch")).and_then(
+                    |()| {
+                        // Init arms recovery at every boot and clears it only
+                        // after health checks that begin 90 s in. An install
+                        // pressed before then rebooted into recovery (.140.dev,
+                        // 2026-09-14); the next boot arms the flag again itself.
+                        couch_system::power::clear_recovery(std::path::Path::new(
+                            couch_system::power::BCB,
+                        ))
+                        .map_err(|e| {
+                            format!(
+                                "Update applied but the recovery flag could not be cleared: {e}"
+                            )
+                        })
+                    },
+                )
             } else {
                 Err("No verified update is ready".into())
             };
