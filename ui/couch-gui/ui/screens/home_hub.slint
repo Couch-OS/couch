@@ -23,7 +23,7 @@ export struct RoomRow {
     status-known: bool,
     idle: bool,
     offline: bool,
-    dimmed: bool,       // Study in the reference: idle and recessed further
+    dimmed: bool,       // On, but every light reporting a level is under half
     // A Lucide icon, see RoomIcon: 0 sofa, 1 bed, 2 cooking pot, 3 open book,
     // 4 open door, 5 car, 6 trees, 7 lamp, 8 tv, anything else a house.
     glyph: int,
@@ -391,8 +391,12 @@ component AreaPane inherits Rectangle {
                                             : (area.active-count + " ON");
                                         font-size: 14px;
                                         horizontal-alignment: right;
+                                        // A dim room is on, so it keeps the
+                                        // accent and only loses weight; the
+                                        // idle branch has no level to recess.
                                         color: area.offline ? Theme.text-quaternary
-                                            : area.idle ? (area.dimmed ? Theme.text-disabled : Theme.text-quaternary)
+                                            : area.idle ? Theme.text-quaternary
+                                            : area.dimmed ? Theme.accent.with-alpha(0.55)
                                             : Theme.accent;
                                     }
                                 }
