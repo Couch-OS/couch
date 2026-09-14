@@ -1,6 +1,6 @@
 //! Task-oriented entry points over the existing configuration model.
 use crate::{api, route::Route, ui, App};
-use couch_model::{Config, Integration};
+use couch_model::Integration;
 use leptos::prelude::*;
 use serde_json::json;
 
@@ -17,31 +17,44 @@ fn destination(
     </button> }.into_any()
 }
 
-pub fn overview(app: App, config: &Config) -> AnyView {
-    let unconnected = config
-        .devices()
-        .filter(|(_, d)| matches!(d.integration, Integration::None))
-        .count();
-    let hidden_rooms = config
-        .rooms
-        .iter()
-        .filter(|r| !config.areas.iter().any(|a| a.rooms.contains(&r.id)))
-        .count();
+/// Read-only, so the minimal conversion: mounted once, every count read inside
+/// its own closure.
+pub fn overview(app: App) -> AnyView {
+    let rooms = move || app.rooms.with(Vec::len);
+    let devices = move || app.devices.with(Vec::len);
+    let areas = move || app.areas.with(Vec::len);
+    let unconnected = move || {
+        app.devices.with(|all| {
+            all.iter()
+                .filter(|(_, d)| matches!(d.integration, Integration::None))
+                .count()
+        })
+    };
+    let hidden_rooms = move || {
+        app.areas.with(|areas| {
+            app.rooms.with(|rooms| {
+                rooms
+                    .iter()
+                    .filter(|r| !areas.iter().any(|a| a.rooms.contains(&r.id)))
+                    .count()
+            })
+        })
+    };
     view! {
         <div class="hero"><p class="eyebrow">"MAKE IT YOUR REMOTE"</p><h1>"A home that makes sense."</h1>
         <p>"Add the things you control, decide what they do together, then arrange your remote’s screens."</p></div>
-        <section class="notice"><strong>"Your remote’s configuration"</strong><p>{format!("{} rooms · {} devices · {} areas", config.rooms.len(), config.devices().count(), config.areas.len())}</p></section>
+        <section class="notice"><strong>"Your remote’s configuration"</strong><p>{move ||format!("{} rooms · {} devices · {} areas", rooms(), devices(), areas())}</p></section>
         <h2 class="section">"Set up your remote"</h2>
         <div class="destination-grid">
             {destination(app, Route::Connections, "01 · Connections", "Add your Kodi players, Home Assistant server, Hue bridge or infrared connection.")}
-            {destination(app, Route::Rooms, "02 · Rooms & devices", format!("Create a room, then choose devices from saved connections. {} rooms · {} devices", config.rooms.len(), config.devices().count()))}
+            {destination(app, Route::Rooms, "02 · Rooms & devices", move ||format!("Create a room, then choose devices from saved connections. {} rooms · {} devices", rooms(), devices()))}
             {destination(app, Route::Activities, "03 · Activities & scenes", "Activities describe what you do, such as Watch TV. Scenes collect commands, such as Movie night.")}
-            {destination(app, Route::Areas, "04 · Areas", format!("An area is a screen. Choose its rooms, activity strip and scene shortcuts. {} areas", config.areas.len()))}
+            {destination(app, Route::Areas, "04 · Areas", move ||format!("An area is a screen. Choose its rooms, activity strip and scene shortcuts. {} areas", areas()))}
         </div>
-        {(unconnected > 0 || hidden_rooms > 0).then(|| view! { <h2 class="section">"Finish setting up"</h2> })}
+        {move ||(unconnected() > 0 || hidden_rooms() > 0).then(|| view! { <h2 class="section">"Finish setting up"</h2> })}
         <div class="destination-grid">
-            {(unconnected > 0).then(|| destination(app, Route::Connections, format!("{unconnected} devices without a connection"), "A connection chooses how a client reaches a device: Kodi, Home Assistant or infrared."))}
-            {(hidden_rooms > 0).then(|| destination(app, Route::Rooms, format!("{hidden_rooms} rooms not on a screen"), "Rooms can appear on several area screens. Editing a shared room updates it everywhere."))}
+            {move ||(unconnected() > 0).then(|| destination(app, Route::Connections, format!("{} devices without a connection", unconnected()), "A connection chooses how a client reaches a device: Kodi, Home Assistant or infrared."))}
+            {move ||(hidden_rooms() > 0).then(|| destination(app, Route::Rooms, format!("{} rooms not on a screen", hidden_rooms()), "Rooms can appear on several area screens. Editing a shared room updates it everywhere."))}
         </div>
         <section class="card"><h2>"How the pieces fit"</h2><p>"Connections reach servers and bridges. Rooms contain devices from those connections. Activity → room, source device and startup steps. Scene → an ordered list of device commands. Area → the rooms, activities and scenes you want on one screen."</p>
         <p class="dim">"Names and ordering save when changed. Device forms have an explicit Save button. Removing an item from a screen keeps the original; deleting it removes it from the home."</p></section>

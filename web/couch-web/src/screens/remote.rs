@@ -1,12 +1,16 @@
 use crate::{api, ui, App};
-use couch_model::{Config, RemoteSettings};
+use couch_model::RemoteSettings;
 use leptos::{prelude::*, task::spawn_local};
 
-pub fn screen(app: App, config: &Config) -> AnyView {
-    let timezone = RwSignal::new(config.remote.timezone.clone());
-    let clock = RwSignal::new(config.remote.clock_24h);
-    let dock = RwSignal::new(config.remote.dock_clock);
-    let lift = RwSignal::new(config.remote.wake_on_lift);
+/// The four settings are a draft with one Save button, seeded from the saved
+/// record once. The screen used to be rebuilt after every write, which reset
+/// the draft and asked the daemon for the timezone list all over again.
+pub fn screen(app: App) -> AnyView {
+    let saved = app.remote.get_untracked();
+    let timezone = RwSignal::new(saved.timezone);
+    let clock = RwSignal::new(saved.clock_24h);
+    let dock = RwSignal::new(saved.dock_clock);
+    let lift = RwSignal::new(saved.wake_on_lift);
     let zones = RwSignal::new(vec!["UTC".to_string()]);
     let error = RwSignal::new(String::new());
     spawn_local(async move {
@@ -37,7 +41,7 @@ pub fn screen(app: App, config: &Config) -> AnyView {
         <p class="dim">"Lift the resting remote to restore the screen. Touch and button wake remain available."</p>
         <p role="alert">{move ||error.get()}</p><button class="primary" disabled=move ||app.busy.get() on:click=move |_|app.run(api::put("/api/remote",RemoteSettings{timezone:timezone.get_untracked(),clock_24h:clock.get_untracked(),dock_clock:dock.get_untracked(),wake_on_lift:lift.get_untracked()}))>"Save remote settings"</button>
         </section>
-        {super::appearance::editor(app,config)}
+        {super::appearance::editor(app)}
         {super::remote_device::sections(app)}
     }.into_any()
 }

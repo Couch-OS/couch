@@ -46,11 +46,11 @@ pub fn provide_editor_state() {
 
 pub fn render(app: App, route: Route) -> AnyView {
     match route {
-        Route::Overview => keyed(app, overview::overview),
+        Route::Overview => overview::overview(app),
         Route::Rooms => overview::rooms(app),
         Route::Connections => overview::connections(app),
         Route::Connection(id) => connections::detail(app, id),
-        Route::Settings => keyed(app, remote::screen),
+        Route::Settings => remote::screen(app),
         Route::Updates => updates::screen(app),
         Route::Areas => keyed(app, areas::list),
         Route::Area(id) => keyed(app, move |app, c| areas::detail(app, c, &id)),
