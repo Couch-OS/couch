@@ -1,20 +1,34 @@
 import { Theme } from "../theme.slint";
 
-// Shown while, and only while, the microphone is open.
+// Shown while the microphone is open, and for a moment afterwards with what
+// Home Assistant heard and said.
 //
 // Unmissable on purpose. A device with a microphone in someone's living room
 // owes them an obvious answer to "is it listening", and a discreet indicator is
-// a worse answer than none - it trains people not to look. The bar is driven
-// from the capture thread's own liveness, so it cannot be lit while the
-// microphone is shut, or dark while it is open.
+// a worse answer than none - it trains people not to look. The red bar and the
+// meter are driven from the capture thread's own liveness, so they cannot be
+// lit while the microphone is shut, or dark while it is open. Once the device
+// is closed the card turns to the result, in the accent, with no red anywhere.
 export component MicOverlay inherits Rectangle {
     in property <bool> shown: false;
+    /// The microphone is open. Red while true; never red otherwise.
+    in property <bool> recording: false;
     in property <float> level;      // 0..1
     /// Tapped rather than held, so it stays on until the next press.
     in property <bool> latched: false;
+    /// "connecting" | "listening" | "thinking" | "done" | "failed".
+    in property <string> phase: "listening";
+    in property <string> phase-label: "LISTENING";
+    /// "keyboard" while dictating into the on-screen keyboard.
+    in property <string> target: "assistant";
+    in property <string> heard;
+    in property <string> said;
+    in property <string> detail;    // an error, or where the audio goes
 
     visible: root.shown;
     background: #000000E0;
+
+    property <color> tone: root.recording ? #E04030 : root.phase == "failed" ? Theme.text-tertiary : Theme.accent;
 
     VerticalLayout {
         alignment: center;
@@ -27,7 +41,7 @@ export component MicOverlay inherits Rectangle {
             background: Theme.surface-raised;
             border-radius: Theme.r-card;
             border-width: 2px;
-            border-color: #E04030;
+            border-color: root.tone;
             HorizontalLayout {
                 alignment: center;
                 spacing: 14px;
@@ -36,13 +50,13 @@ export component MicOverlay inherits Rectangle {
                     Rectangle {
                         width: 22px; height: 22px;
                         border-radius: 11px;
-                        background: #E04030;
+                        background: root.tone;
                     }
                 }
                 VerticalLayout {
                     alignment: center;
                     Text {
-                        text: "LISTENING";
+                        text: root.phase-label;
                         font-size: 26px;
                         font-weight: 700;
                         letter-spacing: 2px;
@@ -54,8 +68,8 @@ export component MicOverlay inherits Rectangle {
 
         // The meter is the honest part: it moves with what the capsule hears,
         // so a microphone that is open but deaf looks different from one that
-        // is working.
-        Rectangle {
+        // is working. It is only there while the device is.
+        if root.recording: Rectangle {
             height: 12px;
             background: Theme.surface;
             border-radius: 6px;
@@ -69,12 +83,42 @@ export component MicOverlay inherits Rectangle {
             }
         }
 
+        // What was heard, and what came back. Filled in as the events arrive,
+        // so a transcript shows while the assistant is still thinking.
+        if root.heard != "": Text {
+            text: "“" + root.heard + "”";
+            font-size: 23px;
+            font-weight: 600;
+            color: Theme.text;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+        if root.said != "": Text {
+            text: root.said;
+            font-size: 21px;
+            color: Theme.accent;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+        if root.detail != "": Text {
+            text: root.detail;
+            font-size: 18px;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+
         Text {
-            text: root.latched ? "Press the mic key again to finish."
-                               : "Release the mic key to finish.";
+            text: root.recording
+                ? (root.latched ? "Press the mic key again to finish." : "Release the mic key to finish.")
+                  + (root.target == "keyboard" ? "  Your words go into the keyboard." : "")
+                : root.phase == "thinking" ? "Waiting for Home Assistant…"
+                : root.target == "keyboard" && root.phase == "done" ? "Added to the keyboard."
+                : "";
             font-size: 19px;
             color: Theme.text-secondary;
             horizontal-alignment: center;
+            wrap: word-wrap;
         }
     }
 }

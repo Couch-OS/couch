@@ -488,6 +488,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The panel is a touchscreen too. Slint does the hit testing once the
     // pointer events are fed in, so this is only a translation layer.
     let mut mic = mic::Mic::new();
+    // The result card after a voice run stays up until this instant.
+    let mut mic_result_until: Option<u64> = None;
     // Push to talk, with a latch. Hold the key and it records while held;
     // tap it and it stays on until the next tap. The button is small and the
     // thing being dictated is a sentence, so insisting on a hold would be a
@@ -860,7 +862,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // microphone and nothing else, so there is no screen on which it
             // means something different.
             match physical_input.microphone(press.mic, now_monotonic_us(), mic.recording()) {
-                input::MicAction::Start => mic.start(),
+                input::MicAction::Start => {
+                    // With the keyboard up the words are for its field; anywhere
+                    // else they are a request to the house.
+                    let target = if app.get_keyboard_shown() { mic::Target::Dictation } else { mic::Target::Assistant };
+                    mic_result_until = None;
+                    app.set_mic_result_shown(false);
+                    app.set_mic_target(if target == mic::Target::Dictation { "keyboard" } else { "assistant" }.into());
+                    app.set_mic_heard("".into());
+                    app.set_mic_said("".into());
+                    app.set_mic_detail("".into());
+                    mic.start(target, connections::ha_assist());
+                }
                 input::MicAction::Stop => mic.stop(),
                 input::MicAction::None => {},
             }
@@ -927,6 +940,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if mic.recording() {
             app.set_mic_level(mic.meter());
+        }
+        if mic.recording() || app.get_mic_result_shown() {
+            let progress = mic.progress();
+            if let Some(phase) = progress.phase {
+                if app.get_mic_phase() != phase.name() {
+                    app.set_mic_phase(phase.name().into());
+                    app.set_mic_phase_label(phase.label().into());
+                }
+            }
+            if app.get_mic_heard() != progress.heard.as_str() { app.set_mic_heard(progress.heard.as_str().into()); }
+            if app.get_mic_said() != progress.said.as_str() { app.set_mic_said(progress.said.as_str().into()); }
+            if app.get_mic_detail() != progress.detail.as_str() { app.set_mic_detail(progress.detail.as_str().into()); }
+        }
+        if let Some(outcome) = mic.take_outcome() {
+            let now = now_monotonic_us();
+            match outcome {
+                mic::Outcome::Dictated(words) => {
+                    if app.get_keyboard_shown() {
+                        app.invoke_dictate(words.as_str().into());
+                        // The words are in the field; a short card confirms it.
+                        mic_result_until = Some(now + 1_500_000);
+                    } else {
+                        // The keyboard went away while the run finished: say
+                        // what was heard rather than lose it silently.
+                        app.set_mic_detail("The keyboard closed; nothing was entered.".into());
+                        mic_result_until = Some(now + 5_000_000);
+                    }
+                    app.set_mic_result_shown(true);
+                }
+                mic::Outcome::Answered { .. } => {
+                    mic_result_until = Some(now + 7_000_000);
+                    app.set_mic_result_shown(true);
+                }
+                mic::Outcome::Failed(reason) => {
+                    app.set_mic_detail(reason.into());
+                    mic_result_until = Some(now + 5_000_000);
+                    app.set_mic_result_shown(true);
+                }
+                mic::Outcome::NoAssistant => {
+                    // The recording went to the scratch file; the detail says
+                    // what to configure.
+                    mic_result_until = Some(now + 5_000_000);
+                    app.set_mic_result_shown(true);
+                }
+            }
+        }
+        if mic_result_until.is_some_and(|t| now_monotonic_us() >= t) {
+            mic_result_until = None;
+            app.set_mic_result_shown(false);
         }
         physical_input.sync_microphone(mic.recording());
         if app.get_mic_latched() != physical_input.latched() {
@@ -1128,7 +1190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Standby. Anything a person is looking at or waiting on holds
             // the panel awake and restarts the clock; otherwise it dims, then
             // powers down, on the two idle timers.
-            let hold = app.get_activity_busy() || app.get_activity_keep_awake() || app.get_pair_shown() || mic.recording() || app.get_setup_mode() || app.get_wifi_setup_shown() || app.get_keyboard_shown();
+            let hold = app.get_activity_busy() || app.get_activity_keep_awake() || app.get_pair_shown() || mic.recording() || app.get_mic_result_shown() || app.get_setup_mode() || app.get_wifi_setup_shown() || app.get_keyboard_shown();
             let mut idle = now.saturating_sub(last_input);
             // The panel is meant to be showing something in every state but
             // Off. If the driver says it is asleep anyway - it has happened,

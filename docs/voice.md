@@ -14,6 +14,36 @@ Two crates' worth of work in one: `clients/couch-voice/` builds `couch-voice`,
 which records and talks to Home Assistant, and `couch-mic`, which only records
 and has no network code in it at all.
 
+## On the remote
+
+Wired into `couch-gui` (`ui/couch-gui/src/mic.rs`) as of #133. Hold the
+microphone key, or tap it to latch, and the capture streams to the Assist
+pipeline of the **first saved Home Assistant connection** (Connections → Home
+Assistant in the web UI; its URL and long-lived token) while you speak. Two
+uses, chosen by what is on screen when the key goes down:
+
+- **The on-screen keyboard is open:** the run stops at speech-to-text and the
+  words are appended to the keyboard's field. Dictating a search beats spelling
+  it on a D-pad.
+- **Anywhere else:** the run continues to the intent stage. The overlay shows
+  what was heard and what the assistant said back, for a few seconds.
+
+The overlay is the contract below made real: red border and dot only while the
+device is open, a level meter only while the device is open, and the phase in
+words (CONNECTING, LISTENING, THINKING, HEARD, VOICE FAILED). Home Assistant's
+voice activity detection ends the stream on 0.7 s of silence; the remote trips
+its own stop handle when that happens so a latched key does not keep the
+microphone open for a transcript that is already in. With no Home Assistant
+connection the key still records to `/tmp/couch-voice.wav` (the microphone
+probe) and the overlay says what to configure. An `https://` Home Assistant
+URL is refused with a message: the client speaks plain WebSocket only, see
+`wss://` below. Nothing is written to disk when a hub is configured.
+
+Not done yet: registering the remote as a Home Assistant device so the
+assistant knows which room "the light" is in (`Options.device_id`), choosing a
+pipeline other than the preferred one, and resolving a dictated title against
+the Kodi library as the accuracy section proposes.
+
 ## Is speech-to-text even realistic here? Yes, and not on this device
 
 Two questions that get confused with each other. *Can this remote do speech to
