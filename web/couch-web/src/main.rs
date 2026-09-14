@@ -166,7 +166,7 @@ fn Shell() -> impl IntoView {
             <a class="brand" href="/">"couch."</a>
             <span class="spacer"></span>
             <span class="status" role="status" aria-live="polite">
-                {move || if app.busy.get() { "Saving…" } else if app.error.get().is_some() { "Not saved" } else if app.config.get().is_some() { "Saved" } else { "" }}
+                {move || if app.busy.get() { "Saving…" } else if app.error.get().is_some() { "Not saved" } else if app.config.with(|c| c.is_some()) { "Saved" } else { "" }}
             </span>
             <Show when=move || app.paired.get() == Some(true)>
                 <button
@@ -202,7 +202,7 @@ fn Shell() -> impl IntoView {
                     None => view! { <p class="dim pad">"Loading your configuration…"</p> }.into_any(),
                     // Untracked: `revision` above is what says when to draw the
                     // document again.
-                    Some(_) => view! { <fieldset class="editor" disabled=move || app.busy.get()>{app.config.get_untracked().map(|config| screens::render(app, &config, route.get()))}</fieldset> }.into_any(),
+                    Some(_) => view! { <fieldset class="editor" disabled=move || app.busy.get()>{app.config.with_untracked(|c| c.as_ref().map(|config| screens::render(app, config, route.get())))}</fieldset> }.into_any(),
                 },
             }}
         </main>

@@ -107,18 +107,16 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
     let Some(activity) = config.activity(id) else {
         return super::gone(app, "That activity has been deleted.");
     };
-    let mut activity = activity.clone();
-    activity.setup.devices = members(&activity);
-    let activity = StoredValue::new(activity);
-    let cfg = StoredValue::new(config.clone());
+    let mut current = activity.clone();
+    current.setup.devices = members(&current);
+    // One copy, for the handlers that have to send a whole activity back. The
+    // render reads `current`, rather than taking a copy of the activity per
+    // field and per device row.
+    let activity = StoredValue::new(current.clone());
     let save =
         move |next: Activity| app.run(api::put(format!("/api/activities/{}", next.id), next));
-    let name_base = activity.get_value();
-    let description_base = name_base.clone();
-    let room_base = name_base.clone();
-    let awake_base = name_base.clone();
     let devices=config.devices().map(|(r,d)| {
-        let id=d.id.clone();let label=d.name.clone();let room=r.name.clone();let checked=activity.get_value().setup.devices.contains(&id);
+        let id=d.id.clone();let label=d.name.clone();let room=r.name.clone();let checked=current.setup.devices.contains(&id);
         view!{<label class="activity-device-choice"><input type="checkbox" checked=checked disabled=move ||app.busy.get() on:change=move |ev|{
             let mut next=activity.get_value();
             if event_target_checked(&ev) {if !next.setup.devices.contains(&id){next.setup.devices.push(id.clone());}}
@@ -129,33 +127,33 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
     let tabs=[("setup","Devices & sequences"),("buttons","Physical buttons"),("screen","Remote screen")].into_iter().map(|(id,label)|view!{
         <button class:selected=move ||tab.get()==id on:click=move |_|tab.set(id.into())>{label}</button>
     }).collect_view();
-    let screen = screen_editor(app, config, &activity.get_value());
+    let screen = screen_editor(app, config, &current);
     let mut mapped_config = config.clone();
     for room in &mut mapped_config.rooms {
         room.devices
-            .retain(|d| activity.get_value().setup.devices.contains(&d.id));
+            .retain(|d| current.setup.devices.contains(&d.id));
     }
-    let mappings = super::activity_buttons::editor(app, &mapped_config, &activity.get_value());
-    let sequence = super::activity_sequences::editor(app, config, &activity.get_value());
+    let mappings = super::activity_buttons::editor(app, &mapped_config, &current);
+    let sequence = super::activity_sequences::editor(app, config, &current);
     view! {
-        {ui::page_header(app,activity.get_value().name,Some(Route::Activities))}
+        {ui::page_header(app,current.name.clone(),Some(Route::Activities))}
         <nav class="activity-tabs" aria-label="Activity configuration">{tabs}</nav>
         <div style:display=move ||if tab.get()=="setup"{""}else{"none"}>
             <div class="activity-workbench">
                 <aside class="card activity-overview">
                     <h2>"Activity"</h2>
-                    {ui::text_field("Name",name_base.name.clone(),"Watch TV",move |name|save(Activity{name,..name_base.clone()}))}
-                    {ui::text_field("Description",description_base.setup.description.clone(),"TV, receiver and room lighting",move |description|{let mut a=description_base.clone();a.setup.description=description;save(a);})}
-                    <label class="field"><span class="label">"Room"</span><select aria-label="Activity room" on:change=move |ev|{let mut a=room_base.clone();a.room=Id::new(event_target_value(&ev));save(a);}>
-                        {config.rooms.iter().map(|r|view!{<option value=r.id.to_string() selected=r.id==activity.get_value().room>{r.name.clone()}</option>}).collect_view()}
+                    {ui::text_field("Name",current.name.clone(),"Watch TV",move |name|{let mut a=activity.get_value();a.name=name;save(a);})}
+                    {ui::text_field("Description",current.setup.description.clone(),"TV, receiver and room lighting",move |description|{let mut a=activity.get_value();a.setup.description=description;save(a);})}
+                    <label class="field"><span class="label">"Room"</span><select aria-label="Activity room" on:change=move |ev|{let mut a=activity.get_value();a.room=Id::new(event_target_value(&ev));save(a);}>
+                        {config.rooms.iter().map(|r|view!{<option value=r.id.to_string() selected=r.id==current.room>{r.name.clone()}</option>}).collect_view()}
                     </select></label>
-                    <label class="activity-device-choice"><input type="checkbox" checked=awake_base.setup.keep_awake disabled=move ||app.busy.get() on:change=move |ev|{let mut a=awake_base.clone();a.setup.keep_awake=event_target_checked(&ev);save(a);}/><span>"Keep remote awake while running"</span></label>
+                    <label class="activity-device-choice"><input type="checkbox" checked=current.setup.keep_awake disabled=move ||app.busy.get() on:change=move |ev|{let mut a=activity.get_value();a.setup.keep_awake=event_target_checked(&ev);save(a);}/><span>"Keep remote awake while running"</span></label>
                     <h3>"Included devices"</h3><p class="dim">"Only these devices appear in the command and button pickers."</p>
                     <div class="activity-device-list">{devices}</div>
                 </aside>
                 {sequence}
             </div>
-            {(!activity.get_value().steps.is_empty()).then(||view!{<section class="card"><h3>"Previous startup draft"</h3><p class="dim">"These older commands were never executed. Recreate the ones you want in the on sequence; they are retained here for reference."</p><ul>{activity.get_value().steps.into_iter().map(|s|view!{<li>{format!("{} · {}",super::device_name(&cfg.get_value(),&s.device),s.command)}</li>}).collect_view()}</ul></section>})}
+            {(!current.steps.is_empty()).then(||view!{<section class="card"><h3>"Previous startup draft"</h3><p class="dim">"These older commands were never executed. Recreate the ones you want in the on sequence; they are retained here for reference."</p><ul>{current.steps.iter().map(|s|view!{<li>{format!("{} · {}",super::device_name(config,&s.device),s.command)}</li>}).collect_view()}</ul></section>})}
         </div>
         <div style:display=move ||if tab.get()=="buttons"{""}else{"none"}>{mappings}</div>
         <div style:display=move ||if tab.get()=="screen"{""}else{"none"}>{screen}</div>

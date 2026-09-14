@@ -1,6 +1,7 @@
 use crate::{api, App};
 use couch_model::{Action, Activity, Config, Provider, SequenceStep};
 use leptos::prelude::*;
+use std::sync::Arc;
 
 /// Which sequence is being edited, and the two boxes that filter its command
 /// library.
@@ -29,7 +30,9 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
     let ir_commands=super::device_commands::Commands::new(config);
     let editing = expect_context::<State>();
     let base = StoredValue::new(activity.clone());
-    let cfg = StoredValue::new(config.clone());
+    // Reference counted: the step list and the command library both read the
+    // whole document, once per step and once per keystroke.
+    let cfg = StoredValue::new(Arc::new(config.clone()));
     let save =
         move |next: Activity| app.run(api::put(format!("/api/activities/{}", next.id), next));
     let dynamic = RwSignal::new(Vec::<(String, String)>::new());
