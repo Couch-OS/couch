@@ -6,6 +6,7 @@ mod release;
 mod staging;
 pub use release::{Channel, Manifest, SignedManifest};
 use serde::{Deserialize, Serialize};
+pub use staging::collect;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},

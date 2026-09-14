@@ -73,8 +73,13 @@ bootstrap and is not carried by runtime updates, so the fix ships only with a ne
 full OS image.
 An interrupted pointer preparation can be retried after boot clears its pending
 journal; the updater reclaims only its stale temporary symlink.
-Completed slots are retained; automatic slot garbage collection is not yet
-implemented. Do not manually remove the active or previous slot.
+The system service prunes runtime slots once, before it serves its first
+request: the active slot, the one kept for rollback (`runtime/previous`, written
+by the bootstrap when a candidate is accepted) and a staged candidate are kept,
+and every other slot directory is removed. Nothing is pruned while a candidate
+still awaits its boot confirmation, and only names that are slot ids are
+considered, so the private staging temporary survives. Do not manually remove
+the active or previous slot.
 
 ## Boot image updates
 

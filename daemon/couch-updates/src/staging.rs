@@ -310,6 +310,67 @@ pub fn activate(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Drop runtime slots no boot can select any more: everything but the active
+/// slot, the one slot kept for rollback, and a candidate that is staged or
+/// still awaiting its boot confirmation. Names that are not slot ids (the
+/// private staging temporary) are never touched, and neither is anything but a
+/// directory. The caller must run this where no install can be in flight.
+pub fn collect(root: &Path) -> Result<Vec<String>> {
+    let runtime = root.join("runtime");
+    // A candidate that has not yet passed its boot health gate can still be
+    // rolled back to the slot its journal names; leave everything alone.
+    if runtime.join("pending").exists() {
+        return Ok(Vec::new());
+    }
+    let mut keep = BTreeSet::new();
+    match fs::read_link(runtime.join("current")) {
+        Ok(path) => {
+            let current = path
+                .to_str()
+                .and_then(|s| s.strip_prefix("slots/"))
+                .filter(|s| id(s))
+                .ok_or("Invalid active runtime pointer")?;
+            keep.insert(current.to_owned());
+        }
+        // No pointer means the base runtime is active, which is not a slot.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Could not inspect current runtime".into()),
+    }
+    // `previous` is written by the boot bootstrap once a candidate is accepted;
+    // `staged` names a verified candidate that has not been activated yet.
+    for name in ["previous", "staged"] {
+        if let Ok(text) = fs::read_to_string(runtime.join(name)) {
+            keep.insert(text.trim().to_owned());
+        }
+    }
+    let slots = runtime.join("slots");
+    let entries = match fs::read_dir(&slots) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("Could not inspect runtime slots".into()),
+    };
+    let mut removed = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| "Could not inspect runtime slot")?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str().filter(|n| id(n)) else {
+            continue;
+        };
+        if keep.contains(name) || !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        fs::remove_dir_all(entry.path()).map_err(|_| "Could not remove a runtime slot")?;
+        removed.push(name.to_owned());
+    }
+    if !removed.is_empty() {
+        fs::File::open(&slots)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| "Could not flush runtime slots")?;
+    }
+    removed.sort();
+    Ok(removed)
+}
+
 pub(crate) fn required_names() -> Vec<String> {
     REQUIRED.iter().map(|s| s.to_string()).collect()
 }
@@ -536,6 +597,50 @@ mod tests {
         assert!(!extra("bin/couch-bt-bridge", 0o755));
         assert!(!extra("couch-../shadow", 0o755));
         assert!(!extra("bridge", 0o755));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn collection_removes_only_slots_no_boot_can_select() {
+        let (root, m, bytes) = fixture();
+        unpack(&root, &m, &bytes).unwrap();
+        atomic(&root.join("runtime/staged"), m.sha256.as_bytes()).unwrap();
+        activate(&root).unwrap();
+        let slots = root.join("runtime/slots");
+        let (old, previous, staged) = ("1".repeat(64), "2".repeat(64), "3".repeat(64));
+        for name in [&old, &previous, &staged] {
+            fs::create_dir(slots.join(name)).unwrap();
+        }
+        let work = slots.join(format!(".staging-{}", std::process::id()));
+        fs::create_dir(&work).unwrap();
+        // The candidate has not passed its boot health gate yet.
+        assert!(collect(&root).unwrap().is_empty());
+        fs::remove_file(root.join("runtime/pending")).unwrap();
+        fs::write(root.join("runtime/previous"), format!("{previous}\n")).unwrap();
+        atomic(&root.join("runtime/staged"), staged.as_bytes()).unwrap();
+        assert_eq!(collect(&root).unwrap(), vec![old.clone()]);
+        assert!(!slots.join(&old).exists());
+        for kept in [&m.sha256, &previous, &staged] {
+            assert!(slots.join(kept).is_dir());
+        }
+        assert!(work.is_dir());
+        assert!(collect(&root).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn collection_refuses_an_unreadable_pointer_and_touches_nothing_else() {
+        let (root, _, _) = fixture();
+        let slots = root.join("runtime/slots");
+        fs::create_dir_all(&slots).unwrap();
+        let (stale, file) = ("a".repeat(64), "b".repeat(64));
+        fs::create_dir(slots.join(&stale)).unwrap();
+        fs::write(slots.join(&file), b"not a slot").unwrap();
+        symlink("slots/nowhere", root.join("runtime/current")).unwrap();
+        assert!(collect(&root).is_err());
+        assert!(slots.join(&stale).is_dir());
+        // No pointer at all is the base runtime: no slot is in use.
+        fs::remove_file(root.join("runtime/current")).unwrap();
+        assert_eq!(collect(&root).unwrap(), vec![stale]);
+        assert!(slots.join(&file).is_file());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
