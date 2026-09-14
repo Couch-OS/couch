@@ -179,11 +179,17 @@ fn listed(release: &serde_json::Value, tag: &str, name: &str) -> Result<Option<L
         .as_u64()
         .filter(|n| *n > 0 && *n <= 256 * 1024)
         .ok_or("Invalid update manifest size")?;
-    let digest = asset["digest"]
+    // A release GitHub has attached no digest to is skipped, not an error: the
+    // caller loops over every release, so failing here hid every older, signed
+    // release behind one `phase: "error"`. The digest itself stays mandatory.
+    let Some(digest) = asset["digest"]
         .as_str()
         .and_then(|s| s.strip_prefix("sha256:"))
-        .ok_or("Update manifest has no asset digest")?
-        .to_owned();
+    else {
+        eprintln!("couch-updates: {tag}: {name} has no asset digest, skipping the release");
+        return Ok(None);
+    };
+    let digest = digest.to_owned();
     Ok(Some(Listed {
         tag: tag.to_owned(),
         url,
@@ -255,6 +261,29 @@ pub(crate) fn discover(channel: Channel, installed: &str, key_path: &Path) -> Re
 mod tests {
     use super::*;
     use ed25519_dalek::Signer;
+    #[test]
+    fn a_release_without_an_asset_digest_is_skipped_not_an_error() {
+        let tag = "v0.1.0-alpha.20260914.9";
+        let name = format!("couch-{tag}-ha100-update.json");
+        let mut release = serde_json::json!({
+            "assets": [{
+                "name": name,
+                "browser_download_url": format!("{PREFIX}{tag}/{name}"),
+                "size": 512,
+                "digest": format!("sha256:{}", "a".repeat(64)),
+            }]
+        });
+        let found = listed(&release, tag, &name).unwrap().unwrap();
+        assert_eq!(found.digest, "a".repeat(64));
+        release["assets"][0]["digest"] = serde_json::Value::Null;
+        assert!(listed(&release, tag, &name).unwrap().is_none());
+        // A size that cannot be right is still the whole check's problem: it
+        // means the listing itself is not what this code was written against.
+        release["assets"][0]["digest"] = serde_json::json!(format!("sha256:{}", "a".repeat(64)));
+        release["assets"][0]["size"] = serde_json::json!(0);
+        assert!(listed(&release, tag, &name).is_err());
+    }
+
     #[test]
     fn publisher_signature_binds_version_model_and_payload() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);

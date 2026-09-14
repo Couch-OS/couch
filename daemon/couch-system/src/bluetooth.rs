@@ -99,7 +99,7 @@ fn stop_stack(bridge: bool) -> Result<(), String> {
     kill_comm(&["couch-bt-hid"])?;
     kill_comm(&["bluetoothd"])?;
     wait_for(
-        || !process_running("bluetoothd"),
+        || !crate::ui_settings::process_running("bluetoothd"),
         20,
         Duration::from_millis(100),
     );
@@ -112,14 +112,6 @@ fn stop_stack(bridge: bool) -> Result<(), String> {
         );
     }
     Ok(())
-}
-
-fn process_running(comm: &str) -> bool {
-    std::fs::read_dir("/proc").is_ok_and(|dir| {
-        dir.filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit())))
-            .any(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == comm))
-    })
 }
 
 fn down() -> Result<(), String> {
