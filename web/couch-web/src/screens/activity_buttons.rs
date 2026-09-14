@@ -46,7 +46,6 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
     let open = move |button, press| {
         selected.set(button);
         gesture.set(press);
-        app.button_selection.set((button, press));
         query.set(String::new());
         let target = activity
             .get_value()

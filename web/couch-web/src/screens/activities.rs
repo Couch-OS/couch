@@ -4,6 +4,23 @@ use couch_model::{Activity, ActivitySetup, Config, Id, Integration};
 use leptos::prelude::*;
 use serde_json::json;
 
+/// Which tab of the activity editor is open.
+///
+/// Provided at the root by [`super::provide_editor_state`]: an accepted write
+/// replaces the config signal and rebuilds this screen, so a signal created
+/// here would be thrown away halfway through an edit.
+#[derive(Clone, Copy)]
+pub(super) struct State {
+    pub tab: RwSignal<String>,
+}
+impl State {
+    pub(super) fn new() -> State {
+        State {
+            tab: RwSignal::new("setup".into()),
+        }
+    }
+}
+
 pub(super) fn members(activity: &Activity) -> Vec<Id> {
     if !activity.setup.devices.is_empty() {
         return activity.setup.devices.clone();
@@ -27,10 +44,11 @@ pub(super) fn members(activity: &Activity) -> Vec<Id> {
     ids
 }
 pub fn list(app: App, config: &Config) -> AnyView {
+    let tab = expect_context::<State>().tab;
     let rows = config.activities.iter().map(|a| {
         let id=a.id.clone(); let room=config.room(&a.room).map(|r|r.name.clone()).unwrap_or_default();
         let detail=format!("{room} · {} devices · {} on / {} off steps",members(a).len(),a.setup.on.len(),a.setup.off.len());
-        view! { <button class="activity-card" on:click=move |_| {app.activity_tab.set("setup".into());app.go(Route::Activity(id.clone()));}>
+        view! { <button class="activity-card" on:click=move |_| {tab.set("setup".into());app.go(Route::Activity(id.clone()));}>
             <span class="eyebrow">"ACTIVITY"</span><strong>{a.name.clone()}</strong><span>{detail}</span><span class="activity-card-open">"Configure →"</span>
         </button> }
     }).collect_view();
@@ -43,6 +61,7 @@ pub fn list(app: App, config: &Config) -> AnyView {
     }.into_any()
 }
 fn new_activity(app: App, config: &Config) -> AnyView {
+    let tab = expect_context::<State>().tab;
     if config.rooms.is_empty() {
         return ui::empty("Create a room before adding an activity.");
     }
@@ -77,13 +96,14 @@ fn new_activity(app: App, config: &Config) -> AnyView {
                 let setup=ActivitySetup {devices:selected.get_untracked(),..Default::default()};
                 let body=json!({"name":name.get_untracked().trim(),"room":room.get_untracked(),"kind":"video","setup":setup});
                 let previous=previous.clone();
-                app.run(async move {let next=api::post("/api/activities",body).await?;if let Some(a)=next.activities.iter().find(|a|!previous.contains(&a.id)){app.activity_tab.set("setup".into());app.go(Route::Activity(a.id.clone()));}Ok(next)});
+                app.run(async move {let next=api::post("/api/activities",body).await?;if let Some(a)=next.activities.iter().find(|a|!previous.contains(&a.id)){tab.set("setup".into());app.go(Route::Activity(a.id.clone()));}Ok(next)});
             }>"Create and configure"</button>
             {move ||app.error.get().map(|e|view!{<p class="error">{e}</p>})}
         </dialog>
     }.into_any()
 }
 pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
+    let tab = expect_context::<State>().tab;
     let Some(activity) = config.activity(id) else {
         return super::gone(app, "That activity has been deleted.");
     };
@@ -107,7 +127,7 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
         }/><span><strong>{label}</strong><small>{room}</small></span></label>}
     }).collect_view();
     let tabs=[("setup","Devices & sequences"),("buttons","Physical buttons"),("screen","Remote screen")].into_iter().map(|(id,label)|view!{
-        <button class:selected=move ||app.activity_tab.get()==id on:click=move |_|app.activity_tab.set(id.into())>{label}</button>
+        <button class:selected=move ||tab.get()==id on:click=move |_|tab.set(id.into())>{label}</button>
     }).collect_view();
     let screen = screen_editor(app, config, &activity.get_value());
     let mut mapped_config = config.clone();
@@ -120,7 +140,7 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
     view! {
         {ui::page_header(app,activity.get_value().name,Some(Route::Activities))}
         <nav class="activity-tabs" aria-label="Activity configuration">{tabs}</nav>
-        <div style:display=move ||if app.activity_tab.get()=="setup"{""}else{"none"}>
+        <div style:display=move ||if tab.get()=="setup"{""}else{"none"}>
             <div class="activity-workbench">
                 <aside class="card activity-overview">
                     <h2>"Activity"</h2>
@@ -137,8 +157,8 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
             </div>
             {(!activity.get_value().steps.is_empty()).then(||view!{<section class="card"><h3>"Previous startup draft"</h3><p class="dim">"These older commands were never executed. Recreate the ones you want in the on sequence; they are retained here for reference."</p><ul>{activity.get_value().steps.into_iter().map(|s|view!{<li>{format!("{} · {}",super::device_name(&cfg.get_value(),&s.device),s.command)}</li>}).collect_view()}</ul></section>})}
         </div>
-        <div style:display=move ||if app.activity_tab.get()=="buttons"{""}else{"none"}>{mappings}</div>
-        <div style:display=move ||if app.activity_tab.get()=="screen"{""}else{"none"}>{screen}</div>
+        <div style:display=move ||if tab.get()=="buttons"{""}else{"none"}>{mappings}</div>
+        <div style:display=move ||if tab.get()=="screen"{""}else{"none"}>{screen}</div>
         <div class="pad">{ui::danger_button("Delete activity",move ||{let id=activity.get_value().id;app.run(async move {let result=api::delete(format!("/api/activities/{id}")).await?;app.go(Route::Activities);Ok(result)});})}</div>
     }.into_any()
 }

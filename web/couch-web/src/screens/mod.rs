@@ -4,6 +4,13 @@
 //! their own beyond what a half-typed field needs, because the config signal is
 //! replaced wholesale after each edit and anything else would have to be
 //! reconciled with it.
+//!
+//! The exception is transient editor state - the open tab, the open IR editor,
+//! a filter box - which is what a user is in the middle of rather than
+//! anything the house knows about. Each screen declares its own, and
+//! [`provide_editor_state`] creates all of it at the root, because an accepted
+//! write rebuilds the screen subtree and a signal created inside a screen
+//! would go with it.
 
 pub mod updates;
 pub mod activities;
@@ -22,6 +29,17 @@ use wasm_bindgen::JsCast;
 
 use crate::route::Route;
 use crate::App;
+
+/// Create the transient editor state every screen reads through context.
+///
+/// Called once, from the root component, so it outlives the rebuild that
+/// follows every accepted write.
+pub fn provide_editor_state() {
+    provide_context(activities::State::new());
+    provide_context(activity_sequences::State::new());
+    provide_context(device_picker::State::new());
+    provide_context(infrared::State::new());
+}
 
 pub fn render(app: App, config: &Config, route: Route) -> AnyView {
     match route {
