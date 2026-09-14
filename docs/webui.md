@@ -73,6 +73,18 @@ preview, unlinking and order, activity sources, scene commands, conflicting
 browser revisions, seeded configurations and 360-pixel mobile overflow. All
 checks passed in Chromium with no browser exceptions. Screenshots are written under ignored `build/webui-review/`.
 
+The others start a disposable daemon of their own on a free port, so they need
+only the bundle and `daemon/target/release/couch-confd`, and are run straight:
+
+```sh
+node web/tests/in-place.mjs        # a write does not rebuild the screen it came from
+node web/tests/icons.mjs           # the icon catalog and room activities
+node web/tests/room-order.mjs      # the device reorder arrows
+node web/tests/area-shortcuts.mjs  # the area quick-access keys
+node web/tests/home-assistant.mjs  # an HA fixture, loopback only
+node web/tests/hue.mjs             # an HTTPS bridge fixture, loopback only
+```
+
 
 
 How the house gets described: `couch-confd`, a static binary on the remote that
@@ -173,9 +185,9 @@ The one thing that is not a function of the config is what the user is in the
 middle of: the open activity tab, the open IR editor, the connection being
 browsed, a filter box. Each screen declares its own in a `State` struct
 (`screens::activities::State` and its three siblings), and
-`screens::provide_editor_state` creates all of it in the root component -
-because the screen subtree is rebuilt after an accepted write, and a signal
-created inside a screen would go with it. Nothing transient belongs on `App`.
+`screens::provide_editor_state` creates all of it in the root component, so it
+survives leaving a screen and coming back to it. Nothing transient belongs on
+`App`.
 
 **Every response carries `X-Couch-Revision`.** The store increments a counter on
 each accepted write. Mutations accept `If-Match: <revision>`; a mismatch is a
@@ -183,13 +195,39 @@ each accepted write. Mutations accept `If-Match: <revision>`; a mismatch is a
 `X-Couch-Created: <id>`, because the id is the one thing the client cannot work
 out for itself.
 
-The browser uses that counter too: the screens are keyed on `(route,
-revision)`, not on the config value, so a response that changed nothing - a
-reload after a rejected edit, a second load of the same document - leaves the
-open editor alone instead of rebuilding it. A write that does change the
-document still rebuilds the screen it was made from; the remaining work is to
-have each screen read the slices it draws in its own closures, which is what
-would keep an open `<details>` open across a save.
+### A screen is built once and updates itself
+
+The screens used to be keyed on `(route, revision)`, so any write that changed
+the document threw the current screen away and drew it again: focus lost, scroll
+reset, open `<details>` shut, a name being typed in an unrelated row dropped.
+They are keyed on the route alone now. Beside the config signal sits one `Memo`
+per collection - `App::rooms`, `devices`, `connections`, `activities`, `scenes`,
+`areas`, `appearance`, `remote`, plus `revision` - and `App::room(id)` and its
+siblings for one item of a collection. Memos compare by value, so a screen is
+notified only when the thing it draws actually changed, and a response that
+changed nothing still notifies nobody.
+
+To write a screen: take `(app, id)` rather than a `&Config`, and read nothing
+while the function runs. Anything that comes from the house goes inside a
+closure - `{move || room.get().map(|r| r.name)}` - or inside a `<For>` keyed by
+id whose rows read their own item through `App::room` and friends. `screens::ids`
+turns a slice into the `Memo<Vec<Id>>` such a `<For>` iterates, so the list only
+diffs when something is added, removed or reordered; `screens::reorder_in` is
+the up/down pair for a row that finds its own place in the order; `room_name`
+and `device_label` are the reactive one-line labels. A detail screen gates
+itself on `<Show when=… fallback=gone>`. Reading a slice during construction is
+the one thing that breaks this: the router's closure would depend on the
+document and rebuild the whole screen, which is the bug this replaced.
+
+Anything not converted goes through `screens::keyed`, which takes a `&Config`
+and redraws its block whenever the revision changes, exactly as before. That is
+still how the device picker inside a room, an activity's sequence/button/screen
+editors and an area's quick-access keys are drawn: each of them reads across
+several collections at once. They sit inside converted screens, so a write
+redraws that block and leaves the rest of the page alone.
+
+`web/tests/in-place.mjs` is the regression: a save on one row must leave a
+neighbour's half-typed name, its open editor and its DOM node where they are.
 
 Writes are validated before they are kept. `Store::mutate` applies the edit to a
 *copy*, runs `Config::validate`, and only then replaces the in-memory config and
