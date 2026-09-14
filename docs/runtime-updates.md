@@ -73,8 +73,13 @@ bootstrap and is not carried by runtime updates, so the fix ships only with a ne
 full OS image.
 An interrupted pointer preparation can be retried after boot clears its pending
 journal; the updater reclaims only its stale temporary symlink.
-Completed slots are retained; automatic slot garbage collection is not yet
-implemented. Do not manually remove the active or previous slot.
+The system service prunes runtime slots once, before it serves its first
+request: the active slot, the one kept for rollback (`runtime/previous`, written
+by the bootstrap when a candidate is accepted) and a staged candidate are kept,
+and every other slot directory is removed. Nothing is pruned while a candidate
+still awaits its boot confirmation, and only names that are slot ids are
+considered, so the private staging temporary survives. Do not manually remove
+the active or previous slot.
 
 ## Boot image updates
 
@@ -101,7 +106,9 @@ cache and reads the partition back before it counts as applied. A readback
 mismatch writes the saved image back and reports it. Nothing is written when the
 partition does not parse as an Android boot image, when the staged files differ
 from their manifest, or when the baseline differs. `installed.json` records the
-version and digests written.
+version, the kernel commit the manifest notes named, and the digests written;
+the Updates page and the remote's **Settings → Updates** show it as the
+installed boot image.
 
 What protects the boot after that is the existing one: init arms `boot-recovery`
 before anything can hang and clears it only after a healthy GUI, so a kernel
@@ -109,8 +116,16 @@ that boots but never gets there lands in recovery on its own. A kernel that
 dies before init cannot arm anything and loops on the bad image; that needs the
 physical route, hold **Back** while powering on, and then the saved image, see
 [restoring the previous boot image](device-recovery.md#restoring-the-previous-boot-image).
-The boot payload is not a runtime slot: there is no automatic rollback to
-`previous.img`, and the recovery partition is never written by an update.
+The boot payload is not a runtime slot: nothing rolls back to `previous.img` on
+its own, and the recovery partition is never written by an update. While the
+saved image is there the Updates page offers to write it back
+(`POST /api/updates/boot-rollback` with `{"confirm":true}`, the system service's
+`BootRollback`). That path parses `previous.img`, checks its kernel and ramdisk
+against the digests in `previous.json` and refuses if either is missing or does
+not verify, then writes and reads the partition back exactly as an install does.
+It does not restart: use the Power menu. The saved image is consumed once it is
+back, because the image it replaced is no longer installed, so the next check
+offers that boot payload again.
 
 ## Publishing
 

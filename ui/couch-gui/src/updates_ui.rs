@@ -104,6 +104,7 @@ impl Controller {
     fn present(&self, app: &App) {
         let Some(s) = &self.status else {
             app.set_update_installed("…".into());
+            app.set_update_boot("".into());
             app.set_update_channel("".into());
             app.set_update_summary("Connecting…".into());
             app.set_update_can_install(false);
@@ -112,6 +113,7 @@ impl Controller {
             return;
         };
         app.set_update_installed(s.installed.as_str().into());
+        app.set_update_boot(boot_line(s).into());
         app.set_update_channel(channel_label(s.channel).into());
         app.set_update_summary(summary(s, self.busy).into());
         app.set_update_can_install(s.can_install && !self.busy);
@@ -280,6 +282,18 @@ fn summary(s: &Status, busy: bool) -> String {
         },
     }
 }
+/// The boot image row: empty until a boot payload has been installed, because
+/// until then the partition carries whatever the OS image shipped and this
+/// updater has nothing to say about it.
+fn boot_line(s: &Status) -> String {
+    if s.boot_version.is_empty() {
+        return String::new();
+    }
+    match s.boot_kernel.get(..s.boot_kernel.len().min(8)) {
+        Some(kernel) if !kernel.is_empty() => format!("{} · {kernel}", short(&s.boot_version)),
+        _ => short(&s.boot_version),
+    }
+}
 /// A prerelease tag on one row: `.122` says enough next to the installed build,
 /// whose full name is on the row above; a stable version keeps its full name.
 fn short(version: &str) -> String {
@@ -404,7 +418,19 @@ mod tests {
             checked_at: None,
             can_install: available.is_some() && phase == "idle",
             automatic_checks: true,
+            boot_version: String::new(),
+            boot_kernel: String::new(),
+            boot_previous: false,
         }
+    }
+    #[test]
+    fn the_boot_row_appears_only_once_a_boot_image_has_been_installed() {
+        let mut s = status("idle", None);
+        assert_eq!(boot_line(&s), "");
+        s.boot_version = "v0.1.0-alpha.20260914.142".into();
+        assert_eq!(boot_line(&s), ".142");
+        s.boot_kernel = "ea122a39f434".into();
+        assert_eq!(boot_line(&s), ".142 · ea122a39");
     }
     #[test]
     fn the_check_row_says_where_things_stand() {

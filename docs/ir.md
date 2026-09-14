@@ -391,7 +391,11 @@ User imports are local data; importing does not grant redistribution rights.
 
 The larger Flipper Devices source uses MIT, independently of the older
 Flipper-IRDB CC0 boundary. Detailed commands decompress on demand; the full
-database is not expanded into command tables at daemon startup. SIRC20
+database is not expanded into command tables at daemon startup. Both indexes
+are deserialized into typed records that borrow from the embedded JSON rather
+than kept as a `serde_json::Value` tree, and the browse reply is rendered once
+on first use, so `GET /api/ir/catalog` copies that body and splices in
+`blaster_available` rather than walking 5,477 codesets per request. SIRC20
 imports preserve all 13 address bits (5-bit device plus 8-bit extension).
 
 

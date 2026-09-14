@@ -13,6 +13,14 @@ struct Status {
     message: String,
     can_install: bool,
     automatic_checks: bool,
+    /// The boot image the partition carries, and whether the one it replaced
+    /// is still saved on the remote.
+    #[serde(default)]
+    boot_version: String,
+    #[serde(default)]
+    boot_kernel: String,
+    #[serde(default)]
+    boot_previous: bool,
 }
 async fn status(app: App, value: RwSignal<Status>, error: RwSignal<String>) {
     match api::ha("GET", "/api/updates", None).await {
@@ -85,6 +93,7 @@ pub fn screen(app: App) -> AnyView {
     let value = RwSignal::new(Status::default());
     let error = RwSignal::new(String::new());
     let confirm = RwSignal::new(false);
+    let undo = RwSignal::new(false);
     spawn_local(status(app, value, error));
     let timer = leptos::prelude::set_interval_with_handle(
         move || spawn_local(status(app, value, error)),
@@ -100,6 +109,12 @@ pub fn screen(app: App) -> AnyView {
         {ui::page_header(app,"Software updates".into(),None)}
         <p class="lead">"Review new Couch builds and choose when to install them."</p>
         <section class="card"><h2>"Installed build"</h2><p>{move ||value.get().installed}</p>
+        {move ||(!value.get().boot_version.is_empty()).then(||{let v=value.get();let kernel=if v.boot_kernel.is_empty(){String::new()}else{format!(" · kernel {}",v.boot_kernel)};view!{<p>"Boot image: "{v.boot_version}{kernel}</p>}})}
+        {move ||value.get().boot_previous.then(||view!{
+            <p class="dim">"The boot image this replaced is saved on the remote. Writing it back verifies it against its record first, and does not restart: use Power afterwards."</p>
+            <label><input type="checkbox" prop:checked=move ||undo.get() on:change=move |e|undo.set(event_target_checked(&e))/>"Write the saved previous boot image back to the boot partition"</label>
+            <button class="ghost" disabled=move ||!undo.get() on:click=move |_|{undo.set(false);request(app,value,error,"POST","/api/updates/boot-rollback",serde_json::json!({"confirm":true}));}>"Restore previous boot image"</button>
+        })}
         <p class="dim">"This updater installs Couch apps and services, and boot images (kernel and boot ramdisk) published with the installed build. Alpine upgrades use the OS installer."</p>
         <label class="field">"Release channel"<select aria-label="Release channel" prop:value=move ||value.get().channel on:change=move |e|request(app,value,error,"PUT","/api/updates/settings",serde_json::json!({"channel":event_target_value(&e),"automatic_checks":value.get_untracked().automatic_checks}))><option value="stable">"Stable"</option><option value="alpha">"Alpha · testing builds"</option><option value="dev">"Dev · every build from the dev branch"</option></select></label>
         <label><input type="checkbox" prop:checked=move ||value.get().automatic_checks on:change=move |e|request(app,value,error,"PUT","/api/updates/settings",serde_json::json!({"channel":value.get_untracked().channel,"automatic_checks":event_target_checked(&e)}))/>"Check for updates when I open the web UI"</label>

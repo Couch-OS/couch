@@ -81,6 +81,7 @@ export component Settings inherits Rectangle {
     in property <bool> bt-available;           // the kernel has Bluetooth at all
     // Updates. The host mirrors the system service's status here.
     in property <string> update-installed;
+    in property <string> update-boot;          // installed boot image, "" if none
     in property <string> update-channel;       // "Stable" / "Alpha"
     in property <string> update-summary;       // the value on the check row
     in property <bool> update-can-install;
@@ -338,6 +339,10 @@ export component Settings inherits Rectangle {
                     arrow: !root.update-busy && !(root.update-ready && root.update-armed);
                     stepper: false;
                 }
+                // Which kernel and boot ramdisk the partition carries, written
+                // by a separate boot payload. Read-only, and last, so the
+                // cursor's fixed row indices above are undisturbed.
+                if root.update-boot != "": SettingsRow { title: "Boot image"; value: root.update-boot; stepper: false; }
                 Text {
                     text: root.update-message;
                     font-size: 15px;

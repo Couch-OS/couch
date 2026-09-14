@@ -6,6 +6,7 @@ mod release;
 mod staging;
 pub use release::{Channel, Manifest, SignedManifest};
 use serde::{Deserialize, Serialize};
+pub use staging::collect;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -28,6 +29,16 @@ pub struct Status {
     pub checked_at: Option<u64>,
     pub can_install: bool,
     pub automatic_checks: bool,
+    /// The boot image on the partition, from `boot/installed.json`: the version
+    /// this updater wrote and the kernel commit its notes named, both empty
+    /// when no boot payload has been installed. `boot_previous` says whether
+    /// the image it replaced is still saved, so a rollback is possible.
+    #[serde(default)]
+    pub boot_version: String,
+    #[serde(default)]
+    pub boot_kernel: String,
+    #[serde(default)]
+    pub boot_previous: bool,
 }
 struct State {
     status: Status,
@@ -55,6 +66,7 @@ impl Updater {
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
             .and_then(|v| v["version"].as_str().map(str::to_owned))
             .unwrap_or_else(|| "development".into());
+        let (boot_version, boot_kernel, boot_previous) = boot::record(&root);
         Self {
             root: root.clone(),
             boot_device,
@@ -86,6 +98,9 @@ impl Updater {
                     checked_at: None,
                     can_install: false,
                     automatic_checks: config["automatic_checks"].as_bool().unwrap_or(true),
+                    boot_version,
+                    boot_kernel,
+                    boot_previous,
                 },
                 offer: None,
                 busy: false,
@@ -240,6 +255,29 @@ impl Updater {
             }
         });
         Ok(())
+    }
+    /// Put the saved previous boot image back on the partition, from the
+    /// Updates page: the counterpart of an install that the device otherwise
+    /// only has through a recovery serial shell. The caller restarts.
+    pub fn boot_rollback(&self) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        if state.busy || state.status.phase == "ready" {
+            return Err("An update operation is already running".into());
+        }
+        state.busy = true;
+        drop(state);
+        let result = boot::restore(&self.root, &self.boot_device);
+        let mut state = self.state.lock().unwrap();
+        state.busy = false;
+        let (version, kernel, previous) = boot::record(&self.root);
+        state.status.boot_version = version;
+        state.status.boot_kernel = kernel;
+        state.status.boot_previous = previous;
+        if result.is_ok() {
+            state.status.message =
+                "The previous boot image is back on the boot partition. Restart to run it.".into();
+        }
+        result
     }
     pub fn ready(&self) -> bool {
         self.state.lock().unwrap().status.phase == "ready"

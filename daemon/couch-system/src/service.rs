@@ -130,7 +130,21 @@ pub fn serve() -> Result<(), String> {
         UnixListener::bind(protocol::SOCKET).map_err(|_| "Could not bind system socket")?;
     fs::set_permissions(protocol::SOCKET, fs::Permissions::from_mode(0o600))
         .map_err(|_| "Could not secure system socket")?;
-    let updates = couch_updates::Updater::new(std::path::PathBuf::from("/mnt/alpine/opt/couch"));
+    let root = std::path::PathBuf::from("/mnt/alpine/opt/couch");
+    // Before the first connection is served, so no install can be staging a
+    // slot while the old ones are counted: every superseded runtime is a full
+    // copy on phone flash, and nothing else ever removes one.
+    match couch_updates::collect(&root) {
+        Ok(removed) if !removed.is_empty() => {
+            eprintln!(
+                "couch-system: removed {} superseded runtime slots",
+                removed.len()
+            )
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("couch-system: runtime slot cleanup: {error}"),
+    }
+    let updates = couch_updates::Updater::new(root);
     let gate = Arc::new(Mutex::new(()));
     let count = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
@@ -231,6 +245,9 @@ fn handle_updates(
                 }
             }
             reply
+        }
+        Request::BootRollback => {
+            protocol::write(&Reply::Done(updates.boot_rollback()), &mut stream)
         }
         Request::Network => network_session(stream),
         Request::Power { action } => {
