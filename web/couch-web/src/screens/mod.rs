@@ -1,16 +1,19 @@
 //! The screens, and the bits more than one of them needs.
 //!
-//! Every screen is a function of `(&Config, Route)`. They hold no state of
-//! their own beyond what a half-typed field needs, because the config signal is
-//! replaced wholesale after each edit and anything else would have to be
-//! reconciled with it.
+//! A screen is built once, when its route is opened, and updates itself after
+//! that: it reads the slice memos on [`App`] inside its own closures, its lists
+//! are keyed `<For>`s over ids, and each row reads its item through
+//! [`App::room`] and friends. Nothing here may read a slice while it is being
+//! constructed - that would make the router's closure depend on the document
+//! and rebuild the whole screen on every write, which is what this replaced.
 //!
-//! The exception is transient editor state - the open tab, the open IR editor,
-//! a filter box - which is what a user is in the middle of rather than
-//! anything the house knows about. Each screen declares its own, and
-//! [`provide_editor_state`] creates all of it at the root, because an accepted
-//! write rebuilds the screen subtree and a signal created inside a screen
-//! would go with it.
+//! [`keyed`] is the old behaviour, for screens not converted yet: they still
+//! take a `&Config` and are redrawn whole when the revision changes.
+//!
+//! Transient editor state - the open tab, the open IR editor, a filter box - is
+//! what a user is in the middle of rather than anything the house knows about.
+//! Each screen declares its own and [`provide_editor_state`] creates it at the
+//! root, so it also survives leaving a screen and coming back to it.
 
 pub mod updates;
 pub mod activities;
@@ -32,8 +35,8 @@ use crate::App;
 
 /// Create the transient editor state every screen reads through context.
 ///
-/// Called once, from the root component, so it outlives the rebuild that
-/// follows every accepted write.
+/// Called once, from the root component, so it outlives both a screen being
+/// left and a screen still on the keyed path being redrawn.
 pub fn provide_editor_state() {
     provide_context(activities::State::new());
     provide_context(activity_sequences::State::new());
@@ -41,22 +44,37 @@ pub fn provide_editor_state() {
     provide_context(infrared::State::new());
 }
 
-pub fn render(app: App, config: &Config, route: Route) -> AnyView {
+pub fn render(app: App, route: Route) -> AnyView {
     match route {
-        Route::Overview => overview::overview(app, config),
-        Route::Rooms => overview::rooms(app, config),
-        Route::Connections => overview::connections(app, config),
-        Route::Connection(id) => connections::detail(app, config, &id),
-        Route::Settings => remote::screen(app, config),
+        Route::Overview => keyed(app, overview::overview),
+        Route::Rooms => keyed(app, overview::rooms),
+        Route::Connections => keyed(app, overview::connections),
+        Route::Connection(id) => keyed(app, move |app, c| connections::detail(app, c, &id)),
+        Route::Settings => keyed(app, remote::screen),
         Route::Updates => updates::screen(app),
-        Route::Areas => areas::list(app, config),
-        Route::Area(id) => areas::detail(app, config, &id),
-        Route::Room(id) => rooms::detail(app, config, &id),
-        Route::Scene(id) => scenes::detail(app, config, &id),
-        Route::Activities => activities::list(app, config),
-        Route::Activity(id) => activities::detail(app, config, &id),
+        Route::Areas => keyed(app, areas::list),
+        Route::Area(id) => keyed(app, move |app, c| areas::detail(app, c, &id)),
+        Route::Room(id) => keyed(app, move |app, c| rooms::detail(app, c, &id)),
+        Route::Scene(id) => keyed(app, move |app, c| scenes::detail(app, c, &id)),
+        Route::Activities => keyed(app, activities::list),
+        Route::Activity(id) => keyed(app, move |app, c| activities::detail(app, c, &id)),
         Route::NotFound => gone(app, "That page does not exist."),
     }
+}
+
+/// A screen that still reads the whole document when it is built.
+///
+/// It is thrown away and drawn again whenever the revision changes, which is
+/// what every screen did before the slices existed. Converting a screen means
+/// reading the slices it draws inside its own closures and dropping this.
+fn keyed(app: App, draw: impl Fn(App, &Config) -> AnyView + Send + Sync + 'static) -> AnyView {
+    view! {
+        {move || {
+            app.revision.track();
+            app.config.with_untracked(|c| c.as_ref().map(|config| draw(app, config)))
+        }}
+    }
+    .into_any()
 }
 
 /// Shown when a detail screen's subject is not in the config.

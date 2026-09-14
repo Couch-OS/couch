@@ -23,7 +23,9 @@ mod ui;
 
 use std::future::Future;
 
-use couch_model::Config;
+use couch_model::{
+    Activity, Appearance, Area, Config, Connection, Device, Id, RemoteSettings, Room, Scene,
+};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -43,9 +45,71 @@ pub struct App {
     /// `None` until the first status call answers, so the app shows neither the
     /// house nor a PIN box while it does not yet know which is right.
     pub paired: RwSignal<Option<bool>>,
+
+    // The document, one memo per collection. A screen reads the slice it draws
+    // rather than the whole config, so a write that changes one collection does
+    // not notify a screen showing another, and a response that changed nothing
+    // notifies nobody: memos compare by value.
+    pub revision: Memo<Option<u64>>,
+    pub rooms: Memo<Vec<Room>>,
+    /// Every device with the room it lives in, so a screen listing devices does
+    /// not have to walk the rooms itself.
+    pub devices: Memo<Vec<(Id, Device)>>,
+    pub connections: Memo<Vec<Connection>>,
+    pub activities: Memo<Vec<Activity>>,
+    pub scenes: Memo<Vec<Scene>>,
+    pub areas: Memo<Vec<Area>>,
+    pub appearance: Memo<Appearance>,
+    pub remote: Memo<RemoteSettings>,
+}
+
+/// One collection of the document as its own memo.
+///
+/// Empty before the config loads rather than optional: nothing is drawn until
+/// there is a revision, so an empty list is the right answer in between.
+fn slice<T>(config: RwSignal<Option<Config>>, read: fn(&Config) -> T) -> Memo<T>
+where
+    T: Default + PartialEq + Send + Sync + 'static,
+{
+    Memo::new(move |_| config.with(|c| c.as_ref().map(read).unwrap_or_default()))
+}
+
+/// One item of a collection, found by id, as its own memo.
+///
+/// What a detail screen or a list row holds instead of the document it was
+/// drawn from: a write to anything else in the same collection leaves it equal,
+/// so nothing under it is touched.
+macro_rules! lookup {
+    ($name:ident, $slice:ident, $item:ty) => {
+        pub fn $name(&self, id: Id) -> Memo<Option<$item>> {
+            let slice = self.$slice;
+            Memo::new(move |_| slice.with(|all| all.iter().find(|it| it.id == id).cloned()))
+        }
+    };
 }
 
 impl App {
+    lookup!(room, rooms, Room);
+    lookup!(area, areas, Area);
+    lookup!(scene, scenes, Scene);
+    lookup!(activity, activities, Activity);
+    lookup!(connection, connections, Connection);
+
+    /// A device, wherever in the house it lives.
+    pub fn device(&self, id: Id) -> Memo<Option<Device>> {
+        let devices = self.devices;
+        Memo::new(move |_| {
+            devices.with(|all| all.iter().find(|(_, d)| d.id == id).map(|(_, d)| d.clone()))
+        })
+    }
+
+    /// The whole document, for the handlers that have to send one back.
+    ///
+    /// Untracked on purpose: this is read inside a click, not during a render.
+    pub fn house(&self) -> Config {
+        self.config.get_untracked().unwrap_or_default()
+    }
+
     /// Run one API call: mark the app busy, then either adopt the config it
     /// returns or show why it did not happen.
     ///
@@ -107,6 +171,31 @@ impl App {
     pub fn go(&self, route: Route) {
         self.router.go(route);
     }
+
+    /// The one of these there is, built at the root.
+    fn new() -> App {
+        let config = RwSignal::new(None::<Config>);
+        App {
+            config,
+            error: RwSignal::new(None),
+            busy: RwSignal::new(false),
+            router: Router::install(),
+            paired: RwSignal::new(None),
+            revision: Memo::new(move |_| config.with(|c| c.as_ref().map(|c| c.revision))),
+            rooms: slice(config, |c| c.rooms.clone()),
+            devices: slice(config, |c| {
+                c.devices()
+                    .map(|(r, d)| (r.id.clone(), d.clone()))
+                    .collect()
+            }),
+            connections: slice(config, |c| c.connections.clone()),
+            activities: slice(config, |c| c.activities.clone()),
+            scenes: slice(config, |c| c.scenes.clone()),
+            areas: slice(config, |c| c.areas.clone()),
+            appearance: slice(config, |c| c.appearance.clone()),
+            remote: slice(config, |c| c.remote.clone()),
+        }
+    }
 }
 
 fn main() {
@@ -125,17 +214,12 @@ fn install_panic_hook() {
 
 #[component]
 fn Shell() -> impl IntoView {
-    let app = App {
-        config: RwSignal::new(None),
-        error: RwSignal::new(None),
-        busy: RwSignal::new(false),
-        router: Router::install(),
-        paired: RwSignal::new(None),
-    };
+    let app = App::new();
     provide_context(app);
     // The screens' own transient state - which tab is open, what is typed in a
-    // filter box - has to be created out here, because the subtree below is
-    // rebuilt after every accepted write and would take its signals with it.
+    // filter box - is created out here so it survives a screen being left and
+    // come back to, and so a screen still on the keyed path keeps it across a
+    // write.
     screens::provide_editor_state();
 
     // Ask whether this browser is already paired before anything else. A
@@ -153,13 +237,6 @@ fn Shell() -> impl IntoView {
     });
 
     let route = app.router.current;
-    // Reading the config signal where the screens are drawn rebuilds all of
-    // them, which discards the open <details>, the dialog on top of it, the
-    // scroll position and the focused control. The store bumps the revision on
-    // every accepted write, so track that instead: an answer that changed
-    // nothing - a reload after a rejected edit, a second load of the same
-    // document - no longer tears the editor down.
-    let revision = Memo::new(move |_| app.config.with(|c| c.as_ref().map(|c| c.revision)));
 
     view! {
         <header class="bar">
@@ -198,12 +275,21 @@ fn Shell() -> impl IntoView {
             {move || match app.paired.get() {
                 None => view! { <p class="dim pad">"Connecting…"</p> }.into_any(),
                 Some(false) => view! { <Pair/> }.into_any(),
-                Some(true) => match revision.get() {
-                    None => view! { <p class="dim pad">"Loading your configuration…"</p> }.into_any(),
-                    // Untracked: `revision` above is what says when to draw the
-                    // document again.
-                    Some(_) => view! { <fieldset class="editor" disabled=move || app.busy.get()>{app.config.with_untracked(|c| c.as_ref().map(|config| screens::render(app, config, route.get())))}</fieldset> }.into_any(),
-                },
+                // Only the route is read where the screens are drawn, so a
+                // screen is built once when it is opened and updates itself
+                // from the slice memos afterwards. Reading the config here is
+                // what used to discard the open <details>, the scroll position
+                // and the focused control on every accepted write.
+                Some(true) => view! {
+                    <fieldset class="editor" disabled=move || app.busy.get()>
+                        <Show
+                            when=move || app.revision.get().is_some()
+                            fallback=|| view! { <p class="dim pad">"Loading your configuration…"</p> }
+                        >
+                            {move || screens::render(app, route.get())}
+                        </Show>
+                    </fieldset>
+                }.into_any(),
             }}
         </main>
 
