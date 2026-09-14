@@ -4,8 +4,8 @@
   "source_repository": "https://github.com/dangerouslaser/couch-kernel",
   "source_commit": "ea122a39f434d962158dc07c5ff2ba2a27de1673",
   "profile": "normal",
-  "config_sha256": "01e33da1e2745f2a6d65e1f0ef47c708d82fba63ba0c3c8bf5310b88903b2c27",
-  "zimage_sha256": "c7a1ef6003edf7012b0c0914ab1fa5d400a40b74484e939a88092f92771f1591",
+  "config_sha256": "1568fe8c3b9f093b04773ed0f0260fdda24d931e417fafe47a2fc728edce478e",
+  "zimage_sha256": "9dd8e84ca81da1cd08954439508bf62b91e077bca1995eaabcc64ffca25cc528",
   "compiler_sha256": "41ceccad5029346a47c485b1545b8c93e4c95ef670019a1c8b1b2b21779661a0",
   "container": "sha256:0555bb78c532853ec90a6c503095c070245f97d86ec2215072c5b45e8a345ef9",
   "installable": false,
@@ -15,6 +15,7 @@
     "GUI heartbeat, recovery BCB clear, USB serial"
   ],
   "pending": [
+    "Bluetooth candidate (CONFIG_BT, CONFIG_BT_HCIVHCI) on the same source commit: first boot on the HA100 through a boot image update, then every check the September 10 candidate passed",
     "IR after undocked display standby and wake",
     "IR while charging and repeated normal UI use",
     "Clean installer image and recovery validation",
