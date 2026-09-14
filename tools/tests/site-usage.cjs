@@ -63,7 +63,7 @@ const fixtures={thermostat:{thermostat:true,thermostat_modes:false},"thermostat-
   for(const width of [1440,390,320]){
    await page.setViewportSize({width,height:1000});
    await page.goto(new URL('integrations.html',base).href);
-   assert.equal(await page.locator('.integration-cards article').count(),9);
+   assert.ok(await page.locator('.integration-cards article').count()>=13,'every shipping provider has an integration card');
    assert.equal(await page.getByRole('navigation',{name:'Main navigation'}).getByRole('link',{name:'Integrations',exact:true}).count(),1);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`integrations overflow at ${width}`);
    await page.goto(base);
