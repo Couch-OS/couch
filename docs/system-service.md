@@ -9,13 +9,55 @@ Alpine helpers through the fixed `/mnt/alpine` chroot. Both roots share `/tmp`.
 ## Boot boundary
 
 `stage2/stage2.sh` is the rootfs entry point. It sources `hardware-init.sh` for
-MediaTek firmware/device setup and initial station association, starts the
-`system.sh` supervisor, applies the normal/local/recovery setup policy, and
-sources `gui-start.sh` only during normal boot. A service or GUI failure leaves
+MediaTek firmware/device setup, starts the `system.sh` supervisor, sources
+`gui-start.sh` during normal boot, and runs station association and the
+normal/local/recovery setup policy behind it. A service or GUI failure leaves
 the initramfs USB recovery shell available. These files stay on the rootfs so
 runtime changes do not require replacing the kernel or boot ramdisk. Versioned
 application slots continue to mount vendor firmware from the immutable base at
 `/mnt/alpine/opt/couch`, because vendor files are not application update inputs.
+
+### The GUI does not wait for Wi-Fi
+
+`hardware-init.sh` defines `radio_up()` instead of running it, so stage2 decides
+when to wait for the radio. Nothing the panel needs comes from it: the display
+and input nodes, the Alpine root and the system service are all ready first, and
+`initramfs/boot-health.sh` deliberately does not sample network state.
+
+| | before | after |
+|---|---|---|
+| `hardware-init.sh` prologue: nodes, vendor binds, wmt probe, `mdev -s` | ~1 s | ~1 s |
+| WMT loader, STP mode, `wlan0`, association, DHCP | serial, 0-73 s (~19 s typical) | background |
+| `system.sh` + its control socket | after the radio | ~1 s, before the GUI |
+| `couch-confd`, backlight-keeper stop, hotplug floor, `couch-gui` | ~20 s | ~2 s |
+| `touch /tmp/stay` (init's 15-minute dead-man) | ~20 s | ~2 s |
+| setup policy (`setup-mode.sh`), `ssh-start`, second dmesg snapshot | ~20 s | with the lease |
+
+The `mdev -s` sweep moved into the serial prologue because it is what creates
+`/dev/input` on a kernel with no devtmpfs, and the GUI resolves its keypad and
+touch nodes there. It used to run only as the first statement of the radio
+block, so a remote whose radio is parked had no input nodes at all.
+
+The setup decision needs the merged network count, which needs the radio, so it
+lands after the GUI has drawn. `stage2.sh` writes `/tmp/couch.network-pending`
+before backgrounding the radio and removes it in `network_settle`, after any
+`/tmp/couch.onboarding`; the GUI treats the marker as "not decided yet" and
+polls once a second instead of concluding from an absent `couch.onboarding` that
+the remote has saved networks. A remote that does have them therefore never
+flashes Wi-Fi onboarding while it is still associating, and a fresh one opens
+**Welcome to couch.** a few seconds in rather than at its first frame.
+`/tmp/couch.setup` needs no marker: the GUI already re-reads it every second, so
+a hotspot the decision asks for is picked up whenever it arrives.
+
+Marker sectors are unchanged, and `mark()` stamps each with the uptime, so
+`S4 stage2 done` now reads earlier than the `S5`/`S6` radio markers above it in
+`tools/markers.sh` output. The second dmesg snapshot moved from the end of
+`gui-start.sh` into the background job for the same reason: taken where it was,
+it would no longer contain the Wi-Fi bring-up.
+
+Recovery is unchanged. `COUCH_NO_UI=1` calls `radio_up` inline, in its old
+position, because that image exists for its connectivity and has no UI to hold
+back.
 
 `portal.sh` and `station.sh` are fixed hardware helpers owned by the service at
 runtime. The MT6580 exposes its AP personality as `ap0`; it must not be replaced

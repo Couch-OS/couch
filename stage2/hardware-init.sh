@@ -132,6 +132,22 @@ else
     mark $((BASE+2)) "S2 wifi skipped: no wmt driver (module or built-in)"
 fi
 
+# Populate /dev here, in the serial part. There is no devtmpfs, so the only
+# nodes that exist are the ones baked into the cpio, and /dev/input is not among
+# them: the GUI resolves its keypad and touch nodes by name under
+# /sys/class/input and then opens /dev/input/eventN. That worked only as a side
+# effect of the first "mdev -s" inside the radio block below - which ran before
+# the GUI on a normal boot, and never at all on a device whose radio is parked.
+# The GUI now starts beside that block, so the sweep it depends on happens here.
+$BB mdev -s
+
+# The radio, from here to the end of the file. A function rather than a
+# straight-line block so stage2.sh decides when to wait for it: in the
+# background on a normal boot, because the GUI needs none of it and would
+# otherwise sit through ~19s of association and DHCP, and inline in recovery,
+# which runs this script for its connectivity alone. Nothing inside moved, and
+# the ordering notes above still hold.
+radio_up() {
 if [ "$WIFI" = "1" ]; then
     $BB umount /dev/__properties__ 2>/dev/null
     $BB umount $A/dev/__properties__ 2>/dev/null
@@ -337,3 +353,4 @@ if [ "$WIFI" = "1" ]; then
 else
     echo "= wifi parked"
 fi
+}
