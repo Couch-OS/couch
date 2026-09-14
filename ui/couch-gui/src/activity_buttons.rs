@@ -294,6 +294,7 @@ fn connection_worker(
     let mut denon = HashMap::new();
     let mut tv = HashMap::new();
     let mut streaming = HashMap::new();
+    let mut sonos = HashMap::new();
     let mut generation = current.load(Ordering::SeqCst);
     loop {
         let request = rx.recv_timeout(Duration::from_millis(100));
@@ -302,6 +303,7 @@ fn connection_worker(
             denon.clear();
             tv.clear();
             streaming.clear();
+            sonos.clear();
             generation = now;
         }
         let r = match request {
@@ -318,6 +320,7 @@ fn connection_worker(
             &mut denon,
             &mut tv,
             &mut streaming,
+            &mut sonos,
             r.repeat,
             &|| {
                 current.load(Ordering::SeqCst) == r.generation
@@ -337,14 +340,26 @@ fn connection_worker(
     }
 }
 
+/// Whether a failed Sonos command says anything about the session. A press
+/// abandoned at the deadline and a word that is not a Sonos command are both
+/// decided here rather than by the player, and dropping the cached client for
+/// either would throw the session away exactly when presses are being missed.
+fn session_is_suspect(error: &couch_sonos::Error) -> bool {
+    !matches!(
+        error,
+        couch_sonos::Error::Cancelled | couch_sonos::Error::Command
+    )
+}
+
 pub(crate) fn execute(
     config: &Config,
     action: &Action,
     denon: &mut HashMap<String, couch_control::Denon>,
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
+    sonos: &mut HashMap<String, couch_sonos::Client>,
 ) -> Result<(), String> {
-    execute_with_input(config, action, denon, tv, streaming, false, &|| true).map(|_| ())
+    execute_with_input(config, action, denon, tv, streaming, sonos, false, &|| true).map(|_| ())
 }
 
 /// Physical input preserves hold edges; other callers represent distinct presses.
@@ -355,6 +370,7 @@ pub(crate) fn execute_with_input(
     denon: &mut HashMap<String, couch_control::Denon>,
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
+    sonos: &mut HashMap<String, couch_sonos::Client>,
     repeat: bool,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, String> {
@@ -388,18 +404,30 @@ pub(crate) fn execute_with_input(
         _ => "",
     };
     match integration {
+        // Connecting cost a TLS handshake and a GET /players/local/info before
+        // the press could even be sent, inside the same 750 ms deadline the
+        // receiver and the TVs beat by keeping their client. This one is kept
+        // per host the same way.
         Integration::Sonos { host } => {
-            let client = couch_sonos::Client::connect(
-                host.parse().map_err(|_| "Sonos requires an IPv4 address")?,
-            )
-            .map_err(|e| e.to_string())?;
-            client
-                .command_if_current(&command.id(), current)
-                .map_err(|e| e.to_string())?;
+            if !sonos.contains_key(&host) {
+                let address = host.parse().map_err(|_| "Sonos requires an IPv4 address")?;
+                sonos.insert(
+                    host.clone(),
+                    couch_sonos::Client::connect(address).map_err(|e| e.to_string())?,
+                );
+            }
+            let result = sonos
+                .get(&host)
+                .expect("just inserted")
+                .command_if_current(&command.id(), current);
+            if result.as_ref().is_err_and(|e| session_is_suspect(e)) {
+                sonos.remove(&host);
+            }
+            result.map_err(|e| e.to_string())?;
             let volume = if sound {
-                client
-                    .volume_state()
-                    .ok()
+                sonos
+                    .get(&host)
+                    .and_then(|client| client.volume_state().ok())
                     .and_then(|(level, muted)| volume_reading(&name, Some(i64::from(level)), muted))
             } else {
                 None
@@ -1051,6 +1079,28 @@ mod tests {
         p.repeat = false;
         c.handle_press(&p);
         assert_eq!(rx.try_recv().unwrap().action.command, "mute");
+    }
+
+    #[test]
+    fn an_abandoned_sonos_press_keeps_the_session_and_a_silent_player_loses_it() {
+        use couch_sonos::Error as E;
+        // The deadline and an unknown word are decided here, not by the
+        // player; throwing the session away for those would reconnect on
+        // exactly the presses the cache exists to save.
+        assert!(!session_is_suspect(&E::Cancelled));
+        assert!(!session_is_suspect(&E::Command));
+        for error in [
+            E::Transport,
+            E::Response,
+            E::Unsupported,
+            E::Http(503),
+            E::Api("ERROR_PLAYER_NOT_FOUND".into()),
+            E::NotCoordinator {
+                coordinator: "Kitchen".into(),
+            },
+        ] {
+            assert!(session_is_suspect(&error), "{error}");
+        }
     }
 }
 

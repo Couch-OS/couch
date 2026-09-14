@@ -232,6 +232,13 @@ followed by a guess, and relative volume is a single write, so only the mute
 toggle still reads before writing. Every write re-checks command freshness first
 and is never retried.
 
+A `Client` costs a TCP connect, a TLS handshake and one `GET
+/players/local/info` before it can send anything, so the remote's activity
+button worker keeps one per host beside the ones it keeps for the receiver and
+the TVs, and drops it when the player stops answering. A press abandoned at the
+750 ms deadline keeps the session. The one-way Sonos screen still connects per
+refresh, because it reads the household state on every one anyway.
+
 Playback bodies are `{}` with `Content-Type: application/json`. Failures come back
 as JSON `{errorCode, reason}` with HTTP 400 or 499 and surface as
 `Error::Api(code)`, for example `ERROR_PLAYBACK_NO_CONTENT` when the group has an
