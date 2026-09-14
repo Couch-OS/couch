@@ -166,16 +166,6 @@ fn main() -> ExitCode {
     // stop reopening so the bridge cannot hold the shared radio down.
     let mut resets: u32 = 0;
     loop {
-        let mut vhci = match open_device(&args.vhci) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!(
-                    "couch-bt-bridge: cannot open {}: {e} (is CONFIG_BT_HCIVHCI in this kernel?)",
-                    args.vhci
-                );
-                return ExitCode::from(1);
-            }
-        };
         // Opening /dev/stpbt powers the Bluetooth function on through WMT;
         // a failure here is the radio, not us.
         let mut stpbt = match open_device(&args.stpbt) {
@@ -189,6 +179,20 @@ fn main() -> ExitCode {
             }
         };
         radio_ready(&mut stpbt, &mut log);
+        // Open /dev/vhci only now: the driver creates a controller by itself
+        // one second after the open if no vendor packet has named one, and a
+        // create packet after that fails with EBADFD. The probe above can take
+        // longer than that second, so the open and the create stay together.
+        let mut vhci = match open_device(&args.vhci) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!(
+                    "couch-bt-bridge: cannot open {}: {e} (is CONFIG_BT_HCIVHCI in this kernel?)",
+                    args.vhci
+                );
+                return ExitCode::from(1);
+            }
+        };
         // Create the controller before any event can arrive for it.
         if let Err(e) = vhci.write_all(&h4::vhci_create_primary()) {
             eprintln!("couch-bt-bridge: cannot create the virtual controller: {e}");
