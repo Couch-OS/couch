@@ -185,20 +185,39 @@ mod tests {
     }
 }
 
-/// Keep the editor open across a successful revisioned configuration save.
+/// Which device's IR editor is open.
+///
+/// Provided at the root by [`super::provide_editor_state`]: saving a command
+/// replaces the config signal and rebuilds the room, and this keeps the editor
+/// open across that rebuild instead of closing it after every save.
+#[derive(Clone, Copy)]
+pub(super) struct State {
+    pub open: RwSignal<String>,
+}
+impl State {
+    pub(super) fn new() -> State {
+        State {
+            open: RwSignal::new(String::new()),
+        }
+    }
+}
+
+/// The IR section of a device row, open across a successful revisioned save.
 pub fn device_commands(app: App, config: &couch_model::Config, room: &couch_model::Id, device: &couch_model::Device) -> AnyView {
+    let open = expect_context::<State>().open;
     let configured = device.effective_ir_codeset(config).is_some();
     let id = StoredValue::new(device.id.to_string());
     let room = StoredValue::new(room.clone());
     let device = StoredValue::new(device.clone());
     view! {<section class="device-ir">
         <div class="device-ir-heading"><div><h4>"IR commands"</h4><p class="dim">{if configured {"Commands assigned to this device"} else {"Use the remote’s built-in infrared transmitter"}}</p></div>
-        <button type="button" class="ghost" aria-expanded=move ||app.ir_device.get()==id.get_value() on:click=move |_|app.ir_device.update(|open|*open=if *open==id.get_value(){String::new()}else{id.get_value()})>{move ||if app.ir_device.get()==id.get_value(){"Close IR commands"}else if configured{"Manage IR commands"}else{"Add IR commands"}}</button></div>
-        {move ||(app.ir_device.get()==id.get_value()).then(||device_setup(app,room.get_value(),Some(device.get_value())))}
+        <button type="button" class="ghost" aria-expanded=move ||open.get()==id.get_value() on:click=move |_|open.update(|current|*current=if *current==id.get_value(){String::new()}else{id.get_value()})>{move ||if open.get()==id.get_value(){"Close IR commands"}else if configured{"Manage IR commands"}else{"Add IR commands"}}</button></div>
+        {move ||(open.get()==id.get_value()).then(||device_setup(app,room.get_value(),Some(device.get_value())))}
     </section>}.into_any()
 }
 
 pub fn device_setup(app: App, room: couch_model::Id, existing: Option<couch_model::Device>) -> AnyView {
+    let open = expect_context::<State>().open;
     let is_new = existing.is_none();
     let name = RwSignal::new(String::new());
     let kind = RwSignal::new("tv".to_string());
@@ -255,7 +274,7 @@ pub fn device_setup(app: App, room: couch_model::Id, existing: Option<couch_mode
                     let old_ids: Vec<_>=app.config.get_untracked().unwrap_or_default().devices().map(|(_,d)|d.id.clone()).collect();
                     let payload=json!({"name":name.get_untracked().trim(),"kind":kind.get_untracked(),"text":body});
                     app.run(async move {let next=api::post(format!("/api/rooms/{}/devices/ir",room.get_value()),payload).await?;
-                        if let Some((_,device))=next.devices().find(|(_,d)|!old_ids.contains(&d.id)){app.ir_device.set(device.id.to_string());}
+                        if let Some((_,device))=next.devices().find(|(_,d)|!old_ids.contains(&d.id)){open.set(device.id.to_string());}
                         Ok(next)
                     });
                 }

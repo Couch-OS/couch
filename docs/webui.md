@@ -166,14 +166,30 @@ state of every fresh clone - and the daemon serves a page saying what to run.
 client that re-reads it after every edit cannot drift out of step with the
 server, and the alternative - patching a local copy from partial responses - is
 where "the room disappeared until I reloaded" bugs come from. The browser holds
-exactly one piece of state, `RwSignal<Option<Config>>`, and every screen is a
-pure function of it.
+the house in one place, `RwSignal<Option<Config>>`, and every screen is a pure
+function of it.
+
+The one thing that is not a function of the config is what the user is in the
+middle of: the open activity tab, the open IR editor, the connection being
+browsed, a filter box. Each screen declares its own in a `State` struct
+(`screens::activities::State` and its three siblings), and
+`screens::provide_editor_state` creates all of it in the root component -
+because the screen subtree is rebuilt after an accepted write, and a signal
+created inside a screen would go with it. Nothing transient belongs on `App`.
 
 **Every response carries `X-Couch-Revision`.** The store increments a counter on
 each accepted write. Mutations accept `If-Match: <revision>`; a mismatch is a
 409 rather than a silent overwrite. Creates additionally answer with
 `X-Couch-Created: <id>`, because the id is the one thing the client cannot work
 out for itself.
+
+The browser uses that counter too: the screens are keyed on `(route,
+revision)`, not on the config value, so a response that changed nothing - a
+reload after a rejected edit, a second load of the same document - leaves the
+open editor alone instead of rebuilding it. A write that does change the
+document still rebuilds the screen it was made from; the remaining work is to
+have each screen read the slices it draws in its own closures, which is what
+would keep an open `<details>` open across a save.
 
 Writes are validated before they are kept. `Store::mutate` applies the edit to a
 *copy*, runs `Config::validate`, and only then replaces the in-memory config and

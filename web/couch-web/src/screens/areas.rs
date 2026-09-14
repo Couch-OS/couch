@@ -18,6 +18,9 @@ use crate::screens::{counts, gone, pick_row, reorder_buttons};
 use crate::{api, ui, App};
 
 pub fn list(app: App, config: &Config) -> AnyView {
+    // One snapshot for every row's reorder buttons. The closure below rebuilds
+    // the whole document, but it runs on a click, not on a render.
+    let house = StoredValue::new(config.clone());
     let rows = config
         .areas
         .iter()
@@ -33,9 +36,8 @@ pub fn list(app: App, config: &Config) -> AnyView {
 
             let name = area.name.clone();
             let order: Vec<Id> = config.areas.iter().map(|a| a.id.clone()).collect();
-            let base = config.clone();
             let reorder = move |order: Vec<Id>| {
-                let mut next = base.clone();
+                let mut next = house.get_value();
                 next.areas
                     .sort_by_key(|a| order.iter().position(|id| id == &a.id));
                 app.run(api::put("/api/config", next));

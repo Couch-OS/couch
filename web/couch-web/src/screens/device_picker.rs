@@ -3,33 +3,65 @@ use crate::{api, route::Route, App};
 use couch_model::{Config, Connection, Device, Id, Integration, Provider};
 use leptos::{prelude::*, task::spawn_local};
 use serde_json::{json, Value};
+use std::sync::Arc;
+
+/// What the "add to this room" panel is showing: which connection is being
+/// browsed, and the boxes that filter what it found.
+///
+/// Provided at the root by [`super::provide_editor_state`]: adding a device
+/// replaces the config signal and rebuilds this screen, and starting over from
+/// "Choose a device source" after every device is not how anybody adds three
+/// lights.
+#[derive(Clone, Copy)]
+pub(super) struct State {
+    pub source: RwSignal<String>,
+    pub filter: RwSignal<String>,
+    pub hue_category: RwSignal<String>,
+    pub hue_room: RwSignal<String>,
+}
+impl State {
+    pub(super) fn new() -> State {
+        State {
+            source: RwSignal::new(String::new()),
+            filter: RwSignal::new(String::new()),
+            hue_category: RwSignal::new("lights".into()),
+            hue_room: RwSignal::new(String::new()),
+        }
+    }
+}
 
 pub fn picker(app: App, config: &Config, room: &Id) -> AnyView {
+    let picking = expect_context::<State>();
+    // The discovered list is redrawn on every keystroke in its filter box, and
+    // each card asks whether its resource is already in the house. One shared
+    // snapshot, rather than a copy of the document per card.
+    let house = Arc::new(config.clone());
     let connections: Vec<_> = config.connections.iter().filter(|c|c.provider!=Provider::Ir).cloned().collect();
     let room = StoredValue::new(room.clone());
-    if app.device_source.get_untracked() != "manual-ir" && !connections.iter().any(|c|c.id.as_str()==app.device_source.get_untracked()) {
-        app.device_source.set(if connections.len()==1 {connections[0].id.to_string()} else {String::new()});
+    if picking.source.get_untracked() != "manual-ir" && !connections.iter().any(|c|c.id.as_str()==picking.source.get_untracked()) {
+        picking.source.set(if connections.len()==1 {connections[0].id.to_string()} else {String::new()});
     }
     let options=connections.clone();
     view!{<section class="creation device-picker"><h2>"Add to this room"</h2><p class="dim">"Choose a connected device, or add a device controlled by infrared. You can also add IR commands to any device already in this room."</p>
-        <label class="field">"Device source"<select aria-label="From connection" prop:value=move ||app.device_source.get() on:change=move |e|{app.device_filter.set(String::new());app.device_source.set(event_target_value(&e));}>
+        <label class="field">"Device source"<select aria-label="From connection" prop:value=move ||picking.source.get() on:change=move |e|{picking.filter.set(String::new());picking.source.set(event_target_value(&e));}>
             <option value="">"Choose a device source"</option>{options.into_iter().map(|c|view!{<option value=c.id.to_string()>{super::connections::label(&c)}</option>}).collect_view()}
             <option value="manual-ir">"Manual / infrared"</option>
         </select></label>
-        {move ||if app.device_source.get()=="manual-ir" {super::infrared::device_setup(app,room.get_value(),None)}else{
-            connections.iter().find(|c|c.id.as_str()==app.device_source.get()).map(|c|match c.provider{Provider::UnifiProtect|Provider::Hue|Provider::HomeAssistant|Provider::Matter=>discover(app,c.clone(),room.get_value()),_=>manual(app,c.clone(),room.get_value())}).unwrap_or_else(||view!{<p class="dim">"Need a server or bridge first?" <button class="ghost" on:click=move |_|app.go(Route::Connections)>"Manage connections"</button></p>}.into_any())
+        {move ||if picking.source.get()=="manual-ir" {super::infrared::device_setup(app,room.get_value(),None)}else{
+            connections.iter().find(|c|c.id.as_str()==picking.source.get()).map(|c|match c.provider{Provider::UnifiProtect|Provider::Hue|Provider::HomeAssistant|Provider::Matter=>discover(app,house.clone(),c.clone(),room.get_value()),_=>manual(app,&house,c.clone(),room.get_value())}).unwrap_or_else(||view!{<p class="dim">"Need a server or bridge first?" <button class="ghost" on:click=move |_|app.go(Route::Connections)>"Manage connections"</button></p>}.into_any())
         }}
     </section>}.into_any()
 }
 
-fn assigned(app: App, connection: &Connection, resource: &str) -> Option<String> {
-    app.config.get_untracked().and_then(|cfg|cfg.devices().find_map(|(r,d)|{
+fn assigned(cfg: &Config, connection: &Connection, resource: &str) -> Option<String> {
+    cfg.devices().find_map(|(r,d)|{
         let same=matches!(&d.integration,Integration::Connection{connection_id,resource_id} if connection_id==&connection.id && resource_id==resource)
             || match cfg.resolve_integration(&d.integration){Some(Integration::Hue{light_id})=>connection.provider==Provider::Hue && light_id==format!("{}/{resource}",connection.id),Some(Integration::HomeAssistant{entity_id})=>connection.provider==Provider::HomeAssistant && entity_id==format!("{}/{resource}",connection.id),Some(Integration::Matter{device})=>connection.provider==Provider::Matter && device==format!("{}/{resource}",connection.id),Some(Integration::Kodi{host,port})=>connection.provider==Provider::Kodi{host,port},_=>false};
         same.then(||r.name.clone())
-    }))
+    })
 }
-fn discover(app: App, connection: Connection, room: Id) -> AnyView {
+fn discover(app: App, house: Arc<Config>, connection: Connection, room: Id) -> AnyView {
+    let picking = expect_context::<State>();
     let list = RwSignal::new(Vec::<Value>::new());
     let busy = RwSignal::new(false);
     let message = RwSignal::new(String::new());
@@ -42,7 +74,7 @@ fn discover(app: App, connection: Connection, room: Id) -> AnyView {
     };
     let base=StoredValue::new(format!("/api/connections/{}/{prefix}",connection.id));
     let category = if prefix == "hue" {
-        app.hue_category
+        picking.hue_category
     } else {
         RwSignal::new(if prefix == "protect" { "cameras" } else { "lights" }.to_string())
     };
@@ -75,20 +107,20 @@ fn discover(app: App, connection: Connection, room: Id) -> AnyView {
     };
     fetch();
     view!{<p class="dim">{if prefix=="protect" {"Add cameras to this room to view them on your remote."} else if prefix=="matter" {"Add the on/off controls of devices paired with this remote. A device that does not answer shows as unavailable."} else if prefix=="hue" {"Add lights, grouped room controls or scenes. Scenes go straight into this room’s Scenes button on the remote."} else {"Add lights, blinds or thermostats. Their controls adapt to the features Home Assistant exposes."}}</p>
-        {(prefix=="hue").then(||view!{<label class="field">"Hue controls"<select aria-label="Hue controls" prop:value=move ||category.get() disabled=move ||busy.get() on:change=move |e|{category.set(event_target_value(&e));app.device_filter.set(String::new());app.hue_room_filter.set(String::new());list.set(Vec::new());fetch();}><option value="lights">"Lights"</option><option value="rooms">"Hue rooms"</option><option value="scenes">"Hue scenes"</option></select></label>})}
-        {(prefix=="ha").then(||view!{<label class="field">"Device type"<select aria-label="Home Assistant device type" prop:value=move ||category.get() disabled=move ||busy.get() on:change=move |e|{category.set(event_target_value(&e));app.device_filter.set(String::new());list.set(Vec::new());fetch();}><option value="lights">"Lights"</option><option value="covers">"Blinds"</option><option value="climates">"Thermostats"</option></select></label>})}
+        {(prefix=="hue").then(||view!{<label class="field">"Hue controls"<select aria-label="Hue controls" prop:value=move ||category.get() disabled=move ||busy.get() on:change=move |e|{category.set(event_target_value(&e));picking.filter.set(String::new());picking.hue_room.set(String::new());list.set(Vec::new());fetch();}><option value="lights">"Lights"</option><option value="rooms">"Hue rooms"</option><option value="scenes">"Hue scenes"</option></select></label>})}
+        {(prefix=="ha").then(||view!{<label class="field">"Device type"<select aria-label="Home Assistant device type" prop:value=move ||category.get() disabled=move ||busy.get() on:change=move |e|{category.set(event_target_value(&e));picking.filter.set(String::new());list.set(Vec::new());fetch();}><option value="lights">"Lights"</option><option value="covers">"Blinds"</option><option value="climates">"Thermostats"</option></select></label>})}
         <button class="ghost" disabled=move ||busy.get() on:click=move |_|fetch()>"Refresh devices"</button>
-        {super::connections::field("Search devices",app.device_filter,"Filter by name")}
-        {(prefix=="hue").then(||view!{<label class="field">"Hue room or zone"<select aria-label="Hue room or zone" prop:value=move ||app.hue_room_filter.get() on:change=move |e|app.hue_room_filter.set(event_target_value(&e))><option value="">"All bridge rooms and zones"</option>{move ||list.get().iter().filter_map(|v|v["room_name"].as_str()).filter(|s|!s.is_empty()).map(str::to_string).collect::<std::collections::BTreeSet<_>>().into_iter().map(|name|view!{<option value=name.clone()>{name.clone()}</option>}).collect_view()}</select></label>})}
+        {super::connections::field("Search devices",picking.filter,"Filter by name")}
+        {(prefix=="hue").then(||view!{<label class="field">"Hue room or zone"<select aria-label="Hue room or zone" prop:value=move ||picking.hue_room.get() on:change=move |e|picking.hue_room.set(event_target_value(&e))><option value="">"All bridge rooms and zones"</option>{move ||list.get().iter().filter_map(|v|v["room_name"].as_str()).filter(|s|!s.is_empty()).map(str::to_string).collect::<std::collections::BTreeSet<_>>().into_iter().map(|name|view!{<option value=name.clone()>{name.clone()}</option>}).collect_view()}</select></label>})}
         <p role="status">{move ||message.get()}</p>
         <div class="discovered-devices">{move ||list.get().into_iter().filter(|d|{
             let text=format!("{} {}",d["name"].as_str().unwrap_or(""),d["room_name"].as_str().unwrap_or("")).to_lowercase();
-            app.device_filter.get().to_lowercase().split_whitespace().all(|word|text.contains(word))
-                && (prefix!="hue" || app.hue_room_filter.get().is_empty() || d["room_name"].as_str()==Some(app.hue_room_filter.get().as_str()))
-        }).map(|d| discovery_card(app,&connection,&room,d)).collect_view()}</div>
+            picking.filter.get().to_lowercase().split_whitespace().all(|word|text.contains(word))
+                && (prefix!="hue" || picking.hue_room.get().is_empty() || d["room_name"].as_str()==Some(picking.hue_room.get().as_str()))
+        }).map(|d| discovery_card(app,&house,&connection,&room,d)).collect_view()}</div>
     }.into_any()
 }
-fn discovery_card(app: App, connection: &Connection, room: &Id, value: Value) -> AnyView {
+fn discovery_card(app: App, cfg: &Config, connection: &Connection, room: &Id, value: Value) -> AnyView {
     let id = value[if connection.provider==Provider::UnifiProtect {"id"}else{"entity_id"}].as_str().unwrap_or("").to_string();
     let name = value["name"].as_str().unwrap_or(&id).to_string();
     let scene = value["resource_kind"] == "scene";
@@ -96,24 +128,22 @@ fn discovery_card(app: App, connection: &Connection, room: &Id, value: Value) ->
         if id.starts_with("cover.") { "blind" } else if id.starts_with("climate.") { "thermostat" } else { "light" }
     } else { "light" };
     let saved = if scene {
-        app.config.get().and_then(|c| {
-            c.scenes
-                .iter()
-                .find(|s| {
-                    s.hue.as_ref().is_some_and(|h| {
-                        h.connection_id == connection.id
-                            && Some(h.scene_id.as_str()) == id.strip_prefix("scene:")
-                    })
+        cfg.scenes
+            .iter()
+            .find(|s| {
+                s.hue.as_ref().is_some_and(|h| {
+                    h.connection_id == connection.id
+                        && Some(h.scene_id.as_str()) == id.strip_prefix("scene:")
                 })
-                .cloned()
-        })
+            })
+            .cloned()
     } else {
         None
     };
     let existing = if scene {
         None
     } else {
-        assigned(app, connection, &id)
+        assigned(cfg, connection, &id)
     };
     let used = if scene {
         saved.as_ref().is_some_and(|s| s.rooms.contains(room))
@@ -160,11 +190,11 @@ fn discovery_card(app: App, connection: &Connection, room: &Id, value: Value) ->
         }>{if used {"Added"} else {"Add to this room"}}</button>
     </div>}.into_any()
 }
-fn manual(app: App, connection: Connection, room: Id) -> AnyView {
+fn manual(app: App, cfg: &Config, connection: Connection, room: Id) -> AnyView {
     if connection.provider == Provider::Ir { return super::infrared::device_setup(app, room, None); }
     let television = matches!(connection.provider, Provider::WebOs | Provider::AndroidTv | Provider::AppleTv | Provider::Tizen | Provider::BluetoothTv);
     let receiver = matches!(connection.provider, Provider::Denon { .. } | Provider::Sonos { .. });
-    let existing = assigned(app, &connection, "");
+    let existing = assigned(cfg, &connection, "");
     let name = RwSignal::new(connection.name.clone());
     view!{<form on:submit=move |e|{e.prevent_default();let title=name.get_untracked().trim().to_string();if title.is_empty(){return}app.run(api::post(format!("/api/rooms/{room}/devices"),json!({"name":title,"kind":if television{"tv"}else if receiver{"speaker"}else{"media-player"},"integration":{"via":"connection","connection_id":connection.id,"resource_id":""}})));}>
         {super::connections::field("Device name",name,"Living room TV")}
@@ -173,8 +203,7 @@ fn manual(app: App, connection: Connection, room: Id) -> AnyView {
     </form>}.into_any()
 }
 
-pub fn controls(app: App, device: &Device) -> AnyView {
-    let config = app.config.get_untracked().unwrap_or_default();
+pub fn controls(app: App, config: &Config, device: &Device) -> AnyView {
     let (prefix, id) = match config.resolve_integration(&device.integration) {
         Some(Integration::Sonos { .. }) => {
             return match &device.integration {

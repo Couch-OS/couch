@@ -80,7 +80,7 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
                     {room.devices
                         .iter()
                         .enumerate()
-                        .map(|(index, device)| device_card(app, &id, device, &device_order, index))
+                        .map(|(index, device)| device_card(app, config, &id, device, &device_order, index))
                         .collect_view()}
                 </ul>
             }
@@ -103,7 +103,14 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
     .into_any()
 }
 
-fn device_card(app: App, room: &Id, device: &Device, order: &[Id], index: usize) -> AnyView {
+fn device_card(
+    app: App,
+    config: &Config,
+    room: &Id,
+    device: &Device,
+    order: &[Id],
+    index: usize,
+) -> AnyView {
     let reorder = {
         let room = room.clone();
         super::reorder_buttons(order.to_vec(), index, move |next: Vec<Id>| {
@@ -120,23 +127,20 @@ fn device_card(app: App, room: &Id, device: &Device, order: &[Id], index: usize)
     let room = room.clone();
     let delete_room = room.clone();
     let delete_id = device.id.clone();
-    let summary = app
-        .config
-        .get_untracked()
-        .and_then(|c| match &device.integration {
-            Integration::Connection { connection_id, .. } => {
-                c.connection(connection_id).map(super::connections::label)
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| super::overview::connection_summary(&device.integration));
-    let cfg=app.config.get_untracked().unwrap_or_default();
-    let summary=if device.effective_ir_codeset(&cfg).is_some(){
-        if matches!(cfg.resolve_integration(&device.integration),Some(Integration::None|Integration::Ir{..})){"Infrared · Built-in transmitter".into()}else{format!("{summary} · IR commands")}
+    // The document the screen was drawn from, not a copy of it per row.
+    let summary = match &device.integration {
+        Integration::Connection { connection_id, .. } => config
+            .connection(connection_id)
+            .map(super::connections::label),
+        _ => None,
+    }
+    .unwrap_or_else(|| super::overview::connection_summary(&device.integration));
+    let summary=if device.effective_ir_codeset(config).is_some(){
+        if matches!(config.resolve_integration(&device.integration),Some(Integration::None|Integration::Ir{..})){"Infrared · Built-in transmitter".into()}else{format!("{summary} · IR commands")}
     }else{summary};
     view!{<li class="card device"><div class="device-head">{reorder}<div><h3>{device.name.clone()}</h3><p class="dim">{summary}</p></div></div>
-        {super::device_picker::controls(app,device)}
-        {super::infrared::device_commands(app, &app.config.get_untracked().unwrap_or_default(), &room, device)}
+        {super::device_picker::controls(app,config,device)}
+        {super::infrared::device_commands(app, config, &room, device)}
         <details><summary>"Edit device"</summary><form on:submit=move |e|{e.prevent_default();let title=name.get_untracked().trim().to_string();if title.is_empty(){return}app.run(api::put(format!("/api/rooms/{room}/devices/{}",base.id),Device{name:title,kind:kind.get_untracked(),icon:icon.get_untracked(),..base.clone()}));}>
         {super::connections::field("Device name",name,"Device name")}
         <label class="field">"Device type"<select aria-label="Device type" prop:value=move ||kind.get().name() on:change=move |e|kind.set(DeviceKind::from_name(&event_target_value(&e)).unwrap_or_default())>{ALL_DEVICE_KINDS.iter().map(|k|view!{<option value=k.name()>{k.name()}</option>}).collect_view()}</select></label>
