@@ -394,6 +394,18 @@ pub fn bundle(
     }
     let required_os_baseline = Some(baseline::installed(source)?);
     let mut names = staging::required_names();
+    // Further top-level Couch binaries present in the clean tree ride along.
+    for entry in std::fs::read_dir(source).map_err(|_| "Could not inspect release input")? {
+        let entry = entry.map_err(|_| "Could not inspect runtime entry")?;
+        let name = entry.file_name();
+        let name = name.to_str().ok_or("Invalid runtime name")?;
+        if name.starts_with("couch-")
+            && entry.file_type().is_ok_and(|t| t.is_file())
+            && !names.iter().any(|n| n == name)
+        {
+            names.push(name.to_owned());
+        }
+    }
     for directory in ["www", "licenses"] {
         let mut pending = vec![source.join(directory)];
         while let Some(path) = pending.pop() {

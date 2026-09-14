@@ -9,14 +9,16 @@ use std::{path::Path, process::Command, thread, time::Duration};
 pub const LOG: &str = "/tmp/couch-bt-bridge.log";
 const HCI0: &str = "/sys/class/bluetooth/hci0";
 
-/// The bridge next to this executable (the running runtime slot), else the
-/// base runtime's copy.
+/// The bridge next to this executable (a runtime slot that carries it), else
+/// the boot ramdisk's copy (`/extra`, where the kernel that needs it came
+/// from), else the base runtime's.
 fn binary() -> Option<std::path::PathBuf> {
     let beside = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("couch-bt-bridge")));
     [
         beside,
+        Some(Path::new("/extra/couch-bt-bridge").to_path_buf()),
         Some(Path::new("/mnt/alpine/opt/couch/couch-bt-bridge").to_path_buf()),
     ]
     .into_iter()

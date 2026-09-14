@@ -33,7 +33,13 @@ saved Wi-Fi, SSH enrollment, and per-device data.
 
 The root system service verifies an Ed25519 publisher signature, model/version,
 archive SHA-256, and each allowlisted file's size/hash/mode. Archives cannot
-contain links, special files, configuration, or partition images. Download and
+contain links, special files, configuration, or partition images. The file
+list is closed: the required binaries and scripts, `fbcon`, web assets and
+licence texts, and (from .142 on) further top-level `couch-*` executables.
+Before .142 a bundle carrying any other name was refused outright, which is
+why a new binary cannot simply be added to the runtime until every deployed
+remote runs an updater that tolerates it; the Bluetooth bridge ships in the
+boot ramdisk meanwhile. Download and
 extraction limits are enforced. Files are staged under
 `/opt/couch/runtime/slots/<archive-sha256>` while the running version remains
 active. The user separately confirms **Install & restart**.

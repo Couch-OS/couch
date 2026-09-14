@@ -38,12 +38,20 @@ def clean_ramdisk(root, role):
         shutil.copyfile(root / 'build/fbcon', tree / 'extra/fbcon')
         if role == 'boot':
             shutil.copyfile(root / 'initramfs/boot-health.sh', tree / 'extra/boot-health.sh')
+            # The Bluetooth bridge travels with the kernel that gives it /dev/vhci:
+            # deployed runtime updaters refuse bundles with new binaries, the
+            # boot payload is the one thing only Bluetooth-capable images get.
+            bridge = root / 'clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-bridge'
+            arm_static(regular(bridge))
+            shutil.copyfile(bridge, tree / 'extra/couch-bt-bridge')
+            (tree / 'extra/couch-bt-bridge').chmod(0o755)
         subprocess.run([sys.executable, str(root / 'tools/mkcpio.py'), str(tree), str(tree / 'ramdisk.cpio')], check=True, stdout=subprocess.DEVNULL)
         raw = (tree / 'ramdisk.cpio').read_bytes()
         entries = cpio_files(raw)
         expected = {'init', 'bin/busybox', 'extra/fbcon'}
         if role == 'boot':
             expected.add('extra/boot-health.sh')
+            expected.add('extra/couch-bt-bridge')
         payloads = {name for name, content in entries.items() if content}
         require(payloads == expected, 'Unexpected payload file in clean ramdisk')
         ramdisk = gzip.compress(raw, compresslevel=9, mtime=0)
