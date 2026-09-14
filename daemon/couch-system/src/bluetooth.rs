@@ -83,26 +83,42 @@ fn kill_comm(names: &[&str]) -> Result<(), String> {
 
 /// Kernels built without the in-tree Bluetooth core carry the backported
 /// 4.4 core as modules in the boot ramdisk (`/extra/*.ko`, see
-/// docs/kernel-backports-research.md). Load them the first time the toggle is
-/// used; the virtual HCI misc device then needs its node, which mdev created
-/// at boot on kernels where the driver is built in.
+/// docs/kernel-backports-research.md). Load whatever the ramdisk carries the
+/// first time the toggle is used: the core, then either the in-kernel STP
+/// driver (which registers hci0 itself) or the virtual HCI driver for the
+/// userspace bridge, whose misc node mdev would have created at boot on
+/// kernels where the driver is built in.
+fn insmod(name: &str) -> Result<(), String> {
+    let stem = name.trim_end_matches(".ko");
+    if Path::new(&format!("/sys/module/{stem}")).exists()
+        || !Path::new(&format!("/extra/{name}")).exists()
+    {
+        return Ok(());
+    }
+    let output = Command::new("/bin/busybox")
+        .args(["insmod", &format!("/extra/{name}")])
+        .output()
+        .map_err(|_| "Could not run insmod")?;
+    let text = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() && !text.contains("File exists") {
+        return Err(format!("Loading {name} failed: {}", text.trim()));
+    }
+    Ok(())
+}
+
 fn load_modules() -> Result<(), String> {
+    insmod("compat.ko")?;
+    insmod("bluetooth.ko")?;
+    if crate::ui_settings::stp_driver_available() {
+        return Ok(());
+    }
     if Path::new("/sys/class/misc/vhci").exists() {
         return make_vhci_node();
     }
     if !Path::new("/extra/hci_vhci.ko").exists() {
         return Ok(());
     }
-    for name in ["compat.ko", "bluetooth.ko", "hci_vhci.ko"] {
-        let output = Command::new("/bin/busybox")
-            .args(["insmod", &format!("/extra/{name}")])
-            .output()
-            .map_err(|_| "Could not run insmod")?;
-        let text = String::from_utf8_lossy(&output.stderr);
-        if !output.status.success() && !text.contains("File exists") {
-            return Err(format!("Loading {name} failed: {}", text.trim()));
-        }
-    }
+    insmod("hci_vhci.ko")?;
     if !wait_for(|| Path::new("/sys/class/misc/vhci").exists(), 20, Duration::from_millis(100)) {
         return Err("hci_vhci loaded but no vhci device appeared".into());
     }
@@ -161,8 +177,37 @@ fn stop_stack(bridge: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The in-kernel STP HCI driver, when the boot image carries it: loading
+/// the module registers hci0 and the radio is powered on and off by the
+/// adapter's own open and close, so there is no bridge to run.
+fn load_stp_driver() -> Result<(), String> {
+    if Path::new("/sys/module/hci_stp").exists() {
+        return Ok(());
+    }
+    let output = Command::new("/bin/busybox")
+        .args(["insmod", "/extra/hci_stp.ko"])
+        .output()
+        .map_err(|_| "Could not run insmod")?;
+    if !output.status.success() {
+        return Err(format!(
+            "Loading hci_stp failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+fn unload_stp_driver() {
+    if Path::new("/sys/module/hci_stp").exists() {
+        let _ = Command::new("/bin/busybox").args(["rmmod", "hci_stp"]).status();
+    }
+}
+
 fn down() -> Result<(), String> {
     let result = stop_stack(true);
+    if crate::ui_settings::stp_driver_available() {
+        unload_stp_driver();
+    }
     // The HID daemon binds its key socket last; a stale path from the previous
     // run would otherwise look ready while the next one is still registering.
     let _ = fs::remove_file("/tmp/couch-bt-hid.sock");
@@ -183,14 +228,20 @@ fn up() -> Result<(), String> {
     load_modules()?;
     // A bluetoothd or HID daemon left over from an earlier bridge holds stale
     // adapter state; when the bridge has to be (re)started, start them fresh.
-    if !crate::ui_settings::bridge_running() {
+    if !crate::ui_settings::transport_running() {
         stop_stack(false)?;
+    }
+    if crate::ui_settings::stp_driver_available() {
+        load_stp_driver()?;
+        if !wait_for(|| Path::new(HCI0).exists(), 30, Duration::from_millis(200)) {
+            return Err("hci_stp loaded but no controller appeared".into());
+        }
     }
     // Bridge first: opening the transport powers the radio and creates hci0.
     // WMT occasionally refuses the open right after a power-off (ENODEV) and
     // the bridge exits; a second try a moment later succeeds.
     let mut attempt = 0;
-    loop {
+    while !crate::ui_settings::stp_driver_available() {
         alpine_sh(&format!(
             "for p in /proc/[0-9]*; do [ \"$(cat $p/comm 2>/dev/null)\" = couch-bt-bridge ] && exit 0; done; \
              setsid {base}/couch-bt-bridge </dev/null >/tmp/couch-bt-bridge.log 2>&1 &"
@@ -215,7 +266,7 @@ fn up() -> Result<(), String> {
     // core resets the device (about 300 ms after open). bluetoothd powering
     // the adapter on in the middle of that reset times out, so give the core
     // a moment; the in-tree 3.18 core has no such pass.
-    if Path::new("/sys/module/hci_vhci").exists() {
+    if Path::new("/sys/module/bluetooth").exists() {
         thread::sleep(Duration::from_millis(3000));
     }
     // dbus, then bluetoothd, then the HID daemon. The HID daemon waits for
@@ -235,7 +286,7 @@ fn up() -> Result<(), String> {
         "pidof couch-bt-hid >/dev/null || setsid {base}/couch-bt-hid </dev/null >/tmp/couch-bt-hid.log 2>&1 &"
     ))?;
     if wait_for(
-        || crate::ui_settings::hid_running() && crate::ui_settings::bridge_running(),
+        || crate::ui_settings::hid_running() && crate::ui_settings::transport_running(),
         30,
         Duration::from_millis(100),
     ) {

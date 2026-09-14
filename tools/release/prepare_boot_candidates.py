@@ -27,7 +27,7 @@ def kernel(image):
     return split_dtb(image[page:page+size])[0]
 
 
-MODULES = ('compat.ko', 'bluetooth.ko', 'hci_vhci.ko')
+MODULES = ('compat.ko', 'bluetooth.ko', 'hci_vhci.ko', 'hci_stp.ko')
 
 
 def clean_ramdisk(root, role):
