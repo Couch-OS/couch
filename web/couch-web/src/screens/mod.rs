@@ -55,7 +55,7 @@ pub fn render(app: App, route: Route) -> AnyView {
         Route::Areas => keyed(app, areas::list),
         Route::Area(id) => keyed(app, move |app, c| areas::detail(app, c, &id)),
         Route::Room(id) => rooms::detail(app, id),
-        Route::Scene(id) => keyed(app, move |app, c| scenes::detail(app, c, &id)),
+        Route::Scene(id) => scenes::detail(app, id),
         Route::Activities => activities::list(app),
         Route::Activity(id) => activities::detail(app, id),
         Route::NotFound => gone(app, "That page does not exist."),
@@ -236,6 +236,13 @@ pub fn reorder_buttons(
 /// one row never makes the list diff itself, let alone rebuild its siblings.
 pub fn ids<T: Send + Sync + 'static>(slice: Memo<Vec<T>>, id: fn(&T) -> &Id) -> Memo<Vec<Id>> {
     Memo::new(move |_| slice.with(|items| items.iter().map(|item| id(item).clone()).collect()))
+}
+
+/// [`device_name`] read from the slices instead of from a document.
+pub fn device_label(app: App, id: &Id) -> String {
+    device_place(app, id.clone())()
+        .map(|(device, room)| format!("{device} · {room}"))
+        .unwrap_or_else(|| format!("{id} (missing)"))
 }
 
 /// A device's own name and the name of the room it is in, read reactively.
