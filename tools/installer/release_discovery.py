@@ -15,7 +15,12 @@ API = f'https://api.github.com/repos/{REPOSITORY}/releases'
 DOWNLOAD = f'https://github.com/{REPOSITORY}/releases/download/'
 MAX_MANIFEST = 256 * 1024
 MAX_LIST = 4 * 1024 * 1024
-VERSION = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-alpha\.([1-9][0-9]*))?$')
+# The tags this repository cuts: v0.1.0, v0.1.0-alpha.1, the dated
+# v0.1.0-alpha.20260913.148, and the dev-branch v0.1.0-alpha.20260913.148.dev.
+# daemon/couch-updates/src/release.rs reads the same tags through semver.
+VERSION = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+                     r'(?:-alpha((?:\.(?:0|[1-9][0-9]*))+)(\.dev(?:\.(?:0|[1-9][0-9]*))*)?)?$')
+CHANNELS = ('stable', 'alpha', 'dev')
 SHA = re.compile(r'^[0-9a-f]{64}$')
 
 
@@ -60,8 +65,35 @@ class Selection:
                 'publisher_signature_verified': False, 'installation_authorized': False}
 
 
+def channel_of(match):
+    """Which channel a matched tag belongs to.
+
+    release.rs::accepts nests the channels, because a remote on alpha must
+    still take a stable release. Discovery lists one channel at a time, so
+    here they partition: a dev tag is the alpha core plus a `dev` identifier.
+    """
+    if match[4] is None:
+        return 'stable'
+    return 'dev' if match[5] is not None else 'alpha'
+
+
+def order(tag):
+    """Semver precedence, for sorting newest first.
+
+    A finished version outranks its prereleases, prerelease identifiers compare
+    left to right, and a longer identifier list wins a common prefix - so
+    alpha.20260913.122.dev sits just above alpha.20260913.122 and below
+    alpha.20260914.130, exactly as the remote's own ordering does.
+    """
+    match = VERSION.fullmatch(tag)
+    numbers = [int(part) for part in match[4].split('.')[1:]] if match[4] else []
+    dev = [int(part) for part in match[5].split('.')[2:]] if match[5] else []
+    return (int(match[1]), int(match[2]), int(match[3]),
+            match[4] is None, numbers, match[5] is not None, dev)
+
+
 def selections(releases, channel='stable', exact=None):
-    require(channel in ('stable', 'alpha'), 'Choose stable or alpha channel')
+    require(channel in CHANNELS, 'Choose stable, alpha or dev channel')
     require(exact is None or isinstance(exact, str) and VERSION.fullmatch(exact), 'Invalid exact release version')
     require(isinstance(releases, list), 'Invalid GitHub release listing')
     result = []
@@ -74,8 +106,8 @@ def selections(releases, channel='stable', exact=None):
         match = VERSION.fullmatch(tag) if isinstance(tag, str) else None
         if not match:
             continue
-        alpha = match[4] is not None
-        if release.get('prerelease') is not alpha or channel != ('alpha' if alpha else 'stable') or exact and tag != exact:
+        prerelease = match[4] is not None
+        if release.get('prerelease') is not prerelease or channel != channel_of(match) or exact and tag != exact:
             continue
         name = f'couch-{tag}-{MODEL}.json'
         assets = release.get('assets')
@@ -96,7 +128,7 @@ def selections(releases, channel='stable', exact=None):
                 'Manifest asset has no usable SHA-256 metadata')
         result.append(Selection(tag, channel, release['id'], asset['id'], name, expected_url, asset['size'], digest[7:]))
         seen.add(tag)
-    return sorted(result, key=lambda selected: tuple(int(part or 0) for part in VERSION.fullmatch(selected.tag).groups()), reverse=True)
+    return sorted(result, key=lambda selected: order(selected.tag), reverse=True)
 
 
 def discover(channel='stable', exact=None, fetch=fetch_bytes):

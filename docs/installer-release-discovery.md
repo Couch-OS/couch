@@ -19,10 +19,14 @@ sizes. It never reads the operator's GitHub CLI credentials. Drafts are excluded
 an unpublished alpha is consequently unavailable to public discovery.
 
 Stable tags use `vMAJOR.MINOR.PATCH`; alpha tags use
-`vMAJOR.MINOR.PATCH-alpha.NUMBER` and must have GitHub's prerelease flag set.
-Other prerelease channels are not silently treated as alpha. Selection is sorted
-numerically and pinned to the release ID, tag, asset ID, exact versioned URL,
-byte size and SHA-256. It never follows a floating `latest` reference later.
+`vMAJOR.MINOR.PATCH-alpha.DATE.NUMBER` (`vMAJOR.MINOR.PATCH-alpha.NUMBER` is the
+older shape and still reads), and a dev-branch build is that tag with a trailing
+`.dev`. Every prerelease tag must have GitHub's prerelease flag set. Other
+prerelease channels are not silently treated as alpha, and a dev build is listed
+on the `dev` channel rather than with the alphas, the way the remote's own
+updater separates them. Selection is sorted by semantic-version precedence and
+pinned to the release ID, tag, asset ID, exact versioned URL, byte size and
+SHA-256. It never follows a floating `latest` reference later.
 GitHub's [release API documentation](https://docs.github.com/en/rest/releases/releases)
 describes the list endpoint and asset digests; `/latest` excludes prereleases.
 
