@@ -31,10 +31,15 @@ still in its box must be set up in its own app first.
    `{"via":"connection","connection_id":"<matter>","resource_id":"<node>/<endpoint>"}`.
 
 The room view on the remote toggles a device with OK and adjusts brightness on
-endpoints that have a Level Control cluster. Activities and scenes can use
-`on`, `off` and `toggle`. Every read and command opens a CASE session and reads
-the state back after the command; there is no subscription yet, so a device
-changed elsewhere is only as fresh as the last refresh.
+endpoints that have a Level Control cluster. Activities, scenes and physical
+button mappings can use `on`, `off`, `toggle` and a `dim:<n>` level, the last
+only on an endpoint with a Level Control cluster. A mapped `toggle` reads the
+state first and turns the device on if it will not say. The room view, the
+area's quick-access keys and mapped buttons share one controller per fabric, so
+a key press reuses the CASE session the room list already opened. Every read
+and command opens a CASE session and reads the state back after the command;
+there is no subscription yet, so a device changed elsewhere is only as fresh as
+the last refresh.
 
 ## Forgetting a device
 

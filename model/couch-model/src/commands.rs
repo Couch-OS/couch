@@ -184,7 +184,9 @@ impl Function {
             // table lives here. Listed only where a client sets the level
             // today, and only for the Home Assistant domain that has it.
             Self::Dim(_) => match integration {
-                Integration::Hue { .. } => true,
+                // Matter carries the level on the endpoint's Level Control
+                // cluster; an endpoint without one refuses the command.
+                Integration::Hue { .. } | Integration::Matter { .. } => true,
                 Integration::HomeAssistant { entity_id } => crate::buttons::ha_domain(entity_id) == "light",
                 _ => false,
             },
@@ -257,6 +259,9 @@ mod tests {
             },
             Integration::Hue {
                 light_id: "id".into(),
+            },
+            Integration::Matter {
+                device: "matter/7/1".into(),
             },
             Integration::HomeAssistant {
                 entity_id: "light.test".into(),
@@ -341,6 +346,7 @@ mod tests {
             (Function::Dim(30), Integration::Hue { light_id: "id".into() }, true),
             (Function::Dim(30), ha("light.office"), true),
             (Function::Dim(30), ha("ha-one/light.office"), true),
+            (Function::Dim(30), Integration::Matter { device: "matter/7/1".into() }, true),
             (Function::Dim(30), ha("cover.office"), false),
             (Function::Dim(30), ha("climate.office"), false),
             (Function::Dim(30), Integration::WebOs, false),
@@ -355,6 +361,9 @@ mod tests {
             (Function::Volume(30), Integration::Denon { host: "h".into(), port: 23 }, false),
             (Function::Volume(30), ha("light.office"), false),
             (Function::Volume(30), Integration::Ir { codeset: "tv".into() }, false),
+            // A Matter endpoint is a light: no volume and no cover position.
+            (Function::Volume(30), Integration::Matter { device: "matter/7/1".into() }, false),
+            (Function::Position(30), Integration::Matter { device: "matter/7/1".into() }, false),
         ] {
             assert_eq!(
                 function.supports(&integration),

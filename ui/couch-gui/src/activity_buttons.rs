@@ -295,6 +295,9 @@ fn connection_worker(
     let mut tv = HashMap::new();
     let mut streaming = HashMap::new();
     let mut sonos = HashMap::new();
+    // Not cleared with the other caches on a generation change: the fabrics are
+    // shared with the room list, which is still holding them open.
+    let matter = connections::matter();
     let mut generation = current.load(Ordering::SeqCst);
     loop {
         let request = rx.recv_timeout(Duration::from_millis(100));
@@ -321,6 +324,7 @@ fn connection_worker(
             &mut tv,
             &mut streaming,
             &mut sonos,
+            &matter,
             r.repeat,
             &|| {
                 current.load(Ordering::SeqCst) == r.generation
@@ -358,8 +362,20 @@ pub(crate) fn execute(
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
+    matter: &connections::MatterFleet,
 ) -> Result<(), String> {
-    execute_with_input(config, action, denon, tv, streaming, sonos, false, &|| true).map(|_| ())
+    execute_with_input(
+        config,
+        action,
+        denon,
+        tv,
+        streaming,
+        sonos,
+        matter,
+        false,
+        &|| true,
+    )
+    .map(|_| ())
 }
 
 /// Physical input preserves hold edges; other callers represent distinct presses.
@@ -371,6 +387,7 @@ pub(crate) fn execute_with_input(
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
+    matter: &connections::MatterFleet,
     repeat: bool,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, String> {
@@ -735,6 +752,15 @@ pub(crate) fn execute_with_input(
             .map(|_| Outcome::default())
             .map_err(|e| e.to_string())
         }
+        // The fleet is the one the room list and the shortcut keys use, so a
+        // mapped key reuses whatever CASE session those already opened.
+        Integration::Matter { device } => match command {
+            F::On => matter.power(&device, true),
+            F::Off => matter.power(&device, false),
+            F::Dim(percent) => matter.brightness(&device, percent),
+            _ => matter.toggle_or_on(&device),
+        }
+        .map(|_| Outcome::default()),
         _ => Err("This integration cannot send button commands yet".into()),
     }
 }
@@ -1127,6 +1153,46 @@ mod tests {
         p.repeat = false;
         c.handle_press(&p);
         assert_eq!(rx.try_recv().unwrap().action.command, "mute");
+    }
+
+    #[test]
+    fn matter_devices_dispatch_instead_of_reporting_an_unsupported_integration() {
+        let mut config = Config::default();
+        config.rooms.push(couch_model::Room {
+            id: "room".into(),
+            name: "Room".into(),
+            icon: None,
+            devices: vec![couch_model::Device::new(
+                "lamp".into(),
+                "Lamp",
+                couch_model::DeviceKind::Light,
+            )
+            .with_integration(Integration::Matter {
+                device: "fabric/1/1".into(),
+            })],
+        });
+        let matter = connections::MatterFleet::default();
+        for command in ["on", "off", "toggle", "dim:30"] {
+            let error = execute_with_input(
+                &config,
+                &Action::new("lamp", command),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &matter,
+                false,
+                &|| true,
+            )
+            .unwrap_err();
+            // No fabric on a test host, so the fleet refuses the connection.
+            // The point is that the dispatch reaches Matter at all.
+            assert_ne!(
+                error, "This integration cannot send button commands yet",
+                "{command}"
+            );
+            assert_eq!(error, "Matter connection was removed", "{command}");
+        }
     }
 
     #[test]

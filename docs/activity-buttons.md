@@ -48,8 +48,8 @@ remains unavailable until the built-in blaster can send codes.
 - Brightness, volume and cover position carry a number. Set **Level (%)** in the
   picker, then choose the level row; the mapping is saved as `dim:30`,
   `volume:20` or `position:70`. They are offered only where a client sets a
-  level: brightness on Hue and Home Assistant lights, volume on Sonos, Kodi and
-  LG webOS, position on Home Assistant covers. Denon sets volume in dB rather
+  level: brightness on Hue, Matter and Home Assistant lights, volume on Sonos,
+  Kodi and LG webOS, position on Home Assistant covers. Denon sets volume in dB rather
   than percent, so it keeps only its relative keys.
 - Home Assistant blinds offer Open, Close, Stop and a position level; Home
   Assistant thermostats offer each HVAC mode and Warmer / Cooler, one advertised

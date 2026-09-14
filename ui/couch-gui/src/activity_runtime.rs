@@ -45,6 +45,7 @@ fn execute_sequence(
     let mut tv = HashMap::new();
     let mut streaming = HashMap::new();
     let mut sonos = HashMap::new();
+    let matter = crate::connections::matter();
     execute_steps(job, generation, &mut progress, |action| {
         crate::activity_buttons::execute(
             &job.config,
@@ -53,6 +54,7 @@ fn execute_sequence(
             &mut tv,
             &mut streaming,
             &mut sonos,
+            &matter,
         )
     })
 }
