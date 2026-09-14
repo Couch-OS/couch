@@ -30,6 +30,11 @@ enum Input {
     Back,
     Text(String),
 }
+/// How long to keep watching for boot's setup decision. The radio job clears the
+/// marker even when the radio fails, and its own waits add up to well under
+/// this; the cap only stops a job that was killed from holding the watch open
+/// for the life of the process.
+const PENDING_SECONDS: u32 = 120;
 pub struct Controller {
     worker: network::Worker,
     input: Rc<RefCell<VecDeque<Input>>>,
@@ -39,6 +44,10 @@ pub struct Controller {
     password: String,
     secured: bool,
     onboarding: bool,
+    /// Seconds left to wait for boot's setup decision; `None` once it is in.
+    pending: Option<u32>,
+    /// When the two marker files were last looked at.
+    pending_at: std::time::Instant,
     ip: String,
 }
 impl Controller {
@@ -56,7 +65,14 @@ impl Controller {
         app.on_keyboard_accepted(move |s| queue.borrow_mut().push_back(Input::Text(s.to_string())));
         let queue = input.clone();
         app.on_keyboard_cancelled(move || queue.borrow_mut().push_back(Input::Back));
-        if std::path::Path::new("/tmp/couch.onboarding").exists() {
+        // stage2 starts this process beside the Wi-Fi bring-up, so the setup
+        // decision may not have been made yet: a missing /tmp/couch.onboarding
+        // does not on its own mean "this remote has saved networks".
+        // /tmp/couch.network-pending says the decision is still coming, and
+        // poll() waits for it rather than showing the room UI to a remote that
+        // has never been set up.
+        let onboarding = std::path::Path::new("/tmp/couch.onboarding").exists();
+        if onboarding {
             input.borrow_mut().push_back(Input::Start);
         }
         Self {
@@ -67,7 +83,10 @@ impl Controller {
             ssid: String::new(),
             password: String::new(),
             secured: false,
-            onboarding: std::path::Path::new("/tmp/couch.onboarding").exists(),
+            onboarding,
+            pending: (!onboarding && std::path::Path::new("/tmp/couch.network-pending").exists())
+                .then_some(PENDING_SECONDS),
+            pending_at: std::time::Instant::now(),
             ip: String::new(),
         }
     }
@@ -224,6 +243,24 @@ impl Controller {
         }
     }
     pub fn poll(&mut self, app: &App) {
+        // Boot's setup decision, when it was still pending at startup. Once a
+        // second, not once a frame. couch.onboarding is read first because the
+        // radio job writes it before clearing the marker.
+        if let Some(left) = self.pending {
+            if self.pending_at.elapsed() >= std::time::Duration::from_secs(1) {
+                self.pending_at = std::time::Instant::now();
+                if std::path::Path::new("/tmp/couch.onboarding").exists() {
+                    self.onboarding = true;
+                    self.pending = None;
+                    self.input.borrow_mut().push_back(Input::Start);
+                } else if left == 0 || !std::path::Path::new("/tmp/couch.network-pending").exists()
+                {
+                    self.pending = None;
+                } else {
+                    self.pending = Some(left - 1);
+                }
+            }
+        }
         loop {
             let input = self.input.borrow_mut().pop_front();
             let Some(input) = input else { break };
