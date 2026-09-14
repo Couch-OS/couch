@@ -22,6 +22,8 @@ pub enum Request {
         version: String,
     },
     UpdateRestart,
+    /// Put the saved previous boot image back on the boot partition.
+    BootRollback,
     /// Power off, restart, or restart into the recovery image.
     Power {
         action: crate::power::Action,

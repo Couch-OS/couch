@@ -246,6 +246,9 @@ fn handle_updates(
             }
             reply
         }
+        Request::BootRollback => {
+            protocol::write(&Reply::Done(updates.boot_rollback()), &mut stream)
+        }
         Request::Network => network_session(stream),
         Request::Power { action } => {
             // Answer first: the reply is the menu's cue to show what is

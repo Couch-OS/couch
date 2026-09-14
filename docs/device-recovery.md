@@ -63,6 +63,8 @@ web UI (`COUCH_NO_UI`).
 
 A [boot image update](runtime-updates.md#boot-image-updates) saves the whole
 previous `boot` partition to `/opt/couch/boot/previous.img` before it writes.
+While the remote still comes up, the web UI's Updates page writes that image
+back itself; the steps below are for when it does not.
 If the new kernel boots but the GUI never becomes healthy, init's gate lands in
 recovery by itself; if it dies before init, hold **Back** while powering on.
 From the recovery serial shell, confirm the saved image is a boot image and
