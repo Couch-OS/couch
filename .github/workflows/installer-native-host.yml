@@ -15,6 +15,9 @@ on:
         default: false
 permissions:
   contents: read
+concurrency:
+  group: installer-native-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   native:
     strategy:
@@ -28,6 +31,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Cache the dependency build: couch-installer-host pulls reqwest, rustls,
+      # ring and zip, and four workflows rebuilt all of it on every runner.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/installer/host
       - name: Check native host
         working-directory: tools/installer/host
         run: |
@@ -89,6 +97,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/installer/linux_stage/probe
       - name: Install regular-image fixture tools
         run: sudo apt-get update && sudo apt-get install -y e2fsprogs
       - name: Check private stage and neutral payload builders

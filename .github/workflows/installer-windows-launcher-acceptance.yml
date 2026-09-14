@@ -27,6 +27,11 @@ on:
 permissions:
   contents: read
   actions: read
+concurrency:
+  group: installer-windows-launcher-acceptance-${{ github.event.pull_request.number || github.ref }}
+  # A dispatched acceptance run carries hand-recorded pins and must finish;
+  # only a superseded pull request run is worth cancelling.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   validate:
     runs-on: windows-2022
