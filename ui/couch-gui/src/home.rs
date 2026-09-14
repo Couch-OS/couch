@@ -124,7 +124,8 @@ mod tests {
                 {"id":"t","name":"TV","kind":"tv"}]}]}))
         .unwrap();
         let plan = Plan::build(&config);
-        assert!(plan.has_hue && plan.has_ha);
+        assert!(plan.has_hue);
+        assert_eq!(plan.ha_ids, vec!["a/light.strip".to_string()]);
         assert_eq!(plan.rooms.len(), 1);
         assert_eq!(plan.rooms[0].0, config.rooms[0].id);
         assert_eq!(
@@ -138,7 +139,64 @@ mod tests {
         let mut empty = config.clone();
         empty.rooms[0].devices.clear();
         let plan = Plan::build(&empty);
-        assert!(!plan.has_hue && !plan.has_ha);
+        assert!(!plan.has_hue && plan.ha_ids.is_empty());
+    }
+    fn on(bright: Option<u8>) -> Reading {
+        Reading { on: Some(true), bright, lost: false }
+    }
+    fn off() -> Reading {
+        Reading { on: Some(false), bright: Some(0), lost: false }
+    }
+    /// What the hub's status column says, and the four ways it can say
+    /// nothing rather than guess.
+    #[test]
+    fn the_status_column_counts_only_devices_that_answered() {
+        // Two lights on out of three readable devices, one of them bright.
+        let lit = room_state(&[on(Some(80)), on(Some(20)), off()]);
+        assert_eq!((lit.power, lit.on, lit.known), (1, 2, true));
+        assert!(!lit.dimmed && !lit.offline);
+        // Known and nothing on: IDLE, and the icon disc goes to its off tint.
+        let idle = room_state(&[off(), off()]);
+        assert_eq!((idle.power, idle.on, idle.known), (0, 0, true));
+        assert!(!idle.offline);
+        // An unreadable device is excluded from the count, and leaves the
+        // tri-state icon unknown rather than claiming the room is off.
+        let mixed = room_state(&[Reading::default(), off()]);
+        assert_eq!((mixed.power, mixed.on, mixed.known), (-1, 0, true));
+        // No device in the room reads at all: no status column.
+        let silent = room_state(&[Reading::default(), Reading::default()]);
+        assert_eq!((silent.power, silent.on, silent.known), (-1, 0, false));
+        assert!(!silent.offline);
+        assert_eq!(room_state(&[]), RoomState::default());
+    }
+    #[test]
+    fn dimmed_needs_a_reported_level_and_every_lit_light_below_half() {
+        assert!(room_state(&[on(Some(20)), on(Some(49)), off()]).dimmed);
+        assert!(!room_state(&[on(Some(20)), on(Some(50))]).dimmed);
+        // A lit light with no level reported is not evidence of a dim room,
+        // and an off light's zero must not drag the room into it.
+        assert!(!room_state(&[on(None), on(None)]).dimmed);
+        assert!(room_state(&[on(Some(10)), on(None)]).dimmed);
+        assert!(!room_state(&[off(), off()]).dimmed);
+    }
+    /// OFFLINE is the bridge failing, not the room being off, and it only
+    /// speaks when nothing else in the room can.
+    #[test]
+    fn offline_is_reserved_for_a_connection_that_failed_its_last_fetch() {
+        let down = Reading { on: None, bright: None, lost: true };
+        let gone = room_state(&[down, Reading::default()]);
+        assert!(gone.offline && gone.known);
+        assert_eq!((gone.power, gone.on), (-1, 0));
+        // A second bridge still answering: the count it gives is true, so the
+        // card shows it rather than declaring the whole room unreachable.
+        let partial = room_state(&[down, on(None)]);
+        assert!(!partial.offline && partial.known);
+        assert_eq!(partial.on, 1);
+        assert!(!room_state(&[down, off()]).offline);
+        assert!(lost(&["a".to_string()], "a/light.strip"));
+        assert!(!lost(&["a".to_string()], "b/light.strip"));
+        // A legacy unprefixed entity belongs to the unnamed connection.
+        assert!(lost(&[String::new()], "light.strip"));
     }
     #[test]
     fn every_room_is_reachable_without_configured_areas() {
@@ -208,7 +266,10 @@ fn room_power(states: impl Iterator<Item = Option<bool>>) -> i32 {
     }
 }
 /// Where one device's on/off is read from. Anything else stays unknown: an
-/// unreadable device must not let the rest of a room speak for it.
+/// unreadable device must not let the rest of a room speak for it. A Sonos
+/// player reached through Home Assistant is a `media_player` entity and reads
+/// like any other; a directly configured one would need a poll of its own,
+/// which this loop deliberately does not make.
 #[derive(Debug, PartialEq)]
 enum Source {
     Hue(String),
@@ -217,11 +278,12 @@ enum Source {
 }
 /// What a state pass needs from the configuration, derived once per snapshot
 /// rather than on every pass: whether the house has either integration at all,
-/// and each room's devices already resolved to their state key.
+/// each room's devices already resolved to their state key, and the exact HA
+/// entities to ask for so the pass never reads the whole house.
 #[derive(Debug, Default, PartialEq)]
 struct Plan {
     has_hue: bool,
-    has_ha: bool,
+    ha_ids: Vec<String>,
     rooms: Vec<(Id, Vec<Source>)>,
 }
 impl Plan {
@@ -237,7 +299,9 @@ impl Plan {
                         Source::Hue(light_id)
                     }
                     Some(couch_model::Integration::HomeAssistant { entity_id }) => {
-                        plan.has_ha = true;
+                        if !plan.ha_ids.contains(&entity_id) {
+                            plan.ha_ids.push(entity_id.clone());
+                        }
                         Source::Ha(entity_id)
                     }
                     _ => Source::Unknown,
@@ -248,9 +312,63 @@ impl Plan {
         plan
     }
 }
+/// One device's contribution to its room's card. `on` is None when nothing
+/// readable answered for it; `bright` is only ever a light's percentage.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Reading {
+    on: Option<bool>,
+    bright: Option<u8>,
+    /// The connection serving this device failed its last fetch, so "off"
+    /// would be a guess.
+    lost: bool,
+}
+/// Everything one room card shows beyond its name and device list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RoomState {
+    power: i32,
+    on: i32,
+    known: bool,
+    dimmed: bool,
+    offline: bool,
+}
+impl Default for RoomState {
+    /// Nothing has answered yet: the row the projection starts from.
+    fn default() -> Self {
+        Self { power: -1, on: 0, known: false, dimmed: false, offline: false }
+    }
+}
+/// The status column derived from one room's readings. A device nothing
+/// answered for is excluded, never counted off, so a single unreadable TV
+/// cannot claim its room is idle. OFFLINE is reserved for the case where a
+/// room has devices behind a failed connection and nothing else to report:
+/// with one bridge down and another answering, the count is still true.
+fn room_state(readings: &[Reading]) -> RoomState {
+    let on = readings.iter().filter(|r| r.on == Some(true)).count() as i32;
+    let known = readings.iter().any(|r| r.on.is_some());
+    let offline = !known && readings.iter().any(|r| r.lost);
+    // Only lights report brightness, and only while they are on. No level at
+    // all is not evidence of a dim room.
+    let mut levels = readings
+        .iter()
+        .filter(|r| r.on == Some(true))
+        .filter_map(|r| r.bright)
+        .peekable();
+    RoomState {
+        power: room_power(readings.iter().map(|r| r.on)),
+        on,
+        known: known || offline,
+        dimmed: on > 0 && levels.peek().is_some() && levels.all(|b| b < 50),
+        offline,
+    }
+}
+/// A device is lost rather than off when its connection failed its last
+/// fetch. State keys carry the connection ID that resolved them.
+fn lost(failed: &[String], key: &str) -> bool {
+    failed.iter().any(|id| id == crate::connections::split(key).0)
+}
 pub struct RoomMonitor {
-    rx: std::sync::mpsc::Receiver<std::collections::HashMap<Id, i32>>,
-    latest: std::collections::HashMap<Id, i32>,
+    rx: std::sync::mpsc::Receiver<std::collections::HashMap<Id, RoomState>>,
+    latest: std::collections::HashMap<Id, RoomState>,
     /// The area the rows were last written for; a page change has to write
     /// them again even when no new map arrived.
     shown: usize,
@@ -264,46 +382,56 @@ impl RoomMonitor {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let mut ha_states = HashMap::new();
+            let mut ha_failed: Vec<String> = Vec::new();
             let mut ha_at = Instant::now() - Duration::from_secs(5);
             // The snapshot the plan was built from. The watcher re-reads and
             // validates config.json when its stat changes; this loop is a
             // state poll and must not read or parse the file at all.
             let (mut seen, mut plan) = (0, Plan::default());
             loop {
-                let mut powers = HashMap::new();
+                let mut states = HashMap::new();
                 if let Some(snapshot) = crate::config_snapshot::current() {
                     if snapshot.serial != seen {
                         seen = snapshot.serial;
                         plan = Plan::build(&snapshot.config);
                     }
-                    if plan.has_ha && ha_at.elapsed() >= Duration::from_secs(5) {
-                        ha_states = crate::connections::ha_lights()
+                    if !plan.ha_ids.is_empty() && ha_at.elapsed() >= Duration::from_secs(5) {
+                        let (power, failed) = crate::connections::ha_power(&plan.ha_ids);
+                        ha_states = power
                             .into_iter()
-                            .map(|s| (s.entity_id, s.on))
+                            .map(|s| (s.entity_id, (s.on, s.brightness_percent)))
                             .collect();
+                        ha_failed = failed;
                         ha_at = Instant::now();
                     }
-                    let hue_states: HashMap<_, _> = if plan.has_hue {
-                        hue.lights()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|s| (s.entity_id, s.on))
-                            .collect()
+                    let (hue_lights, hue_failed) = if plan.has_hue {
+                        hue.states()
                     } else {
-                        HashMap::new()
+                        (Vec::new(), Vec::new())
+                    };
+                    let hue_states: HashMap<_, _> = hue_lights
+                        .into_iter()
+                        .map(|s| (s.entity_id, (s.on, s.brightness_percent)))
+                        .collect();
+                    let read = |from: &HashMap<String, (Option<bool>, Option<u8>)>,
+                                failed: &[String],
+                                id: &str| {
+                        let (on, bright) = from.get(id).copied().unwrap_or_default();
+                        Reading { on, bright, lost: lost(failed, id) }
                     };
                     for (room, sources) in &plan.rooms {
-                        powers.insert(
-                            room.clone(),
-                            room_power(sources.iter().map(|s| match s {
-                                Source::Hue(id) => hue_states.get(id).copied().flatten(),
-                                Source::Ha(id) => ha_states.get(id).copied().flatten(),
-                                Source::Unknown => None,
-                            })),
-                        );
+                        let readings: Vec<_> = sources
+                            .iter()
+                            .map(|s| match s {
+                                Source::Hue(id) => read(&hue_states, &hue_failed, id),
+                                Source::Ha(id) => read(&ha_states, &ha_failed, id),
+                                Source::Unknown => Reading::default(),
+                            })
+                            .collect();
+                        states.insert(room.clone(), room_state(&readings));
                     }
                 }
-                match tx.try_send(powers) {
+                match tx.try_send(states) {
                     Err(std::sync::mpsc::TrySendError::Disconnected(_)) => break,
                     _ => {}
                 }
@@ -333,9 +461,13 @@ impl RoomMonitor {
         let rows = model.as_any().downcast_ref::<slint::VecModel<RoomRow>>();
         for (area_index, area) in areas.iter_mut().enumerate() {
             for (row_index, (id, row)) in area.room_ids.iter().zip(&mut area.rooms).enumerate() {
-                let power = self.latest.get(id).copied().unwrap_or(-1);
-                if row.power_state != power {
-                    row.power_state = power;
+                let s = self.latest.get(id).copied().unwrap_or_default();
+                // A room nothing answered for keeps the recessed style it has
+                // today, so idle is simply "nothing on".
+                let next = (s.power, s.on, s.known, s.on == 0, s.offline, s.dimmed);
+                let shown = (row.power_state, row.active_count, row.status_known, row.idle, row.offline, row.dimmed);
+                if shown != next {
+                    (row.power_state, row.active_count, row.status_known, row.idle, row.offline, row.dimmed) = next;
                     if area_index == current {
                         if let Some(rows) = rows {
                             rows.set_row_data(row_index, row.clone());
