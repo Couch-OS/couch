@@ -272,9 +272,49 @@ async fn push(conn: &Connection, path: &str, value: Vec<u8>) {
     let _ = c.value_changed(iref.signal_context()).await;
 }
 
+/// Connect to the system bus, retrying while dbus is still coming up.
+async fn connect() -> zbus::Result<Connection> {
+    let mut last = None;
+    for _ in 0..40 {
+        match Connection::system().await {
+            Ok(c) => return Ok(c),
+            Err(e) => {
+                last = Some(e);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
+    Err(last.unwrap())
+}
+
+/// Wait until bluetoothd owns org.bluez and the adapter answers, so the
+/// one-time registrations below do not race a cold-starting bluetoothd (which
+/// otherwise fails the toggle: the radio is up but the HID service is not).
+async fn wait_for_adapter(conn: &Connection) {
+    for _ in 0..40 {
+        if let Ok(props) = Proxy::new(
+            conn,
+            "org.bluez",
+            ADAPTER,
+            "org.freedesktop.DBus.Properties",
+        )
+        .await
+        {
+            if props
+                .call_method("Get", &("org.bluez.Adapter1", "Address"))
+                .await
+                .is_ok()
+            {
+                return;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> zbus::Result<()> {
-    let conn = Connection::system().await?;
+    let conn = connect().await?;
     let server = conn.object_server();
 
     // Agent.
@@ -410,6 +450,9 @@ async fn main() -> zbus::Result<()> {
             },
         )
         .await?;
+
+    // Wait for bluetoothd to be ready before the one-time registrations.
+    wait_for_adapter(&conn).await;
 
     // Adapter up and pairable.
     set_adapter(&conn, "Powered", Value::from(true)).await?;
