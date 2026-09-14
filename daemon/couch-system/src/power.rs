@@ -51,11 +51,28 @@ pub fn arm_recovery(bcb: &Path) -> io::Result<()> {
     device.sync_all()
 }
 
+/// Zero the first sector, the way init does once the GUI is healthy. For a
+/// deliberate restart from a running system: init arms the marker at every
+/// boot and clears it only after health checks that start 90 s in, so a
+/// restart requested before then would otherwise land in recovery, and the
+/// next boot arms it again before anything can hang.
+pub fn clear_recovery(bcb: &Path) -> io::Result<()> {
+    let mut device = OpenOptions::new().write(true).open(bcb)?;
+    device.write_all(&[0u8; 512])?;
+    device.sync_all()
+}
+
 /// Perform the action. Only returns on failure: the busybox call replaces the
 /// system state. The caller has already answered the request.
 pub fn perform(action: Action, bcb: &Path) -> Result<(), String> {
-    if action == Action::Recovery {
-        arm_recovery(bcb).map_err(|e| format!("Could not arm recovery: {e}"))?;
+    match action {
+        Action::Recovery => {
+            arm_recovery(bcb).map_err(|e| format!("Could not arm recovery: {e}"))?
+        }
+        Action::Restart => {
+            clear_recovery(bcb).map_err(|e| format!("Could not clear the recovery flag: {e}"))?
+        }
+        Action::Off => {}
     }
     let _ = Command::new("/bin/busybox").arg("sync").status();
     let verb = match action {
@@ -73,6 +90,18 @@ pub fn perform(action: Action, bcb: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn clearing_zeroes_only_the_first_sector() {
+        let path = std::env::temp_dir().join(format!("couch-bcb-clear-{}", std::process::id()));
+        let mut image = vec![0xaau8; 2048];
+        image[..13].copy_from_slice(b"boot-recovery");
+        std::fs::write(&path, &image).unwrap();
+        clear_recovery(&path).unwrap();
+        let after = std::fs::read(&path).unwrap();
+        assert!(after[..512].iter().all(|b| *b == 0));
+        assert_eq!(&after[512..], &image[512..]);
+        std::fs::remove_file(path).unwrap();
+    }
     #[test]
     fn the_recovery_block_matches_what_init_writes() {
         let block = recovery_block();

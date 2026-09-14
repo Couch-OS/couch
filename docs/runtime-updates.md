@@ -39,7 +39,13 @@ extraction limits are enforced. Files are staged under
 active. The user separately confirms **Install & restart**.
 
 Activation rechecks staged files, journals the prior slot, switches a symlink,
-and reboots. The stable `runtime-boot.sh` requires a live GUI heartbeat and system
+clears the bootloader control block and reboots. The clear matters: init arms
+`boot-recovery` at every boot and clears it only after health checks that begin
+90 seconds in, so an **Install & restart** pressed before then used to reboot
+into recovery with the update applied (the first boot image update, .140.dev,
+did exactly that). The next boot arms the flag again before anything can hang,
+so nothing is lost by clearing it for a deliberate restart; the Power menu's
+restart does the same. The stable `runtime-boot.sh` requires a live GUI heartbeat and system
 service for five consecutive checks within 90 seconds. Missing or invalid
 heartbeats reset the streak, and each system health command has a two-second
 timeout. A failed or interrupted candidate
