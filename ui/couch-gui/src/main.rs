@@ -639,24 +639,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             system::save_settings(&sett.borrow());
         });
     }
+    // Every SSH call is a socket round trip into the system service with a
+    // 100 s read timeout, and starting sshd generates host keys on first use,
+    // so none of it may run on the UI thread: like the Bluetooth toggle below,
+    // the request goes to a thread and the once-a-second tick applies what
+    // comes back. The message is (enrolled, listening, the toggle it answers).
+    let (ssh_tx, ssh_rx) = std::sync::mpsc::channel::<(bool, bool, Option<bool>)>();
+    // The same two reads, without a toggle: what the settings menu shows. Run
+    // once now and again whenever the menu is asked for, so the row is already
+    // right when it appears and its transition reads nothing.
+    let ssh_probe = {
+        let ssh_tx = ssh_tx.clone();
+        move || {
+            let tx = ssh_tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send((system::ssh_available(), system::ssh_running(), None));
+            });
+        }
+    };
+    ssh_probe();
     {
-        let (weak, sett, toast) = (app.as_weak(), settings.clone(), toast.clone());
+        let (weak, toast, ssh_tx) = (app.as_weak(), toast.clone(), ssh_tx.clone());
         app.on_setting_toggle_ssh(move || {
             let Some(app) = weak.upgrade() else { return };
-            if !system::ssh_available() {
+            if !app.get_ssh_available() {
                 toast("SSH needs a key from the setup page first".into(), 4);
                 return;
             }
-            let on = if system::ssh_running() {
-                system::ssh_stop();
-                false
-            } else {
-                system::ssh_start()
-            };
-            app.set_ssh_on(on);
-            sett.borrow_mut().ssh = on;
-            system::save_settings(&sett.borrow());
-            toast(if on { "SSH on".into() } else { "SSH off".into() }, 3);
+            if app.get_ssh_busy() {
+                toast("SSH is still switching".into(), 2);
+                return;
+            }
+            let want = !app.get_ssh_on();
+            app.set_ssh_busy(true);
+            app.set_ssh_on(want);
+            let tx = ssh_tx.clone();
+            std::thread::spawn(move || {
+                if want {
+                    system::ssh_start();
+                } else {
+                    system::ssh_stop();
+                }
+                let _ = tx.send((system::ssh_available(), system::ssh_running(), Some(want)));
+            });
         });
     }
     // Bringing the Bluetooth stack up takes seconds, so the toggle hands the
@@ -1034,6 +1059,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(at) = settings_at {
             if !settings_opened && now >= at {
                 settings_opened = true;
+                ssh_probe();
                 ask(Intent::OpenSettings);
             }
         }
@@ -1046,8 +1072,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // A hold of the menu key on the home screen opens settings. Only there:
         // a modal is already up owns the key, and the hub is what settings sits
-        // over. The state it shows - the SSID, whether SSH is up - is read here,
-        // once, at open time rather than on the tick.
+        // over. The state it shows - the SSID, whether SSH is up - is asked for
+        // here, at open time rather than on the tick; the SSH pair comes back
+        // from a thread because those two reads can block.
             let on_home = !app.get_tv_shown() && !app.get_player_shown() && !app.get_light_shown() && !app.get_wifi_setup_shown() && !app.get_settings_shown()
                 && !app.get_keyboard_shown()
                 && !app.get_chooser_shown()
@@ -1055,6 +1082,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 && !app.get_setup_mode()
                 && !app.get_recording();
         if physical_input.settings_hold_due(now, on_home) {
+            ssh_probe();
             ask(Intent::OpenSettings);
         }
 
@@ -1122,6 +1150,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Device state changes in seconds, not frames.
         if now - last_tick > 1_000_000 {
             last_tick = now;
+            // What the SSH thread found: a probe, or the outcome of a toggle.
+            if let Ok((available, on, requested)) = ssh_rx.try_recv() {
+                app.set_ssh_available(available);
+                app.set_ssh_on(on);
+                if let Some(want) = requested {
+                    app.set_ssh_busy(false);
+                    if on == want {
+                        settings.borrow_mut().ssh = on;
+                        system::save_settings(&settings.borrow());
+                        toast(if on { "SSH on".into() } else { "SSH off".into() }, 3);
+                    } else if want {
+                        toast("SSH did not start".into(), 5);
+                    } else {
+                        toast("SSH did not stop".into(), 5);
+                    }
+                }
+            }
             // The Bluetooth toggle's outcome, and its state while it settles.
             if let Ok((want, result)) = bt_rx.try_recv() {
                 match result {
@@ -1188,7 +1233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.set_off_index(fresh.off_index);
                     }
                     if fresh.ssh != previous.ssh {
-                        app.set_ssh_on(system::ssh_running());
+                        ssh_probe();
                     }
                     *settings.borrow_mut() = fresh;
                 }

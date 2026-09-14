@@ -123,8 +123,9 @@ impl<F: Fn(&App, usize)> Navigator<F> {
                         .unwrap_or_else(|| "—".into())
                         .into(),
                 );
-                app.set_ssh_available(system::ssh_available());
-                app.set_ssh_on(system::ssh_running());
+                // SSH is not read here: both its reads block on the system
+                // service, and the tick probes them on a thread when the menu
+                // opens.
                 app.set_bt_available(system::bluetooth_available());
                 app.set_bt_state(system::bluetooth_state().into());
                 screen.snapshot();

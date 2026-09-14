@@ -51,6 +51,14 @@ physical-press step; the toggle only runs the daemon for someone already
 enrolled, and shows "unset" otherwise. Turning SSH off from here stops the
 listener but not an existing session.
 
+Starting sshd generates host keys, and every call into `couch-system` is a
+socket round trip with a 100 s read timeout, so the toggle does none of it on
+the UI thread: the press hands the request to a thread, the row says
+"STARTING…" or "STOPPING…" meanwhile, and the once-a-second tick applies what
+came back (Bluetooth works the same way). Whether a key is enrolled and whether
+sshd is listening are probed on that same thread at startup and again whenever
+the menu is asked for, so the settings transition itself reads nothing.
+
 ## Persistence
 
 Brightness and the two timeouts live in `/opt/couch/settings.conf`
