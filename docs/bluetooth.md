@@ -216,7 +216,7 @@ Userland (this repo):
       and API show it (`.145.dev`, `.147`).
 - [x] Key routing: `Provider::BluetoothTv` / `Integration::BluetoothTv`; the
       GUI's mapped-button executor and the one-way TV screen send the
-      function id as a datagram to `/tmp/couch-bt-hid.sock`.
+      function id as a datagram to `/tmp/couch-bt-hid.sock` (mode 0600).
 - [x] Power validation (2026-09-14, `.144.dev`, unplugged, screen off):
       ~110 mA idle with or without Bluetooth on; Wi-Fi throughput unchanged
       with Bluetooth on and idle, halved only during a continuous LE scan.

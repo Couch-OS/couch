@@ -1,6 +1,5 @@
 //! Per-connection private credentials and broker proxy for streaming TVs.
 use super::*;
-use std::os::unix::fs::OpenOptionsExt;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum StreamingConnection {
@@ -95,25 +94,7 @@ impl StreamingConnection {
     }
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
-        let temporary = path.with_extension(format!("{}.new", std::process::id()));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        let result = (|| {
-            file.write_all(&serde_json::to_vec(self)?)?;
-            file.sync_all()?;
-            std::fs::rename(&temporary, path)?;
-            if let Some(parent) = path.parent() {
-                std::fs::File::open(parent)?.sync_all()?;
-            }
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(temporary);
-        }
-        result
+        Ok(couch_sdk::save_private(path, self)?)
     }
 }
 pub struct StreamingTv {

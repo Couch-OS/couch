@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 [dependencies]
+couch-sdk = { path = "../couch-sdk" }
 couch-kodi = { path = "../couch-kodi" }
 couch-webos = { path = "../couch-webos" }
 couch-denon = { path = "../couch-denon" }

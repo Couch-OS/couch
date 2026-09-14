@@ -177,25 +177,6 @@ fn restrict(path: &Path, mode: u32) {
     let _ = (path, mode);
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    let temporary = path.with_extension("tmp");
-    {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        use std::io::Write;
-        let mut file = options.open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&temporary, path)?;
-    Ok(())
-}
-
 impl Controller {
     /// Whether a fabric has been created under `dir`.
     pub fn exists(dir: &Path) -> bool {
@@ -266,7 +247,7 @@ impl Controller {
 
     fn save_inventory(&self, inventory: &Inventory) -> Result<(), Error> {
         let bytes = serde_json::to_vec_pretty(inventory).expect("inventory serializes");
-        write_private(&self.dir.join(INVENTORY_FILE), &bytes)?;
+        couch_sdk::save_private_bytes(&self.dir.join(INVENTORY_FILE), &bytes)?;
         // matc rewrites its registry with the process umask on every change;
         // the 0700 directory is the real guard, this keeps the listing tidy.
         restrict(&self.dir.join("devices.json"), 0o600);

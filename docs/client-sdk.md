@@ -252,6 +252,33 @@ cargo tree -p <your-crate> -e dev    -f "{p} {f}" | grep couch-sdk   # "default,
 strings target/release/libcouch_sdk.rlib | grep -c MockHost          # 0
 ```
 
+### 5. Pinned TLS and Wake-on-LAN, if the device needs them
+
+A LAN device that speaks TLS presents a self-signed certificate no public root
+can verify. `couch_sdk::tls` (feature `tls`, off by default) is the answer the
+existing clients converged on: `Pin` records the certificate seen while the
+user approves the pairing and refuses any other one afterwards, carrying the
+sentence that names *your* device:
+
+```rust
+let config = couch_sdk::tls::pinned_client_config(Arc::new(couch_sdk::tls::Pin::new(
+    certificate,                                  // Arc<Mutex<Vec<u8>>>, empty until paired
+    "Toaster certificate changed; pair again",
+)))?;
+```
+
+`pinned_config_builder` is the same thing stopping before client
+authentication, for a device that wants a client certificate too;
+`verify_tls12_signature` and its two siblings are there for a client that pins
+something else, such as a digest, and still needs the signature half. `Socket`
+is the plain-or-TLS stream a client needs when the same device answers `ws://`
+on one port and `wss://` on another, and `couch_sdk::wol` is the magic packet.
+
+The feature is off by default deliberately: `rustls` builds `ring`, which is C
+and assembly, and `couch-ir`, `couch-kodi`, `couch-denon` and `couch-echo` must
+keep cross-compiling for the remote with no C toolchain at all. Ask for it only
+in a crate that already speaks TLS.
+
 ## Registering a provider
 
 The SDK does not wire your client into the product. Until you make these edits,

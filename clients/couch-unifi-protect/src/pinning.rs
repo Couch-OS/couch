@@ -38,18 +38,15 @@ impl ServerCertVerifier for PinnedVerifier {
         }
         Ok(ServerCertVerified::assertion())
     }
+    // The certificate check above is this crate's own - a digest, with no
+    // trust-on-first-use - but the signature half is the shared one.
     fn verify_tls12_signature(
         &self,
         message: &[u8],
         cert: &CertificateDer<'_>,
         signed: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            signed,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
-        )
+        couch_sdk::tls::verify_tls12_signature(message, cert, signed)
     }
     fn verify_tls13_signature(
         &self,
@@ -57,17 +54,10 @@ impl ServerCertVerifier for PinnedVerifier {
         cert: &CertificateDer<'_>,
         signed: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            signed,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
-        )
+        couch_sdk::tls::verify_tls13_signature(message, cert, signed)
     }
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        rustls::crypto::ring::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
+        couch_sdk::tls::supported_verify_schemes()
     }
 }
 #[derive(Debug)]
@@ -170,12 +160,6 @@ pub(crate) fn tls_config(pin: &str) -> super::Result<ClientConfig> {
         *b = u8::from_str_radix(&pin[i * 2..i * 2 + 2], 16)
             .map_err(|_| super::Error::Configuration)?;
     }
-    let tls =
-        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .map_err(|_| super::Error::Configuration)?
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(PinnedVerifier(bytes)))
-            .with_no_client_auth();
-    Ok(tls)
+    couch_sdk::tls::pinned_client_config(Arc::new(PinnedVerifier(bytes)))
+        .map_err(|_| super::Error::Configuration)
 }

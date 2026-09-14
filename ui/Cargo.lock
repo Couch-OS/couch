@@ -961,6 +961,7 @@ dependencies = [
 name = "couch-androidtv"
 version = "0.1.0"
 dependencies = [
+ "couch-sdk",
  "prost",
  "rand 0.8.8",
  "rcgen",
@@ -978,6 +979,7 @@ name = "couch-appletv"
 version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
+ "couch-sdk",
  "ed25519-dalek",
  "hkdf",
  "num-bigint",
@@ -994,6 +996,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "couch-bt-hid"
+version = "0.1.0"
+
+[[package]]
 name = "couch-control"
 version = "0.1.0"
 dependencies = [
@@ -1001,6 +1007,7 @@ dependencies = [
  "couch-appletv",
  "couch-denon",
  "couch-kodi",
+ "couch-sdk",
  "couch-tizen",
  "couch-webos",
  "libc",
@@ -1024,6 +1031,7 @@ dependencies = [
  "base64 0.22.1",
  "couch-androidtv",
  "couch-appletv",
+ "couch-bt-hid",
  "couch-control",
  "couch-denon",
  "couch-ha",
@@ -1053,6 +1061,7 @@ dependencies = [
 name = "couch-ha"
 version = "0.1.0"
 dependencies = [
+ "couch-sdk",
  "serde",
  "serde_json",
  "ureq",
@@ -1064,6 +1073,7 @@ name = "couch-hue"
 version = "0.1.0"
 dependencies = [
  "couch-ha",
+ "couch-sdk",
  "rustls",
  "serde",
  "serde_json",
@@ -1082,6 +1092,7 @@ dependencies = [
 name = "couch-kodi"
 version = "0.1.0"
 dependencies = [
+ "couch-sdk",
  "serde",
  "serde_json",
 ]
@@ -1091,6 +1102,7 @@ name = "couch-matter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "couch-sdk",
  "matc",
  "rand 0.8.8",
  "serde",
@@ -1110,6 +1122,7 @@ name = "couch-sdk"
 version = "0.1.0"
 dependencies = [
  "couch-model",
+ "rustls",
  "serde",
  "serde_json",
 ]
@@ -1140,6 +1153,7 @@ name = "couch-tizen"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "couch-sdk",
  "rustls",
  "serde",
  "serde_json",
@@ -1152,6 +1166,7 @@ name = "couch-unifi-protect"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "couch-sdk",
  "libc",
  "rustls",
  "serde",
@@ -1193,6 +1208,7 @@ name = "couch-webos"
 version = "0.1.0"
 dependencies = [
  "couch-ir",
+ "couch-sdk",
  "rustls",
  "serde",
  "serde_json",

@@ -1,6 +1,6 @@
 //! Private per-connection web credentials. Never included in house exports.
 use serde::{Deserialize, Serialize};
-use std::{fs, io::Write, os::unix::fs::OpenOptionsExt, path::Path};
+use std::{fs, path::Path};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub host: String,
@@ -20,21 +20,6 @@ impl Settings {
         crate::Kodi::http(&self.host, self.web_port).with_auth(&self.username, &self.password)
     }
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let temporary = path.with_extension(format!("{}.new", std::process::id()));
-        let result = (|| {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temporary)?;
-            file.write_all(&serde_json::to_vec(self)?)?;
-            file.sync_all()?;
-            fs::rename(&temporary, path)?;
-            fs::File::open(path.parent().unwrap())?.sync_all()
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temporary);
-        }
-        result
+        couch_sdk::save_private(path, self)
     }
 }

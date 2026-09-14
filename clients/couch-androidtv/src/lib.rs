@@ -2,8 +2,8 @@
 //! persistent remote session. Call `poll` regularly to answer TV keepalives.
 //! No command is retried automatically. Physical interoperability is pending.
 pub mod cast;
-mod tls;
 mod wire;
+use couch_sdk::tls;
 use prost::Message;
 use rsa::pkcs8::EncodePrivateKey;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
@@ -20,6 +20,10 @@ use x509_parser::prelude::FromDer;
 
 /// Bonjour service used to discover this protocol; discovery is caller-owned.
 pub const MDNS_SERVICE: &str = "_androidtvremote2._tcp.local.";
+
+/// What the pinned verifier reports; it names the device, not the certificate,
+/// because it reaches the panel and the browser unchanged.
+pub(crate) const CERTIFICATE_CHANGED: &str = "Android TV certificate changed; pair again";
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,20 +132,16 @@ impl Connection {
             return Err(Error::Configuration);
         }
         let pin = Arc::new(Mutex::new(pin));
-        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|_| Error::Crypto)?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(tls::Pin {
-            certificate: pin.clone(),
-        }))
-        .with_client_auth_cert(
-            vec![CertificateDer::from(identity.certificate_der.clone())],
-            PrivatePkcs8KeyDer::from(identity.private_key_pkcs8.clone()).into(),
-        )
-        .map_err(|_| Error::Crypto)?;
+        // Mutual TLS: the TV's certificate is pinned the way the other clients
+        // pin theirs, and this is the one client that also presents its own.
+        let config =
+            tls::pinned_config_builder(Arc::new(tls::Pin::new(pin.clone(), CERTIFICATE_CHANGED)))
+                .map_err(|_| Error::Crypto)?
+                .with_client_auth_cert(
+                    vec![CertificateDer::from(identity.certificate_der.clone())],
+                    PrivatePkcs8KeyDer::from(identity.private_key_pkcs8.clone()).into(),
+                )
+                .map_err(|_| Error::Crypto)?;
         let socket =
             TcpStream::connect_timeout(&SocketAddr::new(address, port), Duration::from_secs(5))
                 .map_err(|_| Error::Transport)?;

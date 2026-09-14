@@ -17,6 +17,8 @@ couch-system = { path = "../../daemon/couch-system" }
 couch-updates = { path = "../../daemon/couch-updates" }
 couch-unifi-protect = { path = "../../clients/couch-unifi-protect", features = ["media"] }
 couch-androidtv = { path = "../../clients/couch-androidtv" }
+# The socket path and key words only; `daemon` off keeps zbus out of the GUI.
+couch-bt-hid = { path = "../../clients/couch-bt-hid", default-features = false }
 couch-ir = { path = "../../clients/couch-ir" }
 couch-control = { path = "../../clients/couch-control" }
 couch-denon = { path = "../../clients/couch-denon" }

@@ -378,16 +378,13 @@ impl Observer {
         socket
             .set_write_timeout(Some(timeout))
             .map_err(|_| Error::Transport)?;
-        let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|_| Error::Crypto)?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(crate::tls::Pin {
-            certificate: Arc::new(Mutex::new(Vec::new())),
-        }))
-        .with_no_client_auth();
+        // A fresh, empty pin: the cast channel accepts whatever certificate the
+        // TV shows on this connection and holds it for that connection only.
+        let cfg = couch_sdk::tls::pinned_client_config(Arc::new(couch_sdk::tls::Pin::new(
+            Arc::new(Mutex::new(Vec::new())),
+            crate::CERTIFICATE_CHANGED,
+        )))
+        .map_err(|_| Error::Crypto)?;
         let mut connection =
             rustls::ClientConnection::new(Arc::new(cfg), ServerName::IpAddress(address.into()))
                 .map_err(|_| Error::Crypto)?;
