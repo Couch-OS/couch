@@ -157,9 +157,16 @@ main() {
     # Two independent respawn loops, because a single one that dies takes the
     # only way in with it.
     ( while true; do $BB sh </dev/ttyGS0 >/dev/ttyGS0 2>&1; $BB sleep 1; done ) &
+    PRIMARY=$!
+    # Watch the primary loop by pid. The guard here used to be
+    # pgrep -f "busybox sh", which matches init itself (the kernel execs this
+    # file as "busybox sh /init"), every subshell backgrounded above and
+    # stage2, so it was true for the life of the system and the backup never
+    # ran: the redundancy on the only way back into a wedged device did not
+    # exist.
     ( while true; do
           $BB sleep 20
-          $BB pgrep -f "busybox sh" >/dev/null 2>&1 && continue
+          [ -d /proc/$PRIMARY ] && continue
           $BB sh </dev/ttyGS0 >/dev/ttyGS0 2>&1
       done ) &
     echo "= shell: busybox on usb serial (alpine at /mnt/alpine)"
