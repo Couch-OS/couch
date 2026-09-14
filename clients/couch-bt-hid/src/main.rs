@@ -401,7 +401,9 @@ async fn set_adapter(conn: &Connection, prop: &str, value: Value<'_>) -> zbus::R
         {
             Ok(_) => return Ok(()),
             Err(zbus::Error::MethodError(name, _, _))
-                if attempt < 20 && name.as_str() == "org.freedesktop.DBus.Error.UnknownObject" =>
+                if attempt < 20
+                    && (name.as_str() == "org.freedesktop.DBus.Error.UnknownObject"
+                        || name.as_str() == "org.bluez.Error.Busy") =>
             {
                 attempt += 1;
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
