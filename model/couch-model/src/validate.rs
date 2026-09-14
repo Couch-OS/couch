@@ -204,12 +204,23 @@ impl Config {
         }
 
 
+        // A step is run by the same executor as a button binding, which parses
+        // the command and gives up on anything it does not know, so a step that
+        // does not parse saves and then fails on the first press. Only the parse
+        // is checked here, not `supports_device`: a binding picks from a
+        // device's button catalog, while a step says "on" or "off" to a device
+        // whose catalog has neither.
         for (i, scene) in self.scenes.iter().enumerate() {
             for (j, step) in scene.steps.iter().enumerate() {
                 if !device_ids.contains(&&step.device) {
                     problems.push(Problem {
                         at: alloc::format!("scenes[{i}].steps[{j}]"),
                         message: alloc::format!("no device \"{}\"", step.device),
+                    });
+                } else if crate::commands::Function::parse(&step.command).is_none() {
+                    problems.push(Problem {
+                        at: alloc::format!("scenes[{i}].steps[{j}]"),
+                        message: alloc::format!("unsupported command \"{}\"", step.command),
                     });
                 }
             }
@@ -245,6 +256,11 @@ impl Config {
                     problems.push(Problem {
                         at: alloc::format!("activities[{i}].steps[{j}]"),
                         message: alloc::format!("no device \"{}\"", step.device),
+                    });
+                } else if crate::commands::Function::parse(&step.command).is_none() {
+                    problems.push(Problem {
+                        at: alloc::format!("activities[{i}].steps[{j}]"),
+                        message: alloc::format!("unsupported command \"{}\"", step.command),
                     });
                 }
             }
@@ -391,6 +407,38 @@ mod tests {
             ..Config::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn a_step_command_the_executor_cannot_parse_is_rejected() {
+        let mut living = room("living", "Living room");
+        living.devices.push(Device::new(Id::new("lamp"), "Lamp", DeviceKind::Light));
+        for (command, valid) in [("on", true), ("toggle", true), ("dim:30", false), ("bright", false)] {
+            let steps = vec![Action::new(Id::new("lamp"), command)];
+            let cfg = Config {
+                rooms: vec![living.clone()],
+                scenes: vec![crate::Scene { hue: None, rooms: vec![], id: Id::new("s"), name: "S".to_string(), icon: None, steps: steps.clone() }],
+                activities: vec![crate::Activity {
+                    setup: Default::default(),
+                    id: Id::new("a"),
+                    name: "A".to_string(),
+                    kind: Default::default(),
+                    room: Id::new("living"),
+                    source: None,
+                    buttons: vec![],
+                    steps,
+                }],
+                ..Config::default()
+            };
+            if valid {
+                assert!(cfg.validate().is_ok(), "{command}");
+            } else {
+                let problems = cfg.validate().unwrap_err().problems;
+                let at: Vec<&str> = problems.iter().map(|p| p.at.as_str()).collect();
+                assert_eq!(at, ["scenes[0].steps[0]", "activities[0].steps[0]"], "{command}");
+                assert!(problems.iter().all(|p| p.message.contains(command)), "{command}");
+            }
+        }
     }
 
     #[test]

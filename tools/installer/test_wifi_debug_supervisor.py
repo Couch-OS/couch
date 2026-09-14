@@ -37,6 +37,16 @@ def extract(text, name):
     raise ValueError(f'unterminated shell function {name}')
 
 
+def wait_for_all(path, *needles, seconds=3):
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        text = path.read_text() if path.exists() else ''
+        if all(needle in text for needle in needles):
+            return text
+        time.sleep(.02)
+    raise AssertionError(f'timed out waiting for {needles} in {path}')
+
+
 def wait_for(path, expected, seconds=3):
     until = time.monotonic() + seconds
     while time.monotonic() < until:
@@ -94,7 +104,9 @@ class DebugSupervisorTests(unittest.TestCase):
     def staged_supervisor(self, mode):
         fail = extract(self.wifi_init, 'fail').replace('/tmp', str(self.root))
         init = self.root / 'couch-wifi-init'
-        if mode == 'after':
+        if mode == 'clean':
+            init.write_text(f'#!{self.harness.runner} sh\nexit 0\n')
+        elif mode == 'after':
             init.write_text(
                 f'#!{self.harness.runner} sh\nBB={self.harness.wrapper}\n'
                 f'echo start >> {self.root / "starts"}\n'
@@ -150,6 +162,25 @@ class DebugSupervisorTests(unittest.TestCase):
         self.assertEqual(self.harness.calls.read_text().splitlines(),
                          ['killall wpa_supplicant wmt_launcher wmt_loader'])
         self.assertNotIn('couch-installer-probe', self.supervisor)
+
+    @unittest.skipUnless(shutil.which('busybox'), 'requires BusyBox ash lifecycle semantics')
+    def test_worker_is_reaped_and_the_supplicant_cleaned_up_on_a_plain_exit(self):
+        # `wait` is the shell's, so the status is the worker's rather than
+        # BusyBox's 127 for an applet it does not have, and the fixed cleanup
+        # runs when the worker dies on its own, not only when a retry kills it.
+        process = subprocess.Popen(self.harness.shell + [str(self.staged_supervisor('clean'))])
+        try:
+            wait_for_all(self.root / 'couch-wifi-debug.lifecycle',
+                         'phase=waiting-retry', 'worker=exited', 'worker_exit=success')
+            self.assertEqual(self.harness.calls.read_text().splitlines(),
+                             ['killall wpa_supplicant wmt_launcher wmt_loader'])
+        finally:
+            process.send_signal(signal.SIGTERM)
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
     @unittest.skipUnless(os.name == 'posix', 'requires POSIX shell startup semantics')
     def test_debug_startup_evidence_prioritizes_wpa_and_liveness(self):

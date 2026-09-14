@@ -55,13 +55,20 @@ while true; do
             retry_state=consumed
             lifecycle retry-consumed present running none
             $BB kill "$worker" 2>/dev/null
-            $BB killall wpa_supplicant wmt_launcher wmt_loader 2>/dev/null
             break
         fi
         lifecycle worker-running absent running none
         $BB sleep 1
     done
-    $BB wait "$worker" 2>/dev/null
+    # On both ways out of the loop, not just the retry: a
+    # supplicant-socket-timeout deliberately leaves the blocked wpa_supplicant
+    # running after the worker is gone, and the next generation would race it
+    # for the control socket.
+    $BB killall wpa_supplicant wmt_launcher wmt_loader 2>/dev/null
+    # `wait` is an ash builtin, not a BusyBox applet: `$BB wait` exited 127
+    # without reaping anything, so every worker_exit read "failure" and the
+    # retry loop below spun against a zombie.
+    wait "$worker" 2>/dev/null
     result=$?
     if [ -f /tmp/couch-wifi-debug.retry ]; then
         retry_state=consumed

@@ -234,11 +234,11 @@ impl Integration {
 
 /// One step of a scene or an activity: put this device into this state.
 ///
-/// `command` is free text rather than an enum because what a device accepts is
-/// the integration's business, not the config's - `on`, `off`, `input:hdmi2`,
-/// `volume:35`. Validating it here would mean this crate knowing every
-/// integration's vocabulary, and would reject a command a newer daemon
-/// understands.
+/// `command` is a string rather than a `Function` because that is what the
+/// document stores and the web UI edits - `on`, `off`, `input:hdmi2`. It is not
+/// free text: `Config::validate` refuses a step whose command
+/// `commands::Function::parse` does not understand, because the executor parses
+/// it the same way and a step that does not parse fails on the first press.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Action {
     pub device: DeviceId,
@@ -255,18 +255,19 @@ impl Action {
 
     /// `on` and `off` for every device, plus whatever its kind suggests.
     ///
-    /// Only a hint for the web UI's picker; the field stays free text.
+    /// A hint for the web UI's picker, so every string here has to be one the
+    /// executor runs: the list used to offer `dim:30`, `bright` and `open`,
+    /// which no `Function` parses, so anything built from it failed on the
+    /// first press. `every_command_suggestion_parses` keeps it honest.
     pub fn suggestions(kind: DeviceKind) -> Vec<&'static str> {
         let mut v = alloc::vec!["on", "off"];
         if kind.is_playable() {
             v.extend_from_slice(&["play", "pause", "stop"]);
         }
         match kind {
-            DeviceKind::Light => v.extend_from_slice(&["dim:30", "dim:70", "bright"]),
             DeviceKind::Tv => v.extend_from_slice(&["input:hdmi1", "input:hdmi2"]),
-            DeviceKind::Speaker => v.extend_from_slice(&["volume:20", "volume:40"]),
-            DeviceKind::Blind => v.extend_from_slice(&["open", "close"]),
-            DeviceKind::Thermostat => v.extend_from_slice(&["target:18", "target:21"]),
+            DeviceKind::Speaker => v.extend_from_slice(&["volume-up", "volume-down", "mute"]),
+            DeviceKind::Light | DeviceKind::Blind | DeviceKind::Switch => v.push("toggle"),
             _ => {}
         }
         v
@@ -276,6 +277,17 @@ impl Action {
 #[cfg(test)]
 mod ir_tests {
     use super::*;
+    #[test]
+    fn every_command_suggestion_parses() {
+        for &kind in ALL_DEVICE_KINDS {
+            for command in Action::suggestions(kind) {
+                assert!(
+                    crate::commands::Function::parse(command).is_some(),
+                    "{kind} suggests \"{command}\", which the executor cannot parse"
+                );
+            }
+        }
+    }
     #[test]
     fn old_json_and_legacy_ir_work_without_a_supplemental_field() {
         let old:Device=serde_json::from_str(r#"{"id":"tv","name":"TV","integration":{"via":"ir","codeset":"lg-tv"}}"#).unwrap();

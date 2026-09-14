@@ -1,6 +1,9 @@
 import io
+import sys
 import unittest
 
+if sys.platform == 'win32':
+    raise unittest.SkipTest('The status viewer reads a tty through termios; Windows never runs it')
 from installer_status import Display, safe_line
 
 

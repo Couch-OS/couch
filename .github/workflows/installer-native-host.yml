@@ -2,17 +2,10 @@ name: Native installer host
 on:
   pull_request:
     paths:
-      - 'tools/installer/host/**'
-      - 'tools/installer/mtk_*.py'
-      - 'tools/installer/stage_usb.py'
-      - 'tools/installer/wifi_debug*.py'
-      - 'tools/installer/test_wifi_debug*.py'
-      - 'tools/installer/test_native_entrypoint.py'
-      - 'tools/installer/test_stage_usb.py'
-      - 'tools/installer/test_couch_serial.py'
-      - 'tools/installer/couch_serial.py'
+      # The whole directory: this job runs every tools/installer test, so a
+      # change to any of them has to be able to trigger it.
+      - 'tools/installer/**'
       - 'tools/release/**'
-      - 'tools/installer/linux_stage/**'
       - '.github/workflows/installer-native-host.yml'
   workflow_dispatch:
     inputs:
@@ -48,8 +41,19 @@ jobs:
           import os, pathlib, subprocess
           suffix = '.exe' if os.name == 'nt' else ''
           os.environ['COUCH_NATIVE_HOST_TEST'] = str((pathlib.Path('tools/installer/host/target/release') / ('couch-installer-host' + suffix)).resolve())
-          for pattern in ('test_mtk_adapter.py', 'test_mtk_capture_evidence.py', 'test_mtk_com.py', 'test_stage_usb.py', 'test_couch_serial.py', 'test_native_entrypoint.py', 'test_wifi_debug*.py'):
-              subprocess.run(['python', '-m', 'unittest', 'discover', '-s', 'tools/installer', '-p', pattern], check=True, timeout=120)
+          # Discovery rather than a hand-kept pattern list on Linux and macOS:
+          # the list ran 11 of the 43 test files, leaving the partition write
+          # path, the USB and TTY transports, the TUI, factory restore and
+          # bootstrap untested on every platform. The whole suite is ~400
+          # tests in about 7 seconds. Windows keeps the curated list: most of
+          # the rest exercise POSIX-only paths (temp-file permission bits,
+          # ptys, monotonic clock intervals) and fail there for that reason,
+          # not because the installer misbehaves on Windows.
+          if os.name == 'nt':
+              for pattern in ('test_mtk_adapter.py', 'test_mtk_capture_evidence.py', 'test_mtk_com.py', 'test_stage_usb.py', 'test_couch_serial.py', 'test_native_entrypoint.py', 'test_wifi_debug*.py', 'test_release_discovery.py'):
+                  subprocess.run(['python', '-m', 'unittest', 'discover', '-s', 'tools/installer', '-p', pattern], check=True, timeout=120)
+          else:
+              subprocess.run(['python', '-m', 'unittest', 'discover', '-s', 'tools/installer', '-p', 'test_*.py'], check=True, timeout=600)
       - name: Execute native official input preparation
         if: github.event_name == 'workflow_dispatch' && inputs.verify_official_ota
         shell: python
