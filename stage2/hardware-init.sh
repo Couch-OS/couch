@@ -231,14 +231,25 @@ if [ "$WIFI" = "1" ]; then
         echo "= wlan mac: no device id, leaving the driver's random one"
     fi
 
+    # Wait for the netdev to register rather than guessing at how long the
+    # probe takes. Every other wait in this file polls for its event; this one
+    # was a flat "sleep 3", and a slow probe - a cold chip, a contended boot,
+    # mdev -s racing the registration - reported "wlan0 MISSING", skipped the
+    # supplicant, dhcp and NETS below, and dropped a perfectly configured
+    # device into local onboarding.
     $BB echo 1 > /dev/wmtWifi 2>/tmp/wifion.err
-    $BB sleep 3; $BB mdev -s
+    w=0
+    while [ ! -d /sys/class/net/wlan0 ] && [ $w -lt 40 ]; do
+        $BB sleep 0.25; w=$((w+1))
+    done
+    WLANMS=$((w * 250))
+    $BB mdev -s
     $BB ifconfig wlan0 up 2>/dev/null
     if [ -d /sys/class/net/wlan0 ]; then
-        echo "= wlan0 UP $($BB cat /sys/class/net/wlan0/address)"
+        echo "= wlan0 UP after ${WLANMS}ms $($BB cat /sys/class/net/wlan0/address)"
         echo 'file *gen2* -p' > /sys/kernel/debug/dynamic_debug/control 2>/dev/null
     else
-        echo "= wlan0 MISSING  $($BB cat /tmp/wifion.err 2>/dev/null)"
+        echo "= wlan0 MISSING after ${WLANMS}ms  $($BB cat /tmp/wifion.err 2>/dev/null)"
         echo "= wlan probe log:"; $BB dmesg | $BB grep -E "wlan_gen2.*(ERROR|WARN)|WMT-FUNC" | $BB tail -6
     fi
 
@@ -297,7 +308,7 @@ if [ "$WIFI" = "1" ]; then
                 echo "= dhcp FAILED $($BB tail -1 /tmp/dhcp.log 2>/dev/null)"
             fi
         fi
-        mark $((BASE+6)) "S6 assoc=$ST ip=${IP:-none}"
+        mark $((BASE+6)) "S6 wlan0=${WLANMS}ms assoc=$ST ip=${IP:-none}"
         # The combo chip's whole-chip reset (a firmware assert, or Bluetooth
         # coming up at the wrong moment) bounces wlan0: the driver flushes the
         # address and re-associates, but udhcpc holds its 24 h lease and never
