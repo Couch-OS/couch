@@ -13,10 +13,10 @@
 //! the pump with errno 99; the bridge then reopens `/dev/stpbt` and starts
 //! over, unless `--once` was given. Runs as root, like everything on the
 //! remote; no network, no files beyond the two devices.
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use couch_bt::bridge::{open_device, pump, Counters, STP_RESET_END, STP_RESET_START};
 use couch_bt::h4;
@@ -81,6 +81,52 @@ fn log(line: &str) {
     let _ = std::io::stdout().flush();
 }
 
+
+/// Wait until the radio answers HCI. On the first open after boot the
+/// firmware takes a moment past WMT's "BT on" before it acknowledges STP
+/// frames, and anything sent before then is lost at the transport, which then
+/// times out and retries. The in-tree 3.18 core never sent a command until
+/// bluetoothd powered the adapter seconds later; the backported 4.4 core runs
+/// its setup pass the instant the controller exists. So probe with HCI Reset
+/// and only create the controller once a Command Complete comes back.
+fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
+    let reset = h4::command(0x0c03, &[]);
+    let mut framer = h4::Framer::default();
+    let mut buf = [0u8; h4::MAX_FRAME];
+    for attempt in 1..=10u32 {
+        if let Err(e) = stpbt.write_all(&reset) {
+            log(&format!("readiness probe not sent: {e}"));
+        }
+        let deadline = Instant::now() + Duration::from_millis(400);
+        while Instant::now() < deadline {
+            match stpbt.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    if let Ok(frames) = framer.push(&buf[..n]) {
+                        if frames.iter().any(|f| {
+                            f.len() >= 7 && f[0] == h4::EVENT && f[1] == 0x0e && f[4] == 0x03 && f[5] == 0x0c
+                        }) {
+                            if attempt > 1 {
+                                log(&format!("radio answered HCI Reset on try {attempt}"));
+                            }
+                            return true;
+                        }
+                    }
+                }
+                Ok(_) => std::thread::sleep(Duration::from_millis(20)),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(e) => {
+                    log(&format!("readiness probe read failed: {e}"));
+                    return false;
+                }
+            }
+        }
+    }
+    log("radio never answered HCI Reset; creating the controller anyway");
+    false
+}
+
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let args = match parse(&raw) {
@@ -130,6 +176,7 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         };
+        radio_ready(&mut stpbt, &mut log);
         // Create the controller before any event can arrive for it.
         if let Err(e) = vhci.write_all(&h4::vhci_create_primary()) {
             eprintln!("couch-bt-bridge: cannot create the virtual controller: {e}");
