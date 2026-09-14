@@ -8,6 +8,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: installer-native-frontend-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   ipc:
     strategy:
@@ -21,6 +24,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      # Cache the dependency build: couch-installer-host pulls reqwest, rustls,
+      # ring and zip, and four workflows rebuilt all of it on every runner.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tools/installer/host
+            tools/installer/tui
       - name: Build native host and test terminal
         shell: python
         run: |

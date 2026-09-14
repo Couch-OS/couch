@@ -1,15 +1,20 @@
 name: UniFi Protect client
 on:
   push:
+    branches: [dev, main]
     paths: ['clients/couch-unifi-protect/**', 'clients/Cargo.toml', 'clients/Cargo.lock', '.github/workflows/unifi-protect.yml']
   pull_request:
     paths: ['clients/couch-unifi-protect/**', 'clients/Cargo.toml', 'clients/Cargo.lock', '.github/workflows/unifi-protect.yml']
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: unifi-protect-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   protocol:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: clients

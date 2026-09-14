@@ -11,6 +11,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: runtime-os-compatibility-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   compatibility:
     runs-on: ubuntu-24.04
