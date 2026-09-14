@@ -140,8 +140,19 @@ are `apk add`ed over SSH on the development remote meanwhile.
 
    Follow-up hardening: if a chip reset ever does fire, re-run DHCP on `wlan0`
    so Wi-Fi re-associates without a reboot.
-2. *Power and coexistence.* BT idle current unplugged per
-   `docs/ha100-power-validation.md`; Wi-Fi throughput with the BT function on.
+2. *Power and coexistence.* **Measured 2026-09-14** on the .144 kernel,
+   unplugged, screen asleep, over Wi-Fi (fuel gauge `current_now`; the averaged
+   field reads 0 on battery). Idle draw was ~110 mA screen-off with Bluetooth
+   off, and unchanged with Bluetooth on and the controller idle: the idle radio
+   cost is below the gauge's resolution (~5 mA quantization, ~50 mA background
+   swing). Wi-Fi throughput (iperf3): ~30 down / ~37 up Mbit/s with BT off; the
+   same with BT enabled but the controller down (the toggle's actual state) or
+   up-idle (down unchanged, up dips to ~27); it drops to ~13 down / ~23 up only
+   during a *continuous* LE scan. Takeaway: enabling Bluetooth costs no
+   measurable idle power and does not hurt Wi-Fi; the shared radio time-slices
+   Wi-Fi only under sustained BT activity. A HID peripheral advertises and holds
+   a low-rate connection rather than scanning, so its expected impact is small;
+   confirm once HID lands, and prefer duty-cycled advertising over any scanning.
 3. *HID over GATT.* A second daemon (or the same one grown) that registers the
    HID service with BlueZ over D-Bus, with the keyboard and consumer-control
    report map, and drives advertising through raw HCI since 3.18 has no
