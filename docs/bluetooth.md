@@ -7,8 +7,9 @@ up bridge, dbus, bluetoothd and `couch-bt-hid`; a real TV paired to "Couch
 Remote" and took volume keys; and a **Bluetooth TV** connection/device routes
 the remote's mapped buttons and the one-way TV screen over Bluetooth
 ([user guide](bluetooth-tv.md)). Idle Bluetooth has no measurable power or
-Wi-Fi cost. Still open: per-activity bonds, the vendor set-address command,
-and an in-kernel HCI driver. The sections below are the design record: "what
+Wi-Fi cost. Still open: per-activity bonds and the vendor set-address command. An
+in-kernel HCI driver now exists (`hci_stp`, see
+[kernel-backports-research.md](kernel-backports-research.md#outcome-2026-09-15-the-in-kernel-driver-on-both-cores)). The sections below are the design record: "what
 exists today" describes the starting point, the
 [implementation plan](#implementation-plan-branch-bluetooth-rebased-onto-dev-2026-09-14)
 and [staging checklist](#staging-checklist) what was done. Kernel-side tasks are mirrored in the kernel tree at

@@ -554,3 +554,29 @@ All three gates passed on the dev remote the same evening the plan was written.
   `org.bluez.Error.Busy` (bluetoothd resetting the adapter). With those, eight
   consecutive toggle cycles came up clean with `LEAdvertisingManager1`-managed
   advertising (`ActiveInstances` 1) and no chip reset.
+
+## Outcome (2026-09-15): the in-kernel driver, on both cores
+
+The transport trouble above was the userspace pump, not the radio. The vendor
+tree has a Kconfig entry for "MTK BT driver for BlueZ" and the STP core's
+BlueZ mode, but no driver, so Couch wrote one: `hci_stp` (couch-kernel branch
+`couch-hci-stp`, about 290 lines, also copied to `kernel/backports/hci_stp.c`
+for the backports build). It registers an `hci_dev`, powers the BT function
+on and off in the adapter's own open and close, transmits through
+`mtk_wcn_stp_send_data` with the STP tx-event callback for flow control, and
+receives through the STP core's BlueZ-mode hook with its own H4 reassembly.
+Built as a module, it is loaded when Bluetooth is toggled on and unloaded when
+it is turned off; there is no bridge and no `/dev/vhci`.
+
+- On the in-tree 3.18 core (`bluetooth-hci-stp`, `.153.dev`): first toggle
+  after boot in 2 s, 15 of 15 cycles, zero STP timeouts, zero chip resets.
+- On the backported 4.4 core (`bluetooth-backports`, `.154.dev`, the four
+  modules in the ramdisk): first toggle in 6 s (3 s of it a settle that may
+  be unnecessary now), 6 of 6 cycles, zero STP timeouts, zero chip resets, and
+  not one hardware-error event; bluetoothd exports `LEAdvertisingManager1`
+  (SupportedInstances 4) and `couch-bt-hid` runs a managed advertisement.
+
+`kernel/backports/build.sh` reproduces the module build. Still to do before
+a candidate: the disconnect/re-advertise acceptance with a real TV, a full
+hardware round on the CMAC kernel, pushing `couch-hci-stp` to the kernel
+repo, and folding the modules into `tools/build.sh` images.
