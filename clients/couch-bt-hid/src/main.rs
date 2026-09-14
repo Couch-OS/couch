@@ -10,10 +10,15 @@
 //!     predates the MGMT Add Advertising command and bluetoothd exposes no
 //!     LEAdvertisingManager1;
 //!   * turns short text commands on a Unix datagram socket
-//!     (`/run/couch-bt-hid.sock`) into HID input-report notifications.
+//!     (`couch_bt_hid::SOCKET_PATH`) into HID input-report notifications.
+//!
+//! The socket path and the key vocabulary live in this crate's lib, which the
+//! GUI links; everything below is the daemon and stays here.
 //!
 //! D-Bus is spoken with zbus (pure Rust) so the binary stays static-musl.
+use couch_bt_hid::{consumer_usage, SOCKET_MODE, SOCKET_PATH};
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
@@ -22,7 +27,6 @@ use zbus::{interface, Connection, Proxy};
 const ADAPTER: &str = "/org/bluez/hci0";
 const AGENT_PATH: &str = "/couch/hid/agent";
 const APP: &str = "/couch/hid/app";
-const SOCK_PATH: &str = "/tmp/couch-bt-hid.sock";
 
 fn uuid16(x: u16) -> String {
     format!("0000{x:04x}-0000-1000-8000-00805f9b34fb")
@@ -57,36 +61,6 @@ const REPORT_MAP_BYTES: &[u8] = &[
     0x15, 0x00, 0x26, 0xff, 0x03, 0x19, 0x00, 0x2a, 0xff, 0x03,
     0x75, 0x10, 0x95, 0x01, 0x81, 0x00, 0xc0,
 ];
-
-/// Key words to HID consumer-page usages. Both the short test words and the
-/// model's function ids (what the GUI sends for a mapped button) are accepted.
-fn consumer_usage(cmd: &str) -> Option<u16> {
-    Some(match cmd {
-        "vol+" | "volup" | "volume-up" => 0x00e9,
-        "vol-" | "voldown" | "volume-down" => 0x00ea,
-        "mute" | "mute-on" | "mute-off" => 0x00e2,
-        "power" | "power-off" | "power-on" | "toggle" => 0x0030,
-        "play" => 0x00b0,
-        "pause" => 0x00b1,
-        "playpause" | "play-pause" => 0x00cd,
-        "stop" => 0x00b7,
-        "next" => 0x00b5,
-        "prev" | "previous" => 0x00b6,
-        "rew" | "rewind" => 0x00b4,
-        "ff" | "fast-forward" => 0x00b3,
-        "chan+" | "channel-up" => 0x009c,
-        "chan-" | "channel-down" => 0x009d,
-        "menu" => 0x0040,
-        "ok" | "select" => 0x0041,
-        "up" => 0x0042,
-        "down" => 0x0043,
-        "left" => 0x0044,
-        "right" => 0x0045,
-        "home" => 0x0223,
-        "back" => 0x0224,
-        _ => return None,
-    })
-}
 
 /// A GATT service object: UUID and whether it is a primary service.
 struct GattService {
@@ -519,10 +493,14 @@ async fn main() -> zbus::Result<()> {
         Err(e) => eprintln!("couch-bt-hid: could not run hcitool for advertising: {e}"),
     }
 
-    // Key injection socket.
-    let _ = std::fs::remove_file(SOCK_PATH);
-    let socket = tokio::net::UnixDatagram::bind(SOCK_PATH)?;
-    println!("couch-bt-hid: keys on {SOCK_PATH}");
+    // Key injection socket. bind() honours the umask, which is whatever
+    // started us, so the mode is set explicitly straight afterwards: an
+    // unprivileged local process must not be able to drive a paired TV's
+    // power and volume. couch-control does the same for control.sock.
+    let _ = std::fs::remove_file(SOCKET_PATH);
+    let socket = tokio::net::UnixDatagram::bind(SOCKET_PATH)?;
+    std::fs::set_permissions(SOCKET_PATH, std::fs::Permissions::from_mode(SOCKET_MODE))?;
+    println!("couch-bt-hid: keys on {SOCKET_PATH}");
     let mut buf = [0u8; 64];
     let mut readvertise = tokio::time::interval(std::time::Duration::from_secs(15));
     loop {

@@ -411,7 +411,7 @@ pub(crate) fn execute_with_input(
         // id to the HID daemon, which turns it into a consumer-control report
         // for the TV paired to it. No connection state to keep here.
         Integration::BluetoothTv => {
-            let socket = ["/tmp/couch-bt-hid.sock", "/mnt/alpine/tmp/couch-bt-hid.sock"]
+            let socket = couch_bt_hid::SOCKET_PATHS
                 .into_iter()
                 .find(|p| std::path::Path::new(p).exists())
                 .ok_or("Turn Bluetooth on in Settings first")?;

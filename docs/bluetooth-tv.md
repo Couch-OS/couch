@@ -64,7 +64,10 @@ bluetoothd and advertises through raw HCI commands, because the 3.18 kernel's
 BlueZ has no advertising manager. The GUI sends one datagram per key press,
 the function's id, to `/tmp/couch-bt-hid.sock`; the daemon turns it into an
 input report (usage down, 30 ms, usage up) on the notifying connection. The
-same words work from a shell on the remote for testing. The controller keeps
+socket is mode 0600 and root-owned, because writing one word to it presses a
+key on a paired TV. The same words work from a root shell on the remote for
+testing; the path and the vocabulary are `couch-bt-hid`'s lib, which the GUI
+links so neither side carries its own copy. The controller keeps
 a synthetic address (`00:00:46:65:80:01`) until the vendor set-address
 command is confirmed; TVs pair to it fine, but a reflashed remote will look
 like the same device to a TV that paired the previous one.

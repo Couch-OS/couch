@@ -996,6 +996,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "couch-bt-hid"
+version = "0.1.0"
+
+[[package]]
 name = "couch-control"
 version = "0.1.0"
 dependencies = [
@@ -1027,6 +1031,7 @@ dependencies = [
  "base64 0.22.1",
  "couch-androidtv",
  "couch-appletv",
+ "couch-bt-hid",
  "couch-control",
  "couch-denon",
  "couch-ha",

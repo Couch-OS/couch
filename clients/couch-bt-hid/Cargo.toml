@@ -10,10 +10,27 @@ description = "Couch as a Bluetooth LE HID peripheral (keyboard + consumer contr
 # links static musl with rust-lld and no cross sysroot, like the other clients.
 # A separate binary from couch-bt-bridge: the bridge stays minimal and always
 # on; this runs only while Bluetooth is advertising or connected.
+#
+# The lib half - the socket path and the key vocabulary - carries neither, so
+# the GUI can depend on it for those strings without linking a D-Bus stack.
+# That is what `default-features = false` gets a consumer; the binary needs the
+# `daemon` feature, which is on by default so a plain build still builds it.
 [dependencies]
-zbus = { version = "4", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["rt", "macros", "net", "time", "signal", "sync"] }
+zbus = { version = "4", default-features = false, features = ["tokio"], optional = true }
+tokio = { version = "1", features = ["rt", "macros", "net", "time", "signal", "sync"], optional = true }
+
+[dev-dependencies]
+couch-model = { path = "../../model/couch-model" }
+
+[features]
+default = ["daemon"]
+daemon = ["dep:zbus", "dep:tokio"]
+
+[lib]
+name = "couch_bt_hid"
+path = "src/lib.rs"
 
 [[bin]]
 name = "couch-bt-hid"
 path = "src/main.rs"
+required-features = ["daemon"]

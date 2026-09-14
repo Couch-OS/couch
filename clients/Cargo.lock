@@ -526,6 +526,7 @@ dependencies = [
 name = "couch-bt-hid"
 version = "0.1.0"
 dependencies = [
+ "couch-model",
  "tokio",
  "zbus",
 ]
