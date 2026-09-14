@@ -206,16 +206,43 @@ pub fn bluetooth_state() -> BluetoothState {
 pub fn bluetooth_available() -> bool {
     Path::new("/dev/vhci").exists() && Path::new("/dev/stpbt").exists()
 }
-fn process_running(comm: &str) -> bool {
-    std::fs::read_dir("/proc")
-        .map(|dir| {
-            dir.filter_map(|e| e.ok()).any(|e| {
-                std::fs::read_to_string(e.path().join("comm"))
-                    .map(|c| c.trim() == comm)
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
+/// Whether a process with exactly this `comm` is running.
+///
+/// The GUI asks once a second while Settings is open, `GET /api/remote/device`
+/// asks twice, and a Bluetooth bring-up waits on it up to thirty times, so it
+/// skips the non-pid entries in /proc (`meminfo`, `net`, `self`, ~40 more),
+/// reuses one path and one read buffer instead of allocating per entry, and
+/// stops at the first match. `comm` is at most 15 bytes plus a newline.
+pub(crate) fn process_running(comm: &str) -> bool {
+    use std::io::Read;
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    let mut path = String::with_capacity(24);
+    let mut buffer = [0u8; 32];
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str() else { continue };
+        if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        path.clear();
+        path.push_str("/proc/");
+        path.push_str(pid);
+        path.push_str("/comm");
+        // The process can exit between the readdir and the open; that is not
+        // an error, it is the answer.
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            continue;
+        };
+        let Ok(read) = file.read(&mut buffer) else {
+            continue;
+        };
+        if buffer[..read].trim_ascii() == comm.as_bytes() {
+            return true;
+        }
+    }
+    false
 }
 
 /// The file's modification time, for noticing another writer.
