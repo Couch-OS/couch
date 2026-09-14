@@ -138,8 +138,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App::new().map_err(|e| format!("App::new: {e:?}"))?;
 
     // Areas are a level above rooms: left and right move between them, up and
-    // down between the rooms inside one. The demo remains a fallback when no
-    // saved home exists; normal operation reloads the daemon's configuration.
+    // down between the rooms inside one. Normal operation reloads the daemon's
+    // configuration; the demo house below is a screenshot fixture behind
+    // COUCH_DEMO=1, never a fallback - standing in for a configuration that
+    // failed to load, it looked like a real house and did nothing on OK.
     fn room(name: &str, devices: &str, detail: &str, on: i32, glyph: i32) -> RoomRow {
         RoomRow {
             name: name.into(),
@@ -171,112 +173,123 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut areas = vec![
-        Area {
-            id: None,
-            shortcuts: Vec::new(),
-            activity_ids: Vec::new(),
-            name: "WHOLE HOME".into(),
-            room_ids: Vec::new(),
-            scene_ids: Vec::new(),
-            activities: vec![
-                act(0, "Midnight Ferry", "SONOS", "KITCHEN"),
-                act(1, "Paused - Andrei Rublev", "KODI", "LIVING"),
-                act(0, "Radio Paradise", "SONOS", "STUDY"),
-            ],
-            rooms: vec![
-                room("Living room", "5 devices", "Kodi, Hue, LG C3", 2, 0),
-                room("Kitchen", "2 devices", "Sonos Move", 1, 2),
-                room("Bedroom", "3 devices", "Hue, Sonos One", 0, 1),
-                room("Study", "2 devices", "", 0, 3),
-            ],
-            scenes: vec![
-                scene("Movie night"),
-                scene("Good morning"),
-                scene_on("Away"),
-                scene("Dinner"),
-                scene("All off"),
-            ],
-        },
-        Area {
-            id: None,
-            shortcuts: Vec::new(),
-            activity_ids: Vec::new(),
-            name: "UPSTAIRS".into(),
-            room_ids: Vec::new(),
-            scene_ids: Vec::new(),
-            activities: vec![act(0, "White noise", "SONOS", "BEDROOM")],
-            rooms: vec![
-                room("Bedroom", "3 devices", "Hue, Sonos One", 0, 1),
-                room("Study", "2 devices", "", 0, 3),
-                room("Loft", "1 device", "Hue", 0, 7),
-            ],
-            scenes: vec![scene("Bedtime"), scene("Wake up"), scene("Upstairs off")],
-        },
-        Area {
-            id: None,
-            shortcuts: Vec::new(),
-            activity_ids: Vec::new(),
-            name: "DOWNSTAIRS".into(),
-            room_ids: Vec::new(),
-            scene_ids: Vec::new(),
-            activities: vec![
-                act(1, "Paused - Andrei Rublev", "KODI", "LIVING"),
-                act(0, "Midnight Ferry", "SONOS", "KITCHEN"),
-                act(1, "Front door", "CAMERA", "HALLWAY"),
-                act(0, "The Rest Is History", "SONOS", "LIVING"),
-                act(1, "Formula 1 - Practice 2", "PLEX", "LIVING"),
-            ],
-            rooms: vec![
-                room("Living room", "5 devices", "Kodi, Hue, LG C3", 2, 0),
-                room("Kitchen", "2 devices", "Sonos Move", 1, 2),
-                room("Hallway", "2 devices", "Hue", 0, 4),
-            ],
-            scenes: vec![
-                scene_on("Movie night"),
-                scene("Cooking"),
-                scene("Downstairs off"),
-            ],
-        },
-        Area {
-            id: None,
-            shortcuts: Vec::new(),
-            activity_ids: Vec::new(),
-            name: "OUTSIDE".into(),
-            room_ids: Vec::new(),
-            scene_ids: Vec::new(),
-            activities: vec![],
-            rooms: vec![
-                room("Garden", "3 devices", "Hue, Cameras", 1, 6),
-                room("Garage", "2 devices", "Hue", 0, 5),
-                room("Porch", "1 device", "Hue", 0, 4),
-            ],
-            scenes: vec![
-                scene("Evening"),
-                scene("Security on"),
-                scene("Watering"),
-                scene("Outside off"),
-            ],
-        },
-    ];
+    fn demo_house() -> Vec<Area> {
+        let mut areas = vec![
+            Area {
+                id: None,
+                shortcuts: Vec::new(),
+                activity_ids: Vec::new(),
+                name: "WHOLE HOME".into(),
+                room_ids: Vec::new(),
+                scene_ids: Vec::new(),
+                activities: vec![
+                    act(0, "Midnight Ferry", "SONOS", "KITCHEN"),
+                    act(1, "Paused - Andrei Rublev", "KODI", "LIVING"),
+                    act(0, "Radio Paradise", "SONOS", "STUDY"),
+                ],
+                rooms: vec![
+                    room("Living room", "5 devices", "Kodi, Hue, LG C3", 2, 0),
+                    room("Kitchen", "2 devices", "Sonos Move", 1, 2),
+                    room("Bedroom", "3 devices", "Hue, Sonos One", 0, 1),
+                    room("Study", "2 devices", "", 0, 3),
+                ],
+                scenes: vec![
+                    scene("Movie night"),
+                    scene("Good morning"),
+                    scene_on("Away"),
+                    scene("Dinner"),
+                    scene("All off"),
+                ],
+            },
+            Area {
+                id: None,
+                shortcuts: Vec::new(),
+                activity_ids: Vec::new(),
+                name: "UPSTAIRS".into(),
+                room_ids: Vec::new(),
+                scene_ids: Vec::new(),
+                activities: vec![act(0, "White noise", "SONOS", "BEDROOM")],
+                rooms: vec![
+                    room("Bedroom", "3 devices", "Hue, Sonos One", 0, 1),
+                    room("Study", "2 devices", "", 0, 3),
+                    room("Loft", "1 device", "Hue", 0, 7),
+                ],
+                scenes: vec![scene("Bedtime"), scene("Wake up"), scene("Upstairs off")],
+            },
+            Area {
+                id: None,
+                shortcuts: Vec::new(),
+                activity_ids: Vec::new(),
+                name: "DOWNSTAIRS".into(),
+                room_ids: Vec::new(),
+                scene_ids: Vec::new(),
+                activities: vec![
+                    act(1, "Paused - Andrei Rublev", "KODI", "LIVING"),
+                    act(0, "Midnight Ferry", "SONOS", "KITCHEN"),
+                    act(1, "Front door", "CAMERA", "HALLWAY"),
+                    act(0, "The Rest Is History", "SONOS", "LIVING"),
+                    act(1, "Formula 1 - Practice 2", "PLEX", "LIVING"),
+                ],
+                rooms: vec![
+                    room("Living room", "5 devices", "Kodi, Hue, LG C3", 2, 0),
+                    room("Kitchen", "2 devices", "Sonos Move", 1, 2),
+                    room("Hallway", "2 devices", "Hue", 0, 4),
+                ],
+                scenes: vec![
+                    scene_on("Movie night"),
+                    scene("Cooking"),
+                    scene("Downstairs off"),
+                ],
+            },
+            Area {
+                id: None,
+                shortcuts: Vec::new(),
+                activity_ids: Vec::new(),
+                name: "OUTSIDE".into(),
+                room_ids: Vec::new(),
+                scene_ids: Vec::new(),
+                activities: vec![],
+                rooms: vec![
+                    room("Garden", "3 devices", "Hue, Cameras", 1, 6),
+                    room("Garage", "2 devices", "Hue", 0, 5),
+                    room("Porch", "1 device", "Hue", 0, 4),
+                ],
+                scenes: vec![
+                    scene("Evening"),
+                    scene("Security on"),
+                    scene("Watering"),
+                    scene("Outside off"),
+                ],
+            },
+        ];
 
-    // COUCH_ROOMS pads the first area, so the scrolling behaviour is testable
-    // without waiting for a house with a dozen rooms in one area.
-    if let Ok(n) = std::env::var("COUCH_ROOMS").unwrap_or_default().parse::<usize>() {
-        let extra = ["Hallway", "Garage", "Garden", "Loft", "Utility", "Porch", "Cellar"];
-        let mut i = 0;
-        while areas[0].rooms.len() < n {
-            areas[0].rooms.push(room(extra[i % extra.len()], "2 devices", "Hue",
-                                     (i % 2) as i32, (i % 4) as i32));
-            i += 1;
+        // COUCH_ROOMS pads the first area, so the scrolling behaviour is testable
+        // without waiting for a house with a dozen rooms in one area.
+        if let Ok(n) = std::env::var("COUCH_ROOMS").unwrap_or_default().parse::<usize>() {
+            let extra = ["Hallway", "Garage", "Garden", "Loft", "Utility", "Porch", "Cellar"];
+            let mut i = 0;
+            while areas[0].rooms.len() < n {
+                areas[0].rooms.push(room(extra[i % extra.len()], "2 devices", "Hue",
+                                         (i % 2) as i32, (i % 4) as i32));
+                i += 1;
+            }
+            areas[0].rooms.truncate(n);
         }
-        areas[0].rooms.truncate(n);
+        areas
     }
 
     couch_control::use_socket(home::path("control.sock"));
     config_snapshot::start(home::path("config.json"));
+    // One empty area keeps every index valid while the panel says there is
+    // nothing to show; the hub is empty behind it either way.
+    let demo = std::env::var("COUCH_DEMO").is_ok_and(|v| v == "1");
+    let mut areas = if demo { demo_house() } else { home::project(&couch_model::Config::default()) };
     let mut loaded_home = String::new();
     if let Some((raw, saved, accent)) = home::read(&loaded_home) { home::apply_accent(&app,accent); loaded_home = raw; areas = saved; }
+    // No snapshot at all at boot is the case the demo house used to hide.
+    app.set_no_config(!demo && config_snapshot::current().is_none());
+    let mut rejections = config_snapshot::rejected();
+    let mut no_config_at: Option<std::time::Instant> = None;
     let mut light_controls = lights::Controller::install(&app);
     let mut room_monitor = home::RoomMonitor::new(light_controls.hue_live());
     let mut shortcut_controls = shortcuts::Controller::new(light_controls.hue_live());
@@ -1290,6 +1303,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     loaded_home = raw; *areas.borrow_mut() = saved;
                     current.set(0); app.set_area_dots(ModelRc::new(VecModel::from(vec![true;areas.borrow().len()])));
                     put_front(&app,0);
+                    app.set_no_config(false);
+                }
+            }
+            // A rejected update means the panel is knowingly showing stale
+            // configuration, which until now only reached a log the user
+            // cannot read.
+            if config_snapshot::rejected() != rejections {
+                rejections = config_snapshot::rejected();
+                toast("Configuration update rejected".into(), 5);
+            }
+            // The address only exists once the network does, so it is re-read
+            // while this screen is up rather than once at boot.
+            if app.get_no_config()
+                && no_config_at.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(5))
+            {
+                no_config_at = Some(std::time::Instant::now());
+                let info = couch_system::netinfo::current();
+                if app.get_no_config_web() != info.web().as_str() {
+                    app.set_no_config_web(info.web().into());
+                    // The QR carries one address a phone can open: the mDNS
+                    // name only where there is no lease to print.
+                    let url = match info.address.split(" /").next().filter(|a| !a.is_empty()) {
+                        Some(ip) => format!("http://{ip}:8090"),
+                        None => format!("http://{}", couch_system::netinfo::WEB_HOST),
+                    };
+                    if let Some(image) = qr::render(&url, 200) {
+                        app.set_no_config_qr(image);
+                        app.set_no_config_has_qr(true);
+                    }
                 }
             }
 

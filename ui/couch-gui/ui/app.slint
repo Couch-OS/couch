@@ -13,6 +13,7 @@ import { MicOverlay } from "components/mic_overlay.slint";
 import { Chooser, ChoiceItem } from "components/chooser.slint";
 import { HomeHub, LiveActivity, RoomRow, SceneCell } from "screens/home_hub.slint";
 import { Setup } from "screens/setup.slint";
+import { NoConfig } from "screens/no_config.slint";
 import { Keyboard } from "components/keyboard.slint";
 import { Settings } from "components/settings.slint";
 import { RoomDevices } from "components/room_devices.slint";
@@ -104,6 +105,14 @@ export component App inherits Window {
     in-out property <string> portal-url: "http://192.168.4.1";
     in-out property <image> qr;
     in-out property <int> approval: 0;
+
+    // --- no configuration -----------------------------------------------------
+    // Nothing saved yet, or nothing readable. Over the hub, under everything
+    // that can be opened on top of it.
+    in-out property <bool> no-config: false;
+    in-out property <string> no-config-web;
+    in-out property <image> no-config-qr;
+    in-out property <bool> no-config-has-qr: false;
 
     // --- chooser --------------------------------------------------------------
     // Opened by OK on the activity strip or the scenes row. While it is up it
@@ -498,6 +507,15 @@ export component App inherits Window {
         }
     }
 
+
+    if root.no-config && !root.setup-mode: NoConfig {
+        y: root.status-h;
+        width: parent.width;
+        height: parent.height - root.status-h;
+        address: root.no-config-web;
+        qr: root.no-config-qr;
+        has-qr: root.no-config-has-qr;
+    }
 
     light-page := RoomDevices {
         x: root.light-shown && !root.chooser-shown ? 0px : root.width;

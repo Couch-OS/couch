@@ -156,6 +156,17 @@ mod tests {
                 .collect::<Vec<_>>()
         );
     }
+    /// The hub's fallback when there is no configuration at all: the panel
+    /// says so, and every index the shell keeps stays valid behind it.
+    #[test]
+    fn an_empty_configuration_still_projects_one_reachable_area() {
+        let areas = project(&Config::default());
+        assert_eq!(areas.len(), 1);
+        assert!(areas[0].id.is_none());
+        assert!(areas[0].rooms.is_empty());
+        assert!(areas[0].scenes.is_empty());
+        assert!(areas[0].activities.is_empty());
+    }
     #[test]
     fn configured_screens_keep_their_room_order() {
         let mut config = Config::seed();
