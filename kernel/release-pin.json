@@ -4,8 +4,8 @@
   "source_repository": "https://github.com/dangerouslaser/couch-kernel",
   "source_commit": "06b21c74526cfa834b16f2fea67ef3eaa98ee464",
   "profile": "normal",
-  "config_sha256": "469b0edfa28454fcdff66cb3ecd3071580514fe07649d574eaec428902202255",
-  "zimage_sha256": "ce0087e9043fa9e364eb25a9c9cc69b8fa1496891de031c32dde8ff874497617",
+  "config_sha256": "f3d45767deaa2e2ccb1cd6dcda761887d1fd47f1e38ea862ff3b924d47be5916",
+  "zimage_sha256": "d5ba1966c0945f6d7e7c04cf1753c359eb37830b062d738a56659490282d62ca",
   "compiler_sha256": "41ceccad5029346a47c485b1545b8c93e4c95ef670019a1c8b1b2b21779661a0",
   "container": "sha256:0555bb78c532853ec90a6c503095c070245f97d86ec2215072c5b45e8a345ef9",
   "installable": false,
@@ -17,6 +17,7 @@
     "Keys, key backlight and wake-from-standby on a key press with CONFIG_COUCH_HA100 unset, i.e. the vendor keypad path (HA100, 2026-09-14, .144-.149)"
   ],
   "pending": [
+    "EXPERIMENT (docs/kernel-backports-research.md): in-tree Bluetooth core off, CRYPTO_CMAC on, the backports-4.4.2-1 Bluetooth core loaded as modules from the boot ramdisk. Not for promotion until gates 2 and 3 pass and the full hardware round is redone.",
     "Keypad wake quirk now compiled in (CONFIG_COUCH_HA100=y) and the MTK scheduler monitors off: keys, key backlight, wake-from-standby, IR, display and Bluetooth to re-check on hardware (.150.dev)",
     "Clean installer image and recovery validation; release signing and corresponding-source/license review"
   ]
