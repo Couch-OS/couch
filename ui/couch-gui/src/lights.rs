@@ -1007,13 +1007,13 @@ fn description(light: &Light) -> String {
 pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Option<String> {
     let (_, device) = config.devices().find(|(_, d)| d.id.as_str() == device_id)?;
     let integration = config.resolve_integration(&device.integration);
-    if device.effective_ir_codeset(config).is_some()
-        && matches!(
-            integration,
-            Some(Integration::None | Integration::Ir { .. }) | None
-        )
-    {
-        return Some(format!("ir:{device_id}"));
+    if device.network_integration(config).is_none() {
+        if device.effective_ir_codeset(config).is_some() {
+            return Some(format!("ir:{device_id}"));
+        }
+        if device.bluetooth.is_some() {
+            return Some(format!("bt:{device_id}"));
+        }
     }
     let provider = match integration? {
         Integration::Sonos {..} => return Some(format!("sonos:{device_id}")),
@@ -1021,8 +1021,6 @@ pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Op
         Integration::AndroidTv => couch_model::Provider::AndroidTv,
         Integration::AppleTv => couch_model::Provider::AppleTv,
         Integration::Tizen => couch_model::Provider::Tizen,
-        Integration::BluetoothTv => return Some(format!("bt:{device_id}")),
-        Integration::Ir { .. } => return Some(format!("ir:{device_id}")),
         _ => return None,
     };
     match &device.integration {

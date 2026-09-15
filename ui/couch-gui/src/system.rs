@@ -230,3 +230,71 @@ pub fn bluetooth_word(word: &str) -> Result<(), String> {
         _ => "Bluetooth is not running; turn it on in Settings".into(),
     })
 }
+
+/// The daemon's state with the per-bond lines: the TV on the link (address
+/// and name), the bond it holds active, and the TV a window just bonded.
+pub fn bluetooth_link() -> couch_system::ui_settings::LinkStatus {
+    couch_system::ui_settings::bluetooth_link()
+}
+fn bluetooth_request(
+    action: couch_system::bluetooth::PairAction,
+    address: Option<String>,
+    device: Option<String>,
+) -> Result<(), String> {
+    couch_system::client::action(couch_system::protocol::Request::BluetoothPair {
+        action,
+        address,
+        device,
+    })
+}
+/// Open the daemon's pairing window for one device: the TV that bonds is
+/// stored on that device by couch-confd once the card says DONE. Through the
+/// system service (a unix socket round trip; quick, but not on the UI thread
+/// by habit - the callers run it before showing the card).
+pub fn bluetooth_pair_device(device: &str) -> Result<(), String> {
+    bluetooth_request(
+        couch_system::bluetooth::PairAction::Pair,
+        None,
+        Some(device.into()),
+    )
+}
+/// Drop a device's bond: the daemon forgets the address (when it has one)
+/// and couch-confd clears the device's entry.
+pub fn bluetooth_unpair_device(device: &str, address: &str) -> Result<(), String> {
+    bluetooth_request(
+        couch_system::bluetooth::PairAction::Forget,
+        Some(address.to_owned()).filter(|a| couch_system::bluetooth::valid_address(a)),
+        Some(device.into()),
+    )
+}
+/// Make one bond the active link, off the UI thread, and only when it is not
+/// already the one asked for: an activity start, a device screen and an
+/// activity's page all say so on their way in, often for the same TV. A bond
+/// with no address (migrated) is left to the daemon's own choice. Nothing is
+/// sent while Bluetooth is off; the daemon has no link to switch.
+pub fn bluetooth_activate(address: &str) {
+    static LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    if !couch_system::bluetooth::valid_address(address) || !bluetooth_running() {
+        return;
+    }
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.as_deref() == Some(address) {
+        return;
+    }
+    *last = Some(address.to_owned());
+    let address = address.to_owned();
+    std::thread::spawn(move || {
+        println!("couch-gui: bluetooth activate {address}");
+        if let Err(e) = bluetooth_request(
+            couch_system::bluetooth::PairAction::Activate,
+            Some(address.clone()),
+            None,
+        ) {
+            println!("couch-gui: bluetooth activate {address}: {e}");
+            let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+            if last.as_deref() == Some(address.as_str()) {
+                *last = None;
+            }
+        }
+    });
+}

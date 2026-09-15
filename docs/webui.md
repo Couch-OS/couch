@@ -659,6 +659,25 @@ another page. Room, area and scene choices save immediately. Device icons are
 part of the Edit device draft and use Save device / Discard changes. Automatic
 restores the device or room default. All SVG previews are served locally.
 
+A device card also carries the device's transports. Below its controls and
+its **IR commands** section is a **Bluetooth** section: **Pair over
+Bluetooth** opens the remote's two-minute pairing window for this device
+(`POST /api/remote/bluetooth {"action":"pair","device":"<id>"}`), the
+section follows the window (**Send key** for a TV that asks for a key press,
+**Cancel**), and once the TV has bonded the daemon stores its address and
+name on the device (`bluetooth: {address, name}`) and the page reloads the
+configuration; **Unpair** clears it (a `PUT` of the device without
+`bluetooth`, which also tells the remote to forget that TV). The card's
+summary line lists what the device has: its connection, IR commands and
+Bluetooth, the preferred one first. Edit device offers **Preferred control**
+once the device has more than one transport (`preferred_transport`: `ir`,
+`ip` or `bluetooth`; Automatic is infrared, then the connection, then
+Bluetooth); a key falls through to the next when the preferred one is not
+available for that press. See [Bluetooth TV](bluetooth-tv.md). The activity
+editor warns above the device list when two Bluetooth-paired TVs are in one
+activity and the one that is not the main screen has no other transport,
+because the remote keeps one Bluetooth link at a time.
+
 The remote renders the same selected room/device icons from a compiled 24px
 alpha atlas; no runtime SVG decoder or React dependency is needed. Attribution,
 version and regeneration instructions are in assets/lucide/README.md.

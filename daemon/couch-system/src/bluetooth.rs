@@ -82,42 +82,183 @@ fn base() -> Option<String> {
     None
 }
 
-/// What a caller may ask pairing mode to do. A closed set: the request API
-/// names actions, and only this module knows the daemon's words for them, so
-/// nothing arbitrary is written to the key socket on behalf of the web page.
+/// What a caller may ask the HID daemon to do, besides pressing keys. A
+/// closed set: the request API names actions, and only this module knows the
+/// daemon's words for them, so nothing arbitrary is written to the key socket
+/// on behalf of the web page. The address and device that some actions take
+/// travel as separate request fields, checked here before a word is formed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PairAction {
-    /// Forget every bond, become pairable and discoverable for two minutes.
+    /// Become pairable and discoverable for two minutes. With a `device`, the
+    /// TV that bonds is recorded for that device (see [`pending_bond`]).
     Pair,
     /// Close the window early.
     Stop,
-    /// Forget every bond without opening a window.
+    /// Forget one bond (`address`) or, without one, every bond.
     Forget,
     /// Press and release Enter on the keyboard collection, for a TV that
     /// asks for a key press after pairing.
     Enter,
+    /// Make one bond (`address`) the active link: the daemon drops any other
+    /// TV and lets only this one connect. Without an address, no TV may.
+    Activate,
 }
 
-impl PairAction {
-    fn word(self) -> &'static str {
-        match self {
-            PairAction::Pair => couch_bt_hid::WORD_PAIR,
-            PairAction::Stop => couch_bt_hid::WORD_PAIR_STOP,
-            PairAction::Forget => couch_bt_hid::WORD_FORGET,
-            PairAction::Enter => "enter",
+/// Where a pairing window's target device is remembered: the id of the
+/// device whose settings opened the window, so the daemon's `done` can be
+/// attributed to it by whoever owns the configuration (couch-confd's tick
+/// reads it through [`pending_bond`]). One line, the device id; a second word
+/// `unpair` asks for the device's bond to be cleared instead. /tmp is shared
+/// between the outer root and Alpine, like the daemon's own files.
+pub const BOND_REQUEST_PATH: &str = "/tmp/couch-bt-bond.request";
+
+/// Six uppercase hex pairs separated by colons, as the daemon writes them.
+/// Mirrors `couch_model::DeviceBluetooth::valid_address`; the service does
+/// not link the model.
+pub fn valid_address(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == 17
+        && bytes.iter().enumerate().all(|(i, b)| {
+            if i % 3 == 2 {
+                *b == b':'
+            } else {
+                b.is_ascii_digit() || (b'A'..=b'F').contains(b)
+            }
+        })
+}
+
+/// A device id as the model allows them: safe to write to a file and read
+/// back as one word.
+fn valid_device(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The word(s) an action turns into, or why it cannot. Pure, so the CLI's
+/// JSON forms are testable without a daemon.
+pub fn word_for(
+    action: PairAction,
+    address: Option<&str>,
+    device: Option<&str>,
+) -> Result<String, String> {
+    if let Some(address) = address {
+        if !valid_address(address) {
+            return Err(
+                "A Bluetooth address is six uppercase hex pairs separated by colons".into(),
+            );
         }
     }
+    if let Some(device) = device {
+        if !valid_device(device) {
+            return Err("Device ids are alphanumeric with dashes".into());
+        }
+    }
+    Ok(match (action, address) {
+        (PairAction::Pair, _) => couch_bt_hid::WORD_PAIR.into(),
+        (PairAction::Stop, _) => couch_bt_hid::WORD_PAIR_STOP.into(),
+        (PairAction::Forget, Some(address)) => format!("{} {address}", couch_bt_hid::WORD_FORGET),
+        (PairAction::Forget, None) => couch_bt_hid::WORD_FORGET.into(),
+        (PairAction::Enter, _) => "enter".into(),
+        (PairAction::Activate, Some(address)) => format!("activate {address}"),
+        (PairAction::Activate, None) => "activate none".into(),
+    })
 }
 
-/// Send one pairing-mode word to the HID daemon. A datagram: the outcome is
-/// read back from the daemon's state file (`ui_settings::bluetooth_pairing`).
-pub fn pair(action: PairAction) -> Result<(), String> {
+/// Send one control word to the HID daemon. A datagram: the outcome is read
+/// back from the daemon's state file (`ui_settings::bluetooth_link`).
+///
+/// `Pair` with a device remembers that device in [`BOND_REQUEST_PATH`] so the
+/// TV that bonds gets stored on it; `Forget` with a device asks for the
+/// device's stored bond to be cleared the same way. Either without a device
+/// clears any pending request, so a window opened from the global settings
+/// never lands a TV on a device whose window timed out earlier.
+pub fn pair(action: PairAction, address: Option<&str>, device: Option<&str>) -> Result<(), String> {
+    let word = word_for(action, address, device)?;
     if !crate::ui_settings::hid_running() {
         return Err("Turn Bluetooth on first".into());
     }
-    couch_bt_hid::send_word(action.word())
+    match (action, device) {
+        (PairAction::Pair, Some(device)) => write_bond_request(device, "pair")?,
+        (PairAction::Forget, Some(device)) => write_bond_request(device, "unpair")?,
+        (PairAction::Pair | PairAction::Stop | PairAction::Forget, None) => {
+            let _ = fs::remove_file(BOND_REQUEST_PATH);
+        }
+        _ => {}
+    }
+    couch_bt_hid::send_word(&word)
         .map_err(|e| format!("The Bluetooth service is not answering: {e}"))
+}
+
+fn write_bond_request(device: &str, op: &str) -> Result<(), String> {
+    fs::write(BOND_REQUEST_PATH, format!("{device} {op}\n"))
+        .map_err(|e| format!("Could not record the pairing target: {e}"))
+}
+
+/// What a pairing window, or an unpair request, left for the configuration's
+/// owner to apply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BondRequest {
+    /// The window for this device ended with a bonded TV: store it.
+    Bonded {
+        device: String,
+        address: String,
+        name: String,
+    },
+    /// Clear this device's bond; the daemon was already told to forget it.
+    Unpair { device: String },
+}
+
+/// The device a pairing window is for, while one is pending. For the web
+/// page and the remote, so the card can say which device the TV will land on.
+pub fn bond_request_device() -> Option<String> {
+    let text = fs::read_to_string(BOND_REQUEST_PATH).ok()?;
+    let mut words = text.split_whitespace();
+    let device = words.next()?;
+    (words.next() != Some("unpair") && valid_device(device)).then(|| device.to_owned())
+}
+
+/// Read the pending bond request against the daemon's state, and take it
+/// when it has an outcome: the window reached `done` with a peer (the bond to
+/// store), the window failed (nothing to store; the request is dropped), or
+/// the request is an unpair. Pure over the two texts, so the tick's decision
+/// is testable; [`take_pending_bond`] is the filesystem edge.
+pub fn pending_bond(request: &str, state: &crate::ui_settings::LinkStatus) -> Option<BondRequest> {
+    let mut words = request.split_whitespace();
+    let device = words.next().filter(|d| valid_device(d))?.to_owned();
+    if words.next() == Some("unpair") {
+        return Some(BondRequest::Unpair { device });
+    }
+    match state.phase {
+        couch_bt_hid::PairPhase::Done => state.bonded.as_ref().map(|peer| BondRequest::Bonded {
+            device,
+            address: peer.address.clone(),
+            name: peer.name.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// [`pending_bond`] over the files, removing the request once it has an
+/// outcome or once the window it belonged to is over without one. Called
+/// once a second by couch-confd; cheap when there is no request.
+pub fn take_pending_bond() -> Option<BondRequest> {
+    let request = fs::read_to_string(BOND_REQUEST_PATH).ok()?;
+    let state = crate::ui_settings::bluetooth_link();
+    let outcome = pending_bond(&request, &state);
+    let over = matches!(
+        state.phase,
+        couch_bt_hid::PairPhase::Done
+            | couch_bt_hid::PairPhase::Failed
+            | couch_bt_hid::PairPhase::Idle
+    );
+    if outcome.is_some() || over {
+        let _ = fs::remove_file(BOND_REQUEST_PATH);
+    }
+    outcome
 }
 
 /// `aa:bb:cc:dd:ee:ff` to bytes, in the order written.
@@ -447,6 +588,7 @@ fn down() -> Result<(), String> {
     // Its pairing state goes with it: there is no window and no link now.
     let _ = fs::remove_file(couch_bt_hid::SOCKET_PATH);
     let _ = fs::remove_file(couch_bt_hid::PAIR_STATE_PATH);
+    let _ = fs::remove_file(BOND_REQUEST_PATH);
     publish("off");
     result
 }
@@ -645,5 +787,107 @@ mod tests {
         assert!(BLUETOOTHD_COMMS.contains(&comm(PATCHED_BLUETOOTHD)));
         assert!(BLUETOOTHD_COMMS.contains(&comm("bluetoothd")));
         assert!(STOCK_BLUETOOTHD.ends_with("/bluetoothd"));
+    }
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::*;
+    use crate::ui_settings::{LinkStatus, Peer};
+    use couch_bt_hid::PairPhase;
+
+    #[test]
+    fn words_follow_the_daemon_contract_and_refuse_bad_addresses() {
+        assert_eq!(word_for(PairAction::Pair, None, None).unwrap(), "pair");
+        assert_eq!(
+            word_for(PairAction::Pair, None, Some("living-tv")).unwrap(),
+            "pair"
+        );
+        assert_eq!(word_for(PairAction::Stop, None, None).unwrap(), "pair-stop");
+        assert_eq!(word_for(PairAction::Enter, None, None).unwrap(), "enter");
+        assert_eq!(word_for(PairAction::Forget, None, None).unwrap(), "forget");
+        assert_eq!(
+            word_for(PairAction::Forget, Some("44:27:45:4E:33:25"), None).unwrap(),
+            "forget 44:27:45:4E:33:25"
+        );
+        assert_eq!(
+            word_for(PairAction::Activate, Some("44:27:45:4E:33:25"), None).unwrap(),
+            "activate 44:27:45:4E:33:25"
+        );
+        assert_eq!(
+            word_for(PairAction::Activate, None, None).unwrap(),
+            "activate none"
+        );
+        for bad in [
+            "",
+            "44:27:45:4e:33:25",
+            "vol+",
+            "44:27:45:4E:33:25 pair",
+            "none",
+        ] {
+            assert!(
+                word_for(PairAction::Activate, Some(bad), None).is_err(),
+                "{bad:?}"
+            );
+            assert!(
+                word_for(PairAction::Forget, Some(bad), None).is_err(),
+                "{bad:?}"
+            );
+        }
+        for bad in ["", "../x", "a b", "x".repeat(129).as_str()] {
+            assert!(
+                word_for(PairAction::Pair, None, Some(bad)).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pending_request_resolves_only_on_done_with_a_peer_or_on_unpair() {
+        let done = LinkStatus {
+            phase: PairPhase::Done,
+            detail: "LG".into(),
+            bonded: Some(Peer {
+                address: "44:27:45:4E:33:25".into(),
+                name: "LG".into(),
+            }),
+            link: None,
+            active: None,
+        };
+        assert_eq!(
+            pending_bond("living-tv pair\n", &done),
+            Some(BondRequest::Bonded {
+                device: "living-tv".into(),
+                address: "44:27:45:4E:33:25".into(),
+                name: "LG".into()
+            })
+        );
+        // The daemon before this contract reports done without a peer line:
+        // nothing to store, so the request waits for the tick to drop it.
+        let nameless = LinkStatus {
+            bonded: None,
+            ..done.clone()
+        };
+        assert_eq!(pending_bond("living-tv pair\n", &nameless), None);
+        for phase in [
+            PairPhase::Pairing,
+            PairPhase::Paired,
+            PairPhase::Failed,
+            PairPhase::Idle,
+        ] {
+            let s = LinkStatus {
+                phase,
+                ..done.clone()
+            };
+            assert_eq!(pending_bond("living-tv pair\n", &s), None, "{phase:?}");
+        }
+        assert_eq!(
+            pending_bond("living-tv unpair\n", &LinkStatus::default()),
+            Some(BondRequest::Unpair {
+                device: "living-tv".into()
+            })
+        );
+        assert_eq!(pending_bond("", &done), None);
+        assert_eq!(pending_bond("../etc pair", &done), None);
     }
 }

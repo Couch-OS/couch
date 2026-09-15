@@ -83,6 +83,10 @@ struct NewDevice {
     integration: Option<Integration>,
     #[serde(default)]
     ir: Option<couch_model::DeviceIr>,
+    #[serde(default)]
+    bluetooth: Option<couch_model::DeviceBluetooth>,
+    #[serde(default)]
+    preferred_transport: Option<couch_model::Transport>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -330,7 +334,9 @@ impl Api {
             ("GET" | "PUT", ["remote", "device"]) => remote::device(&method, &body),
             ("GET", ["remote", "network"]) => remote::network(),
             ("POST", ["remote", "power"]) => remote::power(&body),
-            ("POST", ["remote", "bluetooth"]) => remote::bluetooth(&body),
+            ("POST", ["remote", "bluetooth"]) => remote::bluetooth(&body, |id| {
+                self.with(|s| s.config().devices().any(|(_, d)| d.id.as_str() == id))
+            }),
             ("PUT", ["remote"]) => {
                 let settings: couch_model::RemoteSettings = match parse(&body) {Ok(value)=>value,Err(reply)=>return reply};
                 if !settings.timezone.is_empty() && !remote::timezones().contains(&settings.timezone) { return Reply::error(400,"Choose an installed IANA timezone"); }
@@ -418,7 +424,16 @@ impl Api {
             }
             ("DELETE", ["rooms", id, "devices", dev]) => {
                 let (id, dev) = (Id::new(*id), Id::new(*dev));
-                self.edit_found(if_match, move |c| c.remove_device(&id, &dev).map(|_| ()))
+                let mut dropped = None;
+                let reply = self.edit_found(if_match, |c| {
+                    let removed = c.remove_device(&id, &dev)?;
+                    dropped = removed.bluetooth.map(|b| b.address);
+                    Some(())
+                });
+                if reply.status == 200 {
+                    forget_bond(dropped);
+                }
+                reply
             }
 
             ("GET", ["scenes"]) => {
@@ -597,7 +612,8 @@ impl Api {
                 "schema_version": SCHEMA_VERSION,
                 "icons": ALL_ICONS.iter().map(|i| i.name()).collect::<Vec<_>>(),
                 "device_kinds": ALL_DEVICE_KINDS.iter().map(|k| k.name()).collect::<Vec<_>>(),
-                "integrations": ["none", "kodi", "home-assistant", "hue", "web-os", "android-tv", "apple-tv", "tizen", "bluetooth-tv", "denon", "sonos", "matter", "unifi-protect", "ir"],
+                "integrations": ["none", "kodi", "home-assistant", "hue", "web-os", "android-tv", "apple-tv", "tizen", "denon", "sonos", "matter", "unifi-protect", "ir"],
+                "transports": couch_model::ALL_TRANSPORTS.iter().map(|t| t.name()).collect::<Vec<_>>(),
                 "activity_kinds": ["audio", "video"],
             }),
         )
@@ -712,6 +728,8 @@ impl Api {
                 icon: new.icon,
                 integration: new.integration.unwrap_or_default(),
                 ir: new.ir,
+                bluetooth: new.bluetooth,
+                preferred_transport: new.preferred_transport,
             });
             Some(())
         });
@@ -730,15 +748,31 @@ impl Api {
             Err(r) => return r,
         };
         let (room, device) = (Id::new(room), Id::new(device));
-        self.edit_found(if_match, move |cfg| {
+        let mut dropped = None;
+        let reply = self.edit_found(if_match, |cfg| {
             let target = cfg.room_mut(&room)?;
             let slot = target.device_mut(&device)?;
+            // A bond the edit removes is forgotten on the daemon too, so the
+            // TV cannot keep reconnecting to a remote that no longer lists
+            // it. The address is what the daemon keys on; a bond without one
+            // (migrated) has nothing to forget by.
+            dropped = slot
+                .bluetooth
+                .as_ref()
+                .filter(|old| {
+                    incoming.bluetooth.as_ref().map(|new| &new.address) != Some(&old.address)
+                })
+                .map(|old| old.address.clone());
             // The path names the device; a body carrying a different id would
             // otherwise silently move it and break every scene step pointing
             // at it.
             *slot = Device { id: device.clone(), ..incoming };
             Some(())
-        })
+        });
+        if reply.status == 200 {
+            forget_bond(dropped);
+        }
+        reply
     }
 
     fn rename(&self, body: &[u8], if_match: Option<u64>, kind: Kind, id: &str) -> Reply {
@@ -1053,6 +1087,65 @@ enum Member {
     Activity,
 }
 
+
+impl Api {
+    /// Once a second from main: a pairing window opened for a device that
+    /// has ended with a bonded TV is stored on that device, and an unpair
+    /// request clears one. The system service owns the request file and the
+    /// daemon's state; this is the one place that can write the
+    /// configuration, which is why the outcome is applied here and not where
+    /// the window was opened (the remote's GUI has no write path to it).
+    pub fn tick(&self) {
+        let Some(request) = couch_system::bluetooth::take_pending_bond() else {
+            return;
+        };
+        let (device, bond) = match request {
+            couch_system::bluetooth::BondRequest::Bonded {
+                device,
+                address,
+                name,
+            } => (
+                device,
+                Some(couch_model::DeviceBluetooth { address, name }),
+            ),
+            couch_system::bluetooth::BondRequest::Unpair { device } => (device, None),
+        };
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let id = Id::new(&device);
+        let result = store.mutate(None, |cfg| {
+            let slot = cfg.rooms.iter_mut().find_map(|room| room.device_mut(&id))?;
+            slot.bluetooth = bond.clone();
+            Some(())
+        });
+        match result {
+            Ok(Some(())) => println!(
+                "couch-confd: bluetooth bond for {device}: {}",
+                match &bond {
+                    Some(b) => format!("{} ({})", b.label(), b.address),
+                    None => "cleared".into(),
+                }
+            ),
+            Ok(None) => println!("couch-confd: bluetooth bond for {device}: device is gone"),
+            Err(e) => println!("couch-confd: bluetooth bond for {device}: {e}"),
+        }
+    }
+}
+
+/// Tell the daemon to drop a bond a device no longer holds. Best effort: the
+/// configuration is already saved, and a daemon that is not running has no
+/// bond to keep either.
+fn forget_bond(address: Option<String>) {
+    let Some(address) = address.filter(|a| couch_system::bluetooth::valid_address(a)) else {
+        return;
+    };
+    if let Err(e) = couch_system::client::action(couch_system::protocol::Request::BluetoothPair {
+        action: couch_system::bluetooth::PairAction::Forget,
+        address: Some(address.clone()),
+        device: None,
+    }) {
+        println!("couch-confd: forget bluetooth bond {address}: {e}");
+    }
+}
 
 fn status_body(status: &auth::Status) -> serde_json::Value {
     json!({

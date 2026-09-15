@@ -220,14 +220,120 @@ pub fn bluetooth_state() -> BluetoothState {
 /// peer, whenever Bluetooth is not up: a file left by a daemon that is gone
 /// says nothing about now.
 pub fn bluetooth_pairing() -> couch_bt_hid::PairStatus {
-    if !hid_running() {
-        return couch_bt_hid::PairStatus::idle();
+    let link = bluetooth_link();
+    couch_bt_hid::PairStatus {
+        phase: link.phase,
+        detail: link.detail,
+        peer: link.link.map(|p| p.label().to_owned()),
     }
-    couch_bt_hid::PairStatus::read(&couch_bt_hid::PAIR_STATE_PATHS)
 }
 /// The name of the TV connected over Bluetooth right now, if one is.
 pub fn bluetooth_peer() -> Option<String> {
     bluetooth_pairing().peer
+}
+
+/// A TV as the daemon names it in its state file: address, then the name it
+/// gave (possibly empty).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Peer {
+    pub address: String,
+    pub name: String,
+}
+impl Peer {
+    pub fn label(&self) -> &str {
+        if self.name.is_empty() {
+            &self.address
+        } else {
+            &self.name
+        }
+    }
+}
+
+/// The daemon's state file with the per-bond lines: `peer <ADDR> <name>`
+/// once a window ends in `done` (the TV that bonded), `link <ADDR> <name>`
+/// while a TV is connected, `active <ADDR>` when a bond has been made the
+/// active link. Parsed here rather than in the daemon's lib, which is owned
+/// with the daemon; the phase line and the staleness rule are still its.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkStatus {
+    pub phase: couch_bt_hid::PairPhase,
+    pub detail: String,
+    pub bonded: Option<Peer>,
+    pub link: Option<Peer>,
+    pub active: Option<String>,
+}
+impl Default for LinkStatus {
+    fn default() -> Self {
+        LinkStatus {
+            phase: couch_bt_hid::PairPhase::Idle,
+            detail: String::new(),
+            bonded: None,
+            link: None,
+            active: None,
+        }
+    }
+}
+impl LinkStatus {
+    pub fn parse(text: &str) -> Self {
+        let first = couch_bt_hid::PairStatus::parse(text);
+        let mut status = LinkStatus {
+            phase: first.phase,
+            detail: first.detail,
+            ..Default::default()
+        };
+        for line in text.lines().skip(1).map(str::trim) {
+            let Some((key, rest)) = line.split_once(' ') else {
+                continue;
+            };
+            let rest = rest.trim();
+            match key {
+                "peer" => status.bonded = Some(peer_from(rest)),
+                "link" => status.link = Some(peer_from(rest)),
+                "active" if crate::bluetooth::valid_address(rest) => {
+                    status.active = Some(rest.to_owned())
+                }
+                _ => {}
+            }
+        }
+        status
+    }
+}
+/// `<ADDR> <name>`, or the older `<name>` alone, which reads as a peer with
+/// no address.
+fn peer_from(text: &str) -> Peer {
+    match text.split_once(' ') {
+        Some((address, name)) if crate::bluetooth::valid_address(address) => Peer {
+            address: address.into(),
+            name: name.trim().into(),
+        },
+        _ if crate::bluetooth::valid_address(text) => Peer {
+            address: text.into(),
+            name: String::new(),
+        },
+        _ => Peer {
+            address: String::new(),
+            name: text.into(),
+        },
+    }
+}
+/// The daemon's state with the bond lines, applying the lib's staleness
+/// rule to the phase. Idle and empty while Bluetooth is not up.
+pub fn bluetooth_link() -> LinkStatus {
+    if !hid_running() {
+        return LinkStatus::default();
+    }
+    for path in couch_bt_hid::PAIR_STATE_PATHS {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let mut status = LinkStatus::parse(&text);
+        status.phase = couch_bt_hid::PairStatus::read(&[path]).phase;
+        if status.phase == couch_bt_hid::PairPhase::Idle {
+            status.detail.clear();
+        }
+        return status;
+    }
+    LinkStatus::default()
 }
 /// Whether this kernel can do Bluetooth at all: the virtual HCI driver and
 /// the MediaTek transport both present. Older boot images have neither.
@@ -342,5 +448,45 @@ mod tests {
         assert_eq!(OFF_SECS.len(), OFF_LABELS.len());
         assert_eq!(Settings::defaults(false).dim_secs(), 30);
         assert_eq!(Settings::defaults(false).off_secs(), 300);
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+    use couch_bt_hid::PairPhase;
+    #[test]
+    fn the_bond_lines_parse_with_and_without_addresses() {
+        let text = "done LG TV\npeer 44:27:45:4E:33:25 LG TV\nlink 44:27:45:4E:33:25 LG TV\nactive 44:27:45:4E:33:25\n";
+        let s = LinkStatus::parse(text);
+        assert_eq!(s.phase, PairPhase::Done);
+        assert_eq!(s.detail, "LG TV");
+        let peer = Peer {
+            address: "44:27:45:4E:33:25".into(),
+            name: "LG TV".into(),
+        };
+        assert_eq!(s.bonded.as_ref(), Some(&peer));
+        assert_eq!(s.link.as_ref(), Some(&peer));
+        assert_eq!(s.active.as_deref(), Some("44:27:45:4E:33:25"));
+        // The daemon before per-device bonds wrote `link <name>` only.
+        let old = LinkStatus::parse("idle\nlink webOS TV OLED48B4PUA\n");
+        assert_eq!(old.phase, PairPhase::Idle);
+        let link = old.link.unwrap();
+        assert!(link.address.is_empty());
+        assert_eq!(link.name, "webOS TV OLED48B4PUA");
+        assert_eq!(link.label(), "webOS TV OLED48B4PUA");
+        // A TV with no name is labelled by its address; a bad active line is
+        // ignored rather than trusted.
+        let bare = LinkStatus::parse("pairing\nlink AA:BB:CC:DD:EE:FF\nactive nope\n");
+        assert_eq!(
+            bare.link.as_ref().map(Peer::label),
+            Some("AA:BB:CC:DD:EE:FF")
+        );
+        assert!(bare.active.is_none() && bare.bonded.is_none());
+        assert_eq!(LinkStatus::parse(""), LinkStatus::default());
+        // The plain reader keeps giving the name only, for the rows that
+        // show "ON · <TV>".
+        let plain = couch_bt_hid::PairStatus::parse(text);
+        assert_eq!(plain.phase, PairPhase::Done);
     }
 }

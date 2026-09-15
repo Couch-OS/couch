@@ -76,35 +76,37 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         .devices()
         .find(|(_, d)| d.id.as_str() == id)
         .ok_or("IR device was removed")?;
-    let choices = if bluetooth {
-        couch_model::buttons::functions(&Integration::BluetoothTv)
-            .iter()
-            .map(|(id, label)| (format!("ir:{id}"), (*label).to_owned(), "Send over Bluetooth".into()))
-            .collect()
-    } else {
-        let codeset = device
-            .effective_ir_codeset(config)
-            .ok_or("Selected device has no infrared commands")?;
+    // What the list offers: the codeset's own entries when the device has
+    // one, then the Bluetooth keys its bond adds (those not already listed).
+    // A press goes through the device's transport order either way.
+    let mut choices: Vec<(String, String, String)> = Vec::new();
+    if let Some(codeset) = device.effective_ir_codeset(config) {
         let integration = Integration::Ir {
             codeset: codeset.into(),
         };
         let codes = couch_ir::codeset::load(&crate::home::path("ir"), codeset)
             .map_err(|e| e.to_string())?;
-        codes
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let f = Function::parse(&entry.button)?;
-                f.supports(&integration).then(|| {
-                    (
-                        format!("ir:{}", f.id()),
-                        entry.button.replace('-', " "),
-                        "Send infrared command".into(),
-                    )
-                })
+        choices.extend(codes.entries.iter().filter_map(|entry| {
+            let f = Function::parse(&entry.button)?;
+            f.supports(&integration).then(|| {
+                (
+                    format!("ir:{}", f.id()),
+                    entry.button.replace('-', " "),
+                    "Send infrared command".into(),
+                )
             })
-            .collect()
-    };
+        }));
+    } else if !bluetooth {
+        return Err("Selected device has no infrared commands".into());
+    }
+    if device.bluetooth.is_some() {
+        for (id, label) in couch_model::buttons::functions(&Integration::BluetoothTv) {
+            let action = format!("ir:{id}");
+            if !choices.iter().any(|(a, _, _)| *a == action) {
+                choices.push((action, (*label).to_owned(), "Send over Bluetooth".into()));
+            }
+        }
+    }
     let command = function(&work.action)?;
     if !current() {
         return Ok(None);

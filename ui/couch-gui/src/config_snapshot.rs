@@ -34,7 +34,10 @@ impl Cache {
             if raw.len() > 4 * 1024 * 1024 {
                 return None;
             }
-            let c: Config = serde_json::from_slice(&raw).ok()?;
+            let mut c: Config = serde_json::from_slice(&raw).ok()?;
+            // couch-confd rewrites an old file on its next start; until then
+            // (and for a file it never opened) the same migration runs here.
+            c.migrate();
             c.validate().ok()?;
             Some(c)
         })();

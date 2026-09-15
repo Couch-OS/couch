@@ -19,6 +19,9 @@ struct Pairing {
     phase: String,
     #[serde(default)]
     detail: String,
+    /// The device the window was opened for, from its own section.
+    #[serde(default)]
+    device: Option<String>,
 }
 impl Pairing {
     /// The daemon's window is open: the page polls and offers Send key.
@@ -27,7 +30,7 @@ impl Pairing {
     }
     fn text(&self) -> String {
         match self.phase.as_str() {
-            "pairing" => "Pairing mode: on the TV, open Bluetooth settings and choose Couch Remote.".into(),
+            "pairing" => "Pairing mode: on the TV, open Bluetooth settings and choose Couch Remote. A TV already connected over Bluetooth is disconnected until the window ends.".into(),
             "connected" => format!("Connected to {}…", self.detail),
             "paired" => format!("Paired with {}. If the TV asks you to press a key, use Send key.", self.detail),
             "done" => format!("Done: {} is paired.", self.detail),
@@ -237,7 +240,7 @@ pub fn sections(app: App) -> AnyView {
             <label><input type="checkbox" disabled=move || !device.get().ssh.available prop:checked=move || device.get().ssh.enabled on:change=move |e| { let mut d = device.get_untracked(); d.ssh.enabled = event_target_checked(&e); save(d); }/>"SSH access"</label>
             <p class="dim">{move || { let s = device.get().ssh; if !s.available { "Nothing enrolled".to_string() } else if s.running { "sshd is running".into() } else { "sshd is stopped".into() } }}</p>
         }.into_any())}
-        {ui::section("Bluetooth", Some("With Bluetooth on, Pair with TV makes the remote discoverable as \"Couch Remote\" for two minutes; choose it from the TV's Bluetooth menu. Outside that window only a TV that already paired can connect. Needs the current boot image; older kernels have no Bluetooth."), view! {
+        {ui::section("Bluetooth", Some("Pair each TV from its device in Rooms & devices, so the bond is stored on that device. Pair with TV here pairs a TV without attaching it to a device (useful before the device exists); Forget pairings drops every bond the remote holds, devices included. Needs the current boot image; older kernels have no Bluetooth."), view! {
             <label><input type="checkbox" disabled=move || { let b = device.get().bluetooth; !b.available || b.state == "starting" } prop:checked=move || device.get().bluetooth.enabled on:change=move |e| { let mut d = device.get_untracked(); d.bluetooth.enabled = event_target_checked(&e); save(d); }/>"Bluetooth"</label>
             <p class="dim">{move || { let b = device.get().bluetooth; if !b.available { "No kernel support".to_string() } else if b.running { match b.peer { Some(peer) => format!("On: connected to {peer}"), None => "On: no TV connected".into() } } else if b.state == "starting" { "Starting the Bluetooth stack…".into() } else if b.state == "error" { format!("Failed: {}", b.detail) } else { "Off".into() } }}</p>
             <div class="power-actions">
@@ -248,7 +251,7 @@ pub fn sections(app: App) -> AnyView {
                 })}
                 <button type="button" class="link" disabled=move || !device.get().bluetooth.running on:click=move |_| bluetooth("forget")>"Forget pairings"</button>
             </div>
-            <p role="status">{move || { let text = device.get().bluetooth.pairing.text(); if bt_note.get().is_empty() { text } else { bt_note.get() } }}</p>
+            <p role="status">{move || { let p = device.get().bluetooth.pairing; let text = match &p.device { Some(d) if p.in_window() => format!("{} (for device {d})", p.text()), _ => p.text() }; if bt_note.get().is_empty() { text } else { bt_note.get() } }}</p>
         }.into_any())}
         {ui::section("Network", None, view! {
             <dl class="facts">

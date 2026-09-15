@@ -271,8 +271,16 @@ fn handle_updates(
         Request::BluetoothAuto => {
             protocol::write(&Reply::Done(couch_system::bluetooth::auto()), &mut stream)
         }
-        Request::BluetoothPair { action } => protocol::write(
-            &Reply::Done(couch_system::bluetooth::pair(action)),
+        Request::BluetoothPair {
+            action,
+            address,
+            device,
+        } => protocol::write(
+            &Reply::Done(couch_system::bluetooth::pair(
+                action,
+                address.as_deref(),
+                device.as_deref(),
+            )),
             &mut stream,
         ),
         Request::Ssh { enabled } => {

@@ -46,7 +46,11 @@ fn ssh_available() -> bool {
 /// needs no copy of the tables.
 fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
     let state = ui_settings::bluetooth_state();
-    let pairing = ui_settings::bluetooth_pairing();
+    let link = ui_settings::bluetooth_link();
+    let peer = |p: &Option<ui_settings::Peer>| {
+        p.as_ref()
+            .map(|p| serde_json::json!({"address": p.address, "name": p.name}))
+    };
     serde_json::json!({
         "brightness": settings.brightness,
         "keys": settings.keys,
@@ -69,13 +73,21 @@ fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
                 _ => "",
             },
             // Pairing mode, from the HID daemon's state file: the phase and
-            // its detail (the TV's name, or why the window closed), and the
-            // TV on the link right now, window or not.
+            // its detail (the TV's name, or why the window closed), the
+            // device the window was opened for (null from the global
+            // button), and the TV that bonded once the phase is done. Then
+            // the TV on the link right now, window or not (its name in
+            // `peer`, for the rows; address and name in `link`), and the
+            // bond the daemon holds active.
             "pairing": {
-                "phase": pairing.phase.word(),
-                "detail": pairing.detail,
+                "phase": link.phase.word(),
+                "detail": link.detail,
+                "device": couch_system::bluetooth::bond_request_device(),
+                "bonded": peer(&link.bonded),
             },
-            "peer": pairing.peer,
+            "peer": link.link.as_ref().map(|p| p.label().to_owned()),
+            "link": peer(&link.link),
+            "active": link.active,
         },
     })
 }
@@ -167,17 +179,49 @@ pub(super) fn power(body: &[u8]) -> Reply {
     }
 }
 
-/// `{"action": "pair" | "stop" | "forget" | "enter"}`: pairing mode on the
-/// HID daemon, through the system service. 202 once the word is on its way;
-/// the outcome shows up in `GET /api/remote/device`'s `bluetooth.pairing`.
-pub(super) fn bluetooth(body: &[u8]) -> Reply {
+/// `{"action": "pair" | "stop" | "forget" | "enter" | "activate",
+/// "address"?: "44:27:45:4E:33:25", "device"?: "<device id>"}`: the HID
+/// daemon's control words, through the system service. `pair` with a device
+/// opens the window for that device, and the TV that bonds is stored on it
+/// by the daemon's tick; `forget` with an address drops one bond, with a
+/// device also clears the device's stored bond; `activate` with an address
+/// makes that bond the link (without one, no TV may connect). 202 once the
+/// word is on its way; the outcome shows up in `GET /api/remote/device`'s
+/// `bluetooth.pairing`. `device_exists` is the configuration's word on the
+/// id, so a window is never opened for a device that is not there.
+pub(super) fn bluetooth(body: &[u8], device_exists: impl Fn(&str) -> bool) -> Reply {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
         return Reply::error(400, "Invalid Bluetooth request");
     };
     let Ok(action) = serde_json::from_value::<PairAction>(value["action"].clone()) else {
-        return Reply::error(400, "Choose pair, stop, forget or enter");
+        return Reply::error(400, "Choose pair, stop, forget, enter or activate");
     };
-    match client::call(Request::BluetoothPair { action }) {
+    let text = |key: &str| match &value[key] {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(s) => Ok(Some(s.clone())),
+        _ => Err(()),
+    };
+    let (Ok(address), Ok(device)) = (text("address"), text("device")) else {
+        return Reply::error(400, "address and device are strings");
+    };
+    if let Some(address) = &address {
+        if !couch_system::bluetooth::valid_address(address) {
+            return Reply::error(
+                400,
+                "A Bluetooth address is six uppercase hex pairs separated by colons",
+            );
+        }
+    }
+    if let Some(device) = &device {
+        if !device_exists(device) {
+            return Reply::error(404, "No such device");
+        }
+    }
+    match client::call(Request::BluetoothPair {
+        action,
+        address,
+        device,
+    }) {
         Ok(SystemReply::Done(Ok(()))) => Reply::json(
             202,
             &serde_json::json!({"accepted": true, "action": action}),
@@ -220,10 +264,24 @@ mod device_tests {
             br#"{"action":"kbd:28"}"#.as_slice(),
             br#"{"action":"vol+"}"#,
             br#"{"action":"Pair"}"#,
+            br#"{"action":"activate","address":"44:27:45:4e:33:25"}"#,
+            br#"{"action":"activate","address":"vol+"}"#,
+            br#"{"action":"pair","device":7}"#,
             br#"{}"#,
             b"{",
         ] {
-            assert_eq!(bluetooth(body).status, 400, "{}", String::from_utf8_lossy(body));
+            assert_eq!(
+                bluetooth(body, |_| true).status,
+                400,
+                "{}",
+                String::from_utf8_lossy(body)
+            );
         }
+        // A window for a device the configuration does not have is refused
+        // before the system service is asked.
+        assert_eq!(
+            bluetooth(br#"{"action":"pair","device":"ghost"}"#, |_| false).status,
+            404
+        );
     }
 }
