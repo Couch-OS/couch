@@ -177,6 +177,11 @@ fn reported_address() -> Option<[u8; 6]> {
 /// but not a reboot, which is why this runs on every bring-up. A random
 /// static address through `btmgmt static-addr` is not an option: it
 /// advertises but bluetoothd never answers ATT on it (checked twice).
+///
+/// hci0 is left DOWN afterwards. bluetoothd powers it on itself, and it must
+/// be the one to: `ControllerMode = le` is applied by switching BR/EDR off
+/// over MGMT, which the core rejects on a powered adapter, so an hci0 left up
+/// here came back dual-mode and the classic-Bluetooth trap with it (.158).
 fn set_controller_address() -> Result<(), String> {
     let Some(wanted) = wanted_address() else {
         println!("couch-system: bluetooth: no Wi-Fi MAC to derive an address from; keeping the controller's own");
@@ -201,7 +206,9 @@ fn set_controller_address() -> Result<(), String> {
         "hciconfig hci0 up && hcitool -i hci0 cmd 0x3f 0x001a {bytes} >/dev/null && hciconfig hci0 down && hciconfig hci0 up"
     ))
     .map_err(|_| "the set-address commands failed".to_string())?;
-    match reported_address() {
+    let reported = reported_address();
+    let _ = alpine_sh("hciconfig hci0 down");
+    match reported {
         Some(now) if now == wanted => {
             println!(
                 "couch-system: bluetooth: controller address {} (from the Wi-Fi MAC)",

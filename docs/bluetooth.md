@@ -111,8 +111,11 @@ socket and reads its state file.
   address at every bring-up: the Wi-Fi MAC of `wlan0` with the last byte plus
   one (`derive_address`, unit-tested), sent with MediaTek's vendor command
   (`hcitool cmd 0x3f 0x001a <six bytes, little-endian>`, opcode 0xFC1A) while
-  hci0 is up, then `hciconfig hci0 down; up`, verified against `hciconfig`.
-  Before bluetoothd starts, because bluetoothd binds its ATT server to the
+  hci0 is up, then `hciconfig hci0 down; up`, verified against `hciconfig`,
+  and hci0 is put down again so that bluetoothd is the one to power it on:
+  the core rejects MGMT's BR/EDR-off on a powered adapter, and an hci0 left
+  up after this step came back dual-mode (.158.dev), reopening the classic
+  trap above. Before bluetoothd starts, because bluetoothd binds its ATT server to the
   address it saw at init: after a live change every central (an LG and a Mac)
   got no ATT MTU response and hung up. The address survives down/up and the
   toggle's func off/off but not a reboot, hence every bring-up. Why: the
