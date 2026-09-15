@@ -619,14 +619,17 @@ async fn forget_all(conn: &Connection) {
     }
 }
 
-/// Pairable and discoverable go together: on for a window, off otherwise.
-/// Either failing is logged and not fatal; the advert's own flag is the one
-/// that matters for a TV's menu, and pairability is a second gate.
+/// Pairable on for a window, off otherwise. Only Pairable: the advert's own
+/// Discoverable flag is what puts the remote in a TV's menu, and setting
+/// `Adapter1.Discoverable` as well was a mistake that cost a day. On this
+/// dual-mode controller it switched BR/EDR inquiry and page scan on, an LG
+/// found "Couch Remote" over classic Bluetooth first, paired with SSP,
+/// searched SDP for a HID record we do not have, and dropped the link; the
+/// GATT HID service is LE only. The system service now also starts
+/// bluetoothd with `ControllerMode = le`, so there is no classic side at all.
 async fn set_pairable(conn: &Connection, on: bool) {
-    for prop in ["Pairable", "Discoverable"] {
-        if let Err(e) = set_adapter(conn, prop, Value::from(on)).await {
-            eprintln!("couch-bt-hid: could not set {prop}={on}: {e}");
-        }
+    if let Err(e) = set_adapter(conn, "Pairable", Value::from(on)).await {
+        eprintln!("couch-bt-hid: could not set Pairable={on}: {e}");
     }
 }
 

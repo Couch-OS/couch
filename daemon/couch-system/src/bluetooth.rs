@@ -22,6 +22,17 @@ const HCI0: &str = "/sys/class/bluetooth/hci0";
 pub const STATE_FILE: &str = "/tmp/couch-bt.state";
 /// The dbus system socket, seen from the outer root.
 const DBUS_SOCKET: &str = "/mnt/alpine/run/dbus/system_bus_socket";
+/// bluetoothd's configuration, seen from the outer root. Written before every
+/// start so an OS image's stock file (all comments) never wins.
+const BLUETOOTHD_CONF: &str = "/mnt/alpine/etc/bluetooth/main.conf";
+/// LE only: the MT6580 is a dual-mode controller and bluetoothd otherwise
+/// answers classic inquiry and page scans, so a TV's Bluetooth menu can find
+/// "Couch Remote" over BR/EDR, pair with SSP, search SDP for a HID record we
+/// do not have, and give up (seen with an LG OLED77G5, 2026-09-15). The HID
+/// service is GATT, so the classic side is nothing but a trap. Not pairable
+/// by default: bluetoothd applies this after the adapter starts, later than
+/// the HID daemon's own first Set, and the daemon opens pairing windows.
+const BLUETOOTHD_CONF_TEXT: &str = "[General]\nControllerMode = le\nPairable = false\n";
 
 /// Where the Bluetooth binaries are, as an Alpine-relative directory: a
 /// runtime slot copy wins over the base install, and a boot image's `/extra`
@@ -336,6 +347,13 @@ fn up() -> Result<(), String> {
         Duration::from_millis(100),
     ) {
         return Err("Bluetooth started but dbus did not come up; see /tmp/dbus.log".into());
+    }
+    if fs::read_to_string(BLUETOOTHD_CONF).ok().as_deref() != Some(BLUETOOTHD_CONF_TEXT) {
+        if let Some(dir) = Path::new(BLUETOOTHD_CONF).parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        fs::write(BLUETOOTHD_CONF, BLUETOOTHD_CONF_TEXT)
+            .map_err(|e| format!("Could not write bluetoothd's configuration: {e}"))?;
     }
     alpine_sh(
         "pidof bluetoothd >/dev/null || setsid /usr/lib/bluetooth/bluetoothd </dev/null >/tmp/bluetoothd.log 2>&1 &",

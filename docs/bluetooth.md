@@ -95,9 +95,20 @@ The remote is only pairable and discoverable while the user asks it to be.
 `couch-bt-hid` owns the policy; everything else drives it through the key
 socket and reads its state file.
 
+- **LE only.** `couch_system::bluetooth` writes `/etc/bluetooth/main.conf`
+  (`ControllerMode = le`, `Pairable = false`) before starting bluetoothd. The
+  MT6580 is dual-mode, and with the classic side up a TV's Bluetooth menu can
+  find "Couch Remote" over BR/EDR first: an LG OLED77G5 did (2026-09-15),
+  paired with SSP, searched SDP for a HID record, found only PnP, and dropped
+  the link three times over, showing nothing paired on its side, while the
+  remote's card said PAIRED (bluetoothd reports the classic bond as
+  `Paired`). The trigger was setting `Adapter1.Discoverable`, which turns
+  inquiry/page scan on; the daemon no longer touches it and, LE-only, there
+  is no classic side to find. `btmgmt info` shows
+  `current settings: powered le secure-conn` (no `br/edr`).
 - **Socket words** (`/tmp/couch-bt-hid.sock`, mode 0600): `pair` removes every
   `Device1` under `hci0` (`Adapter1.RemoveDevice`, bonds included), sets
-  `Pairable` and `Discoverable` on the adapter, re-registers the advertisement
+  `Pairable` on the adapter, re-registers the advertisement
   with `Discoverable=true` (raw-HCI path: flags byte `0x06`) and opens a
   `PAIR_WINDOW_SECS` (120 s) window; `pair-stop` closes it early; `forget`
   removes the devices without a window. Keyboard words `enter`, `escape`,
@@ -111,14 +122,14 @@ socket and reads its state file.
 - **Window edges.** Ends on a peer that is paired-or-bonded *and* has
   subscribed to a report characteristic (`done <name>`), on the timeout
   (`failed timeout`) or on `pair-stop` (`failed cancelled`). At the edge the
-  adapter goes back to `Pairable=false`, `Discoverable=false` and the
+  adapter goes back to `Pairable=false` and the
   advertisement is re-registered non-discoverable (flags `0x04`), so a bonded
   TV still reconnects but a phone's Bluetooth menu no longer lists the remote.
-  On the managed path the 4.4 core composes the flags itself: an
-  `hcidump` of a window on the dev remote shows `LE Set Advertising Data` with
-  `02 01 02` (LE general discoverable) while the window is open and `02 01 04`
-  (BR/EDR not supported only) before and after; the raw path writes `0x06`
-  and `0x04` for the same two states.
+  On the managed path the 4.4 core composes the flags itself: with the
+  controller LE-only an `hcidump` of a window shows `LE Set Advertising Data`
+  with `02 01 06` while the window is open and `02 01 04` before and after,
+  the same bytes the raw path writes (with BR/EDR still on the core wrote
+  `0x02` in the window, which is what the LG's classic side answered).
   The same non-discoverable advertisement is what the daemon starts with.
 - **Peers** come from polling `org.freedesktop.DBus.ObjectManager
   .GetManagedObjects` on `org.bluez` (every 500 ms in the window, every 3 s
@@ -302,8 +313,10 @@ Userland (this repo):
       with no subscriber logged as a dropped keyboard report, `forget` empties
       the device list, Wi-Fi unaffected. bluetoothd re-applies its main.conf
       `Pairable` default when the adapter finishes starting, after the daemon's
-      first Set, so the daemon re-asserts it on every poll. Awaiting the first
-      TV pairing through it.
+      first Set, so the daemon re-asserts it on every poll (and main.conf now
+      says `Pairable = false`). First TV attempt (LG OLED77G5) went over
+      classic Bluetooth and failed, see "LE only" above; the LE-only
+      controller is the fix (.157.dev). Awaiting the first LE pairing.
 - [ ] Bond store keyed per activity; disconnect-and-redirect on switch.
 - [ ] Re-advertise immediately on disconnect. Done where bluetoothd exports
       `LEAdvertisingManager1` (the backported core, see

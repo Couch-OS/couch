@@ -112,7 +112,10 @@ that the remote's card, the web page and the API read (`idle`, `pairing`,
 `connected <name>`, `paired <name>`, `done <name>`, `failed timeout|cancelled`,
 plus a `link <name>` line while a TV is connected). During the window the
 adapter is pairable and the advertisement general-discoverable; outside it,
-neither, so only a bonded TV reconnects. The details are in
+neither, so only a bonded TV reconnects. The controller runs LE-only
+(bluetoothd's `ControllerMode = le`): the chip can do classic Bluetooth too,
+but the HID service only exists over LE, and a TV that found the remote over
+classic paired and then found nothing to use. The details are in
 [bluetooth.md](bluetooth.md#pairing-mode). The controller keeps a synthetic
 address (`00:00:46:65:80:02`, set with the vendor command at bring-up) so a
 reflashed remote looks like the same device to a TV that paired the previous
