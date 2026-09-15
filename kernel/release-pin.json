@@ -15,12 +15,13 @@
     "Bluetooth on alongside Wi-Fi with the singleton bridge: Wi-Fi stayed up, no whole-chip reset (HA100, 2026-09-14)",
     "IR working while charging, and after undocked display standby/wake (HA100, 2026-09-14)",
     "Keys, key backlight and wake-from-standby on a key press with CONFIG_COUCH_HA100 unset, i.e. the vendor keypad path (HA100, 2026-09-14, .144-.149)",
-    "Backported 4.4 Bluetooth core + hci_stp modules from the boot ramdisk (06b21c74 build, .154.dev): 6/6 toggle cycles, 0 STP timeouts, 0 chip resets, managed LE advertising (HA100, 2026-09-15)"
+    "Backported 4.4 Bluetooth core + hci_stp modules from the boot ramdisk (06b21c74 build, .154.dev): 6/6 toggle cycles, 0 STP timeouts, 0 chip resets, managed LE advertising (HA100, 2026-09-15)",
+    "Keypad driver change (08fd6f4d, HA100 guard): 51 fast taps -> 51 presses/50 releases in 10 s with tools/keypad/keytap, kworker/0:1 at 1% during a 10 s hold (was ~20%), wake-from-standby on a key press, IR send (HA100 .160.dev, 2026-09-15)",
+    "Backported 4.4 core + hci_stp modules rebuilt for 08fd6f4d: Bluetooth up after the kernel change, LG bond kept across the runtime restart, kernel install and reboot; pairing mode + stable Wi-Fi-MAC-derived address validated with an LG OLED48B4 (.159/.160.dev, 2026-09-15)"
   ],
   "pending": [
-    "Keypad driver change (matrix_keypad.c, HA100 guard): debounce 50 -> 8 ms, column settle 200 -> 50 us, polling instead of row IRQs while a key is held. Acceptance on hardware: 20 fast taps -> 20 presses (tools/keypad/keytap), a held key scrolls with kworker idle, a second key while one is held, wake on key press; untested on hardware as of 2026-09-15.",
-    "Source 08fd6f4d = couch-hci-stp (0fc79049, the in-kernel hci_stp driver, CONFIG_MTK_COMBO_BT_HCI off in this config) + the keypad commit; the effective .config is byte-identical to the 06b21c74 build that shipped in .154.dev, so the module set from kernel/backports/build.sh must be rebuilt for the new vermagic (3.18.79-couch-normal-g08fd6f4d2efa).",
-    "EXPERIMENT (docs/kernel-backports-research.md): in-tree Bluetooth core off, CRYPTO_CMAC on, the backports-4.4.2-1 Bluetooth core loaded as modules from the boot ramdisk. Not for promotion until the full hardware round is redone.",
+    "Source 08fd6f4d = couch-ha100 tip d417106e's keypad commit on top of hci_stp; modules from kernel/backports/build.sh are built for vermagic 3.18.79-couch-normal-g08fd6f4d2efa and ship in the .160.dev ramdisk.",
+    "EXPERIMENT (docs/kernel-backports-research.md): in-tree Bluetooth core off, CRYPTO_CMAC on, the backports-4.4.2-1 Bluetooth core loaded as modules from the boot ramdisk. Full hardware round redone on .160.dev (keys, hold, wake, IR, Wi-Fi with Bluetooth, LG pairing); remaining before promotion: the per-device bond work (PR #167 and the model/UI PR).",
     "Clean installer image and recovery validation; release signing and corresponding-source/license review"
   ]
 }
