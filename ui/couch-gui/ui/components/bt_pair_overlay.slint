@@ -1,0 +1,96 @@
+import { Theme } from "../theme.slint";
+
+// Pairing mode for a Bluetooth TV, over the settings menu.
+//
+// The remote is only discoverable and pairable while this is up (two minutes,
+// the daemon's window), so the card is the whole story of that window: what to
+// do on the TV, then who connected, then whether it took. The host owns the
+// D-pad while it is shown - OK presses Enter on the TV, for the sets that ask
+// for "any key" after pairing, and Back cancels or closes.
+export component BtPairOverlay inherits Rectangle {
+    in property <bool> shown: false;
+    /// idle | pairing | connected | paired | done | failed (the daemon's words).
+    in property <string> phase: "pairing";
+    /// The TV's name, or the failure's reason (timeout, cancelled).
+    in property <string> detail: "";
+
+    visible: root.shown;
+    background: #000000F0;
+    // Nothing below may take a touch while this is up.
+    TouchArea { enabled: root.shown; }
+
+    property <bool> over: root.phase == "done" || root.phase == "failed" || root.phase == "idle";
+    property <color> tone: root.phase == "done" ? Theme.accent
+        : root.phase == "failed" || root.phase == "idle" ? Theme.text-tertiary
+        : Theme.accent;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 18px;
+        padding-left: 28px;
+        padding-right: 28px;
+
+        Text {
+            text: "PAIR WITH TV";
+            font-size: 15px;
+            letter-spacing: 2px;
+            color: Theme.text-secondary;
+            horizontal-alignment: center;
+        }
+
+        Rectangle {
+            height: 84px;
+            background: Theme.surface-raised;
+            border-radius: Theme.r-card;
+            border-width: 2px;
+            border-color: root.tone;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 14px;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 22px; height: 22px;
+                        border-radius: 11px;
+                        background: root.tone;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.phase == "pairing" ? "DISCOVERABLE"
+                            : root.phase == "connected" ? "CONNECTED"
+                            : root.phase == "paired" ? "PAIRED"
+                            : root.phase == "done" ? "DONE"
+                            : root.phase == "failed" ? "NOT PAIRED"
+                            : "OFF";
+                        font-size: 26px;
+                        font-weight: 700;
+                        letter-spacing: 2px;
+                        color: Theme.text;
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: root.phase == "pairing" ? "On your TV, open Bluetooth settings and choose Couch Remote."
+                : root.phase == "connected" ? "Connected to " + root.detail + "…"
+                : root.phase == "paired" ? "Paired with " + root.detail + ". If the TV asks you to press a key, press OK."
+                : root.phase == "done" ? "Done: " + root.detail + " is paired."
+                : root.phase == "failed" ? (root.detail == "timeout" ? "No TV paired (timed out)." : "Pairing cancelled.")
+                : "Bluetooth is not running.";
+            font-size: 21px;
+            color: Theme.text;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: root.over ? "Back to close" : "OK sends a key  ·  Back cancels";
+            font-size: 15px;
+            color: Theme.text-quaternary;
+            horizontal-alignment: center;
+        }
+    }
+}

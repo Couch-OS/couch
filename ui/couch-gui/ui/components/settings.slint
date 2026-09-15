@@ -79,6 +79,7 @@ export component Settings inherits Rectangle {
     in property <bool> ssh-busy;               // switching, on a thread
     in property <string> bt-state;             // off, starting, on, error
     in property <bool> bt-available;           // the kernel has Bluetooth at all
+    in property <string> bt-peer;              // the TV connected now, "" if none
     // Updates. The host mirrors the system service's status here.
     in property <string> update-installed;
     in property <string> update-boot;          // installed boot image, "" if none
@@ -108,6 +109,7 @@ export component Settings inherits Rectangle {
     callback recovery-wifi();
     callback toggle-ssh();
     callback toggle-bluetooth();
+    callback pair-bluetooth();                 // open pairing mode (panel 7, row 1)
     callback update-check();
     callback update-install();
     callback update-restart();
@@ -133,6 +135,8 @@ export component Settings inherits Rectangle {
     changed update-can-install => { root.sel = Math.min(root.sel, root.row-count() - 1); }
     changed update-busy => { root.sel = Math.min(root.sel, root.row-count() - 1); }
     changed update-ready => { root.sel = Math.min(root.sel, root.row-count() - 1); }
+    // The Pair row is only there while Bluetooth is on.
+    changed bt-state => { root.sel = Math.min(root.sel, root.row-count() - 1); }
     property <length> row-h: 72px;
     property <length> gap: 10px;
     property <length> pitch: root.row-h + root.gap;
@@ -149,7 +153,10 @@ export component Settings inherits Rectangle {
         }
         if (root.panel == 5) { return 5; }   // address, gateway, dns, mac, web
         if (root.panel == 6) { return 3; }   // off, restart, recovery
-        return 1;                            // ssh toggle, bluetooth toggle
+        if (root.panel == 7) {               // toggle, then Pair with TV once on
+            return root.bt-state == "on" ? 2 : 1;
+        }
+        return 1;                            // ssh toggle
     }
 
     // True where left/right change a value rather than doing nothing.
@@ -188,7 +195,10 @@ export component Settings inherits Rectangle {
             return;
         }
         if (root.panel == 3) { root.toggle-ssh(); return; }
-        if (root.panel == 7) { root.toggle-bluetooth(); return; }
+        if (root.panel == 7) {
+            if (root.sel == 0) { root.toggle-bluetooth(); } else { root.pair-bluetooth(); }
+            return;
+        }
         if (root.panel == 4) {
             if (root.sel == 2) { root.update-check(); }
             else if (root.sel == 3) {
@@ -307,19 +317,21 @@ export component Settings inherits Rectangle {
                 }
             }
 
-            // Bluetooth: a single toggle. The stack takes a few seconds to come
-            // up, and the row says so while it does.
+            // Bluetooth: the toggle, naming the TV on the link once there is
+            // one, and pairing mode below it while the stack is up. The stack
+            // takes a few seconds to come up, and the row says so while it does.
             if root.panel == 7: VerticalLayout {
                 spacing: root.gap;
                 SettingsRow {
                     title: "Bluetooth";
                     value: !root.bt-available ? "no kernel support"
-                        : root.bt-state == "on" ? "ON"
+                        : root.bt-state == "on" ? (root.bt-peer == "" ? "ON" : "ON · " + root.bt-peer)
                         : root.bt-state == "starting" ? "STARTING…"
                         : root.bt-state == "error" ? "FAILED"
                         : "OFF";
                     stepper: false;
                 }
+                if root.bt-state == "on": SettingsRow { title: "Pair with TV"; arrow: true; stepper: false; }
             }
 
             // Updates: what is installed, the channel, a check, and then the

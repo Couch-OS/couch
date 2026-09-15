@@ -28,6 +28,7 @@ pub(super) fn timezones() -> Vec<String> {
 // the remote's Network section reads them; Power asks the system service.
 use super::Reply;
 use couch_system::{
+    bluetooth::PairAction,
     client, netinfo,
     power::Action,
     protocol::{Reply as SystemReply, Request},
@@ -45,6 +46,7 @@ fn ssh_available() -> bool {
 /// needs no copy of the tables.
 fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
     let state = ui_settings::bluetooth_state();
+    let pairing = ui_settings::bluetooth_pairing();
     serde_json::json!({
         "brightness": settings.brightness,
         "keys": settings.keys,
@@ -66,6 +68,14 @@ fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
                 ui_settings::BluetoothState::Error(error) => error.as_str(),
                 _ => "",
             },
+            // Pairing mode, from the HID daemon's state file: the phase and
+            // its detail (the TV's name, or why the window closed), and the
+            // TV on the link right now, window or not.
+            "pairing": {
+                "phase": pairing.phase.word(),
+                "detail": pairing.detail,
+            },
+            "peer": pairing.peer,
         },
     })
 }
@@ -157,6 +167,26 @@ pub(super) fn power(body: &[u8]) -> Reply {
     }
 }
 
+/// `{"action": "pair" | "stop" | "forget" | "enter"}`: pairing mode on the
+/// HID daemon, through the system service. 202 once the word is on its way;
+/// the outcome shows up in `GET /api/remote/device`'s `bluetooth.pairing`.
+pub(super) fn bluetooth(body: &[u8]) -> Reply {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return Reply::error(400, "Invalid Bluetooth request");
+    };
+    let Ok(action) = serde_json::from_value::<PairAction>(value["action"].clone()) else {
+        return Reply::error(400, "Choose pair, stop, forget or enter");
+    };
+    match client::call(Request::BluetoothPair { action }) {
+        Ok(SystemReply::Done(Ok(()))) => Reply::json(
+            202,
+            &serde_json::json!({"accepted": true, "action": action}),
+        ),
+        Ok(SystemReply::Done(Err(error))) => Reply::error(409, &error),
+        _ => Reply::error(503, "System service is unavailable"),
+    }
+}
+
 #[cfg(test)]
 mod device_tests {
     use super::*;
@@ -179,5 +209,21 @@ mod device_tests {
         assert_eq!(power(br#"{"action":"restart"}"#).status, 400);
         assert_eq!(power(br#"{"action":"halt","confirm":true}"#).status, 400);
         assert_eq!(power(b"{").status, 400);
+    }
+
+    #[test]
+    fn bluetooth_pairing_takes_only_the_named_actions() {
+        // The page cannot type a word for the daemon's socket: a raw key
+        // name, an unknown action and no action at all stop here, before
+        // the system service is asked anything.
+        for body in [
+            br#"{"action":"kbd:28"}"#.as_slice(),
+            br#"{"action":"vol+"}"#,
+            br#"{"action":"Pair"}"#,
+            br#"{}"#,
+            b"{",
+        ] {
+            assert_eq!(bluetooth(body).status, 400, "{}", String::from_utf8_lossy(body));
+        }
     }
 }

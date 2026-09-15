@@ -9,6 +9,7 @@ import { Theme } from "theme.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { VolumeOverlay } from "components/volume_overlay.slint";
 import { PairOverlay } from "components/pair_overlay.slint";
+import { BtPairOverlay } from "components/bt_pair_overlay.slint";
 import { MicOverlay } from "components/mic_overlay.slint";
 import { Chooser, ChoiceItem } from "components/chooser.slint";
 import { HomeHub, LiveActivity, RoomRow, SceneCell } from "screens/home_hub.slint";
@@ -308,6 +309,13 @@ export component App inherits Window {
     in-out property <bool> ssh-busy: false;    // a start or stop is out on a thread
     in-out property <string> bt-state: "off";  // off, starting, on, error
     in-out property <bool> bt-available: false;
+    in-out property <string> bt-peer: "";      // the TV on the Bluetooth link now
+    // Pairing mode: a modal over settings while the daemon's window is open.
+    // The host reads the daemon's state file into phase and detail and owns
+    // the keys while it is shown (OK sends Enter to the TV, Back cancels).
+    in-out property <bool> bt-pair-shown: false;
+    in-out property <string> bt-pair-phase: "pairing";
+    in-out property <string> bt-pair-detail: "";
     // Updates section of the settings menu; mirrored from the system service.
     in-out property <string> update-installed;
     // The boot image on the boot partition, empty until one is installed.
@@ -353,6 +361,7 @@ export component App inherits Window {
     in-out property <bool> wifi-setup-has-qr: false;
     callback setting-toggle-ssh();
     callback setting-toggle-bluetooth();
+    callback setting-pair-bluetooth();
     // Which tier the settings menu shows (0 root, 1 display, 2 wifi, 3 ssh,
     // 4 updates, 5 network, 6 power, 7 bluetooth),
     // owned here so the host can slide between them. Enter and leave are asks.
@@ -658,6 +667,7 @@ export component App inherits Window {
         ssh-busy: root.ssh-busy;
         bt-state: root.bt-state;
         bt-available: root.bt-available;
+        bt-peer: root.bt-peer;
         update-installed: root.update-installed;
         update-boot: root.update-boot;
         update-channel: root.update-channel;
@@ -688,6 +698,7 @@ export component App inherits Window {
         recovery-wifi => { root.setting-recovery-wifi(); }
         toggle-ssh => { root.setting-toggle-ssh(); }
         toggle-bluetooth => { root.setting-toggle-bluetooth(); }
+        pair-bluetooth => { root.setting-pair-bluetooth(); }
         enter(n) => { root.settings-enter(n); }
         leave => { root.settings-leave(); }
     }
@@ -713,6 +724,14 @@ export component App inherits Window {
         shown: root.pair-shown;
         pin: root.pair-pin;
         seconds-left: root.pair-seconds;
+    }
+
+    BtPairOverlay {
+        x: 0px; y: 0px;
+        width: root.width; height: root.height;
+        shown: root.bt-pair-shown;
+        phase: root.bt-pair-phase;
+        detail: root.bt-pair-detail;
     }
 
     // A transient message near the bottom, above everything. The host sets the

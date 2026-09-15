@@ -7,7 +7,9 @@ up bridge, dbus, bluetoothd and `couch-bt-hid`; a real TV paired to "Couch
 Remote" and took volume keys; and a **Bluetooth TV** connection/device routes
 the remote's mapped buttons and the one-way TV screen over Bluetooth
 ([user guide](bluetooth-tv.md)). Idle Bluetooth has no measurable power or
-Wi-Fi cost. Still open: per-activity bonds and the vendor set-address command. An
+Wi-Fi cost. Pairing is a deliberate two-minute window from Settings or the
+web page ([pairing mode](#pairing-mode)); outside it the remote is not
+discoverable. Still open: per-activity bonds. An
 in-kernel HCI driver now exists (`hci_stp`, see
 [kernel-backports-research.md](kernel-backports-research.md#outcome-2026-09-15-the-in-kernel-driver-on-both-cores)). The sections below are the design record: "what
 exists today" describes the starting point, the
@@ -65,8 +67,9 @@ driver only offers a character device. Two ways to close the gap:
   or the older management commands.
 - LE Secure Connections landed after 3.18. Pairing falls back to legacy LE
   pairing, which TVs and streaming boxes generally accept. Verify per target.
-- The controller comes up without a programmed address unless we write the
-  recorded `bluetooth_mac` with a vendor command after power-on.
+- The controller comes up as `00:00:46:65:80:01` on every remote unless a
+  vendor command programs an address after power-on (it does: see
+  [pairing mode](#pairing-mode), "address").
 - Whether a newer Bluetooth core could be backported onto this 3.18 base, and
   what it would cost, is surveyed in
   [kernel backports research](kernel-backports-research.md) (`Add Advertising`
@@ -84,6 +87,98 @@ for multi-device keyboards applies here:
   (or advertise with a whitelist) to the target's address until it connects.
 - Pairing a new device is a GUI flow: undirected connectable advertising for a
   bounded time, then store the bond and offer it in the activity editor.
+  The bounded window exists ([pairing mode](#pairing-mode)); the per-activity
+  bond store does not yet.
+
+## Pairing mode
+
+The remote is only pairable and discoverable while the user asks it to be.
+`couch-bt-hid` owns the policy; everything else drives it through the key
+socket and reads its state file.
+
+- **LE only.** `couch_system::bluetooth` writes `/etc/bluetooth/main.conf`
+  (`ControllerMode = le`, `Pairable = false`) before starting bluetoothd. The
+  MT6580 is dual-mode, and with the classic side up a TV's Bluetooth menu can
+  find "Couch Remote" over BR/EDR first: an LG OLED77G5 did (2026-09-15),
+  paired with SSP, searched SDP for a HID record, found only PnP, and dropped
+  the link three times over, showing nothing paired on its side, while the
+  remote's card said PAIRED (bluetoothd reports the classic bond as
+  `Paired`). The trigger was setting `Adapter1.Discoverable`, which turns
+  inquiry/page scan on; the daemon no longer touches it and, LE-only, there
+  is no classic side to find. `btmgmt info` shows
+  `current settings: powered le secure-conn` (no `br/edr`).
+- **Address.** `couch_system::bluetooth` programs the controller's public
+  address at every bring-up: the Wi-Fi MAC of `wlan0` with the last byte plus
+  one (`derive_address`, unit-tested), sent with MediaTek's vendor command
+  (`hcitool cmd 0x3f 0x001a <six bytes, little-endian>`, opcode 0xFC1A) while
+  hci0 is up, then `hciconfig hci0 down; up`, verified against `hciconfig`,
+  and hci0 is put down again so that bluetoothd is the one to power it on:
+  the core rejects MGMT's BR/EDR-off on a powered adapter, and an hci0 left
+  up after this step came back dual-mode (.158.dev), reopening the classic
+  trap above. Before bluetoothd starts, because bluetoothd binds its ATT server to the
+  address it saw at init: after a live change every central (an LG and a Mac)
+  got no ATT MTU response and hung up. The address survives down/up and the
+  toggle's func off/off but not a reboot, hence every bring-up. Why: the
+  firmware default is the same on every remote and every boot, and the LG
+  keeps per-address state (after one bad round it listed the remote and said
+  "unable to connect" without ever sending a CONNECT_REQ); a stable unique
+  address makes bonds survive reboots and keeps two remotes apart. Not
+  `btmgmt static-addr` (random static): it advertises, but bluetoothd never
+  answers ATT on it, verified twice. No Wi-Fi MAC: the default is kept and
+  logged.
+- **Socket words** (`/tmp/couch-bt-hid.sock`, mode 0600): `pair` removes every
+  `Device1` under `hci0` (`Adapter1.RemoveDevice`, bonds included), sets
+  `Pairable` on the adapter, re-registers the advertisement
+  with `Discoverable=true` (raw-HCI path: flags byte `0x06`) and opens a
+  `PAIR_WINDOW_SECS` (120 s) window; `pair-stop` closes it early; `forget`
+  removes the devices without a window. Keyboard words `enter`, `escape`,
+  `space`, `tab`, `backspace` and `kbd:<hex>` (`kbd:28`, or `kbd:0204` with
+  modifiers) send a boot-style report `[mods, 0, key, 0, 0, 0, 0, 0]` then an
+  all-zero release on the keyboard report characteristic; the consumer words
+  are unchanged. The GUI sends words itself (it links the lib for the paths and
+  words); the web daemon goes through `Request::BluetoothPair { action }` on
+  the system service, whose `PairAction` is a closed set, so nothing typed on
+  a web page reaches the socket.
+- **Window edges.** Ends on a peer that is paired-or-bonded *and* has
+  subscribed to a report characteristic (`done <name>`), on the timeout
+  (`failed timeout`) or on `pair-stop` (`failed cancelled`). At the edge the
+  adapter goes back to `Pairable=false` and the
+  advertisement is re-registered non-discoverable (flags `0x04`), so a bonded
+  TV still reconnects but a phone's Bluetooth menu no longer lists the remote.
+  On the managed path the 4.4 core composes the flags itself: with the
+  controller LE-only an `hcidump` of a window shows `LE Set Advertising Data`
+  with `02 01 06` while the window is open and `02 01 04` before and after,
+  the same bytes the raw path writes (with BR/EDR still on the core wrote
+  `0x02` in the window, which is what the LG's classic side answered).
+  The same non-discoverable advertisement is what the daemon starts with.
+- **Peers** come from polling `org.freedesktop.DBus.ObjectManager
+  .GetManagedObjects` on `org.bluez` (every 500 ms in the window, every 3 s
+  otherwise) for `Device1` `Connected`/`Paired`/`Bonded`/`Name`/`Alias`;
+  `StartNotify`/`StopNotify` per characteristic and any report `push()`
+  dropped for want of a subscriber are logged in `/tmp/couch-bt-hid.log`,
+  because a TV that pairs but never subscribes looks, from outside, exactly
+  like keys being ignored.
+- **State file** `/tmp/couch-bt-pair.state` (format and parser in the crate's
+  lib, `PairStatus`): line 1 `<phase>[ <detail>]` with phase
+  `idle|pairing|connected|paired|done|failed` (detail = the peer's name, or
+  `timeout`/`cancelled`), optional line 2 `link <name>` while any peer is
+  connected. The daemon rewrites it on every poll while a window is open, so
+  readers treat a window phase older than `PAIR_STALE_SECS` (window + 15 s)
+  as idle: the daemon died. `done` and `failed` are final until the next
+  `pair`; turning Bluetooth off removes the file.
+- **Readers.** `couch_system::ui_settings::bluetooth_pairing()` and
+  `bluetooth_peer()`; the GUI's Settings › Bluetooth panel (row value
+  `ON · <peer>`, a second row **Pair with TV** while on, and a modal that owns
+  OK = `enter` and Back = `pair-stop`, polled every 250 ms while shown); the
+  web Remote page's Bluetooth section and `GET /api/remote/device`
+  (`bluetooth.pairing {phase, detail}`, `bluetooth.peer`) with
+  `POST /api/remote/bluetooth {"action": pair|stop|forget|enter}`.
+- **Why the keyboard report.** An LG webOS TV completed LE Secure Connections
+  pairing and bonding, read the HID service, then showed "press any key on the
+  bluetooth keyboard" and dropped the link after a while; every key sent
+  during that prompt was a consumer-page report (id 2). The prompt is expected
+  to want a keyboard-page report (id 1), which is what OK sends in pairing
+  mode. Hardware status is in the staging checklist below.
 
 ## Implementation plan (branch `bluetooth`, rebased onto `dev` 2026-09-14)
 
@@ -209,7 +304,9 @@ Userland (this repo):
 - [x] Bridge daemon between `/dev/vhci` and `/dev/stpbt` (`clients/couch-bt`).
 - [x] Spike acceptance (2026-09-14): `hciconfig hci0 up`, `hcitool lescan` sees
       advertisers. (Alpine bluez has no `btmgmt`; used `bluetoothctl`/`hciconfig`.)
-- [ ] Program `bluetooth_mac` from the identity record at bring-up.
+- [x] Program a stable address at bring-up (2026-09-15): the Wi-Fi MAC plus
+      one through vendor command 0xFC1A, before bluetoothd; the identity
+      record's `bluetooth_mac` is not needed for this.
 - [x] HID-over-GATT peripheral (2026-09-14, `clients/couch-bt-hid`): GATT HID
       service via bluetoothd GattManager1, keyboard + consumer-control report
       map, advertising through bluetoothd's `LEAdvertisingManager1` where the
@@ -227,6 +324,23 @@ Userland (this repo):
 - [x] Power validation (2026-09-14, `.144.dev`, unplugged, screen off):
       ~110 mA idle with or without Bluetooth on; Wi-Fi throughput unchanged
       with Bluetooth on and idle, halved only during a continuous LE scan.
+- [x] Pairing mode (2026-09-15): `pair`/`pair-stop`/`forget` words, keyboard
+      words, the 120 s pairable + discoverable window, non-discoverable
+      advertising outside it, `/tmp/couch-bt-pair.state`, the Settings modal,
+      the web section and `POST /api/remote/bluetooth`
+      ([details](#pairing-mode)). Verified on the dev remote (.155.dev/.156.dev,
+      backported core): window opens with Discoverable and Pairable on and the
+      advert re-registered discoverable, `pair-stop` → `failed cancelled`,
+      timeout → `failed timeout`, both edges back to non-discoverable, `enter`
+      with no subscriber logged as a dropped keyboard report, `forget` empties
+      the device list, Wi-Fi unaffected. bluetoothd re-applies its main.conf
+      `Pairable` default when the adapter finishes starting, after the daemon's
+      first Set, so the daemon re-asserts it on every poll (and main.conf now
+      says `Pairable = false`). First TV attempt (LG OLED77G5) went over
+      classic Bluetooth and failed, see "LE only" above; the LE-only
+      controller is the fix (.157.dev). **Validated end to end with the LG on
+      .157.dev**: window → connect → bond → TV subscribes → DONE, OK sends
+      Enter, advert hidden afterwards, TV off/on reconnects, volume keys work.
 - [ ] Bond store keyed per activity; disconnect-and-redirect on switch.
 - [ ] Re-advertise immediately on disconnect. Done where bluetoothd exports
       `LEAdvertisingManager1` (the backported core, see
@@ -240,6 +354,8 @@ Userland (this repo):
 
 - Does the CONSYS BT function power on cleanly alongside Wi-Fi under the
   built-in WMT driver, or does it need the sleep/wake handling stock uses?
-- Which HCI vendor command programs the address on CONSYS_6580?
+- ~~Which HCI vendor command programs the address on CONSYS_6580?~~ OGF 0x3f
+  OCF 0x001a (0xFC1A), six bytes little-endian, effective after a down/up of
+  hci0 (2026-09-15).
 - Does each target (LG, Apple TV, Android TV, Fire TV) accept a BLE HID
   keyboard with legacy pairing? Record results here as they are tested.

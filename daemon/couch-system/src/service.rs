@@ -271,6 +271,10 @@ fn handle_updates(
         Request::BluetoothAuto => {
             protocol::write(&Reply::Done(couch_system::bluetooth::auto()), &mut stream)
         }
+        Request::BluetoothPair { action } => protocol::write(
+            &Reply::Done(couch_system::bluetooth::pair(action)),
+            &mut stream,
+        ),
         Request::Ssh { enabled } => {
             protocol::write(&Reply::Done(crate::access::ssh(enabled)), &mut stream)
         }
