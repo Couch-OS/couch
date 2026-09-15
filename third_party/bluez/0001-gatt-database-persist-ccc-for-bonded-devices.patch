@@ -1,0 +1,488 @@
+From: Bryan Hoban <bryan.hoban@gmail.com>
+Subject: [PATCH] gatt-database: Persist CCC values of bonded devices
+
+A bonded GATT client may rely on the server to remember its Client
+Characteristic Configuration across connections (Core Specification
+Vol 3, Part G, 3.3.3.3: "The Client Characteristic Configuration
+descriptor value shall be persistent across connections for bonded
+devices"). bluetoothd keeps a bonded device's CCC states in memory across
+disconnects, but only the Service Changed CCC is written to storage
+(device_store_svc_chng_ccc). gatt_database_free() says so:
+
+  /* TODO: Persistently store CCC states before freeing them */
+
+(src/gatt-database.c, BlueZ 5.79; still present on master). After
+bluetoothd restarts, send_notification_to_device() finds no CCC state for
+any other handle and silently drops every notification. An LG webOS TV
+bonded to a HID-over-GATT peripheral (an external GATT application)
+reconnects after the peripheral's bluetoothd restarts, re-reads services
+on Service Changed, and never writes the report CCCs again, so no key
+reaches it until it pairs anew.
+
+Store the CCC values of bonded devices in the device's info file:
+
+  [GattCCC]
+  LE_0x012b=0x0001 00002a4d-0000-1000-8000-00805f9b34fb
+
+key = bearer (LE or BR/EDR) and CCC handle, value = CCC value and the UUID
+of the characteristic the CCC belongs to.
+
+- Stored on every successful CCC write of a bonded device (the one
+  gatt_ccc_write_cb path covers core and external-application CCCs), when
+  a bonded device's ATT link goes (att_disconnected), and when a device
+  becomes bonded (device_set_bonded), for writes that arrived before the
+  keys were distributed. Only states present in memory are written; a
+  value of 0 removes the entry. Entries for handles without an in-memory
+  state are left alone, so an application unregistering (which removes
+  the states of its services) never erases them.
+- Restored for every bonded device at startup, for the services
+  registered by then (next to the Service Changed CCC), and whenever a
+  service is added, for the handles it covers: an external application
+  that registers after startup, or registers again, gets the
+  subscriptions back. restore_ccc() now finds or creates the device state
+  and the CCC state instead of always creating new ones.
+- Validation: an entry is restored only while the attribute at its handle
+  is a CCC descriptor of a characteristic with the stored UUID. An entry
+  whose handle lies in a registered service but fails the check (or does
+  not parse) is removed from storage; one whose handle no service covers
+  yet is kept. This does not tell apart two characteristics with the same
+  UUID that swapped places; a Service Changed indication is sent for
+  every added service regardless.
+- A restored value has not been through the CCC write callback, so an
+  identical write from the client after a restore still runs it once (an
+  external application gets its StartNotify). The application is not
+  called at restore time; it has to emit value changes whether or not it
+  saw StartNotify, as bluetoothd forwards them to every subscribed device.
+- Removing a device deletes its storage directory, entries included.
+
+Service Changed keeps its own [ServiceChanged] entry.
+---
+diff --git a/src/device.c b/src/device.c
+index 2b3d19f..fc35ab6 100644
+--- a/src/device.c
++++ b/src/device.c
+@@ -6208,6 +6208,10 @@ void device_set_bonded(struct btd_device *device, uint8_t bdaddr_type)
+ 
+ 	state->bonded = true;
+ 
++	/* Subscriptions written before the keys were distributed */
++	btd_gatt_database_store_ccc(btd_adapter_get_database(device->adapter),
++							device, bdaddr_type);
++
+ 	btd_device_set_temporary(device, false);
+ 
+ 	/* If the other bearer state was already true we don't need to
+diff --git a/src/gatt-database.c b/src/gatt-database.c
+index a86e528..98ded4d 100644
+--- a/src/gatt-database.c
++++ b/src/gatt-database.c
+@@ -194,6 +194,8 @@ typedef void (*btd_gatt_database_destroy_t) (void *data);
+ struct ccc_state {
+ 	uint16_t handle;
+ 	uint16_t value;
++	/* Loaded from storage: no CCC callback has seen this value yet */
++	bool restored;
+ };
+ 
+ struct ccc_cb_data {
+@@ -305,6 +307,157 @@ static void device_state_free(void *data)
+ 	free(state);
+ }
+ 
++/*
++ * CCC values of bonded devices are kept in the device's info file, so a
++ * bonded client that relies on the server remembering its subscriptions (as
++ * Core Spec Vol 3, Part G, 3.3.3.3 requires) still gets notifications after
++ * bluetoothd restarts:
++ *
++ * [GattCCC]
++ * LE_0x0039=0x0001 00002a4d-0000-1000-8000-00805f9b34fb
++ *
++ * The key is the bearer (LE or BR/EDR) and the CCC handle; the value is the
++ * CCC value and the UUID of the characteristic the CCC belongs to. An entry
++ * is only restored while the attribute at that handle is still the CCC of a
++ * characteristic with that UUID. An entry whose handle lies in a registered
++ * service but fails that check is dropped from storage; one whose handle no
++ * service covers yet (an application that has not registered) is kept until
++ * a service does. Service Changed keeps its own [ServiceChanged] entry.
++ */
++#define CCC_GROUP "GattCCC"
++
++static void ccc_key(char *key, size_t len, uint8_t bdaddr_type,
++							uint16_t handle)
++{
++	snprintf(key, len, "%s_0x%04x",
++			bdaddr_type == BDADDR_BREDR ? "BR/EDR" : "LE", handle);
++}
++
++static bool ccc_get_char_uuid(struct gatt_db_attribute *ccc, bt_uuid_t *uuid)
++{
++	struct gatt_db_attribute *value;
++	bt_uuid_t ccc_uuid;
++
++	bt_uuid16_create(&ccc_uuid, GATT_CLIENT_CHARAC_CFG_UUID);
++
++	if (!ccc || bt_uuid_cmp(gatt_db_attribute_get_type(ccc), &ccc_uuid))
++		return false;
++
++	value = gatt_db_attribute_get_value(ccc);
++	if (!value || gatt_db_attribute_get_ccc(value) != ccc)
++		return false;
++
++	return gatt_db_attribute_get_char_data(value, NULL, NULL, NULL, NULL,
++									uuid);
++}
++
++static GKeyFile *load_device_info(struct btd_gatt_database *database,
++					const bdaddr_t *bdaddr, char *filename)
++{
++	GKeyFile *key_file;
++	char addr[18];
++
++	ba2str(bdaddr, addr);
++	create_filename(filename, PATH_MAX, "/%s/%s/info",
++				btd_adapter_get_storage_dir(database->adapter),
++				addr);
++
++	key_file = g_key_file_new();
++	g_key_file_load_from_file(key_file, filename, 0, NULL);
++
++	return key_file;
++}
++
++static void save_device_info(GKeyFile *key_file, const char *filename)
++{
++	GError *gerr = NULL;
++	gsize length = 0;
++	char *str;
++
++	create_file(filename, 0600);
++
++	str = g_key_file_to_data(key_file, &length, NULL);
++	if (!g_file_set_contents(filename, str, length, &gerr)) {
++		error("Unable set contents for %s: (%s)", filename,
++								gerr->message);
++		g_error_free(gerr);
++	}
++	g_free(str);
++}
++
++struct ccc_store {
++	struct btd_gatt_database *database;
++	GKeyFile *key_file;
++	uint8_t bdaddr_type;
++	bool changed;
++};
++
++static void store_ccc_entry(void *data, void *user_data)
++{
++	struct ccc_state *ccc = data;
++	struct ccc_store *store = user_data;
++	struct gatt_db_attribute *attrib;
++	char key[20], str[8 + MAX_LEN_UUID_STR], uuid_str[MAX_LEN_UUID_STR];
++	bt_uuid_t uuid;
++	char *old;
++
++	attrib = gatt_db_get_attribute(store->database->db, ccc->handle);
++	if (!attrib || attrib == store->database->svc_chngd_ccc)
++		return;
++
++	ccc_key(key, sizeof(key), store->bdaddr_type, ccc->handle);
++
++	if (!ccc->value || !ccc_get_char_uuid(attrib, &uuid)) {
++		if (g_key_file_remove_key(store->key_file, CCC_GROUP, key,
++									NULL))
++			store->changed = true;
++		return;
++	}
++
++	bt_uuid_to_string(&uuid, uuid_str, sizeof(uuid_str));
++	snprintf(str, sizeof(str), "0x%04x %s", ccc->value, uuid_str);
++
++	old = g_key_file_get_string(store->key_file, CCC_GROUP, key, NULL);
++	if (!old || strcmp(old, str)) {
++		g_key_file_set_string(store->key_file, CCC_GROUP, key, str);
++		store->changed = true;
++	}
++	g_free(old);
++}
++
++/*
++ * Write the device's CCC states to storage if it is bonded. Entries for
++ * handles the device has no state for are left alone: an application's
++ * services going away (and taking the in-memory states with them) must not
++ * erase the subscriptions they are restored from when they come back.
++ */
++static void store_state_ccc(struct device_state *state)
++{
++	struct btd_device *device;
++	struct ccc_store store;
++	char filename[PATH_MAX];
++
++	if (!state || queue_isempty(state->ccc_states))
++		return;
++
++	device = btd_adapter_find_device(state->db->adapter, &state->bdaddr,
++							state->bdaddr_type);
++	if (!device || !device_is_bonded(device, state->bdaddr_type))
++		return;
++
++	memset(&store, 0, sizeof(store));
++	store.database = state->db;
++	store.bdaddr_type = state->bdaddr_type;
++	store.key_file = load_device_info(state->db, &state->bdaddr, filename);
++
++	queue_foreach(state->ccc_states, store_ccc_entry, &store);
++
++	if (store.changed)
++		save_device_info(store.key_file, filename);
++
++	g_key_file_free(store.key_file);
++}
++
+ static void clear_ccc_state(void *data, void *user_data)
+ {
+ 	struct ccc_state *ccc = data;
+@@ -349,6 +502,8 @@ static void att_disconnected(int err, void *user_data)
+ 			device_store_svc_chng_ccc(device, state->bdaddr_type,
+ 								ccc->value);
+ 
++		store_state_ccc(state);
++
+ 		return;
+ 	}
+ 
+@@ -627,7 +782,7 @@ static void gatt_database_free(void *data)
+ 		g_io_channel_unref(database->bredr_io);
+ 	}
+ 
+-	/* TODO: Persistently store CCC states before freeing them */
++	/* CCC states of bonded devices are stored as they change */
+ 	gatt_db_unregister(database->db, database->db_id);
+ 
+ 	queue_destroy(database->records, gatt_record_free);
+@@ -1055,8 +1210,10 @@ static void gatt_ccc_write_cb(struct gatt_db_attribute *attrib,
+ 	else
+ 		val = get_le16(value);
+ 
+-	/* If value is identical, then just succeed */
+-	if (val == ccc->value)
++	/* If value is identical, then just succeed, unless it was restored
++	 * from storage and the callback below has not seen it yet.
++	 */
++	if (val == ccc->value && !ccc->restored)
+ 		goto done;
+ 
+ 	ccc_cb = queue_find(database->ccc_callbacks, ccc_cb_match_handle,
+@@ -1076,8 +1233,11 @@ static void gatt_ccc_write_cb(struct gatt_db_attribute *attrib,
+ 			pending_op_free(op);
+ 	}
+ 
+-	if (!ecode)
++	if (!ecode) {
+ 		ccc->value = val;
++		ccc->restored = false;
++		store_state_ccc(find_device_state_by_att(database, att));
++	}
+ 
+ done:
+ 	gatt_db_attribute_write_result(attrib, id, ecode);
+@@ -1560,13 +1720,29 @@ static void database_store(struct btd_gatt_database *database)
+ 	btd_settings_gatt_db_store(database->db, filename);
+ }
+ 
++struct ccc_restore {
++	struct btd_gatt_database *database;
++	uint16_t start;
++	uint16_t end;
++};
++
++static void restore_device_ccc(struct btd_device *device, void *user_data);
++
+ static void gatt_db_service_added(struct gatt_db_attribute *attrib,
+ 								void *user_data)
+ {
+ 	struct btd_gatt_database *database = user_data;
++	struct ccc_restore restore;
+ 
+ 	DBG("GATT Service added to local database");
+ 
++	/* Subscriptions bonded devices had to this service's CCCs */
++	restore.database = database;
++	if (gatt_db_attribute_get_service_handles(attrib, &restore.start,
++								&restore.end))
++		btd_adapter_for_each_device(database->adapter,
++						restore_device_ccc, &restore);
++
+ 	database_add_record(database, attrib);
+ 
+ 	send_service_changed(database, attrib);
+@@ -4150,40 +4326,149 @@ void btd_gatt_database_att_disconnected(struct btd_gatt_database *database,
+ }
+ 
+ static void restore_ccc(struct btd_gatt_database *database,
+-			const bdaddr_t *addr, uint8_t addr_type, uint16_t value)
++			const bdaddr_t *addr, uint8_t addr_type,
++			uint16_t handle, uint16_t value)
+ {
+ 	struct device_state *dev_state;
+ 	struct ccc_state *ccc;
+ 
+-	dev_state = device_state_create(database, addr, addr_type);
+-	queue_push_tail(database->device_states, dev_state);
++	dev_state = find_device_state(database, addr, addr_type);
++	if (!dev_state) {
++		dev_state = device_state_create(database, addr, addr_type);
++		queue_push_tail(database->device_states, dev_state);
++	}
++
++	ccc = find_ccc_state(dev_state, handle);
++	if (!ccc) {
++		ccc = new0(struct ccc_state, 1);
++		ccc->handle = handle;
++		queue_push_tail(dev_state->ccc_states, ccc);
++	}
+ 
+-	ccc = new0(struct ccc_state, 1);
+-	ccc->handle = gatt_db_attribute_get_handle(database->svc_chngd_ccc);
+ 	ccc->value = value;
+-	queue_push_tail(dev_state->ccc_states, ccc);
++	ccc->restored = true;
++}
++
++/*
++ * Restore the stored CCC values of a bonded device whose handles lie in
++ * [start, end], checking each against the attribute now at that handle.
++ */
++static void restore_device_ccc(struct btd_device *device, void *user_data)
++{
++	struct ccc_restore *restore = user_data;
++	struct btd_gatt_database *database = restore->database;
++	struct gatt_db_attribute *attrib;
++	char filename[PATH_MAX], uuid_str[MAX_LEN_UUID_STR];
++	GKeyFile *key_file;
++	bool changed = false;
++	char **keys, *str, *end;
++	bt_uuid_t uuid, char_uuid;
++	uint8_t bdaddr_type;
++	uint16_t value;
++	unsigned long handle;
++	int i;
++
++	if (!device_is_bonded(device, BDADDR_BREDR) &&
++			!device_is_bonded(device,
++					device_get_le_address_type(device)))
++		return;
++
++	key_file = load_device_info(database, device_get_address(device),
++								filename);
++	keys = g_key_file_get_keys(key_file, CCC_GROUP, NULL, NULL);
++
++	for (i = 0; keys && keys[i]; i++) {
++		if (g_str_has_prefix(keys[i], "LE_")) {
++			bdaddr_type = device_get_le_address_type(device);
++			handle = strtoul(keys[i] + 3, &end, 16);
++		} else if (g_str_has_prefix(keys[i], "BR/EDR_")) {
++			bdaddr_type = BDADDR_BREDR;
++			handle = strtoul(keys[i] + 7, &end, 16);
++		} else
++			continue;
++
++		if (*end || !handle || handle > UINT16_MAX)
++			continue;
++
++		if (handle < restore->start || handle > restore->end ||
++				!device_is_bonded(device, bdaddr_type))
++			continue;
++
++		/* No service covers the handle yet: keep it for later */
++		if (!gatt_db_get_service(database->db, handle))
++			continue;
++
++		attrib = gatt_db_get_attribute(database->db, handle);
++		str = g_key_file_get_string(key_file, CCC_GROUP, keys[i], NULL);
++
++		if (!str || sscanf(str, "0x%4hx %36s", &value, uuid_str) != 2 ||
++				bt_string_to_uuid(&uuid, uuid_str) || !value ||
++				attrib == database->svc_chngd_ccc ||
++				!ccc_get_char_uuid(attrib, &char_uuid) ||
++				bt_uuid_cmp(&uuid, &char_uuid)) {
++			info("%s: dropping stored CCC %s: no matching CCC",
++					device_get_path(device), keys[i]);
++			g_key_file_remove_key(key_file, CCC_GROUP, keys[i],
++									NULL);
++			changed = true;
++			g_free(str);
++			continue;
++		}
++
++		restore_ccc(database, device_get_address(device), bdaddr_type,
++							handle, value);
++		DBG("%s %s=0x%04x", device_get_path(device), keys[i], value);
++		g_free(str);
++	}
++
++	if (changed)
++		save_device_info(key_file, filename);
++
++	g_strfreev(keys);
++	g_key_file_free(key_file);
+ }
+ 
+ static void restore_state(struct btd_device *device, void *data)
+ {
+ 	struct btd_gatt_database *database = data;
+-	uint16_t ccc_le, ccc_bredr;
++	struct ccc_restore restore;
++	uint16_t ccc_le, ccc_bredr, handle;
++
++	handle = gatt_db_attribute_get_handle(database->svc_chngd_ccc);
+ 
+ 	device_load_svc_chng_ccc(device, &ccc_le, &ccc_bredr);
+ 
+ 	if (ccc_le) {
+ 		restore_ccc(database, device_get_address(device),
+-				device_get_le_address_type(device), ccc_le);
++				device_get_le_address_type(device), handle,
++				ccc_le);
+ 
+ 		DBG("%s LE", device_get_path(device));
+ 	}
+ 
+ 	if (ccc_bredr) {
+ 		restore_ccc(database, device_get_address(device),
+-						BDADDR_BREDR, ccc_bredr);
++					BDADDR_BREDR, handle, ccc_bredr);
+ 
+ 		DBG("%s BR/EDR", device_get_path(device));
+ 	}
++
++	/* Every other CCC, for the services registered so far */
++	restore.database = database;
++	restore.start = 0x0001;
++	restore.end = 0xffff;
++	restore_device_ccc(device, &restore);
++}
++
++void btd_gatt_database_store_ccc(struct btd_gatt_database *database,
++				struct btd_device *device, uint8_t bdaddr_type)
++{
++	if (!database)
++		return;
++
++	store_state_ccc(find_device_state(database,
++					device_get_address(device),
++					bdaddr_type));
+ }
+ 
+ void btd_gatt_database_restore_svc_chng_ccc(struct btd_gatt_database *database)
+diff --git a/src/gatt-database.h b/src/gatt-database.h
+index 30ae68e..9bf633d 100644
+--- a/src/gatt-database.h
++++ b/src/gatt-database.h
+@@ -20,3 +20,5 @@ void btd_gatt_database_server_connected(struct btd_gatt_database *database,
+ 						struct bt_gatt_server *server);
+ 
+ void btd_gatt_database_restore_svc_chng_ccc(struct btd_gatt_database *database);
++void btd_gatt_database_store_ccc(struct btd_gatt_database *database,
++				struct btd_device *device, uint8_t bdaddr_type);
