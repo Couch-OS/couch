@@ -114,6 +114,11 @@ socket and reads its state file.
   adapter goes back to `Pairable=false`, `Discoverable=false` and the
   advertisement is re-registered non-discoverable (flags `0x04`), so a bonded
   TV still reconnects but a phone's Bluetooth menu no longer lists the remote.
+  On the managed path the 4.4 core composes the flags itself: an
+  `hcidump` of a window on the dev remote shows `LE Set Advertising Data` with
+  `02 01 02` (LE general discoverable) while the window is open and `02 01 04`
+  (BR/EDR not supported only) before and after; the raw path writes `0x06`
+  and `0x04` for the same two states.
   The same non-discoverable advertisement is what the daemon starts with.
 - **Peers** come from polling `org.freedesktop.DBus.ObjectManager
   .GetManagedObjects` on `org.bluez` (every 500 ms in the window, every 3 s
