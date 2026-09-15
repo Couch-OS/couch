@@ -116,10 +116,37 @@ neither, so only a bonded TV reconnects. The controller runs LE-only
 (bluetoothd's `ControllerMode = le`): the chip can do classic Bluetooth too,
 but the HID service only exists over LE, and a TV that found the remote over
 classic paired and then found nothing to use. The details are in
-[bluetooth.md](bluetooth.md#pairing-mode). The controller keeps a synthetic
-address (`00:00:46:65:80:02`, set with the vendor command at bring-up) so a
-reflashed remote looks like the same device to a TV that paired the previous
-one.
+[bluetooth.md](bluetooth.md#pairing-mode).
+
+The controller's address is the remote's Wi-Fi MAC plus one (`02:28:7d:8f:e1:6e`
+→ `02:28:7d:8f:e1:6f`), programmed at every bring-up with MediaTek's
+set-address command before bluetoothd starts. The firmware's own default is
+`00:00:46:65:80:01` on every remote and every boot, and a TV keeps its bonds
+and its grudges per address: two remotes would look like one, and a bond
+would not survive a reboot. With the derived address a paired TV reconnects
+after the remote reboots, a reflashed remote looks like the same device to
+its TV, and two remotes in one house are two devices.
+
+## Troubleshooting
+
+- **The TV lists nothing, or "unable to connect", while the card says
+  DISCOVERABLE.** LG's scanner wedges after a failed round: the remote is on
+  the air but the TV keeps stale state for it and will not send a connect
+  request. Delete the remote from the TV's Bluetooth list if it is there,
+  then power the TV off at the wall (standby is not enough) and try again.
+- **The TV lists "Bluetooth Keyboard" instead of "Couch Remote".** Same
+  device: the name rides in the scan response and the TV missed it, so it
+  shows the appearance (HID keyboard) instead. Choose it.
+- **PAIRED, then nothing.** The TV bonded but has not subscribed to the
+  remote's reports; most TVs do that on their own within a second or two,
+  and some (LG) first ask you to press a key: press OK. If the card never
+  reaches DONE, `/tmp/couch-bt-hid.log` on the remote says whether a
+  `StartNotify` arrived and which reports were dropped for want of one.
+- **It paired once and never reconnects.** Turn Bluetooth off and on
+  (Settings › Bluetooth); the row should say `ON · <TV name>` within a few
+  seconds of the TV being on. If the TV was paired to the remote before the
+  address policy above (the `00:00:46:65:80:xx` addresses), delete it on the
+  TV and pair again once.
 
 A HID peripheral holds one link at a time, and pairing mode keeps one bond:
 the TV paired last. Per-activity bonds (disconnect and redirect on activity

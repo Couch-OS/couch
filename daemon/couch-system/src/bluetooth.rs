@@ -33,6 +33,11 @@ const BLUETOOTHD_CONF: &str = "/mnt/alpine/etc/bluetooth/main.conf";
 /// by default: bluetoothd applies this after the adapter starts, later than
 /// the HID daemon's own first Set, and the daemon opens pairing windows.
 const BLUETOOTHD_CONF_TEXT: &str = "[General]\nControllerMode = le\nPairable = false\n";
+/// The Wi-Fi interface's MAC as the kernel reports it, from the outer root.
+/// The installer derives it from the chip id, so it is stable per remote and
+/// different between remotes, which is exactly what the controller address
+/// needs to be and what the MediaTek firmware does not give it.
+const WIFI_MAC: &str = "/sys/class/net/wlan0/address";
 
 /// Where the Bluetooth binaries are, as an Alpine-relative directory: a
 /// runtime slot copy wins over the base install, and a boot image's `/extra`
@@ -100,6 +105,117 @@ pub fn pair(action: PairAction) -> Result<(), String> {
     }
     couch_bt_hid::send_word(action.word())
         .map_err(|e| format!("The Bluetooth service is not answering: {e}"))
+}
+
+/// `aa:bb:cc:dd:ee:ff` to bytes, in the order written.
+fn parse_mac(text: &str) -> Option<[u8; 6]> {
+    let mut out = [0u8; 6];
+    let mut n = 0;
+    for part in text.trim().split(':') {
+        if n == 6 || part.len() != 2 {
+            return None;
+        }
+        out[n] = u8::from_str_radix(part, 16).ok()?;
+        n += 1;
+    }
+    (n == 6).then_some(out)
+}
+
+fn format_mac(mac: &[u8; 6]) -> String {
+    mac.iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// The controller's public address, from the Wi-Fi MAC: the same bytes with
+/// the last one plus one (wrapping), so it never equals the Wi-Fi address
+/// and neighbouring remotes never collide with each other.
+///
+/// Why any of this: the MT6580 comes up as 00:00:46:65:80:01 on every remote
+/// and after every boot. A TV keeps per-address state, so two remotes look
+/// like one to it, and one bad pairing round leaves the TV listing the remote
+/// but refusing to connect (an LG did, 2026-09-15) with no way to clear it
+/// but forgetting the address. A stable, unique address makes bonds survive
+/// reboots and keeps remotes apart.
+pub fn derive_address(wifi: [u8; 6]) -> [u8; 6] {
+    let mut address = wifi;
+    address[5] = address[5].wrapping_add(1);
+    address
+}
+
+fn wanted_address() -> Option<[u8; 6]> {
+    fs::read_to_string(WIFI_MAC)
+        .ok()
+        .and_then(|text| parse_mac(&text))
+        .filter(|mac| *mac != [0; 6])
+        .map(derive_address)
+}
+
+/// The `BD Address:` line of `hciconfig hci0`.
+fn parse_reported_address(text: &str) -> Option<[u8; 6]> {
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("BD Address:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(parse_mac)
+}
+
+fn reported_address() -> Option<[u8; 6]> {
+    let output = Command::new("/bin/busybox")
+        .args(["chroot", "/mnt/alpine", "/usr/bin/hciconfig", "hci0"])
+        .output()
+        .ok()?;
+    parse_reported_address(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Program the controller's public address with MediaTek's vendor command
+/// (OGF 0x3f, OCF 0x001a; the address goes out little-endian), then cycle
+/// the device so the core reads it back. Sent with hci0 up and BEFORE
+/// bluetoothd starts: bluetoothd binds its ATT server to the address it saw
+/// at init, and after a live change every central got no MTU response and
+/// hung up. The new address survives down/up and the toggle's func off/on
+/// but not a reboot, which is why this runs on every bring-up. A random
+/// static address through `btmgmt static-addr` is not an option: it
+/// advertises but bluetoothd never answers ATT on it (checked twice).
+fn set_controller_address() -> Result<(), String> {
+    let Some(wanted) = wanted_address() else {
+        println!("couch-system: bluetooth: no Wi-Fi MAC to derive an address from; keeping the controller's own");
+        return Ok(());
+    };
+    if crate::ui_settings::process_running("bluetoothd") {
+        kill_comm(&["bluetoothd"])?;
+        wait_for(
+            || !crate::ui_settings::process_running("bluetoothd"),
+            20,
+            Duration::from_millis(100),
+        );
+    }
+    let bytes = wanted
+        .iter()
+        .rev()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Constants and hex digits only: nothing from a request reaches this line.
+    alpine_sh(&format!(
+        "hciconfig hci0 up && hcitool -i hci0 cmd 0x3f 0x001a {bytes} >/dev/null && hciconfig hci0 down && hciconfig hci0 up"
+    ))
+    .map_err(|_| "the set-address commands failed".to_string())?;
+    match reported_address() {
+        Some(now) if now == wanted => {
+            println!(
+                "couch-system: bluetooth: controller address {} (from the Wi-Fi MAC)",
+                format_mac(&wanted)
+            );
+            Ok(())
+        }
+        now => Err(format!(
+            "controller reports {} after setting {}",
+            now.map(|a| format_mac(&a))
+                .unwrap_or_else(|| "no address".into()),
+            format_mac(&wanted)
+        )),
+    }
 }
 
 fn publish(state: &str) {
@@ -334,6 +450,14 @@ fn up() -> Result<(), String> {
             let _ = fs::write(format!("/sys/kernel/debug/bluetooth/hci0/{name}"), value);
         }
     }
+    // The address goes in now, with hci0 registered and nothing on it yet.
+    // Not fatal: a remote that keeps the firmware's default still works, it
+    // just looks like every other remote to a TV.
+    if let Err(error) = set_controller_address() {
+        eprintln!(
+            "couch-system: bluetooth: {error}; continuing with the controller's default address"
+        );
+    }
     // dbus, then bluetoothd, then the HID daemon. The HID daemon waits for
     // bluetoothd's adapter itself, so the three start back to back.
     alpine_sh(
@@ -407,5 +531,50 @@ pub fn auto() -> Result<(), String> {
         set(true)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_controller_address_is_the_wifi_mac_plus_one_and_never_equal_to_it() {
+        let wifi = parse_mac("02:28:7d:8f:e1:6e\n").unwrap();
+        let bt = derive_address(wifi);
+        assert_eq!(format_mac(&bt), "02:28:7d:8f:e1:6f");
+        assert_ne!(bt, wifi);
+        // Wraps rather than carries: only the last byte ever differs.
+        assert_eq!(
+            derive_address([0x02, 0x28, 0x7d, 0x8f, 0xe1, 0xff]),
+            [0x02, 0x28, 0x7d, 0x8f, 0xe1, 0x00]
+        );
+        for mac in [[0u8; 6], [0xff; 6], wifi] {
+            assert_ne!(derive_address(mac), mac);
+        }
+    }
+
+    #[test]
+    fn mac_text_is_parsed_strictly_and_hciconfig_output_is_read() {
+        assert_eq!(
+            parse_mac("00:00:46:65:80:01"),
+            Some([0, 0, 0x46, 0x65, 0x80, 1])
+        );
+        for bad in [
+            "",
+            "02:28:7d:8f:e1",
+            "02:28:7d:8f:e1:6e:00",
+            "02-28-7d-8f-e1-6e",
+            "0g:28:7d:8f:e1:6e",
+            "2:28:7d:8f:e1:6e",
+        ] {
+            assert_eq!(parse_mac(bad), None, "{bad:?}");
+        }
+        let hciconfig = "hci0:\tType: Primary  Bus: Virtual\n\tBD Address: 02:28:7D:8F:E1:6F  ACL MTU: 1021:7  SCO MTU: 184:1\n\tUP RUNNING\n";
+        assert_eq!(
+            parse_reported_address(hciconfig),
+            Some([0x02, 0x28, 0x7d, 0x8f, 0xe1, 0x6f])
+        );
+        assert_eq!(parse_reported_address("hci0:\tType: Primary\n"), None);
     }
 }

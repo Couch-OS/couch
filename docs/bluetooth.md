@@ -67,8 +67,9 @@ driver only offers a character device. Two ways to close the gap:
   or the older management commands.
 - LE Secure Connections landed after 3.18. Pairing falls back to legacy LE
   pairing, which TVs and streaming boxes generally accept. Verify per target.
-- The controller comes up without a programmed address unless we write the
-  recorded `bluetooth_mac` with a vendor command after power-on.
+- The controller comes up as `00:00:46:65:80:01` on every remote unless a
+  vendor command programs an address after power-on (it does: see
+  [pairing mode](#pairing-mode), "address").
 - Whether a newer Bluetooth core could be backported onto this 3.18 base, and
   what it would cost, is surveyed in
   [kernel backports research](kernel-backports-research.md) (`Add Advertising`
@@ -106,6 +107,22 @@ socket and reads its state file.
   inquiry/page scan on; the daemon no longer touches it and, LE-only, there
   is no classic side to find. `btmgmt info` shows
   `current settings: powered le secure-conn` (no `br/edr`).
+- **Address.** `couch_system::bluetooth` programs the controller's public
+  address at every bring-up: the Wi-Fi MAC of `wlan0` with the last byte plus
+  one (`derive_address`, unit-tested), sent with MediaTek's vendor command
+  (`hcitool cmd 0x3f 0x001a <six bytes, little-endian>`, opcode 0xFC1A) while
+  hci0 is up, then `hciconfig hci0 down; up`, verified against `hciconfig`.
+  Before bluetoothd starts, because bluetoothd binds its ATT server to the
+  address it saw at init: after a live change every central (an LG and a Mac)
+  got no ATT MTU response and hung up. The address survives down/up and the
+  toggle's func off/off but not a reboot, hence every bring-up. Why: the
+  firmware default is the same on every remote and every boot, and the LG
+  keeps per-address state (after one bad round it listed the remote and said
+  "unable to connect" without ever sending a CONNECT_REQ); a stable unique
+  address makes bonds survive reboots and keeps two remotes apart. Not
+  `btmgmt static-addr` (random static): it advertises, but bluetoothd never
+  answers ATT on it, verified twice. No Wi-Fi MAC: the default is kept and
+  logged.
 - **Socket words** (`/tmp/couch-bt-hid.sock`, mode 0600): `pair` removes every
   `Device1` under `hci0` (`Adapter1.RemoveDevice`, bonds included), sets
   `Pairable` on the adapter, re-registers the advertisement
@@ -284,7 +301,9 @@ Userland (this repo):
 - [x] Bridge daemon between `/dev/vhci` and `/dev/stpbt` (`clients/couch-bt`).
 - [x] Spike acceptance (2026-09-14): `hciconfig hci0 up`, `hcitool lescan` sees
       advertisers. (Alpine bluez has no `btmgmt`; used `bluetoothctl`/`hciconfig`.)
-- [ ] Program `bluetooth_mac` from the identity record at bring-up.
+- [x] Program a stable address at bring-up (2026-09-15): the Wi-Fi MAC plus
+      one through vendor command 0xFC1A, before bluetoothd; the identity
+      record's `bluetooth_mac` is not needed for this.
 - [x] HID-over-GATT peripheral (2026-09-14, `clients/couch-bt-hid`): GATT HID
       service via bluetoothd GattManager1, keyboard + consumer-control report
       map, advertising through bluetoothd's `LEAdvertisingManager1` where the
@@ -316,7 +335,9 @@ Userland (this repo):
       first Set, so the daemon re-asserts it on every poll (and main.conf now
       says `Pairable = false`). First TV attempt (LG OLED77G5) went over
       classic Bluetooth and failed, see "LE only" above; the LE-only
-      controller is the fix (.157.dev). Awaiting the first LE pairing.
+      controller is the fix (.157.dev). **Validated end to end with the LG on
+      .157.dev**: window → connect → bond → TV subscribes → DONE, OK sends
+      Enter, advert hidden afterwards, TV off/on reconnects, volume keys work.
 - [ ] Bond store keyed per activity; disconnect-and-redirect on switch.
 - [ ] Re-advertise immediately on disconnect. Done where bluetoothd exports
       `LEAdvertisingManager1` (the backported core, see
@@ -330,6 +351,8 @@ Userland (this repo):
 
 - Does the CONSYS BT function power on cleanly alongside Wi-Fi under the
   built-in WMT driver, or does it need the sleep/wake handling stock uses?
-- Which HCI vendor command programs the address on CONSYS_6580?
+- ~~Which HCI vendor command programs the address on CONSYS_6580?~~ OGF 0x3f
+  OCF 0x001a (0xFC1A), six bytes little-endian, effective after a down/up of
+  hci0 (2026-09-15).
 - Does each target (LG, Apple TV, Android TV, Fire TV) accept a BLE HID
   keyboard with legacy pairing? Record results here as they are tested.
