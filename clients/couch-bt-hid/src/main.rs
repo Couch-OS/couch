@@ -1212,6 +1212,13 @@ async fn main() -> zbus::Result<()> {
     println!("couch-bt-hid: keys on {SOCKET_PATH}");
     let mut buf = [0u8; 64];
     let mut readvertise = tokio::time::interval(Duration::from_secs(15));
+    // Delay, not tokio's default Burst. The tick is only polled while no link
+    // is up (`raw_wanted` below), so through a three-minute link it misses a
+    // dozen ticks, and Burst fired them all back to back when the link went:
+    // on .162.dev hcidump showed eleven raw advertising sequences after one
+    // `activate`, the last of them re-enabling advertising after the next TV
+    // had connected. Delay fires one at most, then every 15 s from there.
+    readvertise.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The device poll: quick while a window is open, so the modal follows
     // the TV step by step; a slower tick otherwise, which is also how soon
     // after a disconnect the raw advertisement comes back.
