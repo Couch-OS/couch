@@ -83,6 +83,8 @@ enum Overlay {
     Player,
     Room,
     WifiSetup,
+    /// Bluetooth pairing mode, over the settings menu; owns OK and Back.
+    BtPair,
     Settings,
     Keyboard,
     Chooser,
@@ -104,6 +106,7 @@ fn overlay(app: &App) -> Option<Overlay> {
         else if app.get_player_shown() { Overlay::Player }
         else if app.get_light_shown() { Overlay::Room }
         else if app.get_wifi_setup_shown() { Overlay::WifiSetup }
+        else if app.get_bt_pair_shown() { Overlay::BtPair }
         else if app.get_settings_shown() { Overlay::Settings }
         else if app.get_keyboard_shown() { Overlay::Keyboard }
         else if app.get_chooser_shown() { Overlay::Chooser }
@@ -772,6 +775,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         });
     }
+    // Pairing mode: one word to the HID daemon opens its window; the modal
+    // follows the daemon's state file from the tick below, and the key loop
+    // hands it OK (Enter to the TV) and Back (cancel, or close once over).
+    {
+        let (weak, toast) = (app.as_weak(), toast.clone());
+        app.on_setting_pair_bluetooth(move || {
+            let Some(app) = weak.upgrade() else { return };
+            if system::bluetooth_state() != "on" {
+                toast("Turn Bluetooth on first".into(), 3);
+                return;
+            }
+            if let Err(error) = system::bluetooth_word(couch_bt_hid::WORD_PAIR) {
+                toast(error, 4);
+                return;
+            }
+            app.set_bt_pair_phase("pairing".into());
+            app.set_bt_pair_detail("".into());
+            app.set_bt_pair_shown(true);
+            println!("couch-gui: bluetooth pairing mode opened");
+        });
+    }
     {
         let ask = ask.clone();
         app.on_settings_enter(move |n| ask(Intent::SettingsEnter(n)));
@@ -931,6 +955,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             if app.get_activity_busy() { continue; }
+            // Pairing mode owns the D-pad: OK presses Enter on the TV (the
+            // "press any key" step some sets add after pairing), Back cancels
+            // the daemon's window, or just closes the card once it is over.
+            if app.get_bt_pair_shown() {
+                if !press.repeat && !press.released {
+                    match press.key {
+                        Some(slint::platform::Key::Return) => {
+                            if let Err(error) = system::bluetooth_word("enter") { toast(error, 3); }
+                        }
+                        Some(slint::platform::Key::Escape) => {
+                            let phase = app.get_bt_pair_phase();
+                            if phase == "pairing" || phase == "connected" || phase == "paired" {
+                                let _ = system::bluetooth_word(couch_bt_hid::WORD_PAIR_STOP);
+                            }
+                            app.set_bt_pair_shown(false);
+                            println!("couch-gui: bluetooth pairing mode closed ({phase})");
+                        }
+                        _ => {}
+                    }
+                }
+                continue;
+            }
             // The shortcut and color keys reach what the area assigns them,
             // on the hub only: a device screen or list owns its own keys. A
             // press is a down edge here (releases returned above), and these
@@ -1199,8 +1245,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             slint::platform::update_timers_and_animations();
         }
 
-        // Device state changes in seconds, not frames.
-        if now - last_tick > 1_000_000 {
+        // Device state changes in seconds, not frames - except pairing mode,
+        // whose card should follow the TV's steps as they happen.
+        let tick_us = if app.get_bt_pair_shown() { 250_000 } else { 1_000_000 };
+        if now - last_tick > tick_us {
             last_tick = now;
             // What the SSH thread found: a probe, or the outcome of a toggle.
             if let Ok((available, on, requested)) = ssh_rx.try_recv() {
@@ -1235,6 +1283,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if app.get_settings_shown() {
                 app.set_bt_state(system::bluetooth_state().into());
+                let pairing = system::bluetooth_pairing();
+                app.set_bt_peer(pairing.peer.unwrap_or_default().into());
+                if app.get_bt_pair_shown() {
+                    let phase = pairing.phase.word();
+                    if app.get_bt_pair_phase() != phase { println!("couch-gui: bluetooth pairing {phase} {}", pairing.detail); }
+                    app.set_bt_pair_phase(phase.into());
+                    app.set_bt_pair_detail(pairing.detail.into());
+                }
             }
             // The key LEDs follow the screen: lit only while it is awake and
             // the setting wants them. Something outside this process lights
@@ -1379,7 +1435,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Standby. Anything a person is looking at or waiting on holds
             // the panel awake and restarts the clock; otherwise it dims, then
             // powers down, on the two idle timers.
-            let hold = app.get_activity_busy() || app.get_activity_keep_awake() || app.get_pair_shown() || mic.recording() || app.get_mic_result_shown() || app.get_setup_mode() || app.get_wifi_setup_shown() || app.get_keyboard_shown();
+            let hold = app.get_activity_busy() || app.get_activity_keep_awake() || app.get_pair_shown() || app.get_bt_pair_shown() || mic.recording() || app.get_mic_result_shown() || app.get_setup_mode() || app.get_wifi_setup_shown() || app.get_keyboard_shown();
             let mut idle = now.saturating_sub(last_input);
             // The panel is meant to be showing something in every state but
             // Off. If the driver says it is asleep anyway - it has happened,
@@ -1617,6 +1673,7 @@ mod overlay_tests {
             (Box::new(|a: &App, v| a.set_player_shown(v)), Overlay::Player),
             (Box::new(|a: &App, v| a.set_light_shown(v)), Overlay::Room),
             (Box::new(|a: &App, v| a.set_wifi_setup_shown(v)), Overlay::WifiSetup),
+            (Box::new(|a: &App, v| a.set_bt_pair_shown(v)), Overlay::BtPair),
             (Box::new(|a: &App, v| a.set_settings_shown(v)), Overlay::Settings),
             (Box::new(|a: &App, v| a.set_keyboard_shown(v)), Overlay::Keyboard),
             (Box::new(|a: &App, v| a.set_chooser_shown(v)), Overlay::Chooser),

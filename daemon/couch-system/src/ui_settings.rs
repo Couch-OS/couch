@@ -215,6 +215,20 @@ pub fn bluetooth_state() -> BluetoothState {
         BluetoothState::Off
     }
 }
+/// Where pairing mode is, from the HID daemon's state file, with the lib's
+/// staleness rule (a window whose daemon died reads as idle). Idle, with no
+/// peer, whenever Bluetooth is not up: a file left by a daemon that is gone
+/// says nothing about now.
+pub fn bluetooth_pairing() -> couch_bt_hid::PairStatus {
+    if !hid_running() {
+        return couch_bt_hid::PairStatus::idle();
+    }
+    couch_bt_hid::PairStatus::read(&couch_bt_hid::PAIR_STATE_PATHS)
+}
+/// The name of the TV connected over Bluetooth right now, if one is.
+pub fn bluetooth_peer() -> Option<String> {
+    bluetooth_pairing().peer
+}
 /// Whether this kernel can do Bluetooth at all: the virtual HCI driver and
 /// the MediaTek transport both present. Older boot images have neither.
 pub fn bluetooth_available() -> bool {

@@ -368,6 +368,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "couch-bt-hid"
+version = "0.1.0"
+
+[[package]]
 name = "couch-confd"
 version = "0.1.0"
 dependencies = [
@@ -515,6 +519,7 @@ dependencies = [
 name = "couch-system"
 version = "0.1.0"
 dependencies = [
+ "couch-bt-hid",
  "couch-updates",
  "libc",
  "serde",

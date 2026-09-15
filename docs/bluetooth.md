@@ -7,7 +7,9 @@ up bridge, dbus, bluetoothd and `couch-bt-hid`; a real TV paired to "Couch
 Remote" and took volume keys; and a **Bluetooth TV** connection/device routes
 the remote's mapped buttons and the one-way TV screen over Bluetooth
 ([user guide](bluetooth-tv.md)). Idle Bluetooth has no measurable power or
-Wi-Fi cost. Still open: per-activity bonds and the vendor set-address command. An
+Wi-Fi cost. Pairing is a deliberate two-minute window from Settings or the
+web page ([pairing mode](#pairing-mode)); outside it the remote is not
+discoverable. Still open: per-activity bonds. An
 in-kernel HCI driver now exists (`hci_stp`, see
 [kernel-backports-research.md](kernel-backports-research.md#outcome-2026-09-15-the-in-kernel-driver-on-both-cores)). The sections below are the design record: "what
 exists today" describes the starting point, the
@@ -84,6 +86,63 @@ for multi-device keyboards applies here:
   (or advertise with a whitelist) to the target's address until it connects.
 - Pairing a new device is a GUI flow: undirected connectable advertising for a
   bounded time, then store the bond and offer it in the activity editor.
+  The bounded window exists ([pairing mode](#pairing-mode)); the per-activity
+  bond store does not yet.
+
+## Pairing mode
+
+The remote is only pairable and discoverable while the user asks it to be.
+`couch-bt-hid` owns the policy; everything else drives it through the key
+socket and reads its state file.
+
+- **Socket words** (`/tmp/couch-bt-hid.sock`, mode 0600): `pair` removes every
+  `Device1` under `hci0` (`Adapter1.RemoveDevice`, bonds included), sets
+  `Pairable` and `Discoverable` on the adapter, re-registers the advertisement
+  with `Discoverable=true` (raw-HCI path: flags byte `0x06`) and opens a
+  `PAIR_WINDOW_SECS` (120 s) window; `pair-stop` closes it early; `forget`
+  removes the devices without a window. Keyboard words `enter`, `escape`,
+  `space`, `tab`, `backspace` and `kbd:<hex>` (`kbd:28`, or `kbd:0204` with
+  modifiers) send a boot-style report `[mods, 0, key, 0, 0, 0, 0, 0]` then an
+  all-zero release on the keyboard report characteristic; the consumer words
+  are unchanged. The GUI sends words itself (it links the lib for the paths and
+  words); the web daemon goes through `Request::BluetoothPair { action }` on
+  the system service, whose `PairAction` is a closed set, so nothing typed on
+  a web page reaches the socket.
+- **Window edges.** Ends on a peer that is paired-or-bonded *and* has
+  subscribed to a report characteristic (`done <name>`), on the timeout
+  (`failed timeout`) or on `pair-stop` (`failed cancelled`). At the edge the
+  adapter goes back to `Pairable=false`, `Discoverable=false` and the
+  advertisement is re-registered non-discoverable (flags `0x04`), so a bonded
+  TV still reconnects but a phone's Bluetooth menu no longer lists the remote.
+  The same non-discoverable advertisement is what the daemon starts with.
+- **Peers** come from polling `org.freedesktop.DBus.ObjectManager
+  .GetManagedObjects` on `org.bluez` (every 500 ms in the window, every 3 s
+  otherwise) for `Device1` `Connected`/`Paired`/`Bonded`/`Name`/`Alias`;
+  `StartNotify`/`StopNotify` per characteristic and any report `push()`
+  dropped for want of a subscriber are logged in `/tmp/couch-bt-hid.log`,
+  because a TV that pairs but never subscribes looks, from outside, exactly
+  like keys being ignored.
+- **State file** `/tmp/couch-bt-pair.state` (format and parser in the crate's
+  lib, `PairStatus`): line 1 `<phase>[ <detail>]` with phase
+  `idle|pairing|connected|paired|done|failed` (detail = the peer's name, or
+  `timeout`/`cancelled`), optional line 2 `link <name>` while any peer is
+  connected. The daemon rewrites it on every poll while a window is open, so
+  readers treat a window phase older than `PAIR_STALE_SECS` (window + 15 s)
+  as idle: the daemon died. `done` and `failed` are final until the next
+  `pair`; turning Bluetooth off removes the file.
+- **Readers.** `couch_system::ui_settings::bluetooth_pairing()` and
+  `bluetooth_peer()`; the GUI's Settings › Bluetooth panel (row value
+  `ON · <peer>`, a second row **Pair with TV** while on, and a modal that owns
+  OK = `enter` and Back = `pair-stop`, polled every 250 ms while shown); the
+  web Remote page's Bluetooth section and `GET /api/remote/device`
+  (`bluetooth.pairing {phase, detail}`, `bluetooth.peer`) with
+  `POST /api/remote/bluetooth {"action": pair|stop|forget|enter}`.
+- **Why the keyboard report.** An LG webOS TV completed LE Secure Connections
+  pairing and bonding, read the HID service, then showed "press any key on the
+  bluetooth keyboard" and dropped the link after a while; every key sent
+  during that prompt was a consumer-page report (id 2). The prompt is expected
+  to want a keyboard-page report (id 1), which is what OK sends in pairing
+  mode. Hardware status is in the staging checklist below.
 
 ## Implementation plan (branch `bluetooth`, rebased onto `dev` 2026-09-14)
 
@@ -227,6 +286,11 @@ Userland (this repo):
 - [x] Power validation (2026-09-14, `.144.dev`, unplugged, screen off):
       ~110 mA idle with or without Bluetooth on; Wi-Fi throughput unchanged
       with Bluetooth on and idle, halved only during a continuous LE scan.
+- [x] Pairing mode (2026-09-15): `pair`/`pair-stop`/`forget` words, keyboard
+      words, the 120 s pairable + discoverable window, non-discoverable
+      advertising outside it, `/tmp/couch-bt-pair.state`, the Settings modal,
+      the web section and `POST /api/remote/bluetooth`
+      ([details](#pairing-mode)). Awaiting the first TV pairing through it.
 - [ ] Bond store keyed per activity; disconnect-and-redirect on switch.
 - [ ] Re-advertise immediately on disconnect. Done where bluetoothd exports
       `LEAdvertisingManager1` (the backported core, see

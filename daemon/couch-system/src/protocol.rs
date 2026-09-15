@@ -40,6 +40,11 @@ pub enum Request {
     },
     /// At boot: start the bridge if the saved setting says so.
     BluetoothAuto,
+    /// Pairing mode on the HID daemon: open a window, cancel it, forget the
+    /// bonds, or press Enter for a TV that asks for a key.
+    BluetoothPair {
+        action: crate::bluetooth::PairAction,
+    },
     EnrollKey {
         key: String,
     },
@@ -119,6 +124,27 @@ mod tests {
         let mut data = Vec::new();
         write(
             &serde_json::json!({"Power":{"action":"halt","force":true}}),
+            &mut data,
+        )
+        .unwrap();
+        assert!(read::<Request>(&mut &data[..]).is_err());
+        // Pairing actions are a closed set: no word reaches the daemon's
+        // socket that this enum did not name.
+        let mut data = Vec::new();
+        write(
+            &serde_json::json!({"BluetoothPair":{"action":"pair"}}),
+            &mut data,
+        )
+        .unwrap();
+        assert!(matches!(
+            read::<Request>(&mut &data[..]).unwrap(),
+            Request::BluetoothPair {
+                action: crate::bluetooth::PairAction::Pair
+            }
+        ));
+        let mut data = Vec::new();
+        write(
+            &serde_json::json!({"BluetoothPair":{"action":"kbd:28"}}),
             &mut data,
         )
         .unwrap();

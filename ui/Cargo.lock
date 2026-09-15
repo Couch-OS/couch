@@ -1142,6 +1142,7 @@ dependencies = [
 name = "couch-system"
 version = "0.1.0"
 dependencies = [
+ "couch-bt-hid",
  "couch-updates",
  "libc",
  "serde",

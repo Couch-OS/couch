@@ -458,13 +458,7 @@ pub(crate) fn execute_with_input(
         // id to the HID daemon, which turns it into a consumer-control report
         // for the TV paired to it. No connection state to keep here.
         Integration::BluetoothTv => {
-            let socket = couch_bt_hid::SOCKET_PATHS
-                .into_iter()
-                .find(|p| std::path::Path::new(p).exists())
-                .ok_or("Turn Bluetooth on in Settings first")?;
-            std::os::unix::net::UnixDatagram::unbound()
-                .and_then(|s| s.send_to(command.id().as_bytes(), socket))
-                .map_err(|_| "Bluetooth is not running; turn it on in Settings")?;
+            crate::system::bluetooth_word(&command.id())?;
             Ok(Outcome::default())
         }
         Integration::AndroidTv | Integration::AppleTv | Integration::Tizen => {

@@ -14,6 +14,7 @@
 //! state file (`starting`, `on`, `off`, or `error <sentence>`) that the GUI,
 //! the web UI and the API read while they wait, instead of showing "off" until
 //! the last piece is up.
+use serde::{Deserialize, Serialize};
 use std::{fs, path::Path, process::Command, thread, time::Duration};
 
 const HCI0: &str = "/sys/class/bluetooth/hci0";
@@ -50,6 +51,44 @@ fn base() -> Option<String> {
         return Some("/tmp/couch-bt".into());
     }
     None
+}
+
+/// What a caller may ask pairing mode to do. A closed set: the request API
+/// names actions, and only this module knows the daemon's words for them, so
+/// nothing arbitrary is written to the key socket on behalf of the web page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PairAction {
+    /// Forget every bond, become pairable and discoverable for two minutes.
+    Pair,
+    /// Close the window early.
+    Stop,
+    /// Forget every bond without opening a window.
+    Forget,
+    /// Press and release Enter on the keyboard collection, for a TV that
+    /// asks for a key press after pairing.
+    Enter,
+}
+
+impl PairAction {
+    fn word(self) -> &'static str {
+        match self {
+            PairAction::Pair => couch_bt_hid::WORD_PAIR,
+            PairAction::Stop => couch_bt_hid::WORD_PAIR_STOP,
+            PairAction::Forget => couch_bt_hid::WORD_FORGET,
+            PairAction::Enter => "enter",
+        }
+    }
+}
+
+/// Send one pairing-mode word to the HID daemon. A datagram: the outcome is
+/// read back from the daemon's state file (`ui_settings::bluetooth_pairing`).
+pub fn pair(action: PairAction) -> Result<(), String> {
+    if !crate::ui_settings::hid_running() {
+        return Err("Turn Bluetooth on first".into());
+    }
+    couch_bt_hid::send_word(action.word())
+        .map_err(|e| format!("The Bluetooth service is not answering: {e}"))
 }
 
 fn publish(state: &str) {
@@ -119,7 +158,11 @@ fn load_modules() -> Result<(), String> {
         return Ok(());
     }
     insmod("hci_vhci.ko")?;
-    if !wait_for(|| Path::new("/sys/class/misc/vhci").exists(), 20, Duration::from_millis(100)) {
+    if !wait_for(
+        || Path::new("/sys/class/misc/vhci").exists(),
+        20,
+        Duration::from_millis(100),
+    ) {
         return Err("hci_vhci loaded but no vhci device appeared".into());
     }
     make_vhci_node()
@@ -199,7 +242,9 @@ fn load_stp_driver() -> Result<(), String> {
 
 fn unload_stp_driver() {
     if Path::new("/sys/module/hci_stp").exists() {
-        let _ = Command::new("/bin/busybox").args(["rmmod", "hci_stp"]).status();
+        let _ = Command::new("/bin/busybox")
+            .args(["rmmod", "hci_stp"])
+            .status();
     }
 }
 
@@ -210,7 +255,9 @@ fn down() -> Result<(), String> {
     }
     // The HID daemon binds its key socket last; a stale path from the previous
     // run would otherwise look ready while the next one is still registering.
-    let _ = fs::remove_file("/tmp/couch-bt-hid.sock");
+    // Its pairing state goes with it: there is no window and no link now.
+    let _ = fs::remove_file(couch_bt_hid::SOCKET_PATH);
+    let _ = fs::remove_file(couch_bt_hid::PAIR_STATE_PATH);
     publish("off");
     result
 }
@@ -283,7 +330,11 @@ fn up() -> Result<(), String> {
          mkdir -p /run/dbus; \
          pidof dbus-daemon >/dev/null || { rm -f /run/dbus/dbus.pid; setsid dbus-daemon --system --nopidfile </dev/null >/tmp/dbus.log 2>&1 & }",
     )?;
-    if !wait_for(|| Path::new(DBUS_SOCKET).exists(), 30, Duration::from_millis(100)) {
+    if !wait_for(
+        || Path::new(DBUS_SOCKET).exists(),
+        30,
+        Duration::from_millis(100),
+    ) {
         return Err("Bluetooth started but dbus did not come up; see /tmp/dbus.log".into());
     }
     alpine_sh(

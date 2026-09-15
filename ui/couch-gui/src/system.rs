@@ -217,3 +217,16 @@ pub fn bluetooth_state() -> &'static str {
 pub fn bluetooth_set(enabled: bool) -> Result<(), String> {
     couch_system::client::action(couch_system::protocol::Request::Bluetooth { enabled })
 }
+/// Where pairing mode is and who is on the link, from the HID daemon's state
+/// file (idle with no peer while Bluetooth is off).
+pub fn bluetooth_pairing() -> couch_bt_hid::PairStatus {
+    couch_system::ui_settings::bluetooth_pairing()
+}
+/// One word to the HID daemon's key socket: a pairing-mode control word or a
+/// key. A datagram, so this neither waits nor blocks the UI thread.
+pub fn bluetooth_word(word: &str) -> Result<(), String> {
+    couch_bt_hid::send_word(word).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => "Turn Bluetooth on in Settings first".into(),
+        _ => "Bluetooth is not running; turn it on in Settings".into(),
+    })
+}

@@ -25,18 +25,48 @@ the design and the kernel side.
 
 ## Setup
 
-1. Turn Bluetooth on (above). The remote advertises as **Couch Remote**.
-2. On the TV, open its Bluetooth or remote-control settings and pair
+The remote is not discoverable by default: with Bluetooth on it advertises
+in a way only a TV that has already paired will connect to, so a laptop or
+phone in the room never lists a "Couch Remote" to grab. Pairing a TV is a
+deliberate two-minute **pairing mode**:
+
+1. Turn Bluetooth on (above). The row says **ON**, and names the TV once
+   one is connected (**ON · webOS TV OLED48B4PUA**).
+2. **Settings → Bluetooth → Pair with TV** on the remote, or **Pair with
+   TV** in the Bluetooth section of the web UI's Remote page. This forgets
+   every TV the remote had paired (it holds one TV at a time; pair again to
+   move it) and opens the window. The card on the remote reads
+   **DISCOVERABLE**: "On your TV, open Bluetooth settings and choose Couch
+   Remote."
+3. On the TV, open its Bluetooth or remote-control settings and choose
    **Couch Remote**. Pairing is "just works": no PIN. TVs that pair a
    Bluetooth remote at first setup (LG, Samsung, Android/Google TV, Fire TV)
    usually have a "pair a Bluetooth device" or "connect Bluetooth remote"
-   entry; the first pairing has only been tried on one TV, so record what
-   each make needs in [bluetooth.md](bluetooth.md#open-questions).
-3. On the web, **Connections → Add a connection → Bluetooth TV**, name it and
+   entry. The card follows along: **CONNECTED** when the TV has connected,
+   **PAIRED** once it has bonded.
+4. Some TVs (LG webOS among them) then ask you to *press any key on the
+   keyboard*. Press **OK** on the remote: in pairing mode OK sends an Enter
+   key from the keyboard half of the HID profile, which is the key such a
+   prompt is waiting for (the volume and navigation keys are consumer-control
+   keys, which the prompt ignores). On the web, use **Send key**.
+5. The card says **DONE** ("Done: *name* is paired.") once the TV has bonded
+   and subscribed to the remote's input reports; press **Back** to close it.
+   The window closes by itself after two minutes with **NOT PAIRED** if no
+   TV got that far, and **Back** during the window cancels it. Either way
+   the remote goes back to non-discoverable, and the paired TV reconnects
+   whenever both are on.
+6. On the web, **Connections → Add a connection → Bluetooth TV**, name it and
    create it. There is nothing to configure on the connection; its page
    repeats these steps.
-4. **Rooms & devices** → add a device from that connection. The device is a
+7. **Rooms & devices** → add a device from that connection. The device is a
    TV; give it the TV's name.
+
+**Forget pairings** on the web page drops the bond without opening a window;
+the TV then needs pairing mode again. Turning Bluetooth off does not forget
+anything.
+
+The first pairing has only been tried on one TV, so record what each make
+needs in [bluetooth.md](bluetooth.md#open-questions).
 
 ## Controls and activities
 
@@ -74,12 +104,21 @@ input report (usage down, 30 ms, usage up) on the notifying connection. The
 socket is mode 0600 and root-owned, because writing one word to it presses a
 key on a paired TV. The same words work from a root shell on the remote for
 testing; the path and the vocabulary are `couch-bt-hid`'s lib, which the GUI
-links so neither side carries its own copy. The controller keeps
-a synthetic address (`00:00:46:65:80:01`) until the vendor set-address
-command is confirmed; TVs pair to it fine, but a reflashed remote will look
-like the same device to a TV that paired the previous one.
+and the system service link so nobody carries their own copy.
 
-Multiple TVs can pair to the remote, but a HID peripheral holds one link at a
-time: whichever TV connects first after Bluetooth comes up gets the keys.
-Per-activity bonds (disconnect and redirect on activity switch) are the next
-step in [bluetooth.md](bluetooth.md#multi-device-switching-design).
+Pairing mode is three more words on that socket (`pair`, `pair-stop`,
+`forget`) and a state file the daemon writes, `/tmp/couch-bt-pair.state`,
+that the remote's card, the web page and the API read (`idle`, `pairing`,
+`connected <name>`, `paired <name>`, `done <name>`, `failed timeout|cancelled`,
+plus a `link <name>` line while a TV is connected). During the window the
+adapter is pairable and the advertisement general-discoverable; outside it,
+neither, so only a bonded TV reconnects. The details are in
+[bluetooth.md](bluetooth.md#pairing-mode). The controller keeps a synthetic
+address (`00:00:46:65:80:02`, set with the vendor command at bring-up) so a
+reflashed remote looks like the same device to a TV that paired the previous
+one.
+
+A HID peripheral holds one link at a time, and pairing mode keeps one bond:
+the TV paired last. Per-activity bonds (disconnect and redirect on activity
+switch) are the next step in
+[bluetooth.md](bluetooth.md#multi-device-switching-design).

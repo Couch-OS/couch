@@ -280,6 +280,7 @@ JSON. `{id}` is a slug like `living-room`.
 | `PUT`    | `/api/remote/device`                   | the same five fields; written to the remote's settings file, which the remote applies within a second; `ssh` also starts or stops sshd through the system service |
 | `GET`    | `/api/remote/network`                  | `address`, `gateway`, `dns`, `mac`, `web` and `host` (`couch.local`), as the remote's Settings → Network shows them |
 | `POST`   | `/api/remote/power`                    | `{"action": "off" \| "restart" \| "recovery", "confirm": true}`; 202 once the system service has accepted it |
+| `POST`   | `/api/remote/bluetooth`                | `{"action": "pair" \| "stop" \| "forget" \| "enter"}`: open a two-minute pairing window (forgetting every bond first), close it, forget the bonds, or press Enter on the paired TV; 202 once the system service has passed it to the HID daemon. Progress is `bluetooth.pairing` `{phase, detail}` and `bluetooth.peer` in `GET /api/remote/device` |
 | `POST`   | `/api/rooms/{id}/devices`              | `{name, kind?, icon?, integration?}` |
 | `PUT`    | `/api/rooms/{id}/devices/{device}`     | the whole device; the path names it, so a body with a different id cannot move it |
 | `DELETE` | `/api/rooms/{id}/devices/{device}`     | and every scene step and activity step pointing at it |
