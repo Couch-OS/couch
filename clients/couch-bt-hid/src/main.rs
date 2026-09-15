@@ -630,6 +630,42 @@ async fn set_pairable(conn: &Connection, on: bool) {
     }
 }
 
+/// One boolean adapter property, or None when bluetoothd will not say.
+async fn adapter_flag(conn: &Connection, prop: &str) -> Option<bool> {
+    let props = Proxy::new(
+        conn,
+        "org.bluez",
+        ADAPTER,
+        "org.freedesktop.DBus.Properties",
+    )
+    .await
+    .ok()?;
+    let reply = props
+        .call_method("Get", &("org.bluez.Adapter1", prop))
+        .await
+        .ok()?;
+    let value: OwnedValue = reply.body().deserialize().ok()?;
+    match &*value {
+        Value::Bool(b) => Some(*b),
+        _ => None,
+    }
+}
+
+/// Keep Pairable where the window says it should be. bluetoothd applies its
+/// own default (pairable, from main.conf) when the adapter finishes starting,
+/// which lands after the daemon's first Set at bring-up and would leave the
+/// remote pairable to anyone between windows; seen on the .155 build. Checked
+/// on every peer poll, so any such override is undone within seconds.
+async fn keep_pairable(conn: &Connection, want: bool) {
+    if adapter_flag(conn, "Pairable").await == Some(!want) {
+        println!(
+            "couch-bt-hid: Pairable was {}; setting it back to {want}",
+            !want
+        );
+        set_pairable(conn, want).await;
+    }
+}
+
 /// Pairing mode: the window, what it has seen, and what it has published.
 struct Pairing {
     /// When the window closes; None outside one.
@@ -952,6 +988,7 @@ async fn main() -> zbus::Result<()> {
                     continue;
                 }
                 slow_ticks_left = 5;
+                keep_pairable(&conn, pairing.open()).await;
                 let peers = peers(&conn).await;
                 let linked = peers.iter().find(|p| p.connected);
                 pairing.status.peer = linked.map(|p| p.name.clone());

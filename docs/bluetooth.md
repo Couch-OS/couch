@@ -290,7 +290,15 @@ Userland (this repo):
       words, the 120 s pairable + discoverable window, non-discoverable
       advertising outside it, `/tmp/couch-bt-pair.state`, the Settings modal,
       the web section and `POST /api/remote/bluetooth`
-      ([details](#pairing-mode)). Awaiting the first TV pairing through it.
+      ([details](#pairing-mode)). Verified on the dev remote (.155.dev/.156.dev,
+      backported core): window opens with Discoverable and Pairable on and the
+      advert re-registered discoverable, `pair-stop` → `failed cancelled`,
+      timeout → `failed timeout`, both edges back to non-discoverable, `enter`
+      with no subscriber logged as a dropped keyboard report, `forget` empties
+      the device list, Wi-Fi unaffected. bluetoothd re-applies its main.conf
+      `Pairable` default when the adapter finishes starting, after the daemon's
+      first Set, so the daemon re-asserts it on every poll. Awaiting the first
+      TV pairing through it.
 - [ ] Bond store keyed per activity; disconnect-and-redirect on switch.
 - [ ] Re-advertise immediately on disconnect. Done where bluetoothd exports
       `LEAdvertisingManager1` (the backported core, see
