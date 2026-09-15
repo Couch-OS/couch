@@ -256,7 +256,7 @@ impl ReportRef {
     }
     #[zbus(property)]
     fn flags(&self) -> Vec<String> {
-        vec!["read".to_string()]
+        vec!["encrypt-read".to_string()]
     }
     async fn read_value(&self, _options: HashMap<String, OwnedValue>) -> Vec<u8> {
         self.value.clone()
@@ -1148,7 +1148,7 @@ async fn main() -> zbus::Result<()> {
                 HID_INFORMATION,
                 "HID information",
                 "/couch/hid/app/s2",
-                &["read"],
+                &["encrypt-read"],
                 vec![0x11, 0x01, 0x00, 0x03],
             ),
         )
@@ -1160,7 +1160,7 @@ async fn main() -> zbus::Result<()> {
                 REPORT_MAP,
                 "report map",
                 "/couch/hid/app/s2",
-                &["read"],
+                &["encrypt-read"],
                 REPORT_MAP_BYTES.to_vec(),
             ),
         )
@@ -1196,7 +1196,7 @@ async fn main() -> zbus::Result<()> {
                 REPORT,
                 "keyboard",
                 "/couch/hid/app/s2",
-                &["read", "notify"],
+                &["encrypt-read", "encrypt-notify"],
                 vec![0u8; 8],
             ),
         )
@@ -1217,7 +1217,7 @@ async fn main() -> zbus::Result<()> {
                 REPORT,
                 "consumer",
                 "/couch/hid/app/s2",
-                &["read", "notify"],
+                &["encrypt-read", "encrypt-notify"],
                 vec![0u8; 2],
             ),
         )
