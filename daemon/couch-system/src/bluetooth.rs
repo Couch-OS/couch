@@ -268,6 +268,13 @@ fn up() -> Result<(), String> {
     // a moment; the in-tree 3.18 core has no such pass.
     if Path::new("/sys/module/bluetooth").exists() {
         thread::sleep(Duration::from_millis(3000));
+        // bluetoothd's managed advertisement uses the core's default interval
+        // of 1.28 s, which a TV scanning briefly can miss (the raw-HCI path
+        // advertised every 100 ms). The 4.4 core takes the interval from
+        // debugfs, in 0.625 ms units: 100 to 150 ms.
+        for (name, value) in [("adv_min_interval", "160"), ("adv_max_interval", "240")] {
+            let _ = fs::write(format!("/sys/kernel/debug/bluetooth/hci0/{name}"), value);
+        }
     }
     // dbus, then bluetoothd, then the HID daemon. The HID daemon waits for
     // bluetoothd's adapter itself, so the three start back to back.
