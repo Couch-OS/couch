@@ -166,8 +166,10 @@ int main(int argc, char **argv)
 				first_usec = ev[k].input_event_usec;
 				have_first = 1;
 			}
-			t = (ev[k].input_event_sec - first_sec) +
-			    (ev[k].input_event_usec - first_usec) / 1e6;
+			/* The accessors are unsigned in the kernel header; subtract
+			 * as signed or a usec underflow prints ~4295 s. */
+			t = ((long)ev[k].input_event_sec - first_sec) +
+			    ((long)ev[k].input_event_usec - first_usec) / 1e6;
 			if (ev[k].value == 1) {
 				presses[ev[k].code]++;
 				total_press++;
