@@ -9,7 +9,9 @@ the remote's mapped buttons and the one-way TV screen over Bluetooth
 ([user guide](bluetooth-tv.md)). Idle Bluetooth has no measurable power or
 Wi-Fi cost. Pairing is a deliberate two-minute window from Settings or the
 web page ([pairing mode](#pairing-mode)); outside it the remote is not
-discoverable. Still open: per-activity bonds. An
+discoverable. The daemon holds any number of TV bonds and lets exactly one
+of them, the active bond, connect ([bonds and the active
+link](#bonds-and-the-active-link)); the app chooses which. An
 in-kernel HCI driver now exists (`hci_stp`, see
 [kernel-backports-research.md](kernel-backports-research.md#outcome-2026-09-15-the-in-kernel-driver-on-both-cores)). The sections below are the design record: "what
 exists today" describes the starting point, the
@@ -126,12 +128,19 @@ socket and reads its state file.
   `btmgmt static-addr` (random static): it advertises, but bluetoothd never
   answers ATT on it, verified twice. No Wi-Fi MAC: the default is kept and
   logged.
-- **Socket words** (`/tmp/couch-bt-hid.sock`, mode 0600): `pair` removes every
-  `Device1` under `hci0` (`Adapter1.RemoveDevice`, bonds included), sets
-  `Pairable` on the adapter, re-registers the advertisement
-  with `Discoverable=true` (raw-HCI path: flags byte `0x06`) and opens a
-  `PAIR_WINDOW_SECS` (120 s) window; `pair-stop` closes it early; `forget`
-  removes the devices without a window. Keyboard words `enter`, `escape`,
+- **Socket words** (`/tmp/couch-bt-hid.sock`, mode 0600, one word per
+  datagram; `Control` in the lib parses and renders them): `pair` drops
+  every link, sets `Pairable` on the adapter, advertises discoverable and
+  open to anyone (managed advert with `Discoverable=true`; raw-HCI path:
+  flags byte `0x06`, filter policy `0x00`) and opens a `PAIR_WINDOW_SECS`
+  (120 s) window; it forgets nothing. `pair-stop` closes the window early.
+  `forget <ADDR>` removes that one device (`Adapter1.RemoveDevice`, bond
+  included) and `forget` alone removes every device. `activate <ADDR>`
+  makes that bond the active link and `activate none` lets nobody connect
+  (below). Addresses are six colon-separated hex pairs, accepted in either
+  case and written uppercase (`44:27:45:4E:33:25`); a control word with a
+  malformed argument is refused with a line in the log, never treated as a
+  key. Keyboard words `enter`, `escape`,
   `space`, `tab`, `backspace` and `kbd:<hex>` (`kbd:28`, or `kbd:0204` with
   modifiers) send a boot-style report `[mods, 0, key, 0, 0, 0, 0, 0]` then an
   all-zero release on the keyboard report characteristic; the consumer words
@@ -139,18 +148,21 @@ socket and reads its state file.
   words); the web daemon goes through `Request::BluetoothPair { action }` on
   the system service, whose `PairAction` is a closed set, so nothing typed on
   a web page reaches the socket.
-- **Window edges.** Ends on a peer that is paired-or-bonded *and* has
-  subscribed to a report characteristic (`done <name>`), on the timeout
-  (`failed timeout`) or on `pair-stop` (`failed cancelled`). At the edge the
-  adapter goes back to `Pairable=false` and the
-  advertisement is re-registered non-discoverable (flags `0x04`), so a bonded
-  TV still reconnects but a phone's Bluetooth menu no longer lists the remote.
+- **Window edges.** Ends on a *new* peer (one not bonded when the window
+  opened) that is paired-or-bonded *and* has subscribed to a report
+  characteristic (`done <name>`), on the timeout (`failed timeout`) or on
+  `pair-stop` (`failed cancelled`). A TV that was already bonded before the
+  window is disconnected on sight while it is open: a 4.0 controller holds
+  one link and does not advertise while it has it, so a bonded TV that
+  reconnected would leave the new one nothing to connect to. At the edge
+  the adapter goes back to `Pairable=false`, the managed advertisement is
+  unregistered, and the daemon advertises for the active bond alone (after
+  `done`, the TV that just bonded), or not at all when there is none.
   On the managed path the 4.4 core composes the flags itself: with the
   controller LE-only an `hcidump` of a window shows `LE Set Advertising Data`
-  with `02 01 06` while the window is open and `02 01 04` before and after,
-  the same bytes the raw path writes (with BR/EDR still on the core wrote
-  `0x02` in the window, which is what the LG's classic side answered).
-  The same non-discoverable advertisement is what the daemon starts with.
+  with `02 01 06` while the window is open (with BR/EDR still on the core
+  wrote `0x02`, which is what the LG's classic side answered); the raw path
+  writes the same bytes, and `02 01 04` outside a window.
 - **Peers** come from polling `org.freedesktop.DBus.ObjectManager
   .GetManagedObjects` on `org.bluez` (every 500 ms in the window, every 3 s
   otherwise) for `Device1` `Connected`/`Paired`/`Bonded`/`Name`/`Alias`;
@@ -161,11 +173,17 @@ socket and reads its state file.
 - **State file** `/tmp/couch-bt-pair.state` (format and parser in the crate's
   lib, `PairStatus`): line 1 `<phase>[ <detail>]` with phase
   `idle|pairing|connected|paired|done|failed` (detail = the peer's name, or
-  `timeout`/`cancelled`), optional line 2 `link <name>` while any peer is
-  connected. The daemon rewrites it on every poll while a window is open, so
-  readers treat a window phase older than `PAIR_STALE_SECS` (window + 15 s)
-  as idle: the daemon died. `done` and `failed` are final until the next
-  `pair`; turning Bluetooth off removes the file.
+  `timeout`/`cancelled`); then, each optional and in any order, `link <ADDR>
+  <name>` while a TV is connected (`PairStatus.link`, a `Peer { address,
+  name }`; `peer` keeps the label for older readers), `active <ADDR>` when
+  a bond is the active one (`PairStatus.active`), and `peer <ADDR> <name>`
+  after a window ended in `done`, naming the TV that bonded
+  (`PairStatus.bonded`), until the next `pair`. The parser still reads the
+  older `link <name>` (a peer with an empty address) and skips lines it does
+  not know. The daemon rewrites the file on every poll while a window is
+  open, so readers treat a window phase older than `PAIR_STALE_SECS`
+  (window + 15 s) as idle: the daemon died. `done` and `failed` are final
+  until the next `pair`; turning Bluetooth off removes the file.
 - **Readers.** `couch_system::ui_settings::bluetooth_pairing()` and
   `bluetooth_peer()`; the GUI's Settings › Bluetooth panel (row value
   `ON · <peer>`, a second row **Pair with TV** while on, and a modal that owns
@@ -179,6 +197,68 @@ socket and reads its state file.
   during that prompt was a consumer-page report (id 2). The prompt is expected
   to want a keyboard-page report (id 1), which is what OK sends in pairing
   mode. Hardware status is in the staging checklist below.
+
+## Bonds and the active link
+
+BlueZ keeps one bond per TV and nothing stops several from existing; what
+it cannot do is pick which one talks to us. Its GATT server notifies every
+subscribed client, and a TV is the one that initiates the connection. So
+the daemon enforces the single link at the controller, and everything else
+follows from that.
+
+- **Active bond.** `activate <ADDR>` (or the TV that bonds in a window)
+  makes one bond the active link. The daemon disconnects any other
+  connected TV (`Device1.Disconnect`) and advertises for that address
+  alone: `LE Clear White List` (OCF 0x0010), `LE Add Device To White List`
+  (0x0011, the device's `AddressType` then the address little-endian),
+  then `LE Set Advertising Parameters` with **filter policy 0x03** (scan
+  and connect requests from the white list only), the non-discoverable
+  data (flags `0x04`), the scan response, and enable. A connect request
+  from anyone else is dropped by the controller on air; bluetoothd never
+  sees it (`hcidump -R`: the parameters command is `< 01 06 20 0F …` and
+  its byte 14 is the policy). The bonded TV reconnects by itself, as it
+  did with the open advertisement. `activate none`: no advertising at all
+  (nobody bonded may connect, so nothing is on air) and any link is
+  dropped.
+- **Raw HCI, on purpose.** bluetoothd's managed advertisement (the 4.4
+  core's `Add Advertising`) has no filter-policy field, and the core
+  re-issues `LE Set Advertising Parameters` with policy `0x00` whenever it
+  touches the instance (on register, and `mgmt_reenable_advertising` after
+  every disconnect). So while a bond is active there is **no managed
+  instance**: the daemon unregisters it and drives the controller with the
+  raw commands above, on both kernels. The managed advertisement is used
+  for pairing windows only, where the policy should be open anyway. The
+  controller stops advertising when the TV connects and the kernel restarts
+  nothing it did not start, so the daemon restarts the raw advertisement
+  itself: the device poll (every 2 s idle, 500 ms in a window) sees
+  `Device1.Connected` go false and re-runs the sequence, and a 15 s tick is
+  the backstop for an enable the controller refused because the disconnect
+  had not finished.
+- **The kernel and the white list.** The 4.4 core rewrites the white list
+  only when it starts its own LE passive scan (`hci_req_add_le_passive_scan`
+  → `update_white_list`, `net/bluetooth/hci_request.c`), which
+  `__hci_update_background_scan` runs only while `pend_le_conns` or
+  `pend_le_reports` is non-empty, i.e. when bluetoothd has asked it to
+  auto-connect to or report a device. A peripheral-only bluetoothd adds
+  none, and with both lists empty the function only ever *disables* a scan.
+  The daemon nevertheless clears and rewrites the entry at every (re)start
+  of the advertisement, so a rewrite would cost one reconnect at most.
+- **Persistence.** The active address is the daemon's own file,
+  `/opt/couch/bluetooth-active` (`ACTIVE_PATH`; from outside Alpine,
+  `/mnt/alpine/opt/couch/bluetooth-active`): one line, the address or
+  `none`. It is read at start, so a reboot or a toggle restores the same
+  link with nothing re-sent. Without the file (a remote from before bonds
+  were chosen), the one bond there is becomes the active one; with several,
+  none is, and the app chooses. Turning Bluetooth off leaves the file.
+- **Address types.** The white list matches on address *and* type. The
+  entry takes the type from bluetoothd's `Device1.AddressType`; a central
+  using resolvable private addresses (a Mac, a phone) rotates its address
+  every few minutes and the entry stops matching then. TVs use public or
+  static addresses. A bond bluetoothd does not know is white-listed as
+  public and nothing connects until it pairs.
+- **Windows and the active bond.** A window forgets nothing and does not
+  change the active bond unless it ends in `done`, in which case the new
+  TV becomes it. Bonded TVs are dropped on sight during the window (above).
 
 ## Implementation plan (branch `bluetooth`, rebased onto `dev` 2026-09-14)
 
@@ -341,7 +421,13 @@ Userland (this repo):
       controller is the fix (.157.dev). **Validated end to end with the LG on
       .157.dev**: window → connect → bond → TV subscribes → DONE, OK sends
       Enter, advert hidden afterwards, TV off/on reconnects, volume keys work.
-- [ ] Bond store keyed per activity; disconnect-and-redirect on switch.
+- [x] Several bonds, one active link (2026-09-15, branch
+      `bluetooth-bond-slots`): `activate <ADDR>`/`activate none`,
+      `forget <ADDR>`, `pair` no longer forgets, the white-list advertisement
+      with filter policy 0x03 over raw HCI, `/opt/couch/bluetooth-active`,
+      state lines `link <ADDR> <name>`, `active <ADDR>`, `peer <ADDR> <name>`
+      ([details](#bonds-and-the-active-link)). Which bond an activity or
+      device picks is the app's side.
 - [ ] Re-advertise immediately on disconnect. Done where bluetoothd exports
       `LEAdvertisingManager1` (the backported core, see
       [kernel backports research](kernel-backports-research.md)):
