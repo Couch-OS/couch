@@ -216,8 +216,8 @@ impl GattChar {
     fn value(&self) -> Vec<u8> {
         self.value.clone()
     }
-    async fn read_value(&self, _options: HashMap<String, OwnedValue>) -> Vec<u8> {
-        self.value.clone()
+    async fn read_value(&self, options: HashMap<String, OwnedValue>) -> Vec<u8> {
+        read_at(&self.value, &options)
     }
     async fn write_value(&mut self, value: Vec<u8>, _options: HashMap<String, OwnedValue>) {
         self.value = value;
@@ -258,9 +258,24 @@ impl ReportRef {
     fn flags(&self) -> Vec<String> {
         vec!["encrypt-read".to_string()]
     }
-    async fn read_value(&self, _options: HashMap<String, OwnedValue>) -> Vec<u8> {
-        self.value.clone()
+    async fn read_value(&self, options: HashMap<String, OwnedValue>) -> Vec<u8> {
+        read_at(&self.value, &options)
     }
+}
+
+/// The part of a value a ReadValue call asks for. A host whose ATT MTU is
+/// smaller than the value (the report map is 72 bytes; macOS reads it 49 at
+/// a time) continues with Read Blob, which bluetoothd passes on as an
+/// `offset` option. Returning the whole value every time made macOS stitch
+/// together the first 49 bytes over and over: a report map with no
+/// consumer-control collection, so none of our keys decoded. An offset at
+/// or past the end reads as empty, which ends the host's blob loop.
+fn read_at(value: &[u8], options: &HashMap<String, OwnedValue>) -> Vec<u8> {
+    let offset = match options.get("offset").map(|v| &**v) {
+        Some(Value::U16(o)) => usize::from(*o),
+        _ => 0,
+    };
+    value.get(offset..).unwrap_or_default().to_vec()
 }
 
 /// Just-works pairing agent.
@@ -1523,6 +1538,26 @@ async fn main() -> zbus::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_honour_the_blob_offset() {
+        let map = REPORT_MAP_BYTES;
+        let at = |o: Option<u16>| {
+            let mut options = HashMap::new();
+            if let Some(o) = o {
+                options.insert("offset".to_string(), OwnedValue::from(o));
+            }
+            read_at(map, &options)
+        };
+        assert_eq!(at(None), map);
+        assert_eq!(at(Some(0)), map);
+        // Stitching the chunks a small-MTU host reads gives back the map.
+        let mut stitched = at(Some(0))[..49].to_vec();
+        stitched.extend(at(Some(49)));
+        assert_eq!(stitched, map);
+        assert!(at(Some(map.len() as u16)).is_empty());
+        assert!(at(Some(0x188)).is_empty());
+    }
 
     #[test]
     fn the_gatt_application_is_listed_in_one_fixed_order_and_its_services_do_not_overlap() {
