@@ -104,6 +104,33 @@ Then test an adaptive core floor: enough capacity during interaction and voice,
 less while idle. Avoid pinning the UI to a core HPS can offline. Measure frame
 tails and first-command latency, not just average FPS.
 
+**Change made 2026-09-15 (kernel branch `couch-keypad-debounce`, commit
+`08fd6f4d`, app PR pinning it; awaiting hardware acceptance).** Two findings
+drove it. First, the keypad node `mt_gpio_kpd` exists only in the `odmdtbo`
+overlay the bootloader applies; the partition on the dev remote is byte-identical
+to the factory overlay, so the earlier `tools/dtbpatch.py` 50 → 8 ms debounce
+change was undone by installer/restore writes and every remote runs
+`debounce-delay-ms = 50` (20 fast DOWN taps deliver 8 presses, because
+debounce applies to press and release). Second, `irq-mt-eic.c` emulates
+dual-edge triggering by flipping the EINT polarity after every interrupt and
+has no `irq_disable`, so `disable_irq_nosync` is lazy: the row EINT stays
+unmasked until the scan's column strobes edge the held row again, `handle_level_irq`
+then masks it and marks it pending, and the driver's `enable_irq` after the
+scan replays that edge through the software resend tasklet. A held key therefore
+rescanned every ~85 ms. The fix lives in `drivers/input/keyboard/matrix_keypad.c`
+under the existing `CONFIG_COUCH_HA100` + `mt_gpio_kpd` guard (stock and rescue
+device trees unchanged): debounce clamped to 8 ms, column settle clamped to
+50 µs, and while any key is down the driver keeps the row IRQs off and polls the
+matrix every 20 ms, re-enabling the IRQs only when a scan finds every key up.
+Stop cancels the pending poll; suspend leaves the row IRQs enabled for wake
+(the lazy disable would otherwise leave a strobed row masked). Acceptance:
+`tools/keypad/keytap --seconds 10` then 20 fast taps → 20 presses; a held key
+with `kworker/0:1` idle; a second key while one is held reported within ~20 ms;
+wake on key press. Open question to measure: whether the per-scan cost itself
+(the README's 46–62 ms) was the interrupt storm or the GPIO path; if scans are
+still expensive, raise `COUCH_HA100_HOLD_POLL_MS` (all three values are
+`#define`s at the top of the driver).
+
 ## 3. Implement wake capability before enabling system sleep
 
 The live matrix-keypad DT node has **no `linux,wakeup` property**, and its device
