@@ -1,4 +1,4 @@
-# Bluetooth TV
+# Bluetooth
 
 Couch can be the Bluetooth remote a TV expects: the HA100 advertises as a
 Bluetooth Low Energy HID peripheral called **Couch Remote** (keyboard plus
@@ -96,8 +96,8 @@ pairings** on the Remote page drops every bond the stack holds, the devices'
 included, without touching the configuration: pair those devices again
 afterwards.
 
-A device that was set up before this (a **Bluetooth TV** connection with a
-device on it) is carried over on the daemon's next start: the device keeps
+A device that was set up before this (the older Bluetooth connection, provider `bluetooth-tv`,
+with a device on it) is carried over on the daemon's next start: the device keeps
 Bluetooth as its transport, with the bond's address unrecorded, and the
 connection disappears. It keeps working with whichever TV the remote is
 connected to, as it did; pair it again from the device once, and it is

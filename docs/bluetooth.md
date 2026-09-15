@@ -4,7 +4,7 @@ Status as of 2026-09-14 (end of day): **the remote is a working BLE HID
 remote.** The Bluetooth kernel (`CONFIG_BT` + `CONFIG_BT_HCIVHCI`, unified
 kernel `06b21c74`) ships as a boot payload; the toggle under Settings brings
 up bridge, dbus, bluetoothd and `couch-bt-hid`; a real TV paired to "Couch
-Remote" and took volume keys; and a **Bluetooth TV** connection/device routes
+Remote" and took volume keys; and a Bluetooth device routes
 the remote's mapped buttons and the one-way TV screen over Bluetooth
 ([user guide](bluetooth-tv.md)). Idle Bluetooth has no measurable power or
 Wi-Fi cost. Pairing is a deliberate two-minute window from Settings or the
