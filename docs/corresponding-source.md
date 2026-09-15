@@ -28,6 +28,10 @@ The archive contains:
   An opaque downloaded binary is insufficient.
 - The selected Rust standard-library source component and its copyright/license
   texts, identified alongside the ARM library hash and Rust compiler version.
+- For `couch-bluetoothd`, the patched BlueZ daemon in the runtime: the unmodified
+  BlueZ tarball, the aports recipe and its local files at the pinned commit, the
+  Couch patches, `third_party/bluez/build.sh` and the build receipt (container
+  digest, package versions), identified alongside the binary's SHA256.
 
 No Android images, firmware, vendor library binaries, user configuration,
 calibration or signing credentials belong in this archive. The owner-local
@@ -87,8 +91,12 @@ verified download cache. A failed collection records missing origins and stays
 incomplete; fix the missing source and rerun against the same immutable inputs.
 
 Prepare kernel and Rust receipts using `collect_external_sources.py kernel` or
-`rust-stdlib` (see `--help`). BusyBox's audited source export can use the same
-receipt schema. Then import each source-only component:
+`rust-stdlib` (see `--help`), and the BlueZ one from the build directory
+`tools/build-release.sh` left (`third_party/bluez/build.sh` output) with
+`collect_external_sources.py bluez --build build/bluez --output /inputs/bluez-source`;
+it refuses a build whose binary or any source file differs from `build.json`.
+BusyBox's audited source export can use the same receipt schema. Then import each
+source-only component:
 
 ```sh
 python3 tools/release/corresponding_source.py external \
@@ -97,7 +105,7 @@ python3 tools/release/corresponding_source.py external \
 ```
 
 Each external receipt needs `schema: 1`, `kind: "couch-external-source"`, a
-`component` of `kernel`, `busybox` or `rust-stdlib`, and a SHA256 `files` mapping.
+`component` of `kernel`, `busybox`, `rust-stdlib` or `bluez`, and a SHA256 `files` mapping.
 `source_archive`, `configuration`, `build_recipe` and `toolchain_receipt` name
 actual files in that mapping. `binary_sha256` identifies the corresponding binary
 without including it. Additional provenance fields are retained. Exact source,
@@ -121,6 +129,12 @@ claim of physical-device validation, bit-identical application builds or vendor
 redistribution permission. Bind the archive hash and source commit to the signed
 release inventory, and compare all final binaries' build receipts with this
 commit and their actual toolchain versions before publication.
+
+A runtime-only release (a dev build, or a promotion without installer assets)
+that carries `couch-bluetoothd` publishes the BlueZ source with it even though
+it skips `assemble`: attach the `bluez` component (the `--output` directory of
+`collect_external_sources.py bluez`, tarred deterministically) next to the
+runtime tar, or add `external/bluez` to the project + Cargo source archive.
 
 After extracting, use the retained directory layout. From `couch/`, for example:
 

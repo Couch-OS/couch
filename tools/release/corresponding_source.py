@@ -20,7 +20,7 @@ from urllib.request import Request, urlopen
 
 MAX_DOWNLOAD = 1024 * 1024 * 1024
 SOURCE_TOP = {'assets', 'clients', 'daemon', 'gui', 'initramfs', 'kernel', 'model',
-              'recovery', 'src', 'stage2', 'tools', 'ui', 'web', 'docs', '.github'}
+              'recovery', 'src', 'stage2', 'third_party', 'tools', 'ui', 'web', 'docs', '.github'}
 ROOT_FILES = {'COPYING', 'README.md', 'AGENTS.md', '.gitignore'}
 EXCLUDE_PARTS = {'target', 'dist', 'build', '.git', 'scratchpad', 'node_modules', '__pycache__'}
 FORBIDDEN_SUFFIXES = {'.img', '.apk', '.so', '.a', '.o', '.pem', '.key', '.elf', '.bin'}
@@ -492,7 +492,7 @@ def external_sources(directory, receipt_file, output):
     """Import audited kernel/BusyBox inputs; receipts must name actual source bytes."""
     receipt = json.loads(receipt_file.read_text())
     name = receipt.get('component')
-    if receipt.get('schema') != 1 or receipt.get('kind') != 'couch-external-source' or name not in ('kernel', 'busybox', 'rust-stdlib'):
+    if receipt.get('schema') != 1 or receipt.get('kind') != 'couch-external-source' or name not in ('kernel', 'busybox', 'rust-stdlib', 'bluez'):
         raise ValueError('Unsupported external source receipt')
     files = receipt.get('files', {})
     required = [receipt.get('source_archive'), receipt.get('configuration'), receipt.get('build_recipe'), receipt.get('toolchain_receipt')]
@@ -516,7 +516,8 @@ def external_sources(directory, receipt_file, output):
 def assemble(output, archive_path):
     included, components = {}, {}
     for name, directory in [('project', 'couch'), ('cargo', 'cargo-vendor'), ('cargo-notices', 'cargo-notices'), ('alpine', 'alpine'),
-                            ('kernel', 'external/kernel'), ('busybox', 'external/busybox'), ('rust-stdlib', 'external/rust-stdlib')]:
+                            ('kernel', 'external/kernel'), ('busybox', 'external/busybox'), ('rust-stdlib', 'external/rust-stdlib'),
+                            ('bluez', 'external/bluez')]:
         receipt = output / (name + '.json')
         if not receipt.is_file():
             raise ValueError('Missing source component: ' + name)
@@ -546,6 +547,8 @@ def assemble(output, archive_path):
     notices.extend(['', 'Additional upstream notices are retained under cargo-notices/ at recorded publication commits. Explicit reviewed supplements contain standard license terms and unchanged published metadata, not invented upstream attribution; see cargo-notices.json for each provenance and explanation.', '', '## Alpine runtime packages', ''])
     for p in components['alpine']['packages']:
         notices.append(f"- {p['pkgname']} {p['pkgver']}: {p['license']}; origin {p['origin']} at {p['commit']} (alpine/{p['origin']}-{p['commit']}/).")
+    notices.extend(['', '## Patched BlueZ', '',
+                    f"- couch-bluetoothd: BlueZ {components['bluez'].get('bluez_version', '')} bluetoothd with Couch's patches; GPL-2.0-or-later (parts LGPL-2.1-or-later, BSD-2-Clause); source external/bluez/ (upstream tarball, Alpine recipe, patches, build script)."])
     notices.extend(['', '## Building', '',
                     'Use the matching Couch source recipes in couch/tools and couch/kernel. Each external component includes its configuration, build recipe and toolchain receipt.',
                     'To use vendored Rust dependencies, run Cargo from couch/ and pass --config ../cargo-config/vendor.toml --locked --offline with the chosen workspace manifest. Keep the archive directory layout intact.',
@@ -554,7 +557,7 @@ def assemble(output, archive_path):
     included['NOTICES.md'] = sha(output / 'NOTICES.md')
     manifest = {'schema': 1, 'kind': 'couch-corresponding-source-archive', 'complete': True,
                 'project_commit': components['project']['commit'], 'files': included,
-                'scope': 'Couch/runtime/installer, locked Cargo dependencies, Alpine closure, compiled normal kernel, BusyBox, Rust standard library; excludes owner-local Android vendor inputs and stock recovery kernel'}
+                'scope': 'Couch/runtime/installer, locked Cargo dependencies, Alpine closure, compiled normal kernel, BusyBox, Rust standard library, patched BlueZ bluetoothd; excludes owner-local Android vendor inputs and stock recovery kernel'}
     report(output / 'SOURCE-MANIFEST.json', manifest)
     names = sorted([*included, 'SOURCE-MANIFEST.json'])
     if archive_path.exists():
