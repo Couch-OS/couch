@@ -530,9 +530,8 @@ pub fn screen(app: App) -> AnyView {
         {ui::page_header(app, "Integrations", None)}
         <p class="lead">"Install signed packages from trusted repositories. Removing or changing a package keeps its saved connection settings so it can be set up again later."</p>
         {move || recovery.get().recovery.and_then(|snapshot| (!snapshot.integrations_active && snapshot.path.is_some()).then_some(view! {
-            <section class="notice" role="alert"><strong>"Saved integration configuration found"</strong><p>"Couch kept configuration from an earlier runtime integration setup. Download a copy before any deliberate import; importing it replaces the current house configuration."</p><a href="/api/integrations/recovery/config">"Download saved integration configuration"</a></section>
+            <section class="notice" role="alert"><strong>"Saved integration configuration found"</strong><p>"Couch kept configuration from an earlier runtime integration setup. Download a copy before any deliberate import; importing it replaces the current house configuration."</p><a href="/api/integrations/recovery/config" download="couch-integration-recovery.json">"Download saved integration configuration"</a></section>
         }))}
-        <section class="notice"><strong>"Package safety"</strong><p>"Couch installs packages only by their catalog ID from a trusted repository. It never installs a raw package URL. For a custom repository, paste its public key and compare the fingerprint before you trust it."</p></section>
         <section class="card integration-operation">
             <h2>"Catalog"</h2>
             <p role="status" aria-live="polite">{move || message.get()}</p>
@@ -554,8 +553,8 @@ pub fn screen(app: App) -> AnyView {
             <p class="dim">"Official repositories are built in. To add a custom repository, paste its public signing key from a source you trust; Couch does not fetch or trust a key automatically."</p>
             <div class="integration-grid">{move || catalog.get().repositories.into_iter().map(|repository| repository_card(app, repository, catalog, message, error)).collect_view()}</div>
             <h3>"Add a custom repository"</h3>
-            <label class="field"><span class="label">"Repository ID"</span><input aria-label="Repository ID" placeholder="living-room-packages" prop:value=move || repo_id.get() on:input=move |event| repo_id.set(event_target_value(&event)) /></label>
-            <label class="field"><span class="label">"Repository name"</span><input aria-label="Repository name" placeholder="Living room packages" prop:value=move || repo_name.get() on:input=move |event| repo_name.set(event_target_value(&event)) /></label>
+            <label class="field"><span class="label">"Repository ID"</span><input type="text" aria-label="Repository ID" placeholder="living-room-packages" prop:value=move || repo_id.get() on:input=move |event| repo_id.set(event_target_value(&event)) /></label>
+            <label class="field"><span class="label">"Repository name"</span><input type="text" aria-label="Repository name" placeholder="Living room packages" prop:value=move || repo_name.get() on:input=move |event| repo_name.set(event_target_value(&event)) /></label>
             <label class="field"><span class="label">"Repository URL"</span><input type="url" aria-label="Repository URL" placeholder="https://packages.example.com/couch" prop:value=move || repo_url.get() on:input=move |event| repo_url.set(event_target_value(&event)) /></label>
             <label class="field"><span class="label">"Repository public key (PEM)"</span><textarea aria-label="Repository public key" rows="5" placeholder="-----BEGIN PUBLIC KEY-----" prop:value=move || public_key.get() on:input=move |event| public_key.set(event_target_value(&event))></textarea></label>
             <button class="primary" type="button" on:click=move |_| stage_repository()>"Check public-key fingerprint"</button>
