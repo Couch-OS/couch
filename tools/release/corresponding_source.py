@@ -21,7 +21,7 @@ from urllib.request import Request, urlopen
 MAX_DOWNLOAD = 1024 * 1024 * 1024
 SOURCE_TOP = {'assets', 'clients', 'daemon', 'gui', 'initramfs', 'kernel', 'model',
               'recovery', 'src', 'stage2', 'third_party', 'tools', 'ui', 'web', 'docs', '.github'}
-ROOT_FILES = {'COPYING', 'README.md', 'AGENTS.md', '.gitignore'}
+ROOT_FILES = {'COPYING', 'README.md', 'AGENTS.md', '.gitignore', 'local.env.example'}
 EXCLUDE_PARTS = {'target', 'dist', 'build', '.git', 'scratchpad', 'node_modules', '__pycache__'}
 FORBIDDEN_SUFFIXES = {'.img', '.apk', '.so', '.a', '.o', '.pem', '.key', '.elf', '.bin'}
 MANIFESTS = ('model/Cargo.toml', 'clients/Cargo.toml', 'daemon/Cargo.toml',
