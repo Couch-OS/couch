@@ -6,12 +6,11 @@ on:
       # change to any of them has to be able to trigger it.
       - 'tools/installer/**'
       - 'tools/release/**'
-      # The published release tag is copied into these three by
+      # The published release tag is copied into these two by
       # tools/release/bump_release.py, so a hand edit to one of them has to be
       # able to reach the literal check in the stage job below.
       - 'README.md'
       - 'docs/installer.md'
-      - 'site/index.html'
       - '.github/workflows/installer-native-host.yml'
   workflow_dispatch:
     inputs:

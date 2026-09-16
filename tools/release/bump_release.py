@@ -9,10 +9,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = 'tools/release/current-release.txt'
 # Files whose dated tags are all the published release: the install commands a
-# reader copies. site/index.html carries each command twice, once visibly and
-# once in the copy button's data-copy attribute, and a hand edit that missed
-# the invisible one shipped a page whose copied command 404s.
-GOVERNED = ('README.md', 'docs/installer.md', 'site/index.html')
+# reader copies. The separately published site reads this source file from its
+# pinned Couch checkout during its own build, so it has no cross-repository
+# literal to rewrite here.
+GOVERNED = ('README.md', 'docs/installer.md')
 # Dated tags here are ordering examples and test fixtures, not install
 # instructions, so a bump has to leave them alone.
 EXEMPT = (SOURCE, 'tools/installer/couch_tui.py', 'tools/installer/release_discovery.py',

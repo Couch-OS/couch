@@ -6,7 +6,7 @@ Couch brings your TVs, media players, speakers and smart-home devices together
 on a dedicated remote. Use its physical buttons and touchscreen for everyday
 control, and configure your setup from a browser.
 
-[Project site](https://dangerouslaser.github.io/couch/) ·
+[Project site](https://couch-os.dev/) ·
 [Kernel source](https://github.com/dangerouslaser/couch-kernel) ·
 [Discord](https://discord.gg/KnZK6SZQhF)
 
