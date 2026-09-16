@@ -82,7 +82,7 @@ fn decode_hex(s: &str) -> Result<Vec<u8>> {
 pub(crate) fn digest(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }
-fn version(tag: &str) -> Option<semver::Version> {
+pub(crate) fn version(tag: &str) -> Option<semver::Version> {
     semver::Version::parse(tag.strip_prefix('v')?).ok()
 }
 pub(crate) fn fetch(url: &str, limit: u64) -> Result<Vec<u8>> {
@@ -155,6 +155,11 @@ pub(crate) fn verify(bytes: &[u8], key: &[u8], expected: &str) -> Result<Manifes
 /// the one that runtime shipped, so the runtime always goes first.
 pub(crate) struct Offers {
     pub runtime: Option<Manifest>,
+    /// Whether the release the runtime offer comes from also publishes a boot
+    /// payload. Read from the asset listing that is already in hand, so the
+    /// remote can say "step 1 of 2" before the first step is even installed,
+    /// without a second request.
+    pub runtime_has_boot: bool,
     pub boot: Option<Manifest>,
 }
 /// A signed manifest asset on a release, as the listing describes it.
@@ -233,14 +238,22 @@ pub(crate) fn discover(channel: Channel, installed: &str, key_path: &Path) -> Re
             continue;
         }
         if let Some(item) = listed(&release, tag, &format!("couch-{tag}-ha100-update.json"))? {
-            candidates.push((v, item));
+            let name = format!("couch-{tag}-ha100-boot.json");
+            let pair = release["assets"]
+                .as_array()
+                .is_some_and(|assets| assets.iter().any(|asset| asset["name"] == name));
+            candidates.push((v, item, pair));
         }
     }
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
-    let runtime = candidates.into_iter().next().map(|(_, item)| item);
+    let (runtime, runtime_has_boot) = match candidates.into_iter().next() {
+        Some((_, item, pair)) => (Some(item), pair),
+        None => (None, false),
+    };
     if runtime.is_none() && boot.is_none() {
         return Ok(Offers {
             runtime: None,
+            runtime_has_boot: false,
             boot: None,
         });
     }
@@ -254,7 +267,11 @@ pub(crate) fn discover(channel: Channel, installed: &str, key_path: &Path) -> Re
         .map(|item| fetch_manifest(&item, &key))
         .transpose()?
         .filter(|m| m.kind == "boot");
-    Ok(Offers { runtime, boot })
+    Ok(Offers {
+        runtime,
+        runtime_has_boot,
+        boot,
+    })
 }
 
 #[cfg(test)]
