@@ -233,8 +233,8 @@ pub fn bluetooth_word(word: &str) -> Result<(), String> {
 
 /// The daemon's state with the per-bond lines: the TV on the link (address
 /// and name), the bond it holds active, and the TV a window just bonded.
-pub fn bluetooth_link() -> couch_system::ui_settings::LinkStatus {
-    couch_system::ui_settings::bluetooth_link()
+pub fn bluetooth_link() -> couch_bt_hid::PairStatus {
+    couch_system::ui_settings::bluetooth_pairing()
 }
 fn bluetooth_request(
     action: couch_system::bluetooth::PairAction,
@@ -268,20 +268,36 @@ pub fn bluetooth_unpair_device(device: &str, address: &str) -> Result<(), String
     )
 }
 /// Make one bond the active link, off the UI thread, and only when it is not
-/// already the one asked for: an activity start, a device screen and an
+/// already the one the daemon has: an activity start, a device screen and an
 /// activity's page all say so on their way in, often for the same TV. A bond
 /// with no address (migrated) is left to the daemon's own choice. Nothing is
 /// sent while Bluetooth is off; the daemon has no link to switch.
+///
+/// The daemon's `active` line is the truth, not a flag kept here: it owns
+/// the active bond, restores it after a reboot, and moves it itself when a
+/// pairing window ends in `done`. A local memo only suppresses the repeats
+/// that would pile up in the seconds before the daemon's poll rewrites the
+/// file, and it is short-lived so a bond changed underneath us is noticed.
 pub fn bluetooth_activate(address: &str) {
-    static LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    static SENT: std::sync::Mutex<Option<(String, std::time::Instant)>> =
+        std::sync::Mutex::new(None);
+    const SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
     if !couch_system::bluetooth::valid_address(address) || !bluetooth_running() {
         return;
     }
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if last.as_deref() == Some(address) {
+    if bluetooth_link().active.as_deref() == Some(address) {
         return;
     }
-    *last = Some(address.to_owned());
+    {
+        let mut sent = SENT.lock().unwrap_or_else(|e| e.into_inner());
+        if sent
+            .as_ref()
+            .is_some_and(|(last, at)| last == address && at.elapsed() < SETTLE)
+        {
+            return;
+        }
+        *sent = Some((address.to_owned(), std::time::Instant::now()));
+    }
     let address = address.to_owned();
     std::thread::spawn(move || {
         println!("couch-gui: bluetooth activate {address}");
@@ -291,9 +307,9 @@ pub fn bluetooth_activate(address: &str) {
             None,
         ) {
             println!("couch-gui: bluetooth activate {address}: {e}");
-            let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-            if last.as_deref() == Some(address.as_str()) {
-                *last = None;
+            let mut sent = SENT.lock().unwrap_or_else(|e| e.into_inner());
+            if sent.as_ref().is_some_and(|(last, _)| *last == address) {
+                *sent = None;
             }
         }
     });

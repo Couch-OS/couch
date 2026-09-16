@@ -113,20 +113,10 @@ pub enum PairAction {
 /// between the outer root and Alpine, like the daemon's own files.
 pub const BOND_REQUEST_PATH: &str = "/tmp/couch-bt-bond.request";
 
-/// Six uppercase hex pairs separated by colons, as the daemon writes them.
-/// Mirrors `couch_model::DeviceBluetooth::valid_address`; the service does
-/// not link the model.
-pub fn valid_address(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    bytes.len() == 17
-        && bytes.iter().enumerate().all(|(i, b)| {
-            if i % 3 == 2 {
-                *b == b':'
-            } else {
-                b.is_ascii_digit() || (b'A'..=b'F').contains(b)
-            }
-        })
-}
+/// Six uppercase hex pairs separated by colons, as the daemon writes them:
+/// the daemon's own check, re-exported. couch-confd and this service would
+/// otherwise each keep a copy to drift from it.
+pub use couch_bt_hid::{normalize_address, valid_address};
 
 /// A device id as the model allows them: safe to write to a file and read
 /// back as one word.
@@ -138,38 +128,41 @@ fn valid_device(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// The word(s) an action turns into, or why it cannot. Pure, so the CLI's
-/// JSON forms are testable without a daemon.
-pub fn word_for(
+/// The datagram an action turns into, or why it cannot. The control words
+/// are the daemon's [`Control`](couch_bt_hid::Control), which renders them,
+/// so this is only the mapping from a request onto one of those; `Enter` is
+/// a key rather than a control and is the one word spelled here. Pure, so
+/// the CLI's JSON forms are testable without a daemon.
+pub fn control_for(
     action: PairAction,
     address: Option<&str>,
     device: Option<&str>,
 ) -> Result<String, String> {
-    if let Some(address) = address {
-        if !valid_address(address) {
-            return Err(
-                "A Bluetooth address is six uppercase hex pairs separated by colons".into(),
-            );
-        }
-    }
+    // The daemon accepts either case and writes uppercase, so a hand-typed
+    // address is brought to its form rather than refused.
+    let address = match address {
+        Some(text) => Some(
+            couch_bt_hid::normalize_address(text)
+                .ok_or("A Bluetooth address is six uppercase hex pairs separated by colons")?,
+        ),
+        None => None,
+    };
     if let Some(device) = device {
         if !valid_device(device) {
             return Err("Device ids are alphanumeric with dashes".into());
         }
     }
-    Ok(match (action, address) {
-        (PairAction::Pair, _) => couch_bt_hid::WORD_PAIR.into(),
-        (PairAction::Stop, _) => couch_bt_hid::WORD_PAIR_STOP.into(),
-        (PairAction::Forget, Some(address)) => format!("{} {address}", couch_bt_hid::WORD_FORGET),
-        (PairAction::Forget, None) => couch_bt_hid::WORD_FORGET.into(),
-        (PairAction::Enter, _) => "enter".into(),
-        (PairAction::Activate, Some(address)) => format!("activate {address}"),
-        (PairAction::Activate, None) => "activate none".into(),
+    Ok(match action {
+        PairAction::Pair => couch_bt_hid::Control::Pair.word(),
+        PairAction::Stop => couch_bt_hid::Control::PairStop.word(),
+        PairAction::Forget => couch_bt_hid::Control::Forget(address).word(),
+        PairAction::Activate => couch_bt_hid::Control::Activate(address).word(),
+        PairAction::Enter => "enter".into(),
     })
 }
 
 /// Send one control word to the HID daemon. A datagram: the outcome is read
-/// back from the daemon's state file (`ui_settings::bluetooth_link`).
+/// back from the daemon's state file (`ui_settings::bluetooth_pairing`).
 ///
 /// `Pair` with a device remembers that device in [`BOND_REQUEST_PATH`] so the
 /// TV that bonds gets stored on it; `Forget` with a device asks for the
@@ -177,7 +170,7 @@ pub fn word_for(
 /// clears any pending request, so a window opened from the global settings
 /// never lands a TV on a device whose window timed out earlier.
 pub fn pair(action: PairAction, address: Option<&str>, device: Option<&str>) -> Result<(), String> {
-    let word = word_for(action, address, device)?;
+    let word = control_for(action, address, device)?;
     if !crate::ui_settings::hid_running() {
         return Err("Turn Bluetooth on first".into());
     }
@@ -226,7 +219,7 @@ pub fn bond_request_device() -> Option<String> {
 /// store), the window failed (nothing to store; the request is dropped), or
 /// the request is an unpair. Pure over the two texts, so the tick's decision
 /// is testable; [`take_pending_bond`] is the filesystem edge.
-pub fn pending_bond(request: &str, state: &crate::ui_settings::LinkStatus) -> Option<BondRequest> {
+pub fn pending_bond(request: &str, state: &couch_bt_hid::PairStatus) -> Option<BondRequest> {
     let mut words = request.split_whitespace();
     let device = words.next().filter(|d| valid_device(d))?.to_owned();
     if words.next() == Some("unpair") {
@@ -247,7 +240,7 @@ pub fn pending_bond(request: &str, state: &crate::ui_settings::LinkStatus) -> Op
 /// once a second by couch-confd; cheap when there is no request.
 pub fn take_pending_bond() -> Option<BondRequest> {
     let request = fs::read_to_string(BOND_REQUEST_PATH).ok()?;
-    let state = crate::ui_settings::bluetooth_link();
+    let state = crate::ui_settings::bluetooth_pairing();
     let outcome = pending_bond(&request, &state);
     let over = matches!(
         state.phase,
@@ -793,50 +786,67 @@ mod tests {
 #[cfg(test)]
 mod pairing_tests {
     use super::*;
-    use crate::ui_settings::{LinkStatus, Peer};
-    use couch_bt_hid::PairPhase;
+    use couch_bt_hid::{PairPhase, PairStatus, Peer};
 
     #[test]
-    fn words_follow_the_daemon_contract_and_refuse_bad_addresses() {
-        assert_eq!(word_for(PairAction::Pair, None, None).unwrap(), "pair");
+    fn controls_follow_the_daemon_contract_and_refuse_bad_addresses() {
+        assert_eq!(control_for(PairAction::Pair, None, None).unwrap(), "pair");
         assert_eq!(
-            word_for(PairAction::Pair, None, Some("living-tv")).unwrap(),
+            control_for(PairAction::Pair, None, Some("living-tv")).unwrap(),
             "pair"
         );
-        assert_eq!(word_for(PairAction::Stop, None, None).unwrap(), "pair-stop");
-        assert_eq!(word_for(PairAction::Enter, None, None).unwrap(), "enter");
-        assert_eq!(word_for(PairAction::Forget, None, None).unwrap(), "forget");
         assert_eq!(
-            word_for(PairAction::Forget, Some("44:27:45:4E:33:25"), None).unwrap(),
+            control_for(PairAction::Stop, None, None).unwrap(),
+            "pair-stop"
+        );
+        assert_eq!(control_for(PairAction::Enter, None, None).unwrap(), "enter");
+        assert_eq!(
+            control_for(PairAction::Forget, None, None).unwrap(),
+            "forget"
+        );
+        assert_eq!(
+            control_for(PairAction::Forget, Some("44:27:45:4E:33:25"), None).unwrap(),
             "forget 44:27:45:4E:33:25"
         );
         assert_eq!(
-            word_for(PairAction::Activate, Some("44:27:45:4E:33:25"), None).unwrap(),
+            control_for(PairAction::Activate, Some("44:27:45:4E:33:25"), None).unwrap(),
             "activate 44:27:45:4E:33:25"
         );
         assert_eq!(
-            word_for(PairAction::Activate, None, None).unwrap(),
+            control_for(PairAction::Activate, None, None).unwrap(),
             "activate none"
         );
-        for bad in [
-            "",
-            "44:27:45:4e:33:25",
-            "vol+",
-            "44:27:45:4E:33:25 pair",
-            "none",
+        // Either case is accepted and written the daemon's way.
+        assert_eq!(
+            control_for(PairAction::Activate, Some("44:27:45:4e:33:25"), None).unwrap(),
+            "activate 44:27:45:4E:33:25"
+        );
+        // Every control this renders is one the daemon's own parser takes.
+        for action in [
+            PairAction::Pair,
+            PairAction::Stop,
+            PairAction::Forget,
+            PairAction::Activate,
         ] {
+            let word = control_for(action, Some("44:27:45:4E:33:25"), None).unwrap();
             assert!(
-                word_for(PairAction::Activate, Some(bad), None).is_err(),
+                couch_bt_hid::Control::parse(&word).unwrap().is_some(),
+                "{word:?} is not a control the daemon parses"
+            );
+        }
+        for bad in ["", "vol+", "44:27:45:4E:33:25 pair", "none"] {
+            assert!(
+                control_for(PairAction::Activate, Some(bad), None).is_err(),
                 "{bad:?}"
             );
             assert!(
-                word_for(PairAction::Forget, Some(bad), None).is_err(),
+                control_for(PairAction::Forget, Some(bad), None).is_err(),
                 "{bad:?}"
             );
         }
         for bad in ["", "../x", "a b", "x".repeat(129).as_str()] {
             assert!(
-                word_for(PairAction::Pair, None, Some(bad)).is_err(),
+                control_for(PairAction::Pair, None, Some(bad)).is_err(),
                 "{bad:?}"
             );
         }
@@ -844,15 +854,14 @@ mod pairing_tests {
 
     #[test]
     fn a_pending_request_resolves_only_on_done_with_a_peer_or_on_unpair() {
-        let done = LinkStatus {
+        let done = PairStatus {
             phase: PairPhase::Done,
             detail: "LG".into(),
             bonded: Some(Peer {
                 address: "44:27:45:4E:33:25".into(),
                 name: "LG".into(),
             }),
-            link: None,
-            active: None,
+            ..PairStatus::idle()
         };
         assert_eq!(
             pending_bond("living-tv pair\n", &done),
@@ -864,7 +873,7 @@ mod pairing_tests {
         );
         // The daemon before this contract reports done without a peer line:
         // nothing to store, so the request waits for the tick to drop it.
-        let nameless = LinkStatus {
+        let nameless = PairStatus {
             bonded: None,
             ..done.clone()
         };
@@ -875,14 +884,14 @@ mod pairing_tests {
             PairPhase::Failed,
             PairPhase::Idle,
         ] {
-            let s = LinkStatus {
+            let s = PairStatus {
                 phase,
                 ..done.clone()
             };
             assert_eq!(pending_bond("living-tv pair\n", &s), None, "{phase:?}");
         }
         assert_eq!(
-            pending_bond("living-tv unpair\n", &LinkStatus::default()),
+            pending_bond("living-tv unpair\n", &PairStatus::idle()),
             Some(BondRequest::Unpair {
                 device: "living-tv".into()
             })

@@ -46,7 +46,7 @@ fn ssh_available() -> bool {
 /// needs no copy of the tables.
 fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
     let state = ui_settings::bluetooth_state();
-    let link = ui_settings::bluetooth_link();
+    let link = ui_settings::bluetooth_pairing();
     let peer = |p: &Option<ui_settings::Peer>| {
         p.as_ref()
             .map(|p| serde_json::json!({"address": p.address, "name": p.name}))
@@ -85,7 +85,7 @@ fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
                 "device": couch_system::bluetooth::bond_request_device(),
                 "bonded": peer(&link.bonded),
             },
-            "peer": link.link.as_ref().map(|p| p.label().to_owned()),
+            "peer": link.peer,
             "link": peer(&link.link),
             "active": link.active,
         },
@@ -204,14 +204,20 @@ pub(super) fn bluetooth(body: &[u8], device_exists: impl Fn(&str) -> bool) -> Re
     let (Ok(address), Ok(device)) = (text("address"), text("device")) else {
         return Reply::error(400, "address and device are strings");
     };
-    if let Some(address) = &address {
-        if !couch_system::bluetooth::valid_address(address) {
-            return Reply::error(
-                400,
-                "A Bluetooth address is six uppercase hex pairs separated by colons",
-            );
-        }
-    }
+    // Either case, as the daemon takes them; stored and sent uppercase, so
+    // one spelling reaches the socket however the caller typed it.
+    let address = match &address {
+        Some(text) => match couch_system::bluetooth::normalize_address(text) {
+            Some(address) => Some(address),
+            None => {
+                return Reply::error(
+                    400,
+                    "A Bluetooth address is six hex pairs separated by colons",
+                )
+            }
+        },
+        None => None,
+    };
     if let Some(device) = &device {
         if !device_exists(device) {
             return Reply::error(404, "No such device");
@@ -264,8 +270,8 @@ mod device_tests {
             br#"{"action":"kbd:28"}"#.as_slice(),
             br#"{"action":"vol+"}"#,
             br#"{"action":"Pair"}"#,
-            br#"{"action":"activate","address":"44:27:45:4e:33:25"}"#,
             br#"{"action":"activate","address":"vol+"}"#,
+            br#"{"action":"activate","address":"44:27:45:4E:33"}"#,
             br#"{"action":"pair","device":7}"#,
             br#"{}"#,
             b"{",
@@ -283,5 +289,19 @@ mod device_tests {
             bluetooth(br#"{"action":"pair","device":"ghost"}"#, |_| false).status,
             404
         );
+        // A well-formed address in either case gets past the checks here and
+        // is only stopped by the absent system service, so the page and a
+        // hand-typed request spell it the same way.
+        for body in [
+            br#"{"action":"activate","address":"44:27:45:4E:33:25"}"#.as_slice(),
+            br#"{"action":"activate","address":"44:27:45:4e:33:25"}"#,
+        ] {
+            assert_eq!(
+                bluetooth(body, |_| true).status,
+                503,
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
     }
 }
