@@ -6,12 +6,87 @@
 //! because for most providers creating the record is the first of two steps
 //! and the second (address, pairing, credentials) is only offered there.
 use crate::{api, route::Route, ui, App};
-use couch_model::{Connection, Id, Integration, Provider};
+use couch_model::{
+    Connection, Id, Integration, PluginCapability, PluginComponent, PluginStatusField, Provider,
+};
 use leptos::prelude::*;
+use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Clone, Debug, Deserialize)]
+struct PluginCatalog {
+    #[serde(default)]
+    integrations: Vec<PluginManifest>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PluginManifest {
+    id: String,
+    label: String,
+    #[serde(default)]
+    capabilities: Vec<PluginCapability>,
+    #[serde(default)]
+    settings: Vec<PluginSetting>,
+    #[serde(default)]
+    supports_inputs: bool,
+    #[serde(default)]
+    presentation: Vec<PluginComponent>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PluginFieldKind {
+    Text,
+    Secret,
+    Integer,
+    Boolean,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PluginSetting {
+    id: String,
+    label: String,
+    kind: PluginFieldKind,
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    default: Option<Value>,
+}
 
 pub fn screen(app: App) -> AnyView {
     let choice = RwSignal::new(String::new());
+    let plugins = RwSignal::new(Vec::<PluginManifest>::new());
+    let catalog_status = RwSignal::new("Loading installed integrations…".to_string());
+    leptos::task::spawn_local(async move {
+        match api::ha("GET", "/api/integrations", None).await {
+            Ok(value) => match serde_json::from_value::<PluginCatalog>(value) {
+                Ok(catalog) => {
+                    catalog_status.set(if catalog.integrations.is_empty() {
+                        "No external integration packages are installed.".into()
+                    } else {
+                        format!(
+                            "{} external integration package{} installed.",
+                            catalog.integrations.len(),
+                            if catalog.integrations.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        )
+                    });
+                    plugins.set(catalog.integrations);
+                }
+                Err(_) => catalog_status.set("The integration catalog was unreadable.".into()),
+            },
+            Err(error) => {
+                if error.unauthorized {
+                    app.paired.set(Some(false));
+                }
+                catalog_status.set(error.message);
+            }
+        }
+    });
     // Infrared is not a connection anyone adds here; it is built into the
     // remote and configured on each device.
     let order = Memo::new(move |_| {
@@ -46,8 +121,9 @@ pub fn screen(app: App) -> AnyView {
         {move ||order.with(Vec::is_empty).then(||ui::empty("No connections yet. Add your first connection below."))}
         <div class="destination-grid"><For each=move ||order.get() key=|id|id.clone() children=move |id|card(app,id)/></div>
         <section class="creation"><h2>"Add a connection"</h2>
-        <label class="field">"Connection type"<select aria-label="Connection type" prop:value=move || choice.get() on:change=move |e|choice.set(event_target_value(&e))><option value="">"Choose a type"</option>{available.into_iter().map(|(kind,label)|view!{<option value=kind>{label}</option>}).collect_view()}</select></label>
-        {move || match choice.get().as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"matter"=>create_named(app,Provider::Matter),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"denon"=>denon_form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"hue"=>create_named(app,Provider::Hue),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),"tizen"=>create_named(app,Provider::Tizen),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}
+        <label class="field">"Connection type"<select aria-label="Connection type" prop:value=move || choice.get() on:change=move |e|choice.set(event_target_value(&e))><option value="">"Choose a type"</option>{available.into_iter().map(|(kind,label)|view!{<option value=kind>{label}</option>}).collect_view()}{move ||plugins.get().into_iter().map(|plugin|view!{<option value=format!("plugin:{}",plugin.id)>{format!("{} · installed package",plugin.label)}</option>}).collect_view()}</select></label>
+        <p class="dim" role="status">{move ||catalog_status.get()}</p>
+        {move || {let selected=choice.get();if let Some(id)=selected.strip_prefix("plugin:"){plugins.get().into_iter().find(|plugin|plugin.id==id).map(|plugin|create_plugin(app,plugin)).unwrap_or_else(||view!{<p class="notice">"That integration package is no longer installed. Existing connections are retained, but a new one cannot be created."</p>}.into_any())}else{match selected.as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"matter"=>create_named(app,Provider::Matter),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"denon"=>denon_form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"hue"=>create_named(app,Provider::Hue),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),"tizen"=>create_named(app,Provider::Tizen),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}}}
         </section>
     }.into_any()
 }
@@ -142,7 +218,7 @@ fn page(app: App, id: Id) -> AnyView {
     // own drafts from it and keeps them across a write, which is the point: a
     // rejected save must not lose what was typed and a pairing under way must
     // not be torn down. A connection never changes provider, so this is safe.
-    let label = c.provider.label();
+    let label = c.provider.label().to_string();
     let settings = match c.provider {
         Provider::Sonos { .. } => view!{{titled("Connection",super::sonos::form(app,Some(c.clone())))}{super::sonos::controls(app,c.id.to_string())}}.into_any(),
         Provider::CoreElec { .. } => view!{{titled("Connection",super::coreelec::form(app,Some(c.clone())))}{super::kodi::setup(app,&c)}{super::coreelec::setup(app,&c)}}.into_any(),
@@ -151,16 +227,17 @@ fn page(app: App, id: Id) -> AnyView {
         Provider::Ir => titled("Connection", local_form(app, Some(c.clone()), true)),
         Provider::UnifiProtect => super::protect::setup(app, &c),
         Provider::Matter => super::matter::setup(app, &c),
+        Provider::Plugin { .. } => plugin_setup(app, &c),
         Provider::HomeAssistant => super::home_assistant::setup(app, &c),
         Provider::Hue => super::hue::setup(app, &c),
         Provider::WebOs => super::webos::setup(app, &c),
-        Provider::AndroidTv | Provider::AppleTv => titled(label, super::streaming_tv::setup(app, &c)),
+        Provider::AndroidTv | Provider::AppleTv => titled(label.clone(), super::streaming_tv::setup(app, &c)),
         Provider::Tizen => super::tizen::setup(app, &c),
-        Provider::BluetoothTv => titled(label, bluetooth_notes()),
+        Provider::BluetoothTv => titled(label.clone(), bluetooth_notes()),
     };
     view!{
         {ui::page_header(app, move ||connection.get().map(|c|c.name), Some(Route::Connections))}
-        <p class="lead">{move ||connection.get().map(|c|format!("{label} · {}", address(&c)))}</p>
+        <p class="lead">{move ||connection.get().map(|c|format!("{} · {}", label, address(&c)))}</p>
 
         <div class="connection-settings">{settings}</div>
 
@@ -184,7 +261,8 @@ fn page(app: App, id: Id) -> AnyView {
 }
 
 /// A settings form on the connection page, in its own card under a heading.
-fn titled(heading: &'static str, body: AnyView) -> AnyView {
+fn titled(heading: impl Into<String>, body: AnyView) -> AnyView {
+    let heading = heading.into();
     view! {<section class="card"><h2>{heading}</h2>{body}</section>}.into_any()
 }
 
@@ -255,6 +333,319 @@ fn create_named(app: App, provider: Provider) -> AnyView {
     {field("Connection name",name,"Living room TV / Upstairs bridge")}
     <p class="dim">"Create a named connection. Its page opens next, where you enter its address and pair it."</p>
     <button type="submit" class="primary">"Create connection"</button></form>}.into_any()
+}
+
+fn create_plugin(app: App, manifest: PluginManifest) -> AnyView {
+    let name = RwSignal::new(manifest.label.clone());
+    let provider = Provider::Plugin {
+        id: manifest.id,
+        label: manifest.label,
+        capabilities: manifest.capabilities,
+        supports_inputs: manifest.supports_inputs,
+        presentation: manifest.presentation,
+    };
+    view!{<form on:submit=move |event|{event.prevent_default();let name=name.get_untracked().trim().to_string();if !name.is_empty(){create(app,json!({"name":name,"provider":provider}));}}>
+        {field("Connection name",name,"Living room integration")}
+        <p class="dim">"Create the connection, then enter its private settings on the next page. The package runs through Couch’s restricted integration host."</p>
+        <button type="submit" class="primary">"Create connection"</button>
+    </form>}.into_any()
+}
+
+fn plugin_setup(app: App, connection: &Connection) -> AnyView {
+    let Provider::Plugin {
+        id: package_id,
+        label,
+        capabilities,
+        supports_inputs,
+        presentation,
+    } = &connection.provider
+    else {
+        return ().into_any();
+    };
+    let package_id = package_id.clone();
+    let cached_label = label.clone();
+    let missing_label = cached_label.clone();
+    let cached_capabilities = capabilities.clone();
+    let cached_inputs = *supports_inputs;
+    let cached_presentation = presentation.clone();
+    let connection_id = connection.id.to_string();
+    let base = StoredValue::new(format!("/api/connections/{connection_id}/plugin"));
+    let manifest = RwSignal::new(None::<PluginManifest>);
+    let values = RwSignal::new(BTreeMap::<String, Value>::new());
+    let saved_secrets = RwSignal::new(BTreeSet::<String>::new());
+    let clear_secrets = RwSignal::new(BTreeSet::<String>::new());
+    let configured = RwSignal::new(false);
+    let busy = RwSignal::new(true);
+    let message = RwSignal::new("Loading integration settings…".to_string());
+    leptos::task::spawn_local(async move {
+        let catalog = api::ha("GET", "/api/integrations", None)
+            .await
+            .ok()
+            .and_then(|value| serde_json::from_value::<PluginCatalog>(value).ok());
+        let installed = catalog.and_then(|catalog| {
+            catalog
+                .integrations
+                .into_iter()
+                .find(|item| item.id == package_id)
+        });
+        let Some(installed) = installed else {
+            message.set(format!(
+                "The {missing_label} package is not installed. This connection and its button mappings are retained. Reinstall the package to edit private settings or send commands."
+            ));
+            busy.set(false);
+            return;
+        };
+        match api::ha("GET", &format!("{}/settings", base.get_value()), None).await {
+            Ok(redacted) => {
+                let mut loaded = BTreeMap::new();
+                for field in &installed.settings {
+                    if let Some(default) = &field.default {
+                        loaded.insert(field.id.clone(), default.clone());
+                    }
+                }
+                if let Some(settings) = redacted["settings"].as_object() {
+                    loaded.extend(
+                        settings
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone())),
+                    );
+                }
+                values.set(loaded);
+                saved_secrets.set(
+                    redacted["secrets"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                );
+                configured.set(redacted["configured"].as_bool().unwrap_or(false));
+                message.set(if configured.get_untracked() {
+                    "Private settings are configured.".into()
+                } else {
+                    "Enter the required settings to configure this integration.".into()
+                });
+                manifest.set(Some(installed));
+            }
+            Err(error) => {
+                if error.unauthorized {
+                    app.paired.set(Some(false));
+                }
+                message.set(error.message);
+            }
+        }
+        busy.set(false);
+    });
+
+    let cached = PluginManifest {
+        id: String::new(),
+        label: cached_label,
+        capabilities: cached_capabilities,
+        settings: Vec::new(),
+        supports_inputs: cached_inputs,
+        presentation: cached_presentation,
+    };
+    view! {
+        <section class="card">
+            <h2>"Integration settings"</h2>
+            <p class="dim">"Settings are stored in the remote’s private connection store and never appear in the home configuration."</p>
+            <p role="status">{move ||message.get()}</p>
+            {move ||manifest.get().map(|installed|plugin_form(app,base,installed,values,saved_secrets,clear_secrets,configured,busy,message))}
+        </section>
+        {plugin_controls(app,connection_id,cached,manifest,busy)}
+    }.into_any()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plugin_form(
+    app: App,
+    base: StoredValue<String>,
+    manifest: PluginManifest,
+    values: RwSignal<BTreeMap<String, Value>>,
+    saved_secrets: RwSignal<BTreeSet<String>>,
+    clear_secrets: RwSignal<BTreeSet<String>>,
+    configured: RwSignal<bool>,
+    busy: RwSignal<bool>,
+    message: RwSignal<String>,
+) -> AnyView {
+    let fields = manifest.settings.clone();
+    let submit_fields = fields.clone();
+    view! {<form on:submit=move |event|{
+        event.prevent_default();
+        if busy.get_untracked(){return}
+        let current=values.get_untracked();
+        let cleared=clear_secrets.get_untracked();
+        let mut settings=serde_json::Map::new();
+        for field in &submit_fields {
+            if field.kind==PluginFieldKind::Secret {
+                if cleared.contains(&field.id) { settings.insert(field.id.clone(),Value::Null); }
+                else if let Some(value)=current.get(&field.id).filter(|value|value.as_str().is_some_and(|text|!text.is_empty())) {settings.insert(field.id.clone(),value.clone());}
+            } else if let Some(value)=current.get(&field.id) { settings.insert(field.id.clone(),value.clone()); }
+        }
+        busy.set(true);message.set("Saving private settings…".into());
+        let saved_fields=submit_fields.clone();
+        leptos::task::spawn_local(async move {
+            match api::ha("POST",&format!("{}/settings",base.get_value()),Some(Value::Object(settings))).await {
+                Ok(redacted)=>{
+                    saved_secrets.set(redacted["secrets"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect());
+                    clear_secrets.set(BTreeSet::new());
+                    configured.set(redacted["configured"].as_bool().unwrap_or(true));
+                    values.update(|all|for field in &saved_fields {if field.kind==PluginFieldKind::Secret {all.remove(&field.id);}});
+                    message.set("Private settings saved.".into());
+                }
+                Err(error)=>{if error.unauthorized{app.paired.set(Some(false));}message.set(error.message);}
+            }
+            busy.set(false);
+        });
+    }>
+        {fields.into_iter().map(|setting|plugin_field(setting,values,saved_secrets,clear_secrets,busy)).collect_view()}
+        <button type="submit" class="primary" disabled=move ||busy.get()>"Save private settings"</button>
+    </form>}.into_any()
+}
+
+fn plugin_field(
+    setting: PluginSetting,
+    values: RwSignal<BTreeMap<String, Value>>,
+    saved_secrets: RwSignal<BTreeSet<String>>,
+    clear_secrets: RwSignal<BTreeSet<String>>,
+    busy: RwSignal<bool>,
+) -> AnyView {
+    let id = setting.id.clone();
+    let input_id = id.clone();
+    let label = if setting.required {
+        format!("{} · required", setting.label)
+    } else {
+        setting.label
+    };
+    match setting.kind {
+        PluginFieldKind::Boolean => view! {<label class="field checkbox-field"><input type="checkbox" checked=move ||values.with(|all|all.get(&id).and_then(Value::as_bool).unwrap_or(false)) disabled=move ||busy.get() on:change=move |event|values.update(|all|{all.insert(input_id.clone(),Value::Bool(event_target_checked(&event)));})/><span>{label}</span></label>}.into_any(),
+        kind => {
+            let id_for_value=id.clone();
+            let id_for_input=id.clone();
+            let saved_id=id.clone();
+            let clear_id=id.clone();
+            let clear_change=id.clone();
+            let input_type=if kind==PluginFieldKind::Secret{"password"}else if kind==PluginFieldKind::Integer{"number"}else{"text"};
+            view! {<div>
+                <label class="field">{label}<input type=input_type autocomplete=if kind==PluginFieldKind::Secret{"new-password"}else{"off"} required=setting.required && kind!=PluginFieldKind::Secret prop:value=move ||values.with(|all|all.get(&id_for_value).map(|value|value.as_str().map(str::to_owned).unwrap_or_else(||value.to_string())).unwrap_or_default()) placeholder=move ||if kind==PluginFieldKind::Secret&&saved_secrets.with(|all|all.contains(&saved_id)){"Saved secret · leave blank to keep"}else{""} on:input=move |event|{let text=event_target_value(&event);let value=if kind==PluginFieldKind::Integer{text.parse::<i64>().map(Value::from).unwrap_or(Value::String(text))}else{Value::String(text)};values.update(|all|{all.insert(id_for_input.clone(),value);});clear_secrets.update(|all|{all.remove(&clear_id);});}/></label>
+                {(kind==PluginFieldKind::Secret).then(||view!{<label class="field checkbox-field"><input type="checkbox" checked=move ||clear_secrets.with(|all|all.contains(&id)) disabled=move ||busy.get() on:change=move |event|clear_secrets.update(|all|{if event_target_checked(&event){all.insert(clear_change.clone());}else{all.remove(&clear_change);}})/><span>"Clear the saved value"</span></label>})}
+            </div>}.into_any()
+        }
+    }
+}
+
+fn plugin_controls(
+    app: App,
+    connection_id: String,
+    cached: PluginManifest,
+    installed: RwSignal<Option<PluginManifest>>,
+    settings_busy: RwSignal<bool>,
+) -> AnyView {
+    let live_busy = RwSignal::new(false);
+    let result = RwSignal::new(String::new());
+    let status = RwSignal::new(Value::Null);
+    let inputs = RwSignal::new(Vec::<(String, String)>::new());
+    let base = StoredValue::new(format!("/api/connections/{connection_id}/plugin"));
+    let call = move |method: &'static str, body: Option<Value>| {
+        if live_busy.get_untracked() || settings_busy.get_untracked() {
+            return;
+        }
+        live_busy.set(true);
+        leptos::task::spawn_local(async move {
+            match api::ha(
+                if method == "action" { "POST" } else { "GET" },
+                &format!("{}/{method}", base.get_value()),
+                body,
+            )
+            .await
+            {
+                Ok(value) => result.set(if method == "action" {
+                    "Command sent.".into()
+                } else if method == "inputs" {
+                    let choices = value
+                        .as_array()
+                        .or_else(|| value["inputs"].as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|item| {
+                            Some((
+                                item["id"].as_str()?.to_owned(),
+                                item["name"]
+                                    .as_str()
+                                    .unwrap_or(item["id"].as_str()?)
+                                    .to_owned(),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                    let message = if choices.is_empty() {
+                        "No selectable inputs reported.".into()
+                    } else {
+                        format!(
+                            "{} input{} available.",
+                            choices.len(),
+                            if choices.len() == 1 { "" } else { "s" }
+                        )
+                    };
+                    inputs.set(choices);
+                    message
+                } else {
+                    status.set(value);
+                    "Status refreshed.".into()
+                }),
+                Err(error) => {
+                    if error.unauthorized {
+                        app.paired.set(Some(false));
+                    }
+                    result.set(error.message);
+                }
+            }
+            live_busy.set(false);
+        });
+    };
+    view!{<section class="card"><h2>"Integration controls"</h2><p class="dim">"Test only commands declared by the installed package. Couch sends them through its local integration host."</p>
+        <p role="status">{move ||result.get()}</p><div class="actions">
+        <button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("status",None)>"Refresh status"</button>
+        </div>
+        {move ||{
+            let source=installed.get().unwrap_or_else(||cached.clone());
+            let components=if source.presentation.is_empty(){vec![PluginComponent::CommandGroup{title:"Commands".into(),commands:source.capabilities.iter().map(|capability|capability.id.clone()).collect()}]}else{source.presentation.clone()};
+            components.into_iter().map(|component|match component {
+                PluginComponent::CommandGroup{title,commands}=>{
+                    let capabilities=source.capabilities.clone();
+                    view!{<section class="integration-component"><h3>{title}</h3><div class="actions">{commands.into_iter().filter_map(|command|capabilities.iter().find(|capability|capability.id==command).map(|capability|(command,capability.label.clone()))).map(|(command,label)|view!{<button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("action",Some(json!({"command":command})))>{label}</button>}).collect_view()}</div></section>}.into_any()
+                }
+                PluginComponent::StatusText{label,field}=>view!{<div class="integration-component integration-reading"><span>{label}</span><strong>{move ||plugin_status_text(&status.get(),field)}</strong></div>}.into_any(),
+                PluginComponent::Toggle{label,state:on_field,on,off}=>view!{<section class="integration-component"><h3>{label}</h3><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none()||plugin_status_bool(&status.get(),on_field).is_none() on:click=move |_|{if let Some(enabled)=plugin_status_bool(&status.get_untracked(),on_field){let command=if enabled{off.clone()}else{on.clone()};call("action",Some(json!({"command":command})));}}>{move ||match plugin_status_bool(&status.get(),on_field){Some(true)=>"Turn off",Some(false)=>"Turn on",None=>"Status unavailable"}}</button></section>}.into_any(),
+                PluginComponent::InputSelector{label}=>view!{<section class="integration-component"><h3>{label}</h3><div class="actions"><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("inputs",None)>"Refresh inputs"</button><select aria-label="Integration input" disabled=move ||live_busy.get()||inputs.with(Vec::is_empty) on:change=move |event|{let id=event_target_value(&event);if !id.is_empty(){call("action",Some(json!({"command":format!("input:{id}")})));}}><option value="">"Choose an input"</option>{move ||inputs.get().into_iter().map(|(id,name)|view!{<option value=id>{name}</option>}).collect_view()}</select></div></section>}.into_any(),
+            }).collect_view()
+        }}
+        </section>}.into_any()
+}
+
+fn plugin_status_bool(status: &Value, field: PluginStatusField) -> Option<bool> {
+    match field {
+        PluginStatusField::On => status["on"].as_bool(),
+        PluginStatusField::Playing => status["playing"].as_bool(),
+        PluginStatusField::Muted => status["muted"].as_bool(),
+        _ => None,
+    }
+}
+
+fn plugin_status_text(status: &Value, field: PluginStatusField) -> String {
+    match field {
+        PluginStatusField::On | PluginStatusField::Playing | PluginStatusField::Muted => {
+            plugin_status_bool(status, field)
+                .map(|value| if value { "On" } else { "Off" }.into())
+                .unwrap_or_else(|| "—".into())
+        }
+        PluginStatusField::Volume => status["volume"]
+            .as_u64()
+            .map(|value| format!("{value}%"))
+            .unwrap_or_else(|| "—".into()),
+        PluginStatusField::Input => status["input"].as_str().unwrap_or("—").into(),
+        PluginStatusField::Title => status["title"].as_str().unwrap_or("—").into(),
+    }
 }
 
 fn denon_form(app: App, existing: Option<Connection>) -> AnyView {

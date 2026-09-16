@@ -13,6 +13,7 @@
 mod api;
 mod assets;
 mod auth;
+mod plugins;
 mod store;
 
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -43,6 +44,24 @@ struct Options {
 }
 
 fn main() {
+    let early: Vec<String> = std::env::args().skip(1).collect();
+    if early == ["--supports-integration-protocol=1"] {
+        return;
+    }
+    if early.first().is_some_and(|arg| arg == "integrations") {
+        match couch_integrations::run_cli(early.into_iter().skip(1).collect()) {
+            Ok(output) => {
+                if !output.is_empty() {
+                    println!("{output}");
+                }
+            }
+            Err(error) => {
+                eprintln!("couch-confd integrations: {error}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
     let options = match parse_args() {
         Ok(Some(options)) => options,
         Ok(None) => return,
@@ -162,6 +181,8 @@ fn main() {
     couch_control::serve(&store.path().with_file_name("control.sock"))
         .expect("start private control socket");
     let api = Arc::new(Api::new(store, assets, auth));
+    api.serve_plugins()
+        .expect("start private integration socket");
     // A Bluetooth pairing window opened for a device ends on the HID daemon's
     // side; the bond it made is stored on the device from here, once a
     // second, because nothing else that sees the daemon's state can write
@@ -252,6 +273,7 @@ fn print_help() {
         "couch-confd - the Couch config server
 
 Usage: couch-confd [options]
+       couch-confd integrations [--root DIR] [--keys-dir DIR] COMMAND
 
   --addr ADDR     listen here (default {DEFAULT_ADDR}, env COUCH_CONFD_ADDR)
   --config PATH   the config file (default {default_config}, env COUCH_CONFIG)

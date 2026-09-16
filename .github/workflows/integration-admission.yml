@@ -1,0 +1,149 @@
+name: Integration admission
+
+on:
+  # Keep the final admission job present on every pull request. If branch
+  # protection later requires it, unrelated pull requests will finish green
+  # instead of waiting forever on a path-filtered workflow that never existed.
+  pull_request:
+  push:
+    branches: [dev, main]
+    paths:
+      - 'clients/**'
+      - 'daemon/**'
+      - 'model/**'
+      - 'integrations/**'
+      - 'tools/integrations/**'
+      - 'tools/tests/integrations-e2e.py'
+      - '.github/workflows/integration-admission.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-admission-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      integration: ${{ steps.scope.outputs.integration }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Select integration work
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=true
+          if [ "$EVENT_NAME" = pull_request ] && git diff --quiet "$BASE_SHA"...HEAD -- \
+            clients daemon model integrations tools/integrations \
+            tools/tests/integrations-e2e.py .github/workflows/integration-admission.yml; then
+              changed=false
+          fi
+          echo "integration=$changed" >> "$GITHUB_OUTPUT"
+
+  catalog:
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate catalog policy
+        run: |
+          python3 tools/integrations/validate_catalog.py
+          python3 -m unittest tools.integrations.test_validate_catalog -v
+      - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.integration == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.integration == 'true'
+        with:
+          workspaces: clients
+      - name: Run shared host protocol tests
+        if: needs.changes.outputs.integration == 'true'
+        run: cargo test --locked --manifest-path clients/Cargo.toml -p couch-plugin --test protocol
+      - name: Run every required package case
+        if: needs.changes.outputs.integration == 'true'
+        run: |
+          python3 tools/integrations/validate_catalog.py --run-tests
+          cargo test --locked --manifest-path clients/Cargo.toml -p couch-denon --test admission concurrent_package_startup_is_offline_and_race_free -- --exact
+
+  product-flow:
+    needs: changes
+    if: needs.changes.outputs.integration == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            clients
+            daemon
+      - name: Build host binaries
+        run: |
+          cargo build --locked --manifest-path clients/Cargo.toml -p couch-echo --bin couch-plugin-echo
+          cargo build --locked --manifest-path daemon/Cargo.toml -p couch-confd
+      - name: Test package lifecycle library
+        run: cargo test --locked --manifest-path daemon/Cargo.toml -p couch-integrations
+      - name: Exercise daemon, package, HTTP, panel, and fake device together
+        run: python3 tools/tests/integrations-e2e.py
+
+  native-package:
+    needs: changes
+    if: needs.changes.outputs.integration == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-musleabihf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            clients
+            daemon
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+      - name: Install the pinned ARM C toolchain
+        run: tools/fetch-zig.sh
+      - name: Cross-build package and daemon binaries
+        run: |
+          . tools/arm-cc-env.sh
+          python3 tools/integrations/validate_catalog.py
+          while IFS=$'\t' read -r package binary; do
+            (cd clients && cargo build --locked --release --target armv7-unknown-linux-musleabihf -p "$package" --bin "$binary")
+          done < <(jq -r '.integrations[] | [.cargo_package, .binary] | @tsv' integrations/catalog.json)
+          (cd daemon && cargo build --locked --release --target armv7-unknown-linux-musleabihf -p couch-confd)
+      - name: Build, sign, index, install, reject tampering, and verify ARM packages
+        run: tools/integrations/smoke.sh "$RUNNER_TEMP/integration-smoke"
+
+  admission:
+    if: always()
+    needs: [changes, catalog, product-flow, native-package]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every applicable admission job
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          INTEGRATION: ${{ needs.changes.outputs.integration }}
+          CATALOG: ${{ needs.catalog.result }}
+          PRODUCT: ${{ needs.product-flow.result }}
+          PACKAGE: ${{ needs.native-package.result }}
+        run: |
+          test "$CHANGES" = success
+          test "$CATALOG" = success
+          if [ "$INTEGRATION" = true ]; then
+            test "$PRODUCT" = success
+            test "$PACKAGE" = success
+          else
+            test "$PRODUCT" = skipped
+            test "$PACKAGE" = skipped
+          fi

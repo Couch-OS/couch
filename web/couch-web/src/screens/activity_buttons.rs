@@ -1,7 +1,7 @@
 //! Activity mappings: visible press slots and a searchable command picker.
 use crate::{api, App};
 use couch_model::{
-    buttons::{functions, Binding, Button, Gesture},
+    buttons::{function_choices, Binding, Button, Gesture},
     Action, Activity, Config,
 };
 use leptos::prelude::*;
@@ -103,11 +103,15 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
             })
             .cloned();
         let Some(connection) = connection else { return };
-        let prefix = match connection.provider {
+        let prefix = match &connection.provider {
             couch_model::Provider::Denon { .. } => "denon",
             couch_model::Provider::WebOs => "webos",
             couch_model::Provider::AppleTv => "appletv",
             couch_model::Provider::Tizen => "tizen",
+            couch_model::Provider::Plugin {
+                supports_inputs: true,
+                ..
+            } => "plugin",
             _ => return,
         };
         discovery.set("Loading inputs and apps…".into());
@@ -141,6 +145,20 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
                                 (format!("input:{id}"), format!("Input · {name}"))
                             }),
                         );
+                    }
+                } else if prefix == "plugin" {
+                    for item in value
+                        .as_array()
+                        .or_else(|| value["inputs"].as_array())
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(id) = item["id"].as_str() {
+                            rows.push((
+                                format!("input:{id}"),
+                                format!("Input · {}", item["name"].as_str().unwrap_or(id)),
+                            ));
+                        }
                     }
                 } else if let Some(inputs) = value["devices"].as_array() {
                     for item in inputs {
@@ -203,7 +221,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         .devices()
         .filter(|(_, d)| {
             cfg.resolve_integration(&d.integration)
-                .is_some_and(|i| !functions(&i).is_empty())
+                .is_some_and(|i| !function_choices(&i).is_empty())
                 || d.effective_ir_codeset(&cfg).is_some()
         })
         .map(|(r, d)| (d.id.to_string(), format!("{} · {}", r.name, d.name)))
@@ -300,10 +318,10 @@ fn mapping_label(
             let function = target
                 .and_then(|(_, d)| cfg.resolve_integration(&d.integration))
                 .and_then(|i| {
-                    functions(&i)
-                        .iter()
+                    function_choices(&i)
+                        .into_iter()
                         .find(|f| f.0 == a.command)
-                        .map(|f| f.1.to_string())
+                        .map(|f| f.1)
                 })
                 .or_else(|| super::device_commands::value_label(&a.command))
                 .unwrap_or_else(|| {

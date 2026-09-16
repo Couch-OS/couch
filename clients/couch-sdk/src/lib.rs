@@ -25,11 +25,11 @@
 //!
 //! # What this is not
 //!
-//! It is **not a plugin system**. Nothing loads a client at runtime, there is
-//! no ABI, and building one does not make it installable. A new integration is
-//! a crate in this workspace that the daemon and GUI are edited to link, and
-//! those edits are manual and listed in `docs/client-sdk.md`. This crate makes
-//! the client itself correct and testable; it does not make it discoverable.
+//! This crate defines the device-facing contract. The separate `couch-plugin`
+//! crate can serve a client as an independently installed subprocess using a
+//! versioned JSON protocol. Echo and Denon provide working adapters and package
+//! manifests. Built-in clients remain linked into the daemon and GUI; see
+//! `docs/client-sdk.md` for both development paths.
 //!
 //! It also does not open sockets for you. Transports stay in the client, which
 //! is what lets `couch-ir` depend on nothing but `libc` and `couch-kodi` on

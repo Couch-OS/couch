@@ -1,9 +1,8 @@
 //! The contract: what a client declares, and what it is asked to do.
 //!
-//! A Couch integration is not a plugin. Nothing loads it at runtime; it is a
-//! crate in the `clients/` workspace that the daemon and the GUI link, and
-//! adding one still means seven manual edits across five workspaces (see
-//! `docs/client-sdk.md`).
+//! A client can be linked directly into Couch or hosted as an independent
+//! subprocess through `couch-plugin`. The transport contract is the same in
+//! both cases; see `docs/client-sdk.md` for the two development paths.
 //! What this trait fixes is the part that was previously re-decided per client:
 //! the vocabulary of commands, the point at which an unsupported command is
 //! refused, and the shape of the answer.

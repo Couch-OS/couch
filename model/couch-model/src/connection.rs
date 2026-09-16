@@ -1,6 +1,6 @@
 //! Named connections are shared by devices; credentials stay on the remote.
 use crate::{Config, Id, Integration};
-use alloc::string::String;
+use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -9,6 +9,60 @@ pub struct Connection {
     pub name: String,
     pub provider: Provider,
 }
+/// One command an external integration deliberately exposes to button maps.
+///
+/// This small public snapshot is stored with the connection. It lets the
+/// remote keep rendering and validating an existing setup when the package is
+/// temporarily missing, without putting executable code or private settings
+/// in the home configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginCapability {
+    pub id: String,
+    pub label: String,
+}
+
+/// Native Couch controls an external integration may compose. These are data,
+/// not package-supplied UI code; both browser and panel render them with their
+/// own built-in components.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PluginComponent {
+    CommandGroup {
+        title: String,
+        commands: Vec<String>,
+    },
+    StatusText {
+        label: String,
+        field: PluginStatusField,
+    },
+    Toggle {
+        label: String,
+        state: PluginStatusField,
+        on: String,
+        off: String,
+    },
+    InputSelector {
+        label: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginStatusField {
+    On,
+    Playing,
+    Muted,
+    Volume,
+    Input,
+    Title,
+}
+
+impl PluginStatusField {
+    pub fn is_boolean(self) -> bool {
+        matches!(self, Self::On | Self::Playing | Self::Muted)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Provider {
@@ -39,10 +93,22 @@ pub enum Provider {
     /// A Matter fabric this remote administers; devices are commissioned
     /// onto it with a pairing code and identified by node ID and endpoint.
     Matter,
+    /// A separately installed integration package. Metadata is copied from its
+    /// validated manifest whenever the connection is created or updated.
+    Plugin {
+        id: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<PluginCapability>,
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        supports_inputs: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        presentation: Vec<PluginComponent>,
+    },
     Ir,
 }
 impl Provider {
-    pub fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> &str {
         match self {
             Self::Kodi { .. } => "kodi",
             Self::CoreElec { .. } => "core-elec",
@@ -57,10 +123,11 @@ impl Provider {
             Self::BluetoothTv => "bluetooth-tv",
             Self::UnifiProtect => "unifi-protect",
             Self::Matter => "matter",
+            Self::Plugin { .. } => "plugin",
             Self::Ir => "ir",
         }
     }
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> &str {
         match self {
             Self::Kodi { .. } => "Kodi",
             Self::CoreElec { .. } => "CoreELEC",
@@ -75,6 +142,7 @@ impl Provider {
             Self::BluetoothTv => "Bluetooth TV",
             Self::UnifiProtect => "UniFi Protect",
             Self::Matter => "Matter",
+            Self::Plugin { label, .. } => label,
             Self::Ir => "Infrared",
         }
     }
@@ -137,6 +205,20 @@ impl Config {
             Provider::Matter => Integration::Matter {
                 device: alloc::format!("{connection_id}/{resource_id}"),
             },
+            Provider::Plugin {
+                id,
+                capabilities,
+                supports_inputs,
+                presentation,
+                ..
+            } => Integration::Plugin {
+                id: id.clone(),
+                connection_id: connection_id.clone(),
+                resource_id: resource_id.clone(),
+                capabilities: capabilities.clone(),
+                supports_inputs: *supports_inputs,
+                presentation: presentation.clone(),
+            },
             Provider::Ir => Integration::Ir {
                 codeset: resource_id.clone(),
             },
@@ -149,6 +231,95 @@ mod tests {
     use super::*;
     use crate::{Device, DeviceKind, Room};
     use alloc::vec;
+    #[test]
+    fn external_provider_round_trips_and_resolves_without_an_installed_package() {
+        let provider = Provider::Plugin {
+            id: "sample-avr".into(),
+            label: "Sample AVR".into(),
+            capabilities: vec![PluginCapability {
+                id: "volume-up".into(),
+                label: "Volume up".into(),
+            }],
+            supports_inputs: true,
+            presentation: vec![PluginComponent::CommandGroup {
+                title: "Volume".into(),
+                commands: vec!["volume-up".into()],
+            }],
+        };
+        let mut config = Config::default();
+        config.connections.push(Connection {
+            id: "receiver".into(),
+            name: "Receiver".into(),
+            provider: provider.clone(),
+        });
+        let stored = Integration::Connection {
+            connection_id: "receiver".into(),
+            resource_id: "zone-main".into(),
+        };
+        let saved = serde_json::to_string(&config).unwrap();
+        let restored: Config = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.connections[0].provider, provider);
+        assert_eq!(
+            restored.resolve_integration(&stored),
+            Some(Integration::Plugin {
+                id: "sample-avr".into(),
+                connection_id: "receiver".into(),
+                resource_id: "zone-main".into(),
+                capabilities: vec![PluginCapability {
+                    id: "volume-up".into(),
+                    label: "Volume up".into(),
+                }],
+                supports_inputs: true,
+                presentation: vec![PluginComponent::CommandGroup {
+                    title: "Volume".into(),
+                    commands: vec!["volume-up".into()],
+                }],
+            })
+        );
+        assert!(restored.validate().is_ok());
+    }
+    #[test]
+    fn external_presentations_reject_unsafe_component_combinations() {
+        let connection = |presentation| Connection {
+            id: "receiver".into(),
+            name: "Receiver".into(),
+            provider: Provider::Plugin {
+                id: "sample-avr".into(),
+                label: "Sample AVR".into(),
+                capabilities: vec![
+                    PluginCapability {
+                        id: "power-on".into(),
+                        label: "Power on".into(),
+                    },
+                    PluginCapability {
+                        id: "power-off".into(),
+                        label: "Power off".into(),
+                    },
+                ],
+                supports_inputs: false,
+                presentation,
+            },
+        };
+        for presentation in [
+            vec![PluginComponent::CommandGroup {
+                title: "Power".into(),
+                commands: vec!["power-on".into(), "power-on".into()],
+            }],
+            vec![PluginComponent::Toggle {
+                label: "Volume".into(),
+                state: PluginStatusField::Volume,
+                on: "power-on".into(),
+                off: "power-off".into(),
+            }],
+            vec![PluginComponent::InputSelector {
+                label: "Source".into(),
+            }],
+        ] {
+            let mut config = Config::default();
+            config.connections.push(connection(presentation));
+            assert!(config.validate().is_err());
+        }
+    }
     #[test]
     fn hue_scene_room_assignments_validate_and_survive_round_trip() {
         let mut c = Config::default();

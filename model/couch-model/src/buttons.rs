@@ -329,6 +329,22 @@ pub fn functions(integration: &Integration) -> &'static [(&'static str, &'static
         _ => &[],
     }
 }
+/// Owned version of [`functions`] that also represents capabilities supplied
+/// by an external integration manifest.
+pub fn function_choices(
+    integration: &Integration,
+) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)> {
+    if let Integration::Plugin { capabilities, .. } = integration {
+        return capabilities
+            .iter()
+            .map(|capability| (capability.id.clone(), capability.label.clone()))
+            .collect();
+    }
+    functions(integration)
+        .iter()
+        .map(|(id, label)| ((*id).into(), (*label).into()))
+        .collect()
+}
 pub fn repeatable(command: &str) -> bool {
     crate::commands::Function::parse(command).is_some_and(|f| f.repeatable())
 }
@@ -337,6 +353,35 @@ pub fn repeatable(command: &str) -> bool {
 mod tests {
     use super::*;
     use alloc::{vec, vec::Vec};
+    #[test]
+    fn external_capabilities_are_the_only_commands_the_model_offers() {
+        let integration = Integration::Plugin {
+            id: "sample".into(),
+            connection_id: "receiver".into(),
+            resource_id: "".into(),
+            capabilities: vec![crate::PluginCapability {
+                id: "volume-up".into(),
+                label: "Louder".into(),
+            }],
+            supports_inputs: false,
+            presentation: vec![],
+        };
+        assert_eq!(
+            function_choices(&integration),
+            vec![("volume-up".into(), "Louder".into())]
+        );
+        assert!(crate::commands::Function::VolumeUp.supports(&integration));
+        assert!(!crate::commands::Function::VolumeDown.supports(&integration));
+        assert!(!crate::commands::Function::Input("hdmi-1".into()).supports(&integration));
+        let mut with_inputs = integration;
+        if let Integration::Plugin {
+            supports_inputs, ..
+        } = &mut with_inputs
+        {
+            *supports_inputs = true;
+        }
+        assert!(crate::commands::Function::Input("hdmi-1".into()).supports(&with_inputs));
+    }
     #[test]
     fn ha_entities_advertise_their_own_domain_and_nothing_else() {
         let ids = |entity_id: &str| -> Vec<&str> {

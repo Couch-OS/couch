@@ -1081,3 +1081,17 @@ h2 .count,h3 .count {
   flex-wrap:wrap;
   gap:10px;
 }
+.integration-component {
+  margin-top:1rem;
+  padding-top:1rem;
+  border-top:1px solid var(--line);
+}
+.integration-component h3 { margin:0 0 .65rem; }
+.integration-reading {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:1rem;
+}
+.integration-reading strong { color:var(--accent); }
+.integration-component select { min-width:12rem; }

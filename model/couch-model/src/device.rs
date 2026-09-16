@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::icon::Icon;
 use crate::id::Id;
-use crate::DeviceId;
+use crate::{DeviceId, PluginCapability, PluginComponent};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Device {
@@ -397,6 +397,22 @@ pub enum Integration {
     Matter {
         device: String,
     },
+    /// Resolved form of a connection backed by an installed integration
+    /// package. The package id selects an executable already approved by the
+    /// package manager; the connection and resource identify its private
+    /// settings and target.
+    Plugin {
+        id: String,
+        connection_id: Id,
+        #[serde(default)]
+        resource_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<PluginCapability>,
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        supports_inputs: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        presentation: Vec<PluginComponent>,
+    },
     HomeAssistant {
         entity_id: String,
     },
@@ -413,7 +429,7 @@ fn default_kodi_port() -> u16 {
 }
 
 impl Integration {
-    pub fn via(&self) -> &'static str {
+    pub fn via(&self) -> &str {
         match self {
             Integration::Connection { .. } => "connection",
             Integration::None => "none",
@@ -426,6 +442,7 @@ impl Integration {
             Integration::BluetoothTv => "bluetooth-tv",
             Integration::UnifiProtect { .. } => "unifi-protect",
             Integration::Matter { .. } => "matter",
+            Integration::Plugin { .. } => "plugin",
             Integration::HomeAssistant { .. } => "home-assistant",
             Integration::Ir { .. } => "ir",
             Integration::Denon { .. } => "denon",

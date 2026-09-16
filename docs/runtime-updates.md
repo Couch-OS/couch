@@ -29,6 +29,17 @@ selected build. It does not upgrade Alpine, the recovery image or the stable
 update bootstrap; use the OS installer for those. It preserves `config.json`,
 saved Wi-Fi, SSH enrollment, and per-device data.
 
+External [integration packages](integration-packages.md) have their own signed
+APK admission and version store beside `config.json`; a core runtime update
+does not replace them. Plugin-bearing configuration requires a plugin-capable
+core. Before the first external connection is saved (including a whole-config
+import), the daemon checks that no core update is pending and that the retained
+rollback runtime understands integration protocol 1. On an older OS image this
+requires two successful plugin-capable runtime upgrades before enabling external
+integrations. Host development directories without a runtime installation are
+exempt. Package rollback selects compatible retained versions without rewriting
+the core runtime or connection credentials.
+
 ## Installation and recovery
 
 The root system service verifies an Ed25519 publisher signature, model/version,

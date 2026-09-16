@@ -1028,6 +1028,7 @@ dependencies = [
 name = "couch-denon"
 version = "0.1.0"
 dependencies = [
+ "couch-plugin",
  "couch-sdk",
  "serde",
  "serde_json",
@@ -1049,6 +1050,7 @@ dependencies = [
  "couch-kodi",
  "couch-matter",
  "couch-model",
+ "couch-plugin",
  "couch-sonos",
  "couch-system",
  "couch-tizen",
@@ -1124,6 +1126,16 @@ name = "couch-model"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "couch-plugin"
+version = "0.1.0"
+dependencies = [
+ "couch-sdk",
+ "libc",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

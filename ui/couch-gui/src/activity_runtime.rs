@@ -91,8 +91,8 @@ fn execute_steps(
     }
     Ok(())
 }
-/// Whether a device can be an activity's main screen: a media or TV
-/// integration, or a Bluetooth-only TV (the one-way screen).
+/// Whether a device can be an activity's main screen: a built-in or packaged
+/// media/TV integration, or a Bluetooth-only TV (the one-way screen).
 pub(crate) fn has_screen(config: &Config, device: &couch_model::Device) -> bool {
     config
         .resolve_integration(&device.integration)
@@ -105,9 +105,20 @@ pub(crate) fn has_screen(config: &Config, device: &couch_model::Device) -> bool 
                     | couch_model::Integration::AndroidTv
                     | couch_model::Integration::AppleTv
                     | couch_model::Integration::Tizen
+                    | couch_model::Integration::Plugin { .. }
             )
         })
         || (device.network_integration(config).is_none() && device.bluetooth.is_some())
+}
+
+fn can_start(config: &Config, activity: &couch_model::Activity) -> bool {
+    (activity.setup.custom_screen && !activity.setup.pages.is_empty())
+        || activity.source.as_ref().is_some_and(|id| {
+            config
+                .devices()
+                .find(|(_, device)| &device.id == id)
+                .is_some_and(|(_, device)| has_screen(config, device))
+        })
 }
 impl Controller {
     pub fn new(app: &App) -> Self {
@@ -177,17 +188,9 @@ impl Controller {
                 error = Some("Activity was removed".into());
                 continue;
             };
-            if start
-                && !(activity.setup.custom_screen && !activity.setup.pages.is_empty())
-                && !activity.source.as_ref().is_some_and(|id| {
-                    config
-                        .devices()
-                        .find(|(_, d)| &d.id == id)
-                        .is_some_and(|(_, d)| has_screen(&config, d))
-                })
-            {
+            if start && !can_start(&config, activity) {
                 error = Some(
-                    "Choose custom pages or a main Kodi/TV screen in the web UI before starting."
+                    "Choose custom pages or a main device screen in the web UI before starting."
                         .into(),
                 );
                 continue;
@@ -301,6 +304,46 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plugin_source_can_start_an_activity_without_dummy_custom_pages() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "connections": [{
+                "id": "hardware-test-tv",
+                "name": "Hardware test TV",
+                "provider": {"kind": "plugin", "id": "echo", "label": "Echo TV"}
+            }],
+            "rooms": [{
+                "id": "hardware-validation",
+                "name": "Hardware Validation",
+                "devices": [{
+                    "id": "hardware-validation-package-tv",
+                    "name": "Package TV",
+                    "kind": "tv",
+                    "integration": {
+                        "via": "connection",
+                        "connection_id": "hardware-test-tv",
+                        "resource_id": ""
+                    }
+                }]
+            }],
+            "activities": [{
+                "id": "hardware-validation-activity",
+                "name": "External integration",
+                "kind": "video",
+                "room": "hardware-validation",
+                "source": "hardware-validation-package-tv"
+            }]
+        }))
+        .unwrap();
+        let activity = &config.activities[0];
+        let device = &config.rooms[0].devices[0];
+        assert!(has_screen(&config, device));
+        assert!(can_start(&config, activity));
+        assert!(!activity.setup.custom_screen);
+        assert!(activity.setup.pages.is_empty());
+    }
+
     #[test]
     fn commands_execute_in_order_once_with_delay_between_them() {
         let generation = AtomicU64::new(1);

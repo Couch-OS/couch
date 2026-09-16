@@ -1,6 +1,7 @@
 //! Local page presentation and bounded asynchronous widget command dispatch.
 use crate::{ActivityTile, App};
-use couch_model::{Action, Config, Icon};
+use couch_model::{Action, Config, Icon, PluginCapability, PluginComponent, PluginStatusField};
+use couch_plugin::{Request as PluginRequest, Response as PluginResponse, Selectable, Status};
 use slint::{ModelRc, VecModel};
 use std::{
     collections::HashMap,
@@ -15,6 +16,62 @@ struct Request {
     config: Arc<Config>,
     action: Action,
 }
+
+#[derive(Clone)]
+pub(super) struct PluginTarget {
+    pub activity: String,
+    pub room: String,
+    pub device: String,
+    pub connection: String,
+    pub label: String,
+    pub capabilities: Vec<PluginCapability>,
+    pub supports_inputs: bool,
+    pub presentation: Vec<PluginComponent>,
+}
+
+struct PluginView {
+    target: PluginTarget,
+    status: Status,
+    inputs: Vec<Selectable>,
+}
+
+struct PluginWork {
+    generation: u64,
+    connection: String,
+    request: PluginRequest,
+}
+
+enum PluginEvent {
+    Status(Status),
+    Inputs(Vec<Selectable>),
+    Error(String),
+}
+
+#[derive(Clone)]
+enum PluginTileAction {
+    Command(String),
+    Toggle {
+        state: PluginStatusField,
+        on: String,
+        off: String,
+    },
+    RefreshStatus,
+    RefreshInputs,
+}
+
+struct PluginTile {
+    label: String,
+    detail: String,
+    icon: &'static str,
+    enabled: bool,
+    action: PluginTileAction,
+}
+
+struct PluginPanelPage {
+    title: String,
+    tiles: Vec<PluginTile>,
+}
+
 pub struct Pages {
     config: Option<Arc<Config>>,
     activity: String,
@@ -23,6 +80,9 @@ pub struct Pages {
     generation: Arc<AtomicU64>,
     tx: mpsc::SyncSender<Request>,
     rx: mpsc::Receiver<(u64, Result<(), String>)>,
+    plugin: Option<PluginView>,
+    plugin_tx: mpsc::SyncSender<PluginWork>,
+    plugin_rx: mpsc::Receiver<(u64, PluginEvent)>,
 }
 pub fn page_index(current: usize, delta: i32, count: usize) -> usize {
     if count == 0 {
@@ -111,6 +171,25 @@ impl Pages {
                 },
             );
         });
+        let (plugin_tx, plugin_work) = mpsc::sync_channel::<PluginWork>(4);
+        let (plugin_reply, plugin_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(work) = plugin_work.recv() {
+                let event = match couch_plugin::local_request(
+                    &crate::home::path("plugin.sock"),
+                    &work.connection,
+                    work.request,
+                    couch_plugin::REQUEST_TIMEOUT + std::time::Duration::from_secs(1),
+                ) {
+                    Ok(PluginResponse::Status { status }) => PluginEvent::Status(status),
+                    Ok(PluginResponse::Inputs { inputs }) => PluginEvent::Inputs(inputs),
+                    Ok(PluginResponse::Error { code }) => PluginEvent::Error(code.to_string()),
+                    Ok(_) => PluginEvent::Error("The integration sent an unexpected reply".into()),
+                    Err(error) => PluginEvent::Error(error.to_string()),
+                };
+                let _ = plugin_reply.send((work.generation, event));
+            }
+        });
         Self {
             config: None,
             activity: String::new(),
@@ -119,6 +198,9 @@ impl Pages {
             generation,
             tx,
             rx,
+            plugin: None,
+            plugin_tx,
+            plugin_rx,
         }
     }
     pub fn open(&mut self, app: &App, config: Arc<Config>, id: &str) {
@@ -129,16 +211,79 @@ impl Pages {
         app.set_custom_activity_shown(true);
         self.render(app);
     }
+    pub fn open_plugin(&mut self, app: &App, config: Arc<Config>, target: PluginTarget) {
+        self.close(app);
+        self.config = Some(config);
+        self.activity.clear();
+        self.page = 0;
+        app.set_player_activity(target.activity.as_str().into());
+        app.set_player_room(target.room.as_str().into());
+        self.plugin = Some(PluginView {
+            target,
+            status: Status::default(),
+            inputs: vec![],
+        });
+        app.set_custom_activity_shown(true);
+        app.set_custom_activity_available(true);
+        self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+        if self
+            .plugin
+            .as_ref()
+            .is_some_and(|view| view.target.supports_inputs)
+        {
+            self.request_plugin(app, PluginRequest::Inputs, "Loading inputs…");
+        }
+        self.render(app);
+    }
     pub fn close(&mut self, app: &App) {
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.config = None;
+        self.plugin = None;
         self.busy = false;
         app.set_custom_activity_shown(false);
         app.set_custom_activity_available(false);
         app.set_custom_activity_busy(false);
         app.set_custom_activity_status("".into());
     }
+    fn request_plugin(&self, app: &App, request: PluginRequest, message: &str) {
+        let Some(plugin) = &self.plugin else { return };
+        let result = self.plugin_tx.try_send(PluginWork {
+            generation: self.generation.load(Ordering::SeqCst),
+            connection: plugin.target.connection.clone(),
+            request,
+        });
+        app.set_custom_activity_status(if result.is_ok() {
+            message.into()
+        } else {
+            "Integration request queue is busy. Try again.".into()
+        });
+    }
     fn render(&self, app: &App) {
+        if let Some(plugin) = &self.plugin {
+            let pages = plugin_pages(plugin);
+            let Some(page) = pages.get(self.page) else {
+                return;
+            };
+            app.set_custom_activity_title(page.title.as_str().into());
+            app.set_custom_activity_page(self.page as i32);
+            app.set_custom_activity_count(pages.len() as i32);
+            app.set_custom_activity_source(false);
+            app.set_custom_activity_tiles(ModelRc::new(VecModel::from(
+                page.tiles
+                    .iter()
+                    .map(|tile| ActivityTile {
+                        label: tile.label.as_str().into(),
+                        detail: tile.detail.as_str().into(),
+                        icon: crate::icons::image(
+                            Icon::from_name(tile.icon)
+                                .unwrap_or_else(|| Icon::from_name("circle-dot").unwrap()),
+                        ),
+                        enabled: tile.enabled,
+                    })
+                    .collect::<Vec<_>>(),
+            )));
+            return;
+        }
         let Some(config) = &self.config else { return };
         let Some(activity) = config
             .activities
@@ -174,11 +319,16 @@ impl Pages {
                         w.icon
                             .unwrap_or_else(|| Icon::from_name("circle-dot").unwrap()),
                     ),
+                    enabled: true,
                 })
                 .collect::<Vec<_>>(),
         )));
     }
     pub fn handle(&mut self, app: &App, action: &str, value: i32) {
+        if self.plugin.is_some() {
+            self.handle_plugin(app, action, value);
+            return;
+        }
         let Some(config) = &self.config else { return };
         let Some(activity) = config
             .activities
@@ -214,6 +364,52 @@ impl Pages {
             }
         }
     }
+    fn handle_plugin(&mut self, app: &App, action: &str, value: i32) {
+        let Some(plugin) = &self.plugin else { return };
+        let pages = plugin_pages(plugin);
+        if action == "page" {
+            self.page = page_index(self.page, value, pages.len());
+            self.render(app);
+            return;
+        }
+        if action != "command" || self.busy {
+            return;
+        }
+        let Some(tile) = pages
+            .get(self.page)
+            .and_then(|page| usize::try_from(value).ok().and_then(|i| page.tiles.get(i)))
+        else {
+            return;
+        };
+        let command = match &tile.action {
+            PluginTileAction::Command(_) | PluginTileAction::Toggle { .. } => {
+                plugin_command(&tile.action, &plugin.status)
+            }
+            PluginTileAction::RefreshStatus => {
+                self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+                return;
+            }
+            PluginTileAction::RefreshInputs => {
+                self.request_plugin(app, PluginRequest::Inputs, "Loading inputs…");
+                return;
+            }
+        };
+        let Some(command) = command else { return };
+        let Some(config) = &self.config else { return };
+        let result = self.tx.try_send(Request {
+            at: std::time::Instant::now(),
+            generation: self.generation.load(Ordering::SeqCst),
+            config: config.clone(),
+            action: Action::new(plugin.target.device.as_str(), command),
+        });
+        if result.is_ok() {
+            self.busy = true;
+            app.set_custom_activity_busy(true);
+            app.set_custom_activity_status(format!("Sending {}…", tile.label).into());
+        } else {
+            app.set_custom_activity_status("Command worker is busy. Try again.".into());
+        }
+    }
     pub fn poll(&mut self, app: &App) {
         for (generation, result) in self.rx.try_iter() {
             if generation != self.generation.load(Ordering::SeqCst) {
@@ -221,16 +417,304 @@ impl Pages {
             }
             self.busy = false;
             app.set_custom_activity_busy(false);
+            let succeeded = result.is_ok();
             app.set_custom_activity_status(match result {
                 Ok(()) => "Command sent".into(),
                 Err(e) => e.into(),
             });
+            if succeeded && self.plugin.is_some() {
+                self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+            }
+        }
+        let events = self.plugin_rx.try_iter().collect::<Vec<_>>();
+        for (generation, event) in events {
+            if let Some(message) = self.apply_plugin_event(generation, event) {
+                app.set_custom_activity_status(message.into());
+                self.render(app);
+            }
         }
     }
+
+    fn apply_plugin_event(&mut self, generation: u64, event: PluginEvent) -> Option<String> {
+        if generation != self.generation.load(Ordering::SeqCst) {
+            return None;
+        }
+        let plugin = self.plugin.as_mut()?;
+        Some(match event {
+            PluginEvent::Status(status) => {
+                plugin.status = status;
+                "Status updated".into()
+            }
+            PluginEvent::Inputs(inputs) => {
+                plugin.inputs = inputs;
+                "Inputs updated".into()
+            }
+            PluginEvent::Error(error) => error,
+        })
+    }
+}
+
+fn status_bool(status: &Status, field: PluginStatusField) -> Option<bool> {
+    match field {
+        PluginStatusField::On => status.on,
+        PluginStatusField::Playing => status.playing,
+        PluginStatusField::Muted => status.muted,
+        _ => None,
+    }
+}
+
+fn plugin_command(action: &PluginTileAction, status: &Status) -> Option<String> {
+    match action {
+        PluginTileAction::Command(command) => Some(command.clone()),
+        PluginTileAction::Toggle { state, on, off } => {
+            status_bool(status, *state)
+                .map(|enabled| if enabled { off.clone() } else { on.clone() })
+        }
+        PluginTileAction::RefreshStatus | PluginTileAction::RefreshInputs => None,
+    }
+}
+
+fn status_text(status: &Status, field: PluginStatusField) -> String {
+    match field {
+        PluginStatusField::On => status.on.map(|v| if v { "On" } else { "Off" }.into()),
+        PluginStatusField::Playing => status
+            .playing
+            .map(|v| if v { "Playing" } else { "Paused" }.into()),
+        PluginStatusField::Muted => status
+            .muted
+            .map(|v| if v { "Muted" } else { "Unmuted" }.into()),
+        PluginStatusField::Volume => status.volume.map(|v| format!("{v}%")),
+        PluginStatusField::Input => status.input.clone(),
+        PluginStatusField::Title => status.title.clone(),
+    }
+    .unwrap_or_else(|| "Unavailable".into())
+}
+
+fn command_tile(view: &PluginView, command: &str, detail: &str) -> PluginTile {
+    let label = view
+        .target
+        .capabilities
+        .iter()
+        .find(|capability| capability.id == command)
+        .map(|capability| capability.label.clone())
+        .unwrap_or_else(|| command.to_owned());
+    PluginTile {
+        label,
+        detail: detail.into(),
+        icon: "circle-play",
+        enabled: true,
+        action: PluginTileAction::Command(command.into()),
+    }
+}
+
+fn chunk_page(title: &str, tiles: Vec<PluginTile>, pages: &mut Vec<PluginPanelPage>) {
+    for chunk in tiles.chunks(6) {
+        pages.push(PluginPanelPage {
+            title: title.into(),
+            tiles: chunk
+                .iter()
+                .map(|tile| PluginTile {
+                    label: tile.label.clone(),
+                    detail: tile.detail.clone(),
+                    icon: tile.icon,
+                    enabled: tile.enabled,
+                    action: tile.action.clone(),
+                })
+                .collect(),
+        });
+    }
+}
+
+fn plugin_pages(view: &PluginView) -> Vec<PluginPanelPage> {
+    let mut pages = vec![];
+    if view.target.presentation.is_empty() {
+        let tiles = view
+            .target
+            .capabilities
+            .iter()
+            .map(|capability| command_tile(view, &capability.id, "Command"))
+            .collect();
+        chunk_page(&view.target.label, tiles, &mut pages);
+    } else {
+        for component in &view.target.presentation {
+            match component {
+                PluginComponent::CommandGroup { title, commands } => chunk_page(
+                    title,
+                    commands
+                        .iter()
+                        .map(|command| command_tile(view, command, "Command"))
+                        .collect(),
+                    &mut pages,
+                ),
+                PluginComponent::StatusText { label, field } => pages.push(PluginPanelPage {
+                    title: label.clone(),
+                    tiles: vec![PluginTile {
+                        label: label.clone(),
+                        detail: status_text(&view.status, *field),
+                        icon: "activity",
+                        enabled: true,
+                        action: PluginTileAction::RefreshStatus,
+                    }],
+                }),
+                PluginComponent::Toggle {
+                    label,
+                    state,
+                    on,
+                    off,
+                } => pages.push(PluginPanelPage {
+                    title: label.clone(),
+                    tiles: vec![PluginTile {
+                        label: label.clone(),
+                        detail: status_text(&view.status, *state),
+                        icon: "power",
+                        enabled: status_bool(&view.status, *state).is_some(),
+                        action: PluginTileAction::Toggle {
+                            state: *state,
+                            on: on.clone(),
+                            off: off.clone(),
+                        },
+                    }],
+                }),
+                PluginComponent::InputSelector { label } => {
+                    let tiles = if view.inputs.is_empty() {
+                        vec![PluginTile {
+                            label: "Refresh inputs".into(),
+                            detail: "No inputs reported".into(),
+                            icon: "refresh-cw",
+                            enabled: true,
+                            action: PluginTileAction::RefreshInputs,
+                        }]
+                    } else {
+                        view.inputs
+                            .iter()
+                            .map(|input| PluginTile {
+                                label: input.name.clone(),
+                                detail: if view.status.input.as_deref() == Some(input.id.as_str()) {
+                                    "Current input".into()
+                                } else {
+                                    "Input".into()
+                                },
+                                icon: "list-video",
+                                enabled: true,
+                                action: PluginTileAction::Command(format!("input:{}", input.id)),
+                            })
+                            .collect()
+                    };
+                    chunk_page(label, tiles, &mut pages);
+                }
+            }
+        }
+    }
+    if pages.is_empty() {
+        pages.push(PluginPanelPage {
+            title: view.target.label.clone(),
+            tiles: vec![PluginTile {
+                label: "Refresh status".into(),
+                detail: "No controls declared".into(),
+                icon: "refresh-cw",
+                enabled: true,
+                action: PluginTileAction::RefreshStatus,
+            }],
+        });
+    }
+    pages
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plugin_presentation_uses_native_pages_and_live_state() {
+        let view = PluginView {
+            target: PluginTarget {
+                activity: "Listen".into(),
+                room: "Living room".into(),
+                device: "receiver".into(),
+                connection: "denon".into(),
+                label: "Community receiver".into(),
+                capabilities: vec![
+                    PluginCapability {
+                        id: "power-on".into(),
+                        label: "Turn on".into(),
+                    },
+                    PluginCapability {
+                        id: "power-off".into(),
+                        label: "Turn off".into(),
+                    },
+                ],
+                supports_inputs: true,
+                presentation: vec![
+                    PluginComponent::Toggle {
+                        label: "Power".into(),
+                        state: PluginStatusField::On,
+                        on: "power-on".into(),
+                        off: "power-off".into(),
+                    },
+                    PluginComponent::InputSelector {
+                        label: "Source".into(),
+                    },
+                ],
+            },
+            status: Status::on(true).with_input("tv"),
+            inputs: vec![Selectable::new("tv", "Television")],
+        };
+        let pages = plugin_pages(&view);
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].title, "Power");
+        assert_eq!(pages[0].tiles[0].detail, "On");
+        assert!(matches!(
+            &pages[0].tiles[0].action,
+            PluginTileAction::Toggle { off, .. } if off == "power-off"
+        ));
+        assert_eq!(pages[1].tiles[0].label, "Television");
+        assert_eq!(pages[1].tiles[0].detail, "Current input");
+        assert!(matches!(
+            &pages[1].tiles[0].action,
+            PluginTileAction::Command(command) if command == "input:tv"
+        ));
+
+        let unknown = Status::default();
+        assert_eq!(plugin_command(&pages[0].tiles[0].action, &unknown), None);
+        assert_eq!(
+            plugin_command(&pages[0].tiles[0].action, &view.status),
+            Some("power-off".into())
+        );
+        let unknown_view = PluginView {
+            target: view.target.clone(),
+            status: unknown,
+            inputs: vec![],
+        };
+        assert!(!plugin_pages(&unknown_view)[0].tiles[0].enabled);
+    }
+
+    #[test]
+    fn stale_plugin_reply_cannot_repaint_a_new_view() {
+        let mut pages = Pages::new();
+        pages.plugin = Some(PluginView {
+            target: PluginTarget {
+                activity: "New activity".into(),
+                room: "Living room".into(),
+                device: "receiver".into(),
+                connection: "receiver".into(),
+                label: "Receiver".into(),
+                capabilities: vec![],
+                supports_inputs: false,
+                presentation: vec![],
+            },
+            status: Status::default(),
+            inputs: vec![],
+        });
+        pages.generation.store(2, Ordering::SeqCst);
+        assert!(pages
+            .apply_plugin_event(1, PluginEvent::Status(Status::on(true)))
+            .is_none());
+        assert_eq!(pages.plugin.as_ref().unwrap().status.on, None);
+        assert_eq!(
+            pages.apply_plugin_event(2, PluginEvent::Status(Status::on(false))),
+            Some("Status updated".into())
+        );
+        assert_eq!(pages.plugin.as_ref().unwrap().status.on, Some(false));
+    }
+
     #[test]
     fn command_worker_reuses_leases_and_releases_on_close_or_config_change() {
         use std::time::{Duration, Instant};
