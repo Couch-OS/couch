@@ -77,6 +77,12 @@ service (`Power { action }`), which answers, waits a second, and for recovery
 writes the same `boot-recovery` marker init uses into the bootloader control
 block before `reboot -f`.
 
+Preview examples: [percentage setting](images/battery-percentage.png),
+[full dock clock](images/battery-dock-full.png), and
+[unavailable percentage while plugged in](images/battery-dock-unknown.png).
+These use the bundled Lucide SVG battery icons; the percentage is text beside
+its icon.
+
 ## Updates on the remote
 
 The Settings menu also has an **Updates** section. It drives the same system

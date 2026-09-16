@@ -159,8 +159,8 @@ status nor that GPIO difference alone establishes overcharging.
 ### Display standby leaves substantial work running
 
 [The GUI](../ui/couch-gui/src/main.rs) blanks the panel with `FBIOBLANK`; it does
-not request system suspend. In the reviewed release, [startup](../stage2/gui-start.sh) enforced a
-three-core minimum through `/proc/hps/num_base_perf_serv`, including during
+not request system suspend. In the reviewed release,
+[startup](../stage2/gui-start.sh) enforced a three-core minimum through `/proc/hps/num_base_perf_serv`, including during
 display standby. The current keypad loop waits for input with a one-second
 timeout; the older 40 ms screen-off polling description no longer applies.
 Lift detection samples acceleration every 100 ms while armed in standby.
@@ -241,8 +241,8 @@ For a useful comparison:
    and enabled Wi-Fi/Bluetooth/integrations.
 2. Take the existing [allowlisted snapshot](../tools/diagnostics/ha100-power-snapshot.sh)
    at docked, just-undocked, dimmed and screen-off transitions. Record elapsed
-   time and `uptime`/snapshot sequence separately. During a supervised 15–30 minute interval, collect a few
-   timestamped snapshots in a fixed state, without rebooting or changing load.
+   time and `uptime`/snapshot sequence separately. During a supervised 15–30
+   minute interval, collect a few timestamped snapshots in a fixed state, without rebooting or changing load.
    Do not deliberately discharge to cutoff to calibrate the percentage.
 3. With a validated build of the reporting kernel, capture `couch_gauge` in
    those snapshots. A decreasing gap between UI_SOC and SOC at a nearly fixed
@@ -266,5 +266,5 @@ measurements above.
 [power-supply]: https://docs.kernel.org/power/power_supply_class.html
 [datasheet-library]: https://hub.sanytron.com/support/datasheets
 [datasheet]: https://drive.google.com/file/d/1H4W41LSZb488SfHwW4lbxWRVGYaCHsDN/view
-[kernel-fix]: https://github.com/dangerouslaser/couch-kernel/tree/fix/ha100-battery-telemetry
-[gauge-abi]: https://github.com/dangerouslaser/couch-kernel/blob/fix/ha100-battery-telemetry/Documentation/ABI/testing/sysfs-class-power-couch-gauge
+[kernel-fix]: https://github.com/dangerouslaser/couch-kernel/pull/4
+[gauge-abi]: https://github.com/dangerouslaser/couch-kernel/blob/254b66cf66ebfa6e4de362a8995db9b32675a58a/Documentation/ABI/testing/sysfs-class-power-couch-gauge
