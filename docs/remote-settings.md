@@ -39,7 +39,7 @@ and screen-off timeouts), **Bluetooth** (one toggle that brings up the whole sta
 the row says "Starting the Bluetooth stack…" for the few seconds that takes,
 then that the remote is advertising as Couch Remote, and "no kernel support"
 on a boot image without `/dev/vhci` and `/dev/stpbt`; see
-[Bluetooth TV](bluetooth-tv.md)), **SSH**, **Network** (read-only) and **Power**. The
+[Bluetooth](bluetooth-tv.md)), **SSH**, **Network** (read-only) and **Power**. The
 daemon reads and writes the same file the remote does
 (`/opt/couch/settings.conf`, owned by `couch-system`'s `ui_settings`), and the
 remote notices a change to it within a second and applies it, so the two

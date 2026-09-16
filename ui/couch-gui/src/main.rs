@@ -1281,7 +1281,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(error) => toast(error, 5),
                 }
             }
-            if app.get_settings_shown() {
+            if app.get_settings_shown() || app.get_bt_pair_shown() {
                 app.set_bt_state(system::bluetooth_state().into());
                 let pairing = system::bluetooth_pairing();
                 app.set_bt_peer(pairing.peer.unwrap_or_default().into());

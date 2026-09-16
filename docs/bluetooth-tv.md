@@ -1,4 +1,4 @@
-# Bluetooth TV
+# Bluetooth
 
 Couch can be the Bluetooth remote a TV expects: the HA100 advertises as a
 Bluetooth Low Energy HID peripheral called **Couch Remote** (keyboard plus
@@ -25,25 +25,38 @@ the design and the kernel side.
 
 ## Setup
 
-The remote is not discoverable by default: with Bluetooth on it advertises
-in a way only a TV that has already paired will connect to, so a laptop or
-phone in the room never lists a "Couch Remote" to grab. Pairing a TV is a
-deliberate two-minute **pairing mode**:
+Bluetooth is a **transport of a device**, the way infrared is: a TV in
+Rooms & devices carries its own Bluetooth bond, next to its network
+connection (webOS, Android TV, Apple TV, Samsung) and its IR commands if it
+has them. Two TVs each get their own bond. Pairing is done from the device
+itself, and the remote is not discoverable at any other time: outside a
+window it advertises for the one TV it is currently talking to and the
+controller drops everyone else's connection request on the air, so a laptop
+or phone in the room never lists a "Couch Remote" to grab.
+Pairing a TV is a deliberate two-minute **pairing mode** opened for one
+device:
 
 1. Turn Bluetooth on (above). The row says **ON**, and names the TV once
    one is connected (**ON · webOS TV OLED48B4PUA**).
-2. **Settings → Bluetooth → Pair with TV** on the remote, or **Pair with
-   TV** in the Bluetooth section of the web UI's Remote page. This opens
-   the window; TVs paired earlier stay paired, though they are kept off the
-   link while the window is open. The card on the remote reads
-   **DISCOVERABLE**: "On your TV, open Bluetooth settings and choose Couch
-   Remote."
-3. On the TV, open its Bluetooth or remote-control settings and choose
-   **Couch Remote**. Pairing is "just works": no PIN. TVs that pair a
-   Bluetooth remote at first setup (LG, Samsung, Android/Google TV, Fire TV)
-   usually have a "pair a Bluetooth device" or "connect Bluetooth remote"
-   entry. The card follows along: **CONNECTED** when the TV has connected,
-   **PAIRED** once it has bonded.
+2. Open the device. On the web: **Rooms & devices** → the room → the TV's
+   card → **Bluetooth** section → **Pair over Bluetooth**. On the remote:
+   open the TV from its room, then **Commands** (an infrared or Bluetooth
+   TV) or **Apps** (a network TV) → **Pair over Bluetooth**. The device
+   need not have anything else configured: a TV added with no connection
+   and no IR commands is a Bluetooth-only device once paired.
+3. The window opens. The card on the remote (or the section on the web)
+   reads **DISCOVERABLE**: "On your TV, open Bluetooth settings and choose
+   Couch Remote." On the TV, open its Bluetooth or remote-control settings
+   and choose **Couch Remote**. Pairing is "just works": no PIN. TVs that
+   pair a Bluetooth remote at first setup (LG, Samsung, Android/Google TV,
+   Fire TV) usually have a "pair a Bluetooth device" or "connect Bluetooth
+   remote" entry. The card follows along: **CONNECTED** when the TV has
+   connected, **PAIRED** once it has bonded. TVs paired earlier stay
+   paired — a window forgets nothing — but they are kept off the link while
+   it is open: a 4.0 controller holds one link and does not advertise while
+   it has one, so a TV that reconnected would leave the new one nothing to
+   connect to. Keys to that TV fall through to its other transports
+   meanwhile, and it reconnects when the window ends.
 4. Some TVs (LG webOS among them) then ask you to *press any key on the
    keyboard*. Press **OK** on the remote: in pairing mode OK sends an Enter
    key from the keyboard half of the HID profile, which is the key such a
@@ -51,36 +64,85 @@ deliberate two-minute **pairing mode**:
    keys, which the prompt ignores). On the web, use **Send key**.
 5. The card says **DONE** ("Done: *name* is paired.") once the TV has bonded
    and subscribed to the remote's input reports; press **Back** to close it.
-   The window closes by itself after two minutes with **NOT PAIRED** if no
-   TV got that far, and **Back** during the window cancels it. Either way
-   the remote goes back to non-discoverable. The TV that just paired is now
-   the one the remote talks to (the *active* one), and it reconnects
+   Within a second the bond (the TV's address and name) is stored on the
+   device: the device's card reads **Paired with *name***, and its room row
+   on the remote lists Bluetooth among its transports. The window closes by
+   itself after two minutes with **NOT PAIRED** if no TV got that far, and
+   **Back** (or **Cancel**) during the window cancels it. Either way the
+   remote goes back to non-discoverable. The TV that just paired is now the
+   one the remote talks to (the *active* one), and it reconnects
    whenever both are on.
-6. On the web, **Connections → Add a connection → Bluetooth TV**, name it and
-   create it. There is nothing to configure on the connection; its page
-   repeats these steps.
-7. **Rooms & devices** → add a device from that connection. The device is a
-   TV; give it the TV's name.
 
-**Forget pairings** on the web page drops the bonds without opening a
-window; a TV then needs pairing mode again. Turning Bluetooth off does not
-forget anything.
+**Unpair** on the device's Bluetooth section (or **Unpair Bluetooth** in the
+same list on the remote) drops that one bond, on the device and on the
+remote's Bluetooth stack; the TV then needs pairing mode again. Deleting the
+device does the same. **Pair again** replaces the device's bond with the TV
+that pairs next. Turning Bluetooth off does not forget anything.
 
 The remote can hold a pairing with every TV in the house, but a Bluetooth
 remote talks to one TV at a time: only the active one can connect, and the
-remote answers nobody else on the air. Switching is instant on the remote's
-side and takes the TV a few seconds to notice and reconnect; which TV is
-active follows the device the app is controlling, and survives a reboot.
+remote answers nobody else on the air. Which TV is active follows the device
+being controlled — the one whose screen is open, or the main device of the
+running activity — and it survives a reboot, because the remote remembers it
+on its own. Switching is instant on the remote's side and takes the TV a few
+seconds to notice and reconnect.
+
+**Settings → Bluetooth → Pair with TV** on the remote, and **Pair with TV**
+on the web UI's Remote page, still open a window, but one that belongs to no
+device: the TV bonds to the remote and nothing is stored on a device. It is
+there for trying a TV before its device exists, and for the remote's own
+tests; a TV you mean to control is paired from its device. **Forget
+pairings** on the Remote page drops every bond the stack holds, the devices'
+included, without touching the configuration: pair those devices again
+afterwards.
+
+A device that was set up before this (the older Bluetooth connection, provider `bluetooth-tv`,
+with a device on it) is carried over on the daemon's next start: the device keeps
+Bluetooth as its transport, with the bond's address unrecorded, and the
+connection disappears. It keeps working with whichever TV the remote is
+connected to, as it did; pair it again from the device once, and it is
+pinned to its own TV.
 
 The first pairing has only been tried on one TV, so record what each make
 needs in [bluetooth.md](bluetooth.md#open-questions).
 
-## Controls and activities
+## Controls, transports and activities
 
-Selecting the TV from a room opens the one-way TV screen: d-pad, OK, Back,
-Home, Menu, volume, mute and channel keys go over Bluetooth, and the
-**Commands** list offers every key the integration knows. The TV gives no
-feedback, so the status line says so.
+Selecting a Bluetooth-only TV from a room opens the one-way TV screen:
+d-pad, OK, Back, Home, Menu, volume, mute and channel keys go over
+Bluetooth, and the **Commands** list offers every key the transport knows.
+The TV gives no feedback, so the status line says so. A TV that also has a
+network connection opens its usual screen (inputs, apps, playback state);
+one that also has IR commands opens the one-way screen with both lists.
+
+**Which transport a key takes.** A device may have up to three: infrared
+(its IR commands), the network (its connection) and Bluetooth (its bond).
+The device's **Preferred control** (Edit device on the web, offered once the
+device has more than one) picks which is tried first; **Automatic** is
+infrared, then the network, then Bluetooth, which is what a device did
+before it had a bond. A key falls through to the next transport when the
+preferred one is not available *right now*: no IR code is assigned to that
+key, the network client cannot connect (the TV is asleep), or the device's
+TV is not the one on the Bluetooth link. Power-on is the everyday case: a
+sleeping TV has no network to answer on and no Bluetooth link to receive a
+key, so a TV set to prefer Bluetooth or the network still wakes by infrared
+when it has an IR code for `power-on`. A transport that was tried and
+refused the key is the end of the press: a failed infrared write is never
+re-sent over the network, and a network command the TV rejected is not
+repeated by IR.
+
+**One link at a time.** The remote is one Bluetooth peripheral and holds
+one link. Whichever device is on screen holds it: when an activity starts,
+its main-screen device's bond becomes the active link (the remote tells the
+Bluetooth stack to drop any other TV and accept only that one), and opening
+another device's screen moves the link to that device. An activity with two
+Bluetooth-paired TVs therefore reaches the second TV over its other
+transport (its connection or IR commands) while the first is on screen. A
+second TV that has *nothing* else cannot be reached while the activity runs:
+the activity editor on the web says so above the device list as soon as the
+combination is saved, and the remote says so once when the activity starts,
+rather than dropping keys silently. Give that TV IR commands or a
+connection, or make it the activity's main screen.
 
 Activity button mappings and start/stop sequences can use: `up`, `down`,
 `left`, `right`, `ok`, `back`, `home`, `menu`, `power-off`, `volume-up`,
@@ -91,8 +153,8 @@ one HID consumer-control usage; which ones a TV honours depends on its make
 
 Power is the consumer-control **power toggle** and only reaches a TV that is
 on: a TV that is off has no Bluetooth link to receive it, so there is no
-`power-on`. Pair infrared or a network integration on the same device for
-waking, or leave the TV's own remote for that.
+`power-on` over Bluetooth. Give the device IR commands or a network
+connection for waking, or leave the TV's own remote for that.
 
 ## How it works
 
@@ -113,13 +175,20 @@ key on a paired TV. The same words work from a root shell on the remote for
 testing; the path and the vocabulary are `couch-bt-hid`'s lib, which the GUI
 and the system service link so nobody carries their own copy.
 
-Pairing mode is three more words on that socket (`pair`, `pair-stop`,
-`forget`) and a state file the daemon writes, `/tmp/couch-bt-pair.state`,
-that the remote's card, the web page and the API read (`idle`, `pairing`,
-`connected <name>`, `paired <name>`, `done <name>`, `failed timeout|cancelled`,
-plus a `link <name>` line while a TV is connected). During the window the
-adapter is pairable and the advertisement general-discoverable; outside it,
-neither, so only a bonded TV reconnects. The controller runs LE-only
+Pairing mode and the per-device bonds are a few more words on that socket
+(`pair`, `pair-stop`, `forget`, `forget <ADDR>`, `activate <ADDR>`,
+`activate none`) and a state file the daemon writes,
+`/tmp/couch-bt-pair.state`, that the remote's card, the web page and the API
+read (`idle`, `pairing`, `connected <name>`, `paired <name>`, `done <name>`,
+`failed timeout|cancelled`, plus `peer <ADDR> <name>` naming the TV that
+just bonded, `link <ADDR> <name>` while a TV is connected and `active <ADDR>`
+for the bond the daemon holds active). A window opened from a device is
+remembered in `/tmp/couch-bt-bond.request`; when the state file says `done`,
+the web daemon stores the `peer` on that device. During the window the
+adapter is pairable and the advertisement general-discoverable and open to
+anyone; outside it the daemon advertises for the active bond alone (the
+controller's white list), or not at all when no bond is active, so only the
+TV being controlled reconnects. The controller runs LE-only
 (bluetoothd's `ControllerMode = le`): the chip can do classic Bluetooth too,
 but the HID service only exists over LE, and a TV that found the remote over
 classic paired and then found nothing to use. The details are in
@@ -168,7 +237,22 @@ its TV, and two remotes in one house are two devices.
   (`/var/lib/bluetooth/<remote>/<TV>/info`) gains a `[GattCCC]` group once
   the TV has subscribed.
 
+- **A key does nothing on a TV that says it is connected.** Check which
+  device holds the link: the Remote page shows the TV on the link and the
+  active bond, and a key from a device whose TV is *not* the link falls
+  through to that device's other transports (or reports "*name* is not
+  connected over Bluetooth" when it has none). Open the device's screen, or
+  start its activity, to move the link to it.
+- **Paired from the device, but the device does not show it.** The bond is
+  stored by the web daemon within a second of DONE; if the device's card
+  still says not paired, the daemon's log on the remote says why
+  (`couch-confd: bluetooth bond for <device>: ...`). A window opened from
+  Settings rather than from a device stores nothing by design.
+
 A HID peripheral holds one link at a time. The remote keeps a bond per TV
 and lets one of them, the active one, connect: the controller's white list
-drops anyone else's connection request on the air. The mechanics are in
-[bluetooth.md](bluetooth.md#bonds-and-the-active-link).
+drops anyone else's connection request on the air. Which TV that is follows
+the device being controlled; see
+[Controls, transports and activities](#controls-transports-and-activities)
+for what that means in an activity with two paired TVs, and
+[bluetooth.md](bluetooth.md#bonds-and-the-active-link) for the mechanics.

@@ -399,6 +399,7 @@ mod activity_pages;
 mod streaming_tv;
 
 mod infrared;
+mod bluetooth;
 
 mod device_commands;
 

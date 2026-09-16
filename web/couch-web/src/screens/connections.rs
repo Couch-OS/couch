@@ -32,7 +32,6 @@ pub fn screen(app: App) -> AnyView {
         ("android-tv", "Android / Google TV · experimental"),
         ("apple-tv", "Apple TV · experimental"),
         ("tizen", "Samsung Tizen TV · experimental"),
-        ("bluetooth-tv", "Bluetooth TV · pairs to the remote"),
         ("denon", "Denon AVR"),
         ("unifi-protect", "UniFi Protect"),
         ("matter", "Matter · experimental"),
@@ -48,16 +47,17 @@ pub fn screen(app: App) -> AnyView {
         <div class="destination-grid"><For each=move ||order.get() key=|id|id.clone() children=move |id|card(app,id)/></div>
         <section class="creation"><h2>"Add a connection"</h2>
         <label class="field">"Connection type"<select aria-label="Connection type" prop:value=move || choice.get() on:change=move |e|choice.set(event_target_value(&e))><option value="">"Choose a type"</option>{available.into_iter().map(|(kind,label)|view!{<option value=kind>{label}</option>}).collect_view()}</select></label>
-        {move || match choice.get().as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"matter"=>create_named(app,Provider::Matter),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"denon"=>denon_form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"hue"=>create_named(app,Provider::Hue),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),"tizen"=>create_named(app,Provider::Tizen),"bluetooth-tv"=>create_named(app,Provider::BluetoothTv),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}
+        {move || match choice.get().as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"matter"=>create_named(app,Provider::Matter),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"denon"=>denon_form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"hue"=>create_named(app,Provider::Hue),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),"tizen"=>create_named(app,Provider::Tizen),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}
         </section>
     }.into_any()
 }
 
-/// A Bluetooth TV has nothing to configure here: the remote is the peripheral
-/// and the TV does the pairing.
+/// A Bluetooth TV connection from before per-device pairing. The daemon
+/// migrates it away on its next start; until then the page says where the
+/// feature went.
 fn bluetooth_notes() -> AnyView {
     view!{
-        <p>"The remote itself is the Bluetooth device. Turn Bluetooth on under Remote, then open the TV's Bluetooth or remote-control settings and pair \"Couch Remote\". Add the TV to a room from this connection; its mapped buttons then go straight over Bluetooth."</p>
+        <p>"Bluetooth pairing now belongs to each device: open the device in Rooms & devices and use its Bluetooth section. This connection carries nothing and is removed automatically."</p>
         <p class="dim">"Keys are standard consumer-control usages (volume, navigation, playback, power toggle). Which ones a TV honours depends on its make."</p>
     }.into_any()
 }

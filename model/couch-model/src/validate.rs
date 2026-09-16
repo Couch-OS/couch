@@ -121,6 +121,20 @@ impl Config {
             if c.id.as_str().len()>128 || !c.id.as_str().bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-' || b==b'_') { problems.push(Problem{at:alloc::format!("connections[{i}]"),message:"Connection IDs must be safe alphanumeric identifiers".into()}); }
         }
         for (room,device) in self.devices() {
+            if let Some(bond) = &device.bluetooth {
+                if !bond.address.is_empty() && !crate::DeviceBluetooth::valid_address(&bond.address) {
+                    problems.push(Problem {
+                        at: alloc::format!("rooms.{}.devices.{}.bluetooth", room.id, device.id),
+                        message: "A Bluetooth address is six uppercase hex pairs separated by colons".into(),
+                    });
+                }
+                if bond.name.len() > 128 {
+                    problems.push(Problem {
+                        at: alloc::format!("rooms.{}.devices.{}.bluetooth", room.id, device.id),
+                        message: "The Bluetooth name must be at most 128 bytes".into(),
+                    });
+                }
+            }
             if let crate::Integration::Sonos { host } = &device.integration {
                 if host.parse::<core::net::Ipv4Addr>().is_err() {
                     problems.push(Problem {

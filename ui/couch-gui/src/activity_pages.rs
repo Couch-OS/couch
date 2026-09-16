@@ -157,17 +157,7 @@ impl Pages {
             config
                 .devices()
                 .find(|(_, d)| &d.id == id)
-                .and_then(|(_, d)| config.resolve_integration(&d.integration))
-                .is_some_and(|i| {
-                    matches!(
-                        i,
-                        couch_model::Integration::Sonos { .. } | couch_model::Integration::Kodi { .. } | couch_model::Integration::WebOs
-                                    | couch_model::Integration::AndroidTv
-                                    | couch_model::Integration::AppleTv
-                                    | couch_model::Integration::Tizen
-                                    | couch_model::Integration::BluetoothTv
-                    )
-                })
+                .is_some_and(|(_, d)| crate::activity_runtime::has_screen(config, d))
         }));
         app.set_custom_activity_tiles(ModelRc::new(VecModel::from(
             page.widgets

@@ -92,20 +92,6 @@
 @media(max-width:850px){.install-band{padding-top:40px}.command-box code{font-size:12px}}
 
 /* Bluetooth: the remote is the peripheral, so the TV does the pairing. */
-.bluetooth{position:relative;padding-top:54px;padding-bottom:58px;display:grid;grid-template-columns:.85fr 2fr;gap:65px}
-.bluetooth:before{content:"";position:absolute;top:0;left:6vw;right:6vw;border-top:1px solid var(--line)}
-.bluetooth>*{min-width:0}
-.bluetooth-copy{max-width:720px}
-.bluetooth-copy p{font-size:14px;line-height:1.8;color:var(--muted);margin:0 0 18px}
-.bluetooth-copy strong{color:var(--ink);font-weight:600}
-.bluetooth-copy .bluetooth-note{font-size:12px}
-.bluetooth-copy .text-link{font-size:13px;text-decoration:underline;text-underline-offset:4px}
-.bluetooth-copy .text-link:hover{color:#755299}
-.bluetooth-keys{list-style:none;margin:0 0 20px;padding:0;display:flex;flex-wrap:wrap;gap:8px}
-.bluetooth-keys li{font-size:11px;font-weight:550;border:1px solid var(--line);border-radius:20px;padding:6px 12px}
-@media(min-width:1500px){.bluetooth:before{left:84px;right:84px}}
-@media(max-width:1000px){.bluetooth{grid-template-columns:1fr;gap:24px}}
-@media(max-width:850px){.bluetooth{padding-top:36px;padding-bottom:38px;gap:16px}.bluetooth h2 br{display:none}}
 
 /* The contribute path: links inside body copy need their own underline. */
 .project-contribute a{text-decoration:underline;text-underline-offset:4px}

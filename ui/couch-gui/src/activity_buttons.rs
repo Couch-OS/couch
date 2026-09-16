@@ -378,8 +378,38 @@ pub(crate) fn execute(
     .map(|_| ())
 }
 
+/// Why a transport did not take a key. `Unavailable` means it was not in a
+/// position to try (no IR code for that key, the device's TV not on the
+/// Bluetooth link, a network client that could not connect), so the next
+/// transport in the device's order gets the key; `Command` means it tried and
+/// failed, which ends the press: a failed IR write is never retried over the
+/// network, and a network command that was refused is not re-sent by IR.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Failure {
+    Unavailable(String),
+    Command(String),
+}
+impl From<String> for Failure {
+    fn from(e: String) -> Self {
+        Failure::Command(e)
+    }
+}
+impl From<&str> for Failure {
+    fn from(e: &str) -> Self {
+        Failure::Command(e.into())
+    }
+}
+fn unreachable(e: impl std::fmt::Display) -> Failure {
+    Failure::Unavailable(e.to_string())
+}
+
 /// Physical input preserves hold edges; other callers represent distinct presses.
 /// `current` is rechecked after loading a codeset and opening the blaster.
+///
+/// The key goes down the device's transport order (`Device::transport_order`:
+/// the preferred transport first) and stops at the first that takes it. Which
+/// transports a device has is configuration; whether one can take the key now
+/// is decided here, per press.
 pub(crate) fn execute_with_input(
     config: &Config,
     action: &Action,
@@ -400,9 +430,100 @@ pub(crate) fn execute_with_input(
         .map(|(_, d)| d)
         .ok_or("Mapped device was removed")?;
     let command = F::parse(&action.command).ok_or("Unsupported button function")?;
-    if try_device_ir(config, device.id.as_str(), &command, repeat, current)? {
-        return Ok(Outcome::default());
+    let order = device.transport_order(config);
+    if order.is_empty() {
+        return Err("Mapped connection was removed".into());
     }
+    if !order
+        .iter()
+        .any(|t| command.supports_transport(device, config, *t))
+    {
+        return Err("Unsupported button function".into());
+    }
+    let mut skipped: Option<String> = None;
+    for transport in order {
+        if !command.supports_transport(device, config, transport) {
+            continue;
+        }
+        let result = match transport {
+            couch_model::Transport::Ir => {
+                match try_device_ir(config, device.id.as_str(), &command, repeat, current) {
+                    Ok(true) => Ok(Outcome::default()),
+                    Ok(false) => Err(Failure::Unavailable(format!(
+                        "No IR code assigned to {}",
+                        command.id()
+                    ))),
+                    Err(e) => Err(Failure::Command(e)),
+                }
+            }
+            couch_model::Transport::Bluetooth => send_bluetooth(device, &command),
+            couch_model::Transport::Ip => send_network(
+                config, device, &command, denon, tv, streaming, sonos, matter, current,
+            ),
+        };
+        match result {
+            Ok(outcome) => return Ok(outcome),
+            Err(Failure::Unavailable(why)) => {
+                println!(
+                    "couch-gui: {} over {transport} unavailable for {}: {why}",
+                    command.id(),
+                    device.name
+                );
+                skipped = Some(why);
+            }
+            Err(Failure::Command(e)) => return Err(e),
+        }
+        if !current() {
+            return Ok(Outcome::default());
+        }
+    }
+    Err(skipped.unwrap_or_else(|| "Unsupported button function".into()))
+}
+
+/// The remote is the HID peripheral: one datagram with the function's id to
+/// the HID daemon, which turns it into a consumer-control report for the TV
+/// on the link. Only when that TV is this device's: a bond that is not the
+/// link right now (the TV is off, or another device holds the link) makes
+/// the transport unavailable rather than sending a key to the wrong TV. A
+/// migrated bond with no address takes whatever TV is on the link, as it
+/// always did; so does a daemon that reports the link without an address.
+fn send_bluetooth(device: &couch_model::Device, command: &F) -> Result<Outcome, Failure> {
+    let bond = device
+        .bluetooth
+        .as_ref()
+        .ok_or_else(|| Failure::Unavailable("No Bluetooth pairing".into()))?;
+    let link = crate::system::bluetooth_link();
+    let linked = link
+        .link
+        .as_ref()
+        .is_some_and(|l| !bond.addressed() || l.address.is_empty() || l.address == bond.address);
+    if !linked {
+        return Err(Failure::Unavailable(format!(
+            "{} is not connected over Bluetooth",
+            device.name
+        )));
+    }
+    crate::system::bluetooth_word(&command.id()).map_err(Failure::Command)?;
+    Ok(Outcome::default())
+}
+
+/// The device's network integration. A client that cannot connect makes the
+/// transport unavailable (the TV is asleep, the box is off) so a key can fall
+/// through to infrared or Bluetooth; a command the connected device refused
+/// is an error.
+#[allow(clippy::too_many_arguments)]
+fn send_network(
+    config: &Config,
+    device: &couch_model::Device,
+    command: &F,
+    denon: &mut HashMap<String, couch_control::Denon>,
+    tv: &mut HashMap<String, couch_control::WebOs>,
+    streaming: &mut HashMap<String, couch_control::StreamingTv>,
+    sonos: &mut HashMap<String, couch_sonos::Client>,
+    matter: &connections::MatterFleet,
+    current: &dyn Fn() -> bool,
+) -> Result<Outcome, Failure> {
+    let command = command.clone();
     // A volume or mute press on a device that can report its level gets the
     // level read back for the volume card; everything else reports nothing.
     let sound = matches!(
@@ -410,12 +531,9 @@ pub(crate) fn execute_with_input(
         F::VolumeUp | F::VolumeDown | F::Volume(_) | F::Mute | F::MuteOn | F::MuteOff
     );
     let name = device.name.clone();
-    let integration = config
-        .resolve_integration(&device.integration)
-        .ok_or("Mapped connection was removed")?;
-    if !command.supports(&integration) {
-        return Err("Unsupported button function".into());
-    }
+    let integration = device
+        .network_integration(config)
+        .ok_or_else(|| Failure::Unavailable("This device has no network connection".into()))?;
     let connection = match &device.integration {
         Integration::Connection { connection_id, .. } => connection_id.as_str(),
         _ => "",
@@ -430,7 +548,7 @@ pub(crate) fn execute_with_input(
                 let address = host.parse().map_err(|_| "Sonos requires an IPv4 address")?;
                 sonos.insert(
                     host.clone(),
-                    couch_sonos::Client::connect(address).map_err(|e| e.to_string())?,
+                    couch_sonos::Client::connect(address).map_err(unreachable)?,
                 );
             }
             let client = sonos.get(&host).expect("just inserted");
@@ -452,14 +570,6 @@ pub(crate) fn execute_with_input(
                 None
             };
             Ok(Outcome { volume })
-        }
-        Integration::Ir { .. } => Err(format!("No IR code assigned to {}", command.id())),
-        // The remote is the HID peripheral: one datagram with the function's
-        // id to the HID daemon, which turns it into a consumer-control report
-        // for the TV paired to it. No connection state to keep here.
-        Integration::BluetoothTv => {
-            crate::system::bluetooth_word(&command.id())?;
-            Ok(Outcome::default())
         }
         Integration::AndroidTv | Integration::AppleTv | Integration::Tizen => {
             let kind = match integration {
@@ -484,7 +594,7 @@ pub(crate) fn execute_with_input(
             {
                 streaming.insert(
                     key.clone(),
-                    couch_control::StreamingTv::connect(&settings).map_err(|e| e.to_string())?,
+                    couch_control::StreamingTv::connect(&settings).map_err(unreachable)?,
                 );
             }
             let result = streaming
@@ -495,7 +605,7 @@ pub(crate) fn execute_with_input(
             if result.is_err() {
                 streaming.remove(&key);
             }
-            result.map(|_| Outcome::default())
+            result.map(|_| Outcome::default()).map_err(Failure::Command)
         }
         Integration::Denon { host, port } => {
             let key = format!("{host}:{port}");
@@ -503,7 +613,7 @@ pub(crate) fn execute_with_input(
                 denon.insert(
                     key.clone(),
                     couch_control::Denon::connect(&couch_denon::Settings { host, port })
-                        .map_err(|e| e.to_string())?,
+                        .map_err(unreachable)?,
                 );
             }
             let c = denon.get_mut(&key).unwrap();
@@ -617,23 +727,28 @@ pub(crate) fn execute_with_input(
                             F::PowerOff => "power-off",
                             _ => "power",
                         })
-                        .map(|_| Outcome::default());
+                        .map(|_| Outcome::default())
+                        .map_err(Failure::Command);
                 }
                 if command == F::Toggle {
-                    return crate::tv::toggle_power(&settings, &path).map(|_| Outcome::default());
+                    return crate::tv::toggle_power(&settings, &path)
+                    .map(|_| Outcome::default())
+                    .map_err(Failure::Command);
                 }
             }
             if command == F::PowerOn {
                 let path = connections::file(connection, "webos");
                 let settings = couch_webos::Settings::load(&path).map_err(|e| e.to_string())?;
-                return crate::tv::wake_tv(&settings, &path).map(|_| Outcome::default());
+                return crate::tv::wake_tv(&settings, &path)
+                    .map(|_| Outcome::default())
+                    .map_err(Failure::Command);
             }
             if !tv.contains_key(connection) {
                 let settings = couch_webos::Settings::load(&connections::file(connection, "webos"))
                     .map_err(|e| e.to_string())?;
                 tv.insert(
                     connection.into(),
-                    couch_control::WebOs::connect(&settings).map_err(|e| e.to_string())?,
+                    couch_control::WebOs::connect(&settings).map_err(unreachable)?,
                 );
             }
             let result = crate::tv::mapped_command(tv.get_mut(connection).unwrap(), &command);
@@ -670,7 +785,7 @@ pub(crate) fn execute_with_input(
                 return c
                     .command(raw, couch_hue::Command::Brightness(percent))
                     .map(|_| Outcome::default())
-                    .map_err(|e| e.to_string());
+                    .map_err(|e| Failure::Command(e.to_string()));
             }
             let on = match command {
                 F::On => true,
@@ -683,7 +798,7 @@ pub(crate) fn execute_with_input(
             };
             c.set_power(raw, on)
                 .map(|_| Outcome::default())
-                .map_err(|e| e.to_string())
+                .map_err(|e| Failure::Command(e.to_string()))
         }
         Integration::HomeAssistant { entity_id } => {
             let (c, raw) = connections::ha(&entity_id)?;
@@ -699,7 +814,7 @@ pub(crate) fn execute_with_input(
                 return c
                     .cover_command(&raw, cover)
                     .map(|_| Outcome::default())
-                    .map_err(|e| e.to_string());
+                    .map_err(|e| Failure::Command(e.to_string()));
             }
             // Stepping the target reads it first: the increment, the limits and
             // whether the thermostat is in range mode are the entity's, not ours.
@@ -718,13 +833,13 @@ pub(crate) fn execute_with_input(
                 return c
                     .climate_command(&raw, climate)
                     .map(|_| Outcome::default())
-                    .map_err(|e| e.to_string());
+                    .map_err(|e| Failure::Command(e.to_string()));
             }
             if let F::Dim(percent) = command {
                 return c
                     .command(&raw, couch_ha::Command::Brightness(percent))
                     .map(|_| Outcome::default())
-                    .map_err(|e| e.to_string());
+                    .map_err(|e| Failure::Command(e.to_string()));
             }
             let on = match command {
                 F::On => true,
@@ -744,7 +859,7 @@ pub(crate) fn execute_with_input(
                 },
             )
             .map(|_| Outcome::default())
-            .map_err(|e| e.to_string())
+            .map_err(|e| Failure::Command(e.to_string()))
         }
         // The fleet is the one the room list and the shortcut keys use, so a
         // mapped key reuses whatever CASE session those already opened.
@@ -754,8 +869,11 @@ pub(crate) fn execute_with_input(
             F::Dim(percent) => matter.brightness(&device, percent),
             _ => matter.toggle_or_on(&device),
         }
-        .map(|_| Outcome::default()),
-        _ => Err("This integration cannot send button commands yet".into()),
+        .map(|_| Outcome::default())
+        .map_err(Failure::Command),
+        _ => Err(Failure::Command(
+            "This integration cannot send button commands yet".into(),
+        )),
     }
 }
 
@@ -1187,6 +1305,72 @@ mod tests {
             );
             assert_eq!(error, "Matter connection was removed", "{command}");
         }
+    }
+
+    #[test]
+    fn a_key_walks_the_transport_order_and_skips_a_bluetooth_tv_that_is_not_linked() {
+        let mut config = Config::default();
+        config.connections.push(couch_model::Connection {
+            id: "lg".into(),
+            name: "LG".into(),
+            provider: couch_model::Provider::WebOs,
+        });
+        let bond = couch_model::DeviceBluetooth {
+            address: "44:27:45:4E:33:25".into(),
+            name: "LG".into(),
+        };
+        config.rooms.push(couch_model::Room {
+            id: "room".into(),
+            name: "Room".into(),
+            icon: None,
+            devices: vec![
+                couch_model::Device {
+                    bluetooth: Some(bond.clone()),
+                    ..couch_model::Device::new("bt-only".into(), "Bedroom TV", couch_model::DeviceKind::Tv)
+                },
+                couch_model::Device {
+                    bluetooth: Some(bond),
+                    preferred_transport: Some(couch_model::Transport::Bluetooth),
+                    ..couch_model::Device::new("lg".into(), "LG TV", couch_model::DeviceKind::Tv)
+                        .with_integration(Integration::Connection {
+                            connection_id: "lg".into(),
+                            resource_id: String::new(),
+                        })
+                },
+            ],
+        });
+        let matter = connections::MatterFleet::default();
+        let run = |device: &str, command: &str| {
+            execute_with_input(
+                &config,
+                &Action::new(device, command),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &matter,
+                false,
+                &|| true,
+            )
+            .unwrap_err()
+        };
+        // No HID daemon on a test host, so the bond is never the link: a
+        // Bluetooth-only TV says so, and says nothing about other transports.
+        assert_eq!(run("bt-only", "volume-up"), "Bedroom TV is not connected over Bluetooth");
+        // Power-on is not a Bluetooth key at all, and the device has nothing else.
+        assert_eq!(run("bt-only", "power-on"), "Unsupported button function");
+        // The LG prefers Bluetooth; with its TV not on the link the key falls
+        // through to webOS, whose error (no credentials here) is what comes
+        // back, not the Bluetooth one.
+        let error = run("lg", "volume-up");
+        assert!(!error.contains("Bluetooth"), "{error}");
+        assert!(!error.is_empty());
+        assert_eq!(
+            Failure::from("x"),
+            Failure::Command("x".into()),
+            "a plain error ends the press"
+        );
+        assert!(matches!(unreachable("gone"), Failure::Unavailable(m) if m == "gone"));
     }
 
     #[test]

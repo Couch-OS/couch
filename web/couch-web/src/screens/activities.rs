@@ -186,6 +186,16 @@ fn page(app: App, id: Id) -> AnyView {
                     </select></label>}}}
                     <label class="activity-device-choice"><input type="checkbox" prop:checked=move ||current.get().is_some_and(|a|a.setup.keep_awake) disabled=move ||app.busy.get() on:change=move |ev|{if let Some(mut a)=base(){a.setup.keep_awake=event_target_checked(&ev);save(a);}}/><span>"Keep remote awake while running"</span></label>
                     <h3>"Included devices"</h3><p class="dim">"Only these devices appear in the command and button pickers."</p>
+                    {move ||current.get().and_then(|a|{
+                        // The remote holds one Bluetooth link: the main screen's
+                        // device gets it. A second bonded TV with nothing else
+                        // cannot be reached while this runs, which is worth
+                        // saying here rather than on a key press.
+                        let house=app.house();
+                        let link=house.bluetooth_link_device(&a)?.name.clone();
+                        let stranded:Vec<String>=house.bluetooth_conflicts(&a).iter().map(|d|d.name.clone()).collect();
+                        (!stranded.is_empty()).then(||view!{<p class="notice" role="alert">{format!("{} cannot be reached while this activity runs: {link} holds the Bluetooth link and the remote keeps one link at a time. Add IR commands or a connection to {}, or make it the main screen.",stranded.join(", "),if stranded.len()==1{"it"}else{"them"})}</p>})
+                    })}
                     <div class="activity-device-list"><For each=move ||devices.get() key=|id|id.clone() children=move |id|{
                         let place=super::device_place(app,id.clone());
                         let checked=id.clone();
@@ -222,7 +232,7 @@ fn screen_editor(app: App, config: &couch_model::Config, activity: &Activity) ->
     use couch_model::Integration;
     let base = StoredValue::new(activity.clone());
     let options=config.devices().filter(|(_,d)|activity.setup.devices.contains(&d.id)).filter_map(|(_,d)|{
-        let screen=match config.resolve_integration(&d.integration) {Some(Integration::Sonos{..})=>"Sonos · now playing, transport and sources",Some(Integration::Kodi{..})=>"Kodi · artwork, playback and chapters",Some(Integration::WebOs)=>"LG TV · inputs, apps and playback",Some(Integration::AndroidTv)=>"Android TV · navigation and playback",Some(Integration::AppleTv)=>"Apple TV · apps and playback",Some(Integration::Tizen)=>"Samsung TV · sources, apps and playback",Some(Integration::BluetoothTv)=>"Bluetooth TV · keys over Bluetooth",_=>return None};
+        let screen=match config.resolve_integration(&d.integration) {Some(Integration::Sonos{..})=>"Sonos · now playing, transport and sources",Some(Integration::Kodi{..})=>"Kodi · artwork, playback and chapters",Some(Integration::WebOs)=>"LG TV · inputs, apps and playback",Some(Integration::AndroidTv)=>"Android TV · navigation and playback",Some(Integration::AppleTv)=>"Apple TV · apps and playback",Some(Integration::Tizen)=>"Samsung TV · sources, apps and playback",_ if d.network_integration(config).is_none() && d.bluetooth.is_some()=>"Bluetooth TV · keys over Bluetooth, no feedback",_=>return None};
         let id=d.id.clone();let selected=activity.source.as_ref()==Some(&id) && !activity.setup.custom_screen;
         Some(view!{<label class="activity-screen-choice"><input type="radio" name="activity-screen" checked=selected disabled=move ||app.busy.get() on:change=move |_|{let mut a=base.get_value();a.source=Some(id.clone());a.setup.custom_screen=false;app.run(api::put(format!("/api/activities/{}",a.id),a));}/><span><strong>{d.name.clone()}</strong><small>{screen}</small></span></label>})
     }).collect_view();
