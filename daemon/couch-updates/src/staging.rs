@@ -128,7 +128,7 @@ pub(crate) fn stage(root: &Path, m: &Manifest, phase: impl Fn(&str)) -> Result<(
     unpack(root, m, &bytes)?;
     atomic(&root.join("runtime/staged"), m.sha256.as_bytes())
 }
-fn unpack(root: &Path, m: &Manifest, bytes: &[u8]) -> Result<()> {
+pub(crate) fn unpack(root: &Path, m: &Manifest, bytes: &[u8]) -> Result<()> {
     crate::baseline::check(root, m)?;
     let files = inventory(m)?;
     let slots = root.join("runtime/slots");
@@ -255,11 +255,8 @@ pub(crate) fn verify_files(slot: &Path, files: &BTreeMap<String, &File>) -> Resu
     }
     Ok(())
 }
-pub fn activate(root: &Path) -> Result<()> {
+pub(crate) fn validate_staged(root: &Path) -> Result<Manifest> {
     let runtime = root.join("runtime");
-    if runtime.join("pending").exists() {
-        return Err("An update already awaits boot confirmation".into());
-    }
     let selected = fs::read_to_string(runtime.join("staged")).map_err(|_| "No staged update")?;
     if !id(&selected) {
         return Err("Invalid staged update identifier".into());
@@ -274,6 +271,16 @@ pub fn activate(root: &Path) -> Result<()> {
     }
     crate::baseline::check(root, &m)?;
     verify_files(&slot, &inventory(&m)?)?;
+    Ok(m)
+}
+
+pub fn activate(root: &Path) -> Result<()> {
+    let runtime = root.join("runtime");
+    if runtime.join("pending").exists() {
+        return Err("An update already awaits boot confirmation".into());
+    }
+    let m = validate_staged(root)?;
+    let selected = m.sha256;
     let previous = match fs::read_link(runtime.join("current")) {
         Ok(path) => {
             let s = path
@@ -450,9 +457,9 @@ pub(crate) fn check_floor(manifest: &Manifest) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    fn fixture() -> (std::path::PathBuf, Manifest, Vec<u8>) {
+    pub(crate) fn fixture() -> (std::path::PathBuf, Manifest, Vec<u8>) {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
             "couch-update-test-{}-{}",

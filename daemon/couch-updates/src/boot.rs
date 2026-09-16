@@ -61,9 +61,15 @@ pub(crate) fn inventory(m: &Manifest) -> Result<BTreeMap<String, &File>> {
 /// Download, verify and unpack a boot payload under `boot/slots/<sha256>`.
 pub(crate) fn stage(root: &Path, m: &Manifest, phase: impl Fn(&str)) -> Result<()> {
     crate::baseline::check(root, m)?;
-    let files = inventory(m)?;
+    inventory(m)?;
     let bytes = release::fetch(&m.url, m.size)?;
-    if bytes.len() as u64 != m.size || release::digest(&bytes) != m.sha256 {
+    stage_bytes(root, m, &bytes, phase)
+}
+
+fn stage_bytes(root: &Path, m: &Manifest, bytes: &[u8], phase: impl Fn(&str)) -> Result<()> {
+    crate::baseline::check(root, m)?;
+    let files = inventory(m)?;
+    if bytes.len() as u64 != m.size || release::digest(bytes) != m.sha256 {
         return Err("Update download digest mismatch".into());
     }
     phase("verifying");
@@ -81,7 +87,7 @@ pub(crate) fn stage(root: &Path, m: &Manifest, phase: impl Fn(&str)) -> Result<(
         }
         fs::create_dir(&work).map_err(|_| "Could not create staging directory")?;
         let result = (|| -> Result<()> {
-            staging::extract(&work, &files, &bytes)?;
+            staging::extract(&work, &files, bytes)?;
             let zimage = fs::read(work.join(ZIMAGE)).map_err(|_| "Could not read staged kernel")?;
             let ramdisk =
                 fs::read(work.join(RAMDISK)).map_err(|_| "Could not read staged ramdisk")?;
@@ -100,6 +106,12 @@ pub(crate) fn stage(root: &Path, m: &Manifest, phase: impl Fn(&str)) -> Result<(
         }
         result?;
     }
+    // Identical payload bytes may be published under several release versions.
+    // Refresh the signed selection metadata even when the slot is reused.
+    staging::atomic(
+        &target.join(".manifest.json"),
+        &serde_json::to_vec(m).unwrap(),
+    )?;
     staging::atomic(&root.join("boot/staged"), m.sha256.as_bytes())
 }
 
@@ -242,6 +254,10 @@ pub(crate) fn repack(current: &[u8], zimage: &[u8], ramdisk: &[u8]) -> Result<Ve
 }
 /// Write the staged payload to the boot partition. The caller reboots on Ok.
 pub fn activate(root: &Path, device: &Path) -> Result<()> {
+    activate_staged(root, device, true)
+}
+
+pub(crate) fn validate_staged(root: &Path) -> Result<Manifest> {
     let selected = fs::read_to_string(root.join("boot/staged")).map_err(|_| "No staged update")?;
     if !staging::id(&selected) {
         return Err("Invalid staged update identifier".into());
@@ -259,11 +275,21 @@ pub fn activate(root: &Path, device: &Path) -> Result<()> {
     staging::verify_files(&slot, &files)?;
     let zimage = fs::read(slot.join(ZIMAGE)).map_err(|_| "Could not read staged kernel")?;
     let ramdisk = fs::read(slot.join(RAMDISK)).map_err(|_| "Could not read staged ramdisk")?;
+    check_payload(&zimage, &ramdisk)?;
+    Ok(m)
+}
+
+pub(crate) fn activate_staged(root: &Path, device: &Path, consume: bool) -> Result<()> {
+    let m = validate_staged(root)?;
+    let files = inventory(&m)?;
+    let slot = root.join("boot/slots").join(&m.sha256);
+    let zimage = fs::read(slot.join(ZIMAGE)).map_err(|_| "Could not read staged kernel")?;
+    let ramdisk = fs::read(slot.join(RAMDISK)).map_err(|_| "Could not read staged ramdisk")?;
     let current = read_partition(device)?;
     let next = repack(&current, &zimage, &ramdisk)?;
-    if next != current {
-        let parsed = parse(&current)?;
-        let (old_zimage, _) = split(parsed.kernel)?;
+    let parsed = parse(&current)?;
+    let (old_zimage, _) = split(parsed.kernel)?;
+    if old_zimage != zimage || parsed.ramdisk != ramdisk {
         staging::atomic(&root.join("boot/previous.img"), &current)?;
         staging::atomic(
             &root.join("boot/previous.json"),
@@ -287,6 +313,16 @@ pub fn activate(root: &Path, device: &Path) -> Result<()> {
             }
         })?;
     }
+    record_installed(root, &m)?;
+    if consume {
+        fs::remove_file(root.join("boot/staged")).map_err(|_| "Could not finalize activation")?;
+    }
+    Ok(())
+}
+
+/// Called only after checking the partition itself against a signed manifest.
+pub(crate) fn record_installed(root: &Path, m: &Manifest) -> Result<()> {
+    let files = inventory(m)?;
     staging::atomic(
         &root.join("boot/installed.json"),
         &serde_json::to_vec_pretty(&serde_json::json!({
@@ -297,9 +333,7 @@ pub fn activate(root: &Path, device: &Path) -> Result<()> {
             "ramdisk_sha256": files[RAMDISK].sha256,
         }))
         .unwrap(),
-    )?;
-    fs::remove_file(root.join("boot/staged")).map_err(|_| "Could not finalize activation")?;
-    Ok(())
+    )
 }
 /// The kernel commit the publisher wrote into the payload's notes ("Couch boot
 /// image VERSION: kernel COMMIT and boot ramdisk"). The manifest has no field
@@ -494,7 +528,7 @@ pub(crate) mod tests {
             required_os_baseline: None,
         }
     }
-    fn stage_fixture(root: &Path, m: &Manifest, zimage: &[u8], ramdisk: &[u8]) {
+    pub(crate) fn stage_fixture(root: &Path, m: &Manifest, zimage: &[u8], ramdisk: &[u8]) {
         let slot = root.join("boot/slots").join(&m.sha256);
         fs::create_dir_all(&slot).unwrap();
         fs::write(slot.join(ZIMAGE), zimage).unwrap();
@@ -509,6 +543,26 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+    #[test]
+    fn unchanged_payload_preserves_the_partition_and_existing_backup() {
+        let root = root("unchanged");
+        let device = root.join("boot-device");
+        let z = zimage(1, 100);
+        let r = ramdisk(2, 100);
+        let original = image(&z, &r);
+        fs::write(&device, &original).unwrap();
+        let m = manifest(&z, &r);
+        stage_fixture(&root, &m, &z, &r);
+        staging::atomic(&root.join("boot/previous.img"), b"existing backup").unwrap();
+        activate(&root, &device).unwrap();
+        assert_eq!(fs::read(device).unwrap(), original);
+        assert_eq!(
+            fs::read(root.join("boot/previous.img")).unwrap(),
+            b"existing backup"
+        );
+        assert_eq!(record(&root).0, m.version);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn repack_keeps_header_and_device_tree_and_replaces_kernel_and_ramdisk() {
@@ -641,6 +695,12 @@ pub(crate) mod tests {
         fs::write(&device, image(&zimage(1, 5000), &ramdisk(2, 3000))).unwrap();
         crate::activate_with(&root, &device).unwrap();
         assert!(installed(&device, &m).unwrap());
+        // A later release can reuse the same archive/slot. Its selection must
+        // retain the NEW manifest, or paired activation would reject it.
+        let mut republished = m.clone();
+        republished.version = "v1.2.4".into();
+        stage_bytes(&root, &republished, &archive, |_| {}).unwrap();
+        assert_eq!(validate_staged(&root).unwrap().version, "v1.2.4");
         // A payload bound to another OS baseline is refused before anything is written.
         staging::atomic(&root.join("boot/staged"), m.sha256.as_bytes()).unwrap();
         fs::write(
