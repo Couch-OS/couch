@@ -1,11 +1,10 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "couch-tested-integration-set",
   "name": "denon-preview-0.1.1",
   "core": {
     "repository": "https://github.com/dangerouslaser/couch.git",
-    "tested_commit": "b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb",
-    "protocol_version": 1,
+    "tested_commit": "f274804c5219db00446f1b9e5ce46391adcfd37c",
     "compatibility_floor": "v0.1.0-alpha.20260910.24",
     "contract_paths": [
       "clients/couch-plugin",
@@ -22,7 +21,18 @@
       "model/couch-model/src/lib.rs",
       "model/couch-model/src/seed.rs",
       "model/couch-model/src/storage.rs",
-      "model/couch-model/src/validate.rs"
+      "model/couch-model/src/validate.rs",
+      "clients/couch-sdk",
+      "daemon/couch-confd/src/api/connections.rs",
+      "model/couch-model/src/volume.rs",
+      "model/couch-model/src/commands.rs",
+      "model/couch-model/src/connection.rs",
+      "model/couch-model/src/device.rs",
+      "model/couch-model/src/buttons.rs"
+    ],
+    "supported_protocol_versions": [
+      1,
+      2
     ]
   },
   "feed": {
@@ -77,7 +87,9 @@
         "binary": "couch-plugin-denon",
         "binary_sha256": "f9d5bc52c7e0a8a77d0f456aaf876a47be5586c0e996e172119ac1efd084a24d",
         "manifest_sha256": "3abd01c3863b1e540d2d1317614c844071e3fd0900e1dcc403ba16680d4df540"
-      }
+      },
+      "protocol_version": 1,
+      "hardware_evidence_core_commit": "b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb"
     }
   ],
   "rollout": {
@@ -85,5 +97,10 @@
     "bundle_packages_in_installer": false,
     "automatic_install": false,
     "automatic_configuration_migration": false
+  },
+  "host_compatibility": {
+    "file": "denon-0.1.1-core-f274804-host-compatibility.json",
+    "size": 1375,
+    "sha256": "20dbfe03afdf2f862903ec0b67fdb2de7da62468548b83cd7c032cfcceafb27c"
   }
 }

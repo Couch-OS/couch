@@ -5,18 +5,42 @@ This writes release provenance. It never downloads, signs, publishes, installs,
 or adds an integration package to a runtime or installer payload.
 """
 import argparse
+import gzip
 import hashlib
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tarfile
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT = Path(__file__).with_name("tested-integrations.json")
+HOST_HARNESS = REPO / "tools/tests/denon-v1-host-compatibility.py"
 HEX40 = re.compile(r"[0-9a-f]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
+LEGACY_EVIDENCE_COMMIT = "b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb"
+# Schema 2 cannot drop a changed contract path to retain stale evidence. The
+# SDK and new model types affect the wire contract even outside couch-plugin.
+CONTRACT_PATHS = (
+    "clients/couch-plugin", "clients/couch-control", "clients/couch-sdk",
+    "daemon/couch-integrations", "daemon/couch-confd/src/api.rs",
+    "daemon/couch-confd/src/api/connections.rs",
+    "daemon/couch-confd/src/api/integration_migrations.rs",
+    "daemon/couch-confd/src/api/integration_packages.rs",
+    "daemon/couch-confd/src/api/plugins.rs", "daemon/couch-confd/src/main.rs",
+    "daemon/couch-confd/src/plugins.rs", "daemon/couch-confd/src/store.rs",
+    "model/couch-model/src/integration_migration.rs", "model/couch-model/src/lib.rs",
+    "model/couch-model/src/seed.rs", "model/couch-model/src/storage.rs",
+    "model/couch-model/src/validate.rs", "model/couch-model/src/volume.rs",
+    "model/couch-model/src/commands.rs", "model/couch-model/src/connection.rs",
+    "model/couch-model/src/device.rs", "model/couch-model/src/buttons.rs",
+)
+HOST_CHECKS = (
+    "signed_package_lifecycle", "v1_handshake", "fake_receiver_status",
+    "fake_receiver_inputs", "fake_receiver_command", "shared_transport_ownership",
+    "v2_action_refused_for_v1",
+)
 
 
 def require(value, message):
@@ -86,16 +110,141 @@ def index_records(text):
     return records
 
 
+def validate_protocol(core, schema):
+    supported = [1] if schema == 1 else core["supported_protocol_versions"]
+    require(type(supported) is list and supported == ([1] if schema == 1 else [1, 2])
+            and all(type(version) is int for version in supported), "Invalid core protocol versions")
+    protocol = (REPO / "clients/couch-plugin/src/protocol.rs").read_text()
+    require(re.search(r"pub const PROTOCOL_VERSION:\s*u32\s*=\s*" + str(max(supported)) + r"\s*;", protocol),
+            "Current plugin protocol maximum differs from tested core")
+    main = (REPO / "daemon/couch-confd/src/main.rs").read_text()
+    require(all(f'"--supports-integration-protocol={version}"' in main for version in supported),
+            "Core host support probe is absent")
+
+
+def validate_host_compatibility(manifest, path):
+    """Validate trusted, hash-pinned host test evidence, never hardware evidence."""
+    raw = pinned_file(manifest["host_compatibility"], path, "host_compatibility")
+    require(len(raw) <= 64 * 1024, "Host compatibility receipt exceeds bound")
+    evidence = json.loads(raw)
+    exact(evidence, ("schema", "kind", "evidence_level", "core", "integrations", "checks",
+                     "hardware_validation", "harness_sha256", "report_sha256"), "host compatibility receipt")
+    require(type(evidence["schema"]) is int and evidence["schema"] == 1
+            and evidence["kind"] == "couch-integration-host-compatibility"
+            and evidence["evidence_level"] == "host-protocol-compatibility"
+            and evidence["hardware_validation"] is False,
+            "Host compatibility receipt must not claim hardware validation")
+    for field in ("harness_sha256", "report_sha256"):
+        require(isinstance(evidence[field], str) and HEX64.fullmatch(evidence[field]),
+                "Missing host compatibility harness/report digest")
+    require(path.name.endswith("-host-compatibility.json"), "Unexpected host compatibility receipt filename")
+    report = path.with_name(path.name.removesuffix("-host-compatibility.json") + "-host-report.json")
+    require(digest(regular(HOST_HARNESS, 128 * 1024)) == evidence["harness_sha256"],
+            "Host compatibility harness bytes differ from executed evidence")
+    report_bytes = regular(report, 64 * 1024)
+    require(digest(report_bytes) == evidence["report_sha256"],
+            "Host compatibility report bytes differ from executed evidence")
+    core = evidence["core"]
+    exact(core, ("source_commit", "supported_protocol_versions", "target", "binary_sha256"), "host compatibility core")
+    require(core["source_commit"] == manifest["core"]["tested_commit"]
+            and core["supported_protocol_versions"] == manifest["core"]["supported_protocol_versions"]
+            and all(type(version) is int for version in core["supported_protocol_versions"])
+            and core["target"] == "armv7-unknown-linux-musleabihf"
+            and isinstance(core["binary_sha256"], str) and HEX64.fullmatch(core["binary_sha256"]),
+            "Host compatibility core differs from frozen tested core")
+    exact(evidence["checks"], HOST_CHECKS, "host compatibility checks")
+    require(all(value == "passed" for value in evidence["checks"].values()),
+            "Host compatibility checks did not all pass")
+    report_data = json.loads(report_bytes)
+    exact(report_data, ("schema", "kind", "core_commit", "hardware_validation", "checks",
+                       "http_panel_device_connections", "maximum_simultaneous_device_connections",
+                       "signature_checks", "lifecycle", "wire_requests"), "host compatibility report")
+    require(type(report_data.get("schema")) is int
+            and report_data["schema"] == 1 and report_data.get("kind") == "couch-integration-host-test-report"
+            and report_data.get("core_commit") == core["source_commit"]
+            and report_data.get("checks") == evidence["checks"]
+            and report_data.get("hardware_validation") is False,
+            "Host compatibility report identity or results differ from receipt")
+    require(all(type(report_data[field]) is int and report_data[field] == 1 for field in (
+                "http_panel_device_connections", "maximum_simultaneous_device_connections"))
+            and report_data["signature_checks"] == {
+                "trusted_apk": "passed", "untrusted_key": "rejected", "tampered_apk": "rejected"}
+            and report_data["lifecycle"] == ["signed_install", "same_version_readmission",
+                "removal_preserves_config_and_settings", "signed_reinstall_preserves_settings"]
+            and report_data["wire_requests"] == ["ZM?", "MV?", "MU?", "SI?", "SSFUN ?", "MVUP",
+                "MV?", "MUON", "MU?", "ZM?", "MV?", "MU?", "SI?"],
+            "Host compatibility report lacks exact signature, lifecycle or shared-owner results")
+    require(type(evidence["integrations"]) is list
+            and len(evidence["integrations"]) == len(manifest["integrations"]),
+            "Host compatibility integration set differs")
+    by_id = {item["id"]: item for item in manifest["integrations"]}
+    seen = set()
+    for item in evidence["integrations"]:
+        exact(item, ("id", "version", "protocol_version", "apk_sha256", "manifest_sha256",
+                     "binary_sha256", "provenance_sha256"), "host compatibility integration")
+        require(isinstance(item["id"], str) and item["id"] in by_id and item["id"] not in seen,
+                "Unknown or duplicate host compatibility integration")
+        seen.add(item["id"])
+        pin = by_id[item["id"]]
+        require(type(item["protocol_version"]) is int and item == {
+            "id": pin["id"], "version": pin["version"], "protocol_version": pin["protocol_version"],
+            "apk_sha256": pin["artifact"]["sha256"],
+            "manifest_sha256": pin["provenance"]["manifest_sha256"],
+            "binary_sha256": pin["provenance"]["binary_sha256"],
+            "provenance_sha256": pin["provenance"]["sha256"],
+        }, "Host compatibility package bytes differ from immutable feed pins")
+    return evidence
+
+
+def verify_package_protocol(data, pin):
+    """Inspect the hash-pinned APK's actual manifest and executable, without extraction."""
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
+            unpacked = compressed.read(64 * 1024 * 1024 + 1)
+        require(len(unpacked) <= 64 * 1024 * 1024, "Tested APK decompressed size exceeds bound")
+        base = "usr/lib/couch/integrations/" + pin["id"] + "/"
+        names = {base + "manifest.json": "manifest_sha256",
+                 base + "bin/" + pin["provenance"]["binary"]: "binary_sha256"}
+        found = {}
+        with tarfile.open(fileobj=io.BytesIO(unpacked), mode="r:", ignore_zeros=True) as archive:
+            for count, member in enumerate(archive, 1):
+                require(count <= 4096, "Tested APK entry count exceeds bound")
+                name = str(PurePosixPath(member.name))
+                if name not in names:
+                    continue
+                limit = 128 * 1024 if name.endswith("/manifest.json") else 32 * 1024 * 1024
+                require(name not in found and member.type in (tarfile.REGTYPE, tarfile.AREGTYPE)
+                        and not member.sparse and 0 < member.size <= limit,
+                        "Duplicate, nonregular or oversized tested APK member")
+                content = archive.extractfile(member).read()
+                require(digest(content) == pin["provenance"][names[name]], "Tested APK member differs from provenance")
+                found[name] = content
+        require(set(found) == set(names), "Tested APK lacks manifest or executable")
+        package = json.loads(found[base + "manifest.json"])
+        require(type(package.get("protocol_version")) is int
+                and package["protocol_version"] == pin["protocol_version"]
+                and package.get("id") == pin["id"] and package.get("version") == pin["version"]
+                and package.get("executable") == "bin/" + pin["provenance"]["binary"],
+                "Tested package protocol or identity differs from actual APK manifest")
+    except (OSError, EOFError, tarfile.TarError) as error:
+        raise ValueError("Invalid bounded tested APK archive") from error
+
+
 def validate_manifest(path=DEFAULT):
     raw = regular(path, 1024 * 1024)
     manifest = json.loads(raw)
-    exact(manifest, ("schema", "kind", "name", "core", "feed", "integrations", "rollout"), "manifest")
-    require(manifest["schema"] == 1 and manifest["kind"] == "couch-tested-integration-set"
+    schema = manifest.get("schema")
+    require(type(schema) is int and schema in (1, 2), "Unsupported tested-set schema")
+    exact(manifest, ("schema", "kind", "name", "core", "feed", "integrations", "rollout",
+                     *(("host_compatibility",) if schema == 2 else ())), "manifest")
+    require(manifest["kind"] == "couch-tested-integration-set"
             and isinstance(manifest["name"], str) and manifest["name"], "Unsupported tested-set identity")
     core = manifest["core"]
-    exact(core, ("repository", "tested_commit", "protocol_version", "compatibility_floor", "contract_paths"), "core")
+    exact(core, ("repository", "tested_commit", "compatibility_floor", "contract_paths",
+                 "protocol_version" if schema == 1 else "supported_protocol_versions"), "core")
     require(core["repository"] == "https://github.com/dangerouslaser/couch.git"
-            and HEX40.fullmatch(core["tested_commit"]) and core["protocol_version"] == 1,
+            and HEX40.fullmatch(core["tested_commit"])
+            and (schema == 2 or type(core["protocol_version"]) is int and core["protocol_version"] == 1),
             "Invalid core identity")
     require(commit_exists(core["tested_commit"]), "Tested core commit is absent from this checkout")
     head = git("rev-parse", "HEAD").stdout.strip()
@@ -104,14 +253,13 @@ def validate_manifest(path=DEFAULT):
     for item in core["contract_paths"]:
         require(isinstance(item, str) and item and not item.startswith("/") and ".." not in Path(item).parts,
                 "Invalid core contract path")
+    if schema == 2:
+        require(len(set(core["contract_paths"])) == len(core["contract_paths"])
+                and set(CONTRACT_PATHS) <= set(core["contract_paths"]), "Schema 2 omits required contract paths")
     changed = git("diff", "--name-only", core["tested_commit"], head, "--", *core["contract_paths"]).stdout.splitlines()
     require(not changed, "Integration contract changed after its tested commit: " + ", ".join(changed))
 
-    protocol = (REPO / "clients/couch-plugin/src/protocol.rs").read_text()
-    require(re.search(r"pub const PROTOCOL_VERSION:\s*u32\s*=\s*1\s*;", protocol),
-            "Current plugin protocol is not version 1")
-    main = (REPO / "daemon/couch-confd/src/main.rs").read_text()
-    require('"--supports-integration-protocol=1"' in main, "Core host support probe is absent")
+    validate_protocol(core, schema)
 
     feed = manifest["feed"]
     exact(feed, ("repository", "source_commit", "base_url", "channel", "architecture", "public_key", "index"), "feed")
@@ -132,7 +280,16 @@ def validate_manifest(path=DEFAULT):
     for position, item in enumerate(manifest["integrations"]):
         where = f"integrations[{position}]"
         exact(item, ("id", "package", "version", "release", "tier", "evidence_level",
-                     "validated_behaviors", "not_validated", "artifact", "provenance"), where)
+                     "validated_behaviors", "not_validated", "artifact", "provenance",
+                     *(("protocol_version", "hardware_evidence_core_commit") if schema == 2 else ())), where)
+        if schema == 2:
+            require(type(item["protocol_version"]) is int and item["protocol_version"] == 1
+                    and item["protocol_version"] in core["supported_protocol_versions"],
+                    "Renewed host evidence covers the original protocol-1 package only")
+            require(item["hardware_evidence_core_commit"] == LEGACY_EVIDENCE_COMMIT
+                    and commit_exists(LEGACY_EVIDENCE_COMMIT)
+                    and ancestor(LEGACY_EVIDENCE_COMMIT, core["tested_commit"]),
+                    "Original hardware evidence core identity must be preserved")
         require(re.fullmatch(r"[a-z0-9][a-z0-9-]*", item["id"] or "") and item["id"] not in seen,
                 f"{where}.id is invalid or duplicated")
         seen.add(item["id"])
@@ -169,6 +326,12 @@ def validate_manifest(path=DEFAULT):
     exact(rollout, ("bundle_packages_in_runtime", "bundle_packages_in_installer",
                     "automatic_install", "automatic_configuration_migration"), "rollout")
     require(all(value is False for value in rollout.values()), "Pilot rollout must remain explicit and unbundled")
+    if schema == 2:
+        evidence_pin = manifest["host_compatibility"]
+        exact(evidence_pin, ("file", "size", "sha256"), "host_compatibility")
+        require(type(evidence_pin["size"]) is int and 0 < evidence_pin["size"] <= 64 * 1024,
+                "Host compatibility receipt exceeds bound")
+        validate_host_compatibility(manifest, path.parent / evidence_pin["file"])
     return manifest, raw, head
 
 
@@ -193,7 +356,9 @@ def verify_artifacts(manifest, key_path=None, index_path=None, packages=None, pr
             "Package/provenance inputs must cover exactly the tested integrations")
     for item in manifest["integrations"]:
         name = item["id"]
-        pinned_file(item["artifact"], packages[name], f"{name}.artifact")
+        package = pinned_file(item["artifact"], packages[name], f"{name}.artifact")
+        if manifest["schema"] == 2:
+            verify_package_protocol(package, item)
         raw = pinned_file({key: item["provenance"][key] for key in ("file", "size", "sha256")},
                           provenance[name], f"{name}.provenance")
         published = json.loads(raw)
@@ -222,18 +387,27 @@ def receipt(manifest_path=DEFAULT, key_path=None, index_path=None, packages=None
     if any((key_path is not None, index_path is not None, bool(packages), bool(provenance))):
         require_clean_contract(manifest)
     artifacts = verify_artifacts(manifest, key_path, index_path, packages, provenance)
-    return {
-        "schema": 1,
+    result = {
+        "schema": manifest["schema"],
         "kind": "couch-tested-integration-set-verification",
         "name": manifest["name"],
         "manifest_sha256": digest(raw),
         "core_tested_commit": manifest["core"]["tested_commit"],
         "candidate_commit": head,
-        "protocol_version": manifest["core"]["protocol_version"],
         "integration_versions": {item["id"]: item["version"] for item in manifest["integrations"]},
         "artifact_bytes_verified": artifacts,
         "rollout": manifest["rollout"],
     }
+    if manifest["schema"] == 1:
+        result["protocol_version"] = manifest["core"]["protocol_version"]
+    else:
+        result.update(
+            core_supported_protocol_versions=manifest["core"]["supported_protocol_versions"],
+            integration_protocol_versions={item["id"]: item["protocol_version"] for item in manifest["integrations"]},
+            hardware_evidence_core_commits={item["id"]: item["hardware_evidence_core_commit"] for item in manifest["integrations"]},
+            host_compatibility_sha256=manifest["host_compatibility"]["sha256"],
+        )
+    return result
 
 
 def verify_receipt(manifest_path, receipt_path, require_artifacts=True):
