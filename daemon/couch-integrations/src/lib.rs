@@ -29,6 +29,9 @@ const MAX_APK_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_FILES: usize = 512;
+// A catalog integrity read may overlap a user install/remove request. Wait
+// before starting the mutation, but never retry a partially executed operation.
+const MUTATION_LOCK_WAIT: Duration = Duration::from_secs(3);
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);
@@ -168,7 +171,7 @@ impl Store {
             .canonicalize()
             .map_err(|e| io("resolve APK path", e))?;
         self.layout()?;
-        let _lock = Lock::acquire(self.root.join(".lock"))?;
+        let _lock = Lock::acquire_wait(self.root.join(".lock"), MUTATION_LOCK_WAIT, libc::LOCK_EX)?;
         self.recover()?;
         let meta = fs::metadata(&package).map_err(|e| io("read APK metadata", e))?;
         if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_APK_BYTES {
@@ -186,8 +189,7 @@ impl Store {
     }
     pub fn list(&self) -> Result<Vec<Manifest>> {
         self.layout()?;
-        let _lock = Lock::acquire(self.root.join(".lock"))?;
-        self.recover()?;
+        let _lock = Lock::acquire_shared_wait(self.root.join(".lock"), Duration::ZERO)?;
         let mut result = Vec::new();
         for entry in fs::read_dir(self.root.join("state"))
             .map_err(|e| io("read integration selections", e))?
@@ -206,11 +208,10 @@ impl Store {
     }
     /// Resolve an installed payload after waiting briefly for an in-progress
     /// store operation. The bound belongs to the caller's request budget; APK
-    /// mutations continue to use fail-fast locking.
+    /// mutations wait separately for exclusive access before making any change.
     pub fn resolve_wait(&self, id: &str, wait: Duration) -> Result<(PathBuf, Manifest)> {
         self.layout()?;
-        let _lock = Lock::acquire_wait(self.root.join(".lock"), wait)?;
-        self.recover()?;
+        let _lock = Lock::acquire_shared_wait(self.root.join(".lock"), wait)?;
         self.resolve_locked(id)
     }
     /// Cheap activation token for a running host. Full payload integrity is
@@ -228,7 +229,7 @@ impl Store {
         if !valid_component(id) {
             return Err(err("invalid integration id"));
         }
-        let _lock = Lock::acquire(self.root.join(".lock"))?;
+        let _lock = Lock::acquire_wait(self.root.join(".lock"), MUTATION_LOCK_WAIT, libc::LOCK_EX)?;
         self.recover()?;
         let state = self.selection(id)?;
         let previous = state
@@ -255,7 +256,8 @@ impl Store {
         if !valid_component(id) {
             return Err(err("invalid integration id"));
         }
-        let _lock = Lock::acquire(self.root.join(".lock"))?;
+        let _lock = Lock::acquire_wait(self.root.join(".lock"), MUTATION_LOCK_WAIT, libc::LOCK_EX)?;
+        self.recover()?;
         self.select(id, &Selection::default())?;
         let path = self.root.join("slots").join(id);
         if path.is_dir() {
@@ -624,10 +626,17 @@ pub fn run_cli(args: Vec<String>) -> Result<String> {
 #[allow(dead_code)] // owns the file descriptor on which the advisory lock lives
 struct Lock(File);
 impl Lock {
+    // Package slots are immutable and selection files commit by atomic rename,
+    // so integrity checks may share the lock. Installs, rollback, removal and
+    // staging recovery use the exclusive path and cannot overlap a reader.
+    #[cfg(test)]
     fn acquire(path: PathBuf) -> Result<Self> {
-        Self::acquire_wait(path, Duration::ZERO)
+        Self::acquire_wait(path, Duration::ZERO, libc::LOCK_EX)
     }
-    fn acquire_wait(path: PathBuf, wait: Duration) -> Result<Self> {
+    fn acquire_shared_wait(path: PathBuf, wait: Duration) -> Result<Self> {
+        Self::acquire_wait(path, wait, libc::LOCK_SH)
+    }
+    fn acquire_wait(path: PathBuf, wait: Duration, operation: libc::c_int) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -636,7 +645,7 @@ impl Lock {
             .map_err(|e| io("open integration lock", e))?;
         let started = Instant::now();
         loop {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            if unsafe { libc::flock(file.as_raw_fd(), operation | libc::LOCK_NB) } == 0 {
                 return Ok(Self(file));
             }
             let error = std::io::Error::last_os_error();
@@ -1175,6 +1184,64 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
         drop(held);
         assert_eq!(task.join().unwrap().unwrap().1.version, "1.0.0");
+    }
+
+    #[test]
+    fn concurrent_resolves_share_the_store_lock() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let active = slot(&store, "1.0.0");
+        store
+            .select(
+                "example",
+                &Selection {
+                    active: Some(active),
+                    previous: None,
+                },
+            )
+            .unwrap();
+        let _held = Lock::acquire_shared_wait(store.root.join(".lock"), Duration::ZERO).unwrap();
+        assert!(
+            Lock::acquire(store.root.join(".lock")).is_err(),
+            "a mutation must not overlap an integrity read"
+        );
+        assert_eq!(
+            store
+                .resolve_wait("example", Duration::ZERO)
+                .unwrap()
+                .1
+                .version,
+            "1.0.0"
+        );
+    }
+
+    #[test]
+    fn removal_waits_for_an_active_catalog_reader() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let active = slot(&store, "1.0.0");
+        store
+            .select(
+                "example",
+                &Selection {
+                    active: Some(active),
+                    previous: None,
+                },
+            )
+            .unwrap();
+        let held = Lock::acquire_shared_wait(store.root.join(".lock"), Duration::ZERO).unwrap();
+        let removing = store.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let task = std::thread::spawn(move || {
+            tx.send(()).unwrap();
+            removing.remove("example")
+        });
+        rx.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(store.generation("example").is_ok());
+        drop(held);
+        task.join().unwrap().unwrap();
+        assert!(store.generation("example").is_err());
     }
 
     #[test]
