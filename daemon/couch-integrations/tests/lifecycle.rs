@@ -93,6 +93,7 @@ fn upgrade_and_rollback_validate_saved_settings_and_preserve_atomic_history() {
             capabilities: vec![],
             supports_inputs: false,
             presentation: vec![],
+            actions: vec![],
         },
     });
     config.validate().unwrap();

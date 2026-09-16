@@ -281,6 +281,9 @@ pub fn contract_findings<C: DeviceClient>(settings: &C::Settings, host: &MockHos
             )),
         }
     }
+    if C::actions().len() > 1 || C::actions().iter().any(|schema| !schema.is_valid()) {
+        findings.push("typed action declarations are invalid or duplicated".into());
+    }
     if let Err(e) = settings.validate() {
         findings.push(format!("the settings given to this check are invalid: {e}"));
         return findings;
@@ -334,6 +337,26 @@ pub fn contract_findings<C: DeviceClient>(settings: &C::Settings, host: &MockHos
     // the gate, not about launching something on a real device.
     if !C::supports_app("definitely-not-installed") {
         quiet(&mut client, "app:definitely-not-installed", &mut findings);
+    }
+    // Extreme values are outside every valid schema; observe the mock peer
+    // as well as the return value so a transport-first gate cannot pass.
+    let before = host.requests().len();
+    for tenths in [i16::MIN, i16::MAX] {
+        let expected = if C::actions().is_empty() {
+            Error::Unsupported
+        } else {
+            Error::Invalid
+        };
+        let answer = client.action(crate::TypedAction::SetVolumeDb { tenths });
+        if answer != Err(expected) {
+            findings.push(format!(
+                "out-of-range typed action was not refused: {answer:?}"
+            ));
+        }
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    if host.requests().len() != before {
+        findings.push("refused typed action reached the device".into());
     }
     findings
 }
