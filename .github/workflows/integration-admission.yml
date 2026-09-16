@@ -68,6 +68,9 @@ jobs:
       - name: Run shared host protocol tests
         if: needs.changes.outputs.integration == 'true'
         run: cargo test --locked --manifest-path clients/Cargo.toml -p couch-plugin --test protocol
+      - name: Verify Denon protocol parity
+        if: needs.changes.outputs.integration == 'true'
+        run: cargo test --locked --manifest-path clients/Cargo.toml -p couch-denon --test parity
       - name: Run every required package case
         if: needs.changes.outputs.integration == 'true'
         run: |
@@ -136,6 +139,7 @@ jobs:
         run: |
           python3 -m http.server 18093 --bind 127.0.0.1 --directory web/couch-web/dist > "$RUNNER_TEMP/couch-web.log" 2>&1 &
           COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/integrations.mjs
+          COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/plugin-components.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -143,6 +147,8 @@ jobs:
           path: |
             build/webui-review/integrations-mobile.png
             build/webui-review/integrations-desktop.png
+            build/webui-review/plugin-components-mobile.png
+            build/webui-review/plugin-components-desktop.png
             ${{ runner.temp }}/couch-web.log
           if-no-files-found: warn
 
