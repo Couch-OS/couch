@@ -44,7 +44,9 @@ linked, and the workaround is to turn Bluetooth off; the site, the
 page all say so. The fix to try is asking for a longer connection interval and
 slave latency in a connection-parameter update once the link is up, which is
 not implemented. Until then Bluetooth is labelled experimental everywhere a
-user meets it, and it stays off by default.
+user meets it. It is also off after every restart — the toggle does not start
+the stack at boot, so it has to be switched on by hand each time — which is a
+known gap on the list rather than a settled choice.
 
 ## Goal
 

@@ -12,8 +12,10 @@ out of line of sight.
 
 Pairing and the keys work: a TV or a computer pairs from the pairing card,
 the remote keeps a bond per device, one link is active at a time, and the
-keys keep working across reboots. Bluetooth is off by default and does not
-start at boot, and a TV paired on an older build has to pair again (see
+keys keep working across reboots. As things stand Bluetooth is off after
+every restart — it does not start at boot, so it has to be switched on by
+hand each time, which is a known gap rather than a settled choice — and a TV
+paired on an older build has to pair again (see
 [troubleshooting](#troubleshooting)).
 
 **The known problem is Wi-Fi.** The remote's Wi-Fi and Bluetooth share one
