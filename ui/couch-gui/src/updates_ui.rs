@@ -295,7 +295,7 @@ fn channel_label(channel: Channel) -> &'static str {
     }
 }
 /// The value shown on the "Check for updates" row: one glance at where things
-/// are, including which half of a two-step update is on the table.
+/// are, including combined updates and completion of older boot updates.
 fn summary(s: &Status, busy: bool) -> String {
     match s.phase.as_str() {
         "checking" => "Checking…".into(),
@@ -307,8 +307,8 @@ fn summary(s: &Status, busy: bool) -> String {
             // A boot payload is only ever offered for the release the remote
             // already runs, so naming that version again would say nothing;
             // which step it is, is the useful part.
-            Some(_) if s.kind == "boot" => "Finish: step 2 of 2".into(),
-            Some(version) if s.steps == 2 => format!("{} · step 1 of 2", short(version)),
+            Some(_) if s.kind == "boot" => "Finish boot update".into(),
+            Some(version) if s.kind == "combined" => format!("{} · full update", short(version)),
             Some(version) => format!("{} available", short(version)),
             None if busy => "Working…".into(),
             None if s.boot_pending => "Update unfinished".into(),
@@ -540,13 +540,13 @@ mod tests {
             ".122 available"
         );
         let mut two = status("idle", Some("v0.1.0-alpha.20260913.122"));
-        two.steps = 2;
-        assert_eq!(summary(&two, false), ".122 · step 1 of 2");
+        two.kind = "combined".into();
+        assert_eq!(summary(&two, false), ".122 · full update");
         let mut boot = status("idle", Some("v0.1.0-alpha.20260913.121"));
         boot.kind = "boot".into();
-        boot.steps = 2;
+        boot.steps = 1;
         boot.boot_pending = true;
-        assert_eq!(summary(&boot, false), "Finish: step 2 of 2");
+        assert_eq!(summary(&boot, false), "Finish boot update");
         // Half-finished and not yet checked: the row says so on its own.
         let mut unfinished = status("idle", None);
         unfinished.boot_pending = true;

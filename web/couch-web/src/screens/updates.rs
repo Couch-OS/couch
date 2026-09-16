@@ -28,10 +28,8 @@ struct Status {
     boot_behind: bool,
     #[serde(default)]
     boot_pending: bool,
-    /// How many steps the offered release installs in, and the one sentence
+    /// The one sentence
     /// the remote's own Updates panel shows for the same state.
-    #[serde(default)]
-    steps: u8,
     #[serde(default)]
     guidance: String,
 }
@@ -102,8 +100,8 @@ pub fn notification(app: App) -> AnyView {
         // who stopped after step 1 is not looking for "an update", they think
         // they already installed it.
         let (text, label) = match (&v.available, v.boot_pending) {
-            (Some(version), _) if v.kind == "boot" => (format!("Finish updating Couch {version}: step 2 of 2 is the kernel and boot image"), "Finish update"),
-            (Some(version), _) if v.steps == 2 => (format!("Couch {version} is available, and installs in two steps"), "Review update"),
+            (Some(version), _) if v.kind == "boot" => (format!("Finish updating Couch {version}: kernel and boot image"), "Finish update"),
+            (Some(version), _) if v.kind == "combined" => (format!("Couch {version} is available: software and kernel, one restart"), "Review update"),
             (Some(version), _) => (format!("Couch {version} is available"), "Review update"),
             (None, true) => ("Your last Couch update is not finished: its kernel and boot image are still to install".into(), "Finish update"),
             (None, false) => return None,
@@ -148,15 +146,15 @@ pub fn screen(app: App) -> AnyView {
             <label><input type="checkbox" prop:checked=move ||undo.get() on:change=move |e|undo.set(event_target_checked(&e))/>"Write the saved previous boot image back to the boot partition"</label>
             <button class="ghost" disabled=move ||!undo.get() on:click=move |_|{undo.set(false);request(app,value,error,"POST","/api/updates/boot-rollback",serde_json::json!({"confirm":true}));}>"Restore previous boot image"</button>
         })}
-        <p class="dim">"Couch ships as two separately signed parts. The software is the apps, services and this web UI. The kernel and boot image is a second payload written to the boot partition, published only when the kernel itself changes — Bluetooth, for instance, needs a kernel that has it. A release carrying both installs in two steps, each with its own restart, and the remote offers step 2 after step 1 has restarted. Alpine upgrades use the OS installer."</p>
+        <p class="dim">"Couch software and its matching kernel and boot image download and verify together. Install the update with one restart. Your connections, Wi-Fi and settings are kept. Alpine upgrades use the OS installer."</p>
         <label class="field">"Release channel"<select aria-label="Release channel" prop:value=move ||value.get().channel on:change=move |e|request(app,value,error,"PUT","/api/updates/settings",serde_json::json!({"channel":event_target_value(&e),"automatic_checks":value.get_untracked().automatic_checks}))><option value="stable">"Stable"</option><option value="alpha">"Alpha · testing builds"</option><option value="dev">"Dev · every build from the dev branch"</option></select></label>
         <label><input type="checkbox" prop:checked=move ||value.get().automatic_checks on:change=move |e|request(app,value,error,"PUT","/api/updates/settings",serde_json::json!({"channel":value.get_untracked().channel,"automatic_checks":event_target_checked(&e)}))/>"Check for updates when I open the web UI"</label>
         <p class="dim">"Checks run at most once every six hours. Updates are installed only when you choose."</p>
         <button class="ghost" disabled=move ||matches!(value.get().phase.as_str(),"checking"|"downloading"|"verifying"|"ready") on:click=move |_|request(app,value,error,"POST","/api/updates/check",serde_json::json!({"automatic":false}))>"Check now"</button>
         </section>
         <section class="card"><h2>{move ||{let v=value.get(); match (&v.available,v.boot_pending) {
-            (Some(_),_) if v.kind=="boot" => "Step 2 of 2: kernel and boot image".to_string(),
-            (Some(version),_) if v.steps==2 => format!("Step 1 of 2: Couch software {version}"),
+            (Some(_),_) if v.kind=="boot" => "Finish update: kernel and boot image".to_string(),
+            (Some(version),_) if v.kind=="combined" => format!("Couch software and kernel {version}"),
             (Some(version),_) => format!("Available: {version}"),
             (None,true) => "This update is not finished".to_string(),
             (None,false) => "Update status".to_string(),
@@ -168,7 +166,7 @@ pub fn screen(app: App) -> AnyView {
         {move ||(value.get().boot_pending&&value.get().available.is_none()).then(||view!{<button class="primary" disabled=move ||matches!(value.get().phase.as_str(),"checking"|"downloading"|"verifying"|"ready") on:click=move |_|request(app,value,error,"POST","/api/updates/check",serde_json::json!({"automatic":false}))>"Find the rest of this update"</button>})}
         {move ||value.get().can_install.then(||view!{<button class="primary" on:click=move |_|request(app,value,error,"POST","/api/updates/install",serde_json::json!({"version":value.get_untracked().available}))>{if value.get_untracked().kind=="boot"{"Finish update: download the kernel and boot image"}else{"Download & verify update"}}</button>})}
         {move ||(value.get().phase=="ready").then(||view!{
-            {if value.get_untracked().kind=="boot" { view!{<p>"Step 2 of 2 is ready. Installing writes the new kernel and boot ramdisk to the boot partition and restarts; the image they replace is saved on the remote. Keep the remote charged and do not power it off until it is back. This is the last restart of this update."</p>}.into_any() } else if value.get_untracked().steps==2 { view!{<p>"Step 1 of 2 is ready. Your connections, Wi-Fi and settings will be kept. Keep the remote charged while it restarts; the kernel and boot image are offered here as step 2 once it is back."</p>}.into_any() } else { view!{<p>"The update is ready. Your connections, Wi-Fi and settings will be kept. Keep the remote charged while it restarts."</p>}.into_any() }}
+            {if value.get_untracked().kind=="boot" { view!{<p>"The boot image is ready. Installing saves the previous boot image and restarts the remote. Keep the remote charged until it is back."</p>}.into_any() } else if value.get_untracked().kind=="combined" { view!{<p>"The software and boot image are ready. Both install together with one restart. Your connections, Wi-Fi and settings will be kept. Keep the remote charged until it is back."</p>}.into_any() } else { view!{<p>"The update is ready. Your connections, Wi-Fi and settings will be kept. Keep the remote charged while it restarts."</p>}.into_any() }}
             <label><input type="checkbox" prop:checked=move ||confirm.get() on:change=move |e|confirm.set(event_target_checked(&e))/>{if value.get_untracked().kind=="boot"{"Write the boot image and restart the remote"}else{"Restart the remote and apply this update"}}</label>
             <button class="primary" disabled=move ||!confirm.get() on:click=move |_|{confirm.set(false);request(app,value,error,"POST","/api/updates/restart",serde_json::json!({"confirm":true}));}>{if value.get_untracked().kind=="boot"{"Finish update & restart"}else{"Install & restart"}}</button>
         })}
