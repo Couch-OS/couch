@@ -229,18 +229,72 @@ fn page(app: App, id: Id) -> AnyView {
 }
 
 fn screen_editor(app: App, config: &couch_model::Config, activity: &Activity) -> AnyView {
-    use couch_model::Integration;
     let base = StoredValue::new(activity.clone());
     let options=config.devices().filter(|(_,d)|activity.setup.devices.contains(&d.id)).filter_map(|(_,d)|{
-        let screen=match config.resolve_integration(&d.integration) {Some(Integration::Sonos{..})=>"Sonos · now playing, transport and sources",Some(Integration::Kodi{..})=>"Kodi · artwork, playback and chapters",Some(Integration::WebOs)=>"LG TV · inputs, apps and playback",Some(Integration::AndroidTv)=>"Android TV · navigation and playback",Some(Integration::AppleTv)=>"Apple TV · apps and playback",Some(Integration::Tizen)=>"Samsung TV · sources, apps and playback",_ if d.network_integration(config).is_none() && d.bluetooth.is_some()=>"Bluetooth TV · keys over Bluetooth, no feedback",_=>return None};
+        let screen=screen_label(config,d)?;
         let id=d.id.clone();let selected=activity.source.as_ref()==Some(&id) && !activity.setup.custom_screen;
         Some(view!{<label class="activity-screen-choice"><input type="radio" name="activity-screen" checked=selected disabled=move ||app.busy.get() on:change=move |_|{let mut a=base.get_value();a.source=Some(id.clone());a.setup.custom_screen=false;app.run(api::put(format!("/api/activities/{}",a.id),a));}/><span><strong>{d.name.clone()}</strong><small>{screen}</small></span></label>})
     }).collect_view();
     let pages = super::activity_pages::editor(app, config, activity);
     let areas=config.areas.iter().map(|area|{let id=area.id.clone();let selected=area.activities.contains(&activity.id);let activity_id=activity.id.clone();view!{<label class="activity-device-choice"><input type="checkbox" checked=selected on:change=move |ev|{if event_target_checked(&ev){app.run(api::post(format!("/api/areas/{id}/activities"),json!({"activity":activity_id})));}else{app.run(api::delete(format!("/api/areas/{id}/activities/{activity_id}")));}}/><span>{area.name.clone()}</span></label>}}).collect_view();
     view!{<section class="card"><h2>"Choose the main control screen"</h2><p class="dim">"The source supplies the screen and default controls. Physical button mappings can control any included device. Hold Back to return to Couch without ending the activity."</p>{options}
-        {activity.source.is_none().then(||view!{<p class="dim">"Select a Kodi/TV screen or create custom pages below."</p>})}
+        {activity.source.is_none().then(||view!{<p class="dim">"Select a device screen or create custom pages below."</p>})}
         {pages}
         <h3>"Show on areas"</h3><p class="dim">"The activity is also available in its room."</p>{areas}
     </section>}.into_any()
+}
+
+fn screen_label(config: &couch_model::Config, device: &couch_model::Device) -> Option<String> {
+    use couch_model::Integration;
+    Some(match config.resolve_integration(&device.integration) {
+        Some(Integration::Sonos { .. }) => "Sonos · now playing, transport and sources".into(),
+        Some(Integration::Kodi { .. }) => "Kodi · artwork, playback and chapters".into(),
+        Some(Integration::WebOs) => "LG TV · inputs, apps and playback".into(),
+        Some(Integration::AndroidTv) => "Android TV · navigation and playback".into(),
+        Some(Integration::AppleTv) => "Apple TV · apps and playback".into(),
+        Some(Integration::Tizen) => "Samsung TV · sources, apps and playback".into(),
+        Some(Integration::Plugin { connection_id, .. }) => format!(
+            "{} · native integration controls",
+            config
+                .connection(&connection_id)
+                .map(|connection| connection.provider.label())
+                .unwrap_or("External integration")
+        ),
+        _ if device.network_integration(config).is_none() && device.bluetooth.is_some() => {
+            "Bluetooth TV · keys over Bluetooth, no feedback".into()
+        }
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installed_integration_is_offered_as_an_activity_screen() {
+        let config: couch_model::Config = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "connections": [{
+                "id": "receiver",
+                "name": "Living room receiver",
+                "provider": {"kind": "plugin", "id": "community-avr", "label": "Community AVR"}
+            }],
+            "rooms": [{
+                "id": "living",
+                "name": "Living room",
+                "devices": [{
+                    "id": "avr",
+                    "name": "Receiver",
+                    "kind": "media-player",
+                    "integration": {"via": "connection", "connection_id": "receiver"}
+                }]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            screen_label(&config, &config.rooms[0].devices[0]).as_deref(),
+            Some("Community AVR · native integration controls")
+        );
+    }
 }

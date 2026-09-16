@@ -44,7 +44,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
     }).collect_view();
     view!{<section class="custom-pages">
         <h3>"Custom pages"</h3><p class="dim">"Build up to 8 pages with 6 command buttons each. Buttons appear left to right, then top to bottom. Use the page arrows or D-pad edges to switch pages on the remote."</p>
-        <label class="activity-screen-choice"><input type="radio" name="activity-screen" checked=activity.setup.custom_screen disabled={move ||app.busy.get()||base.get_value().setup.pages.is_empty()} on:change=move |_|{let mut a=base.get_value();a.setup.custom_screen=true;save(a);}/><span><strong>"Open custom pages first"</strong><small>"Keep a Kodi or TV source to switch to its media controls. Physical button mappings still take precedence."</small></span></label>
+        <label class="activity-screen-choice"><input type="radio" name="activity-screen" checked=activity.setup.custom_screen disabled={move ||app.busy.get()||base.get_value().setup.pages.is_empty()} on:change=move |_|{let mut a=base.get_value();a.setup.custom_screen=true;save(a);}/><span><strong>"Open custom pages first"</strong><small>"Keep a device source to switch to its native controls. Physical button mappings still take precedence."</small></span></label>
         {pages}
         <button class="ghost" disabled={move ||app.busy.get()||base.get_value().setup.pages.len()>=8} on:click=move |_|{let mut a=base.get_value();a.setup.pages.push(ActivityPage{title:format!("Page {}",a.setup.pages.len()+1),widgets:vec![]});save(a);}>"＋ Add page"</button>
     </section>}.into_any()
