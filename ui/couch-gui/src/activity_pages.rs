@@ -1,6 +1,9 @@
 //! Local page presentation and bounded asynchronous widget command dispatch.
 use crate::{ActivityTile, App};
-use couch_model::{Action, Config, Icon, PluginCapability, PluginComponent, PluginStatusField};
+use couch_model::{
+    Action, Config, Icon, PluginActionSchema, PluginCapability, PluginComponent, PluginStatusField,
+    TypedAction, VolumeDb,
+};
 use couch_plugin::{Request as PluginRequest, Response as PluginResponse, Selectable, Status};
 use slint::{ModelRc, VecModel};
 use std::{
@@ -25,6 +28,7 @@ pub(super) struct PluginTarget {
     pub connection: String,
     pub label: String,
     pub capabilities: Vec<PluginCapability>,
+    pub actions: Vec<PluginActionSchema>,
     pub supports_inputs: bool,
     pub presentation: Vec<PluginComponent>,
 }
@@ -33,9 +37,11 @@ struct PluginView {
     target: PluginTarget,
     status: Status,
     inputs: Vec<Selectable>,
+    volume_draft: Option<i16>,
 }
 
 struct PluginWork {
+    at: std::time::Instant,
     generation: u64,
     connection: String,
     request: PluginRequest,
@@ -45,6 +51,7 @@ enum PluginEvent {
     Status(Status),
     Inputs(Vec<Selectable>),
     Error(String),
+    ActionDone(Result<(), String>),
 }
 
 #[derive(Clone)]
@@ -57,6 +64,9 @@ enum PluginTileAction {
     },
     RefreshStatus,
     RefreshInputs,
+    AdjustVolume(i16),
+    ResetVolume,
+    SetVolume(i16),
 }
 
 struct PluginTile {
@@ -146,6 +156,48 @@ fn command_worker<S: Default>(
     }
 }
 
+fn plugin_worker(
+    work_rx: mpsc::Receiver<PluginWork>,
+    reply: mpsc::Sender<(u64, PluginEvent)>,
+    current: Arc<AtomicU64>,
+    mut execute: impl FnMut(&str, PluginRequest) -> Result<PluginResponse, String>,
+) {
+    while let Ok(work) = work_rx.recv() {
+        if work.generation != current.load(Ordering::SeqCst) {
+            continue;
+        }
+        let is_action = matches!(&work.request, PluginRequest::Action { .. });
+        if work.at.elapsed() > std::time::Duration::from_millis(750) {
+            let error = "Integration request expired. Try again.".to_string();
+            let event = if is_action {
+                PluginEvent::ActionDone(Err(error))
+            } else {
+                PluginEvent::Error(error)
+            };
+            let _ = reply.send((work.generation, event));
+            continue;
+        }
+        let response = execute(&work.connection, work.request);
+        let event = if is_action {
+            PluginEvent::ActionDone(match response {
+                Ok(PluginResponse::Ok) => Ok(()),
+                Ok(PluginResponse::Error { code }) => Err(code.to_string()),
+                Err(error) => Err(error.to_string()),
+                _ => Err("The integration sent an unexpected reply".into()),
+            })
+        } else {
+            match response {
+                Ok(PluginResponse::Status { status }) => PluginEvent::Status(status),
+                Ok(PluginResponse::Inputs { inputs }) => PluginEvent::Inputs(inputs),
+                Ok(PluginResponse::Error { code }) => PluginEvent::Error(code.to_string()),
+                Ok(_) => PluginEvent::Error("The integration sent an unexpected reply".into()),
+                Err(error) => PluginEvent::Error(error.to_string()),
+            }
+        };
+        let _ = reply.send((work.generation, event));
+    }
+}
+
 impl Pages {
     pub fn new() -> Self {
         let (tx, work) = mpsc::sync_channel::<Request>(1);
@@ -173,22 +225,22 @@ impl Pages {
         });
         let (plugin_tx, plugin_work) = mpsc::sync_channel::<PluginWork>(4);
         let (plugin_reply, plugin_rx) = mpsc::channel();
+        let plugin_generation = generation.clone();
         std::thread::spawn(move || {
-            while let Ok(work) = plugin_work.recv() {
-                let event = match couch_plugin::local_request(
-                    &crate::home::path("plugin.sock"),
-                    &work.connection,
-                    work.request,
-                    couch_plugin::REQUEST_TIMEOUT + std::time::Duration::from_secs(1),
-                ) {
-                    Ok(PluginResponse::Status { status }) => PluginEvent::Status(status),
-                    Ok(PluginResponse::Inputs { inputs }) => PluginEvent::Inputs(inputs),
-                    Ok(PluginResponse::Error { code }) => PluginEvent::Error(code.to_string()),
-                    Ok(_) => PluginEvent::Error("The integration sent an unexpected reply".into()),
-                    Err(error) => PluginEvent::Error(error.to_string()),
-                };
-                let _ = plugin_reply.send((work.generation, event));
-            }
+            plugin_worker(
+                plugin_work,
+                plugin_reply,
+                plugin_generation,
+                |connection, request| {
+                    couch_plugin::local_request(
+                        &crate::home::path("plugin.sock"),
+                        connection,
+                        request,
+                        couch_plugin::REQUEST_TIMEOUT + std::time::Duration::from_secs(1),
+                    )
+                    .map_err(|error| error.to_string())
+                },
+            );
         });
         Self {
             config: None,
@@ -222,6 +274,7 @@ impl Pages {
             target,
             status: Status::default(),
             inputs: vec![],
+            volume_draft: None,
         });
         app.set_custom_activity_shown(true);
         app.set_custom_activity_available(true);
@@ -245,9 +298,12 @@ impl Pages {
         app.set_custom_activity_busy(false);
         app.set_custom_activity_status("".into());
     }
-    fn request_plugin(&self, app: &App, request: PluginRequest, message: &str) {
-        let Some(plugin) = &self.plugin else { return };
+    fn request_plugin(&self, app: &App, request: PluginRequest, message: &str) -> bool {
+        let Some(plugin) = &self.plugin else {
+            return false;
+        };
         let result = self.plugin_tx.try_send(PluginWork {
+            at: std::time::Instant::now(),
             generation: self.generation.load(Ordering::SeqCst),
             connection: plugin.target.connection.clone(),
             request,
@@ -257,6 +313,7 @@ impl Pages {
         } else {
             "Integration request queue is busy. Try again.".into()
         });
+        result.is_ok()
     }
     fn render(&self, app: &App) {
         if let Some(plugin) = &self.plugin {
@@ -381,6 +438,9 @@ impl Pages {
         else {
             return;
         };
+        if !tile.enabled {
+            return;
+        }
         let command = match &tile.action {
             PluginTileAction::Command(_) | PluginTileAction::Toggle { .. } => {
                 plugin_command(&tile.action, &plugin.status)
@@ -391,6 +451,33 @@ impl Pages {
             }
             PluginTileAction::RefreshInputs => {
                 self.request_plugin(app, PluginRequest::Inputs, "Loading inputs…");
+                return;
+            }
+            PluginTileAction::AdjustVolume(delta) => {
+                if let Some(plugin) = self.plugin.as_mut() {
+                    plugin.volume_draft = adjusted_volume(plugin, *delta);
+                }
+                self.render(app);
+                return;
+            }
+            PluginTileAction::ResetVolume => {
+                if let Some(plugin) = self.plugin.as_mut() {
+                    plugin.volume_draft = observed_volume(plugin);
+                }
+                self.render(app);
+                return;
+            }
+            PluginTileAction::SetVolume(tenths) => {
+                if self.request_plugin(
+                    app,
+                    PluginRequest::Action {
+                        action: TypedAction::SetVolumeDb { tenths: *tenths },
+                    },
+                    "Setting volume…",
+                ) {
+                    self.busy = true;
+                    app.set_custom_activity_busy(true);
+                }
                 return;
             }
         };
@@ -428,9 +515,19 @@ impl Pages {
         }
         let events = self.plugin_rx.try_iter().collect::<Vec<_>>();
         for (generation, event) in events {
+            let action_done = matches!(&event, PluginEvent::ActionDone(Ok(())));
+            if generation == self.generation.load(Ordering::SeqCst)
+                && matches!(&event, PluginEvent::ActionDone(_))
+            {
+                self.busy = false;
+                app.set_custom_activity_busy(false);
+            }
             if let Some(message) = self.apply_plugin_event(generation, event) {
                 app.set_custom_activity_status(message.into());
                 self.render(app);
+                if action_done {
+                    self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+                }
             }
         }
     }
@@ -443,6 +540,9 @@ impl Pages {
         Some(match event {
             PluginEvent::Status(status) => {
                 plugin.status = status;
+                if plugin.volume_draft.is_none() {
+                    plugin.volume_draft = observed_volume(plugin);
+                }
                 "Status updated".into()
             }
             PluginEvent::Inputs(inputs) => {
@@ -450,6 +550,10 @@ impl Pages {
                 "Inputs updated".into()
             }
             PluginEvent::Error(error) => error,
+            PluginEvent::ActionDone(result) => match result {
+                Ok(()) => "Volume set".into(),
+                Err(error) => error,
+            },
         })
     }
 }
@@ -463,6 +567,99 @@ fn status_bool(status: &Status, field: PluginStatusField) -> Option<bool> {
     }
 }
 
+fn format_db(tenths: i16) -> String {
+    format!(
+        "{}{:.1} dB",
+        if tenths < 0 { "−" } else { "" },
+        f32::from(tenths).abs() / 10.0
+    )
+}
+
+fn volume_schema(view: &PluginView) -> Option<PluginActionSchema> {
+    view.target
+        .actions
+        .iter()
+        .copied()
+        .find(|schema| schema.is_valid())
+}
+
+fn observed_volume(view: &PluginView) -> Option<i16> {
+    let VolumeDb::Reading { tenths } = view.status.volume_db? else {
+        return None;
+    };
+    volume_schema(view)?
+        .accepts(TypedAction::SetVolumeDb { tenths })
+        .then_some(tenths)
+}
+
+fn adjusted_volume(view: &PluginView, delta: i16) -> Option<i16> {
+    let PluginActionSchema::SetVolumeDb {
+        min_tenths,
+        max_tenths,
+        step_tenths,
+    } = volume_schema(view)?;
+    // An unknown/minimum reading never becomes an invented actual value. The
+    // first adjustment explicitly chooses the lowest permitted target.
+    let next = view
+        .volume_draft
+        .map(|value| {
+            (i32::from(value) + i32::from(delta) * i32::from(step_tenths))
+                .clamp(i32::from(min_tenths), i32::from(max_tenths)) as i16
+        })
+        .unwrap_or(min_tenths);
+    Some(next)
+}
+
+fn volume_page(view: &PluginView, label: &str) -> PluginPanelPage {
+    let schema = volume_schema(view);
+    let draft = view.volume_draft.filter(|tenths| {
+        schema.is_some_and(|s| s.accepts(TypedAction::SetVolumeDb { tenths: *tenths }))
+    });
+    let target = draft
+        .map(format_db)
+        .unwrap_or_else(|| "Choose a target".into());
+    PluginPanelPage {
+        title: label.into(),
+        tiles: vec![
+            PluginTile {
+                label: "Current volume".into(),
+                detail: status_text(&view.status, PluginStatusField::VolumeDb),
+                icon: "refresh-cw",
+                enabled: true,
+                action: PluginTileAction::RefreshStatus,
+            },
+            PluginTile {
+                label: "Set volume".into(),
+                detail: target.clone(),
+                icon: "volume-2",
+                enabled: draft.is_some(),
+                action: PluginTileAction::SetVolume(draft.unwrap_or_default()),
+            },
+            PluginTile {
+                label: "Lower target".into(),
+                detail: target.clone(),
+                icon: "minus",
+                enabled: schema.is_some() && adjusted_volume(view, -1) != draft,
+                action: PluginTileAction::AdjustVolume(-1),
+            },
+            PluginTile {
+                label: "Raise target".into(),
+                detail: target,
+                icon: "plus",
+                enabled: schema.is_some() && adjusted_volume(view, 1) != draft,
+                action: PluginTileAction::AdjustVolume(1),
+            },
+            PluginTile {
+                label: "Reset target".into(),
+                detail: "Use current reading".into(),
+                icon: "rotate-ccw",
+                enabled: observed_volume(view).is_some(),
+                action: PluginTileAction::ResetVolume,
+            },
+        ],
+    }
+}
+
 fn plugin_command(action: &PluginTileAction, status: &Status) -> Option<String> {
     match action {
         PluginTileAction::Command(command) => Some(command.clone()),
@@ -470,7 +667,7 @@ fn plugin_command(action: &PluginTileAction, status: &Status) -> Option<String> 
             status_bool(status, *state)
                 .map(|enabled| if enabled { off.clone() } else { on.clone() })
         }
-        PluginTileAction::RefreshStatus | PluginTileAction::RefreshInputs => None,
+        _ => None,
     }
 }
 
@@ -484,6 +681,10 @@ fn status_text(status: &Status, field: PluginStatusField) -> String {
             .muted
             .map(|v| if v { "Muted" } else { "Unmuted" }.into()),
         PluginStatusField::Volume => status.volume.map(|v| format!("{v}%")),
+        PluginStatusField::VolumeDb => status.volume_db.as_ref().map(|value| match value {
+            VolumeDb::Reading { tenths } => format_db(*tenths),
+            VolumeDb::Minimum => "Minimum".into(),
+        }),
         PluginStatusField::Input => status.input.clone(),
         PluginStatusField::Title => status.title.clone(),
     }
@@ -538,6 +739,7 @@ fn plugin_pages(view: &PluginView) -> Vec<PluginPanelPage> {
     } else {
         for component in &view.target.presentation {
             match component {
+                PluginComponent::VolumeDbControl { label } => pages.push(volume_page(view, label)),
                 PluginComponent::CommandGroup { title, commands } => chunk_page(
                     title,
                     commands
@@ -622,6 +824,98 @@ fn plugin_pages(view: &PluginView) -> Vec<PluginPanelPage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn volume_view() -> PluginView {
+        PluginView {
+            target: PluginTarget {
+                activity: "Listen".into(),
+                room: "Living room".into(),
+                device: "receiver".into(),
+                connection: "denon".into(),
+                label: "Receiver".into(),
+                capabilities: vec![],
+                actions: vec![PluginActionSchema::SetVolumeDb {
+                    min_tenths: -800,
+                    max_tenths: 180,
+                    step_tenths: 5,
+                }],
+                supports_inputs: false,
+                presentation: vec![PluginComponent::VolumeDbControl {
+                    label: "Volume".into(),
+                }],
+            },
+            status: Status::default(),
+            inputs: vec![],
+            volume_draft: None,
+        }
+    }
+
+    #[test]
+    fn volume_draft_requires_explicit_apply_and_preserves_unknown_minimum_and_bounds() {
+        let mut view = volume_view();
+        assert_eq!(plugin_pages(&view)[0].tiles[0].detail, "Unavailable");
+        assert!(!plugin_pages(&view)[0].tiles[1].enabled);
+        view.status.volume_db = Some(VolumeDb::Minimum);
+        assert_eq!(plugin_pages(&view)[0].tiles[0].detail, "Minimum");
+        assert_eq!(observed_volume(&view), None);
+        view.volume_draft = adjusted_volume(&view, 1);
+        assert_eq!(view.volume_draft, Some(-800));
+        let page = plugin_pages(&view).remove(0);
+        assert_eq!(page.tiles[0].detail, "Minimum");
+        assert!(matches!(
+            page.tiles[1].action,
+            PluginTileAction::SetVolume(-800)
+        ));
+        assert!(matches!(
+            page.tiles[3].action,
+            PluginTileAction::AdjustVolume(1)
+        ));
+        assert!(!page.tiles[2].enabled);
+        view.volume_draft = Some(180);
+        assert!(!plugin_pages(&view)[0].tiles[3].enabled);
+        view.status.volume_db = Some(VolumeDb::Reading { tenths: -345 });
+        assert_eq!(observed_volume(&view), Some(-345));
+        assert_eq!(plugin_pages(&view)[0].tiles[0].detail, "−34.5 dB");
+        assert_eq!(format_db(-5), "−0.5 dB");
+        view.target.actions.clear();
+        assert!(!plugin_pages(&view)[0].tiles[1].enabled);
+    }
+
+    #[test]
+    fn plugin_worker_drops_stale_and_expired_actions_and_never_retries_failure() {
+        use std::time::{Duration, Instant};
+        let (tx, rx) = mpsc::sync_channel(4);
+        let (reply, replies) = mpsc::channel();
+        for (generation, at) in [
+            (1, Instant::now()),
+            (2, Instant::now() - Duration::from_secs(1)),
+            (2, Instant::now()),
+        ] {
+            tx.send(PluginWork {
+                at,
+                generation,
+                connection: "receiver".into(),
+                request: PluginRequest::Action {
+                    action: TypedAction::SetVolumeDb { tenths: -345 },
+                },
+            })
+            .unwrap();
+        }
+        drop(tx);
+        let mut sent = 0;
+        plugin_worker(rx, reply, Arc::new(AtomicU64::new(2)), |_, _| {
+            sent += 1;
+            Err("Disconnected after write".into())
+        });
+        assert_eq!(sent, 1);
+        let events = replies.try_iter().collect::<Vec<_>>();
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(&events[0].1, PluginEvent::ActionDone(Err(message)) if message.contains("expired"))
+        );
+        assert!(
+            matches!(&events[1].1, PluginEvent::ActionDone(Err(message)) if message.contains("Disconnected"))
+        );
+    }
     #[test]
     fn plugin_presentation_uses_native_pages_and_live_state() {
         let view = PluginView {
@@ -642,6 +936,7 @@ mod tests {
                     },
                 ],
                 supports_inputs: true,
+                actions: vec![],
                 presentation: vec![
                     PluginComponent::Toggle {
                         label: "Power".into(),
@@ -656,6 +951,7 @@ mod tests {
             },
             status: Status::on(true).with_input("tv"),
             inputs: vec![Selectable::new("tv", "Television")],
+            volume_draft: None,
         };
         let pages = plugin_pages(&view);
         assert_eq!(pages.len(), 2);
@@ -682,6 +978,7 @@ mod tests {
             target: view.target.clone(),
             status: unknown,
             inputs: vec![],
+            volume_draft: None,
         };
         assert!(!plugin_pages(&unknown_view)[0].tiles[0].enabled);
     }
@@ -697,11 +994,13 @@ mod tests {
                 connection: "receiver".into(),
                 label: "Receiver".into(),
                 capabilities: vec![],
+                actions: vec![],
                 supports_inputs: false,
                 presentation: vec![],
             },
             status: Status::default(),
             inputs: vec![],
+            volume_draft: None,
         });
         pages.generation.store(2, Ordering::SeqCst);
         assert!(pages
@@ -946,6 +1245,65 @@ mod tests {
         assert!(!app.get_custom_activity_shown());
         app.hide().unwrap();
     }
+    #[test]
+    fn volume_panel_edits_draft_and_only_apply_sends_typed_request() {
+        if std::env::var_os("COUCH_TEST_VOLUME_PANEL").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "activity::pages::tests::volume_panel_edits_draft_and_only_apply_sends_typed_request"])
+                .env("COUCH_TEST_VOLUME_PANEL", "1").output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::ComponentHandle;
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = App::new().unwrap();
+        let mut pages = Pages::new();
+        // Isolate the actual panel callbacks from the network worker.
+        let (tx, work) = mpsc::sync_channel(4);
+        pages.plugin_tx = tx;
+        let mut view = volume_view();
+        view.status.volume_db = Some(VolumeDb::Reading { tenths: -345 });
+        view.volume_draft = observed_volume(&view);
+        pages.plugin = Some(view);
+        app.set_player_shown(true);
+        app.set_custom_activity_shown(true);
+        pages.render(&app);
+        app.show().unwrap();
+        pages.handle(&app, "command", 3);
+        assert_eq!(pages.plugin.as_ref().unwrap().volume_draft, Some(-340));
+        assert!(work.try_recv().is_err());
+        pages.handle(&app, "command", 1);
+        assert!(matches!(
+            work.try_recv().unwrap().request,
+            PluginRequest::Action {
+                action: TypedAction::SetVolumeDb { tenths: -340 }
+            }
+        ));
+        pages.handle(&app, "command", 1);
+        assert!(
+            work.try_recv().is_err(),
+            "busy panel must not duplicate command"
+        );
+        if let Some(path) = std::env::var_os("COUCH_VOLUME_SCREENSHOT") {
+            window.draw_if_needed(|renderer| {
+                let mut pixels = vec![slint::Rgb8Pixel::default(); 480 * 800];
+                renderer.render(&mut pixels, 480);
+                let mut bytes = b"P6\n480 800\n255\n".to_vec();
+                for pixel in pixels {
+                    bytes.extend_from_slice(&[pixel.r, pixel.g, pixel.b]);
+                }
+                std::fs::write(path, bytes).unwrap();
+            });
+        }
+        app.hide().unwrap();
+    }
+
     #[test]
     fn page_navigation_wraps_in_both_directions_and_handles_empty_pages() {
         assert_eq!(page_index(0, -1, 3), 2);

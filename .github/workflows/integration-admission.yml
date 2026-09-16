@@ -149,6 +149,8 @@ jobs:
             build/webui-review/integrations-desktop.png
             build/webui-review/plugin-components-mobile.png
             build/webui-review/plugin-components-desktop.png
+            build/webui-review/plugin-components-mobile.png
+            build/webui-review/plugin-components-desktop.png
             ${{ runner.temp }}/couch-web.log
           if-no-files-found: warn
 
