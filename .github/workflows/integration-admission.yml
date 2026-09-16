@@ -68,7 +68,9 @@ jobs:
         run: cargo test --locked --manifest-path clients/Cargo.toml -p couch-plugin --test protocol
       - name: Run every required package case
         if: needs.changes.outputs.integration == 'true'
-        run: python3 tools/integrations/validate_catalog.py --run-tests
+        run: |
+          python3 tools/integrations/validate_catalog.py --run-tests
+          cargo test --locked --manifest-path clients/Cargo.toml -p couch-denon --test admission concurrent_package_startup_is_offline_and_race_free -- --exact
 
   product-flow:
     needs: changes

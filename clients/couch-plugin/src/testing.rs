@@ -56,6 +56,16 @@ impl Package {
         let executable = root.join(&manifest.executable);
         std::fs::create_dir_all(executable.parent().expect("binary parent"))
             .expect("create admission package");
+        // On Linux, fork can inherit another test thread's still write-open
+        // copy destination. CLOEXEC is applied too late to prevent execve from
+        // rejecting that executable with ETXTBSY. The Cargo artifact is
+        // already immutable and on this same filesystem, so link it without a
+        // writable window, matching production's immutable package slots.
+        #[cfg(target_os = "linux")]
+        std::fs::hard_link(adapter.binary, &executable).expect("link immutable real plugin binary");
+        // Concurrent execution through one inode timed out on macOS; separate
+        // copies do not have Linux's inherited-writer failure there.
+        #[cfg(not(target_os = "linux"))]
         std::fs::copy(adapter.binary, &executable).expect("copy real plugin binary");
         Self { root, manifest }
     }
