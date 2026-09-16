@@ -73,7 +73,7 @@ throughput guarantees.
 
 ## Build and verify
 
-Build on Ollie, not the Mac. With Rust and the ARM musl standard library installed:
+Build on a Linux host. With Rust and the ARM musl standard library installed:
 
 ```sh
 cargo test --manifest-path probe/Cargo.toml
@@ -138,7 +138,7 @@ python3 wifi_benchmark.py --vid 0xVID --pid 0xPID --bus 1 --ports 2.1 \
 ```
 
 Rust dependencies are locked; only ring's C implementation needs the ARM cross
-compiler, installed on Ollie. No AWS-LC, full Android NDK or new kernel build is
+compiler, installed on the build host. No AWS-LC, full Android NDK or new kernel build is
 required. Tests include actual loopback rustls handshakes rejecting an untrusted
 certificate and wrong session token, plus the known WPA2 derivation vector and
 credential injection/length validation. Loopback results are not device Wi-Fi

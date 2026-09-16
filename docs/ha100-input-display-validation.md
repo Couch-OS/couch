@@ -44,7 +44,7 @@ partition still has MD5 `2ac16bf92bf9d92220b8af3f0ea46600`.
 ## Reproduction and remaining checks
 
 `kernel/patches/ha100-input-display.patch` contains both commits for application
-with `git am` after baseline `7a0e5e8f`. Build only on Ollie using
+with `git am` after baseline `7a0e5e8f`. Build only on a dedicated Linux host using
 `kernel/build.sh diagnostic` or `kernel/build.sh normal`. Each output directory
 contains its effective config, compiler identity, symbol files, and manifest.
 Five host tests cover boot image packing and configuration merging.

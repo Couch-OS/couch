@@ -420,8 +420,9 @@ directory the initramfs sees as `/mnt/alpine/opt/couch`.
 
 ```sh
 tools/build-webui.sh
-IP=192.168.1.79                        # COUCH_IP in tools/screenshot.sh
-KEY=~/.ssh/couch_dev
+IP=remote.local                         # COUCH_IP in tools/screenshot.sh
+COUCH_SSH_KEY=/path/to/couch-key
+KEY="$COUCH_SSH_KEY"
 SSH="ssh -i $KEY -o IdentitiesOnly=yes"
 
 scp -i $KEY daemon/target/armv7-unknown-linux-musleabihf/release/couch-confd \
@@ -443,7 +444,7 @@ on arrival), a create round-tripping to `/opt/couch/config.json` and coming back
 after a restart at the revision it was left at, and 740 kB RSS alongside a
 running `couch-gui` - the two do not contend for anything, since the daemon
 touches neither the framebuffer nor the keypad. Then
-`http://192.168.1.79:8090` from a phone on the same network.
+`http://$IP:8090` from a phone on the same network.
 
 Stage2 now starts the editor automatically; see Starting it at boot below.
 
@@ -542,8 +543,8 @@ For an immediate start after copying the helper to `/opt/couch/confd.sh`:
 nohup /bin/sh /opt/couch/confd.sh </dev/null >/tmp/confd-supervisor.log 2>&1 &
 ```
 
-The redesigned editor was deployed on September 8, 2026 at
-`http://192.168.1.127:8090`. The existing configuration checksum was unchanged.
+The redesigned editor was deployed on September 8, 2026 at the remote's
+configuration endpoint. The existing configuration checksum was unchanged.
 The embedded ARM bundle, unauthenticated health endpoint and enabled pairing
 were verified; 17 daemon tests, three web tests and the browser regression passed.
 The startup script passed shell syntax checks; no reboot was required to deploy.

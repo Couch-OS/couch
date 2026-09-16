@@ -3,7 +3,7 @@
 ## Constraints and decisions (2026-09-08)
 
 The Cortex-A7 has NEON/VFPv4 and a Mali-400 GPU. The panel uses MediaTek fbdev,
-not DRM/KMS. Kernel builds run exclusively on Ollie; the Rust GUI is a static
+not DRM/KMS. Kernel builds run exclusively on a dedicated Linux build host; the Rust GUI is a static
 ARMv7 musl executable and can be cross-compiled natively on the Mac.
 
 - **CPU rendering:** retain cached RAM plus dirty-rectangle copies. This

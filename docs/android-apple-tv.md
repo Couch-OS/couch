@@ -116,7 +116,7 @@ and configuration daemon also build. Model, broker and daemon regression tests
 cover provider resolution, private credentials and pairing session handling. A
 Playwright fixture verified both connection types through mocked discovery, PIN
 entry, saved status and mobile layout without contacting a TV. This is client-side
-validation; every kernel build remains on Ollie.
+validation; kernel builds remain on a dedicated Linux build host.
 
 ## Couch integration
 

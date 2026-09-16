@@ -9,7 +9,7 @@
  *
  *   keytap [--seconds N] [--quiet] [/dev/input/eventN]
  *
- * Static ARM build: tools/keypad/build.sh on Ollie (zig cc). On the remote:
+ * Static ARM build: tools/keypad/build.sh with zig cc. On the remote:
  *   /tmp/keytap --seconds 10        # then tap DOWN 20 times
  *
  * Copyright (c) 2026 Couch contributors. GPL-2.0-or-later.

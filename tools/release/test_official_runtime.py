@@ -52,7 +52,7 @@ class OfficialRuntimeTests(unittest.TestCase):
         with zipfile.ZipFile(raw) as archive, self.assertRaises(ValueError):
             checked_member(archive,'link',{'size':6,'sha256':sha(b'target')},lambda data:None)
 
-    @unittest.skipUnless(brotli,'Real Brotli tests run on Ollie with python3-brotli')
+    @unittest.skipUnless(brotli,'Real Brotli tests require python3-brotli')
     def test_brotli_bounds_truncation_and_exact_image_digest(self):
         transfer=b'4\n2\n0\n0\nnew 2,1,2\nzero 2,0,1\n'
         payload=b'A'*4096

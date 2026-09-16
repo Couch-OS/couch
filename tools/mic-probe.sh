@@ -16,7 +16,8 @@
 set -e
 cd "$(dirname "$0")/.."
 
-IP=${COUCH_IP:-192.168.1.79}
+: "${COUCH_IP:?Set COUCH_IP to the device hostname or IP address}"
+IP=$COUCH_IP
 KEY=${COUCH_KEY:-$HOME/.ssh/couch_dev}
 OUT=${1:-build/mic.wav}
 SECONDS_TO_RECORD=${SECONDS_TO_RECORD:-5}

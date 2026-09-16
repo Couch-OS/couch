@@ -51,7 +51,7 @@ LG reception test.
 
 ## Android application and HAL follow-up
 
-The following inspection used the original images privately stored on Ollie,
+The following inspection used original images stored in a private audit workspace,
 without mounting or accessing the remote. Read-only `debugfs` extraction, JADX
 and Capstone Thumb disassembly were used; APKs, native libraries and reconstructed
 source remain outside Git. The inspected images have SHA256:
@@ -178,7 +178,7 @@ The latter is an older February build with charging release notes, not a new
 IR kernel release. Sanytron's [firmware guide](https://hub.sanytron.com/support/astrion/firmware)
 also distinguishes software features and underlying firmware versions.
 
-Downloaded artifacts stayed on Ollie, outside Git; neither was installed:
+Downloaded artifacts stayed in the private audit workspace, outside Git; neither was installed:
 
 | Artifact | Bytes | SHA256 |
 |---|---:|---|
@@ -191,7 +191,7 @@ signer verification**. The model/channel provenance comes from the backed-up
 manufacturer launcher; its metadata endpoint uses HTTP. Treat the artifacts as
 analysis inputs, not newly approved restore images. Private metadata, source,
 and extracted images live under the existing `ir-app-audit/latest-ota` directory
-on Ollie. No device-identity data was sent in the update checks.
+in the private audit workspace. No device-identity data was sent in the update checks.
 
 ### Comparison results
 
@@ -226,7 +226,7 @@ transmission, pin change, reboot, restore or flash was performed in this audit.
 ## Initialization follow-up (September 10, 2026)
 
 This follow-up examines setup outside the app/HAL transmit path. Offline
-extractions remain on Ollie under `ir-app-audit/initialization`; none of the
+extractions remain in the private audit workspace; none of the
 Android executables were run on the remote.
 
 ### Android startup
@@ -318,11 +318,11 @@ existing path, and button lighting no longer touches touchscreen reset GPIO4.
 The implementation and host regression tests are preserved in
 [`ha100-board-led-init.patch`](../kernel/patches/ha100-board-led-init.patch).
 Tests cover normal/recovery startup order and accepted/rejected selector
-combinations. The normal kernel built successfully on Ollie; the packaging
+combinations. The normal kernel built successfully on a dedicated Linux build host; the packaging
 and boot-health Python suite also passed (eight tests). Image SHA256:
 `2e98a376893c62b1ec1eab01881e427749c5cffe9e358939ec795ad9bd0889b0`.
 The p8 write passed readback verification. Fresh pre-change p8 backups are
-retained on the device and Ollie under `board-init-20260910`; p9 is preserved.
+retained on the device and in the private audit workspace; p9 is preserved.
 
 The first device boot exposed a validation error before any board pin changed:
 `pinctrl_lookup_state("default")` returns `-ENODEV` because the DT default state
@@ -330,7 +330,7 @@ is empty. Stock tolerates this absent state and never selects it. Requiring it
 prevented LED probe. The correction validates all eight functional states,
 while skipping the unused empty default; missing functional states still fail.
 Correction `ea122a39` also adds acquisition failure diagnostics and a regression
-check for the optional default state. It built successfully on Ollie and its
+check for the optional default state. It built successfully on a dedicated Linux build host and its
 image passed p8 readback verification, SHA256
 `dbe414f9e137fb8df28153680eb50b8549557cb506f8edc86182fdd2ad995725`.
 

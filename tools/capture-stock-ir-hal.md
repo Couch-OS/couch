@@ -1,7 +1,7 @@
 # Offline stock IR HAL capture
 
 `capture-stock-ir-hal.py` runs the private HA100 Android ARM32 consumerir ELF in
-Unicorn on Ollie. It relocates the original code, calls exported HMI's module
+Unicorn on a Linux build host. It relocates the original code, calls exported HMI's module
 open with `transmitter`, then calls its installed transmit callback. Guest
 `open`, `ioctl`, and `write` are simulated; raw syscalls and unknown imports fail.
 No Android boot, NDK, linker, or physical remote is needed.
@@ -27,7 +27,7 @@ LED output. Only the documented open/transmit paths run, not ELF constructors.
 
 Private stock HAL SHA256:
 `05658d1ca0c03a13f16f74eb554170cb597cb7b42d187b7981c10da6e1ced8c8`.
-Three fixture tests passed on Ollie: deterministic execution/mode differences,
+Three fixture tests passed on the Linux build host: deterministic execution/mode differences,
 9-high/17-low carrier samples, and guest syscall rejection.
 
 At 38 kHz the stock bitstream has 9 high samples followed by 17 low samples,

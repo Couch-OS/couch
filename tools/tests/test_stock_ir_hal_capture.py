@@ -1,4 +1,4 @@
-"""Private-fixture offline tests; run on Ollie with COUCH_STOCK_IR_HAL set."""
+"""Private-fixture offline tests; run with COUCH_STOCK_IR_HAL set."""
 import importlib.util
 import os
 from pathlib import Path

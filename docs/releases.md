@@ -41,7 +41,7 @@ Validation includes traversal/link attacks, private state and keys, wrong hashes
 
 ## Build host
 
-Releases are built and packaged on one Linux host (Ollie), so the binaries the
+Releases are built and packaged on one dedicated Linux host, so the binaries the
 inventory hashes are the ones the same checkout just produced and nothing is
 copied between machines. The host needs:
 
@@ -64,13 +64,13 @@ development; it is not the release host.
 
 ## Assemble offline packages
 
-On Ollie, `tools/release/prepare_rootfs.py SPEC CLOSURE NEW_OUTPUT` combines the same staging specification with a verified `package_closure.py` cache. It runs authenticated APK installation and its ARM maintainer scripts in an isolated container using Ollie's existing ARM binfmt emulator. No host binfmt registration, loop mount, device access or privileged container is used. The container has only the filesystem/chroot capabilities required for a disposable tmpfs root, no network, read-only inputs, and one new writable output directory.
+On the dedicated Linux host, `tools/release/prepare_rootfs.py SPEC CLOSURE NEW_OUTPUT` combines the same staging specification with a verified `package_closure.py` cache. It runs authenticated APK installation and its ARM maintainer scripts in an isolated container using the host's ARM binfmt emulator. No host binfmt registration, loop mount, device access or privileged container is used. The container has only the filesystem/chroot capabilities required for a disposable tmpfs root, no network, read-only inputs, and one new writable output directory.
 
 The result is a normalized `rootfs-staging.tar.gz` plus a noninstallable `staging.json` recording base/artifact/package hashes and builder digest. APK installation and ARM executable checks are logged separately. The archive is rescanned for private state, host keys, password credentials, special nodes, link traversal and modified Couch defaults. Package-created numeric ownership is retained; archive order/timestamps are normalized. Failed assembly leaves diagnostics without a successful staging manifest.
 
 Extensionless recovery scripts are explicitly limited to `save`, `setpw`, `scan`, and `enroll` under `opt/couch/www/cgi-bin/`; they require mode 0755 and an input hash like other artifacts. There is no general extensionless-file exception.
 
-Validation on Ollie installed 19 additional packages over the pinned base, executed dnsmasq's pre-install and BusyBox's trigger, and ran ARM Wi-Fi/SSH/iw version checks. Two independent builds produced identical normalized archives (1277 entries without optional artifacts). A separate fixture included all four real CGI scripts. The version-only Wi-Fi check reports missing `/dev/urandom` because no runtime device tree is mounted; it does not test networking. This validates package assembly, not remote boot or a complete Couch runtime. Reviewed vendor files, complete executable/script inventory, partition images, signatures and physical recovery validation remain required.
+Validation on the dedicated Linux host installed 19 additional packages over the pinned base, executed dnsmasq's pre-install and BusyBox's trigger, and ran ARM Wi-Fi/SSH/iw version checks. Two independent builds produced identical normalized archives (1277 entries without optional artifacts). A separate fixture included all four real CGI scripts. The version-only Wi-Fi check reports missing `/dev/urandom` because no runtime device tree is mounted; it does not test networking. This validates package assembly, not remote boot or a complete Couch runtime. Reviewed vendor files, complete executable/script inventory, partition images, signatures and physical recovery validation remain required.
 
 ## Prepare a raw userdata filesystem
 

@@ -61,7 +61,7 @@ the full computed waveform duration after configuration returns. A stale count
 cannot complete the next frame. No shared IRQ is enabled. Error diagnostics read
 only the powered channel and shared controller before acknowledgement/disable.
 `kernel/test-irtx-completion.c` tests the actual helper's stale-count and duration
-guards on Ollie.
+guards on a dedicated Linux build host.
 
 An earlier driver revision hung during transmission. Compilation and successful
 probe do **not** validate LED output, carrier frequency, completion interrupts,
@@ -505,7 +505,7 @@ values with board callbacks. The subsequent
 identified omitted 3.3 V/standby setup and actual GPIO61/GPIO58 callbacks.
 This remains a possible shared-power issue despite no generic PWM0 conflict.
 
-Built on Ollie with the normal profile from a clean source tree. Existing IR
+Built on a dedicated Linux build host with the normal profile from a clean source tree. Existing IR
 completion-guard tests passed. Local `build/couch-irtx-output.img` preserves
 the previous timing candidate's DTB/ramdisk, is 7,946,240 bytes, and has SHA256
 `355a004bd5491569ed435eb3d1fcaf3dccdfee4f0c9fb154a90e28c5196f34bf`.
@@ -517,7 +517,7 @@ DTB and ramdisk exactly match the running image. The p8 write passed readback
 verification; the device reports `3.18.79-couch-normal-g4ee1dd92f1b1`.
 USB serial and Wi-Fi SSH work, GUI heartbeats advance, and the boot-health
 check cleared the recovery BCB. The recovery partition hash is unchanged.
-Fresh full p8/p9 backups are retained on the device and Ollie under
+Fresh full p8/p9 backups are retained on the device and in a private backup workspace under
 `irtx-output-20260910`. Telemetry remains disabled (`N`) pending the coordinated
 camera test. No transmission or optical validation has occurred on this kernel
 yet; successful boot does not establish that IR output works.
@@ -534,7 +534,7 @@ Correction `ce7c9ee7` supplies `8 | 0x80000000` to the four GPIO getter calls;
 `mt_gpio_pin_decrypt()` strips that required API flag before accessing GPIO8.
 It changes no hardware configuration. See
 [`ha100-irtx-pad-api.patch`](../kernel/patches/ha100-irtx-pad-api.patch).
-The corrected kernel was built on Ollie; eight build/boot-health tests and
+The corrected kernel was built on a dedicated Linux build host; eight build/boot-health tests and
 the IR completion-guard test passed. Its image SHA256 is
 `214b495b78900c840c0b5aa1eaca8451d17c0a3edf91b2e5b30496d519e74bbf`.
 Do not interpret the first capture's zero counts as a pin held low.
@@ -557,7 +557,7 @@ solely on this result; the GPIO8-to-emitter board connection is still unproven.
 
 ### Confirmed device controls after board initialization fix
 
-With kernel `ea122a39f434`, the user confirmed the LG B4 in Bryan’s Office
+With kernel `ea122a39f434`, the device owner confirmed the LG B4 in the primary viewing room
 responds to the physical remote controls through per-device IR assignments:
 NEC address `0x04`, command `0x02` for Volume Up (single and held repeats), and
 command `0x08` for Power toggle (both off and on from TV standby). Volume Down

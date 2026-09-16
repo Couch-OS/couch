@@ -9,7 +9,7 @@ One bridge connection is supported per remote.
 ## Connect and add lights
 
 1. Open the remote's web editor, pair with its on-screen PIN, and open **Connections → Philips Hue**.
-2. Enter the bridge IP address (for example `192.168.1.157`). Press the bridge's
+2. Enter the bridge IP address (for example, `$BRIDGE_IP`). Press the bridge's
    round link button, then **Pair bridge**. A failed pairing leaves saved settings intact.
 3. Open **Rooms & devices**, create or open a room, then choose the saved Hue
    connection under **Add devices to this room**. Search the discovered lights and
@@ -44,7 +44,8 @@ Adding this integration requires updated readers of the shared configuration.
 
 ```sh
 (cd clients && cargo test -p couch-hue)
-couch-hue pair 192.168.1.157
+BRIDGE_IP=bridge.local
+couch-hue pair "$BRIDGE_IP"
 couch-hue lights
 couch-hue on LIGHT_UUID
 couch-hue brightness LIGHT_UUID 40
@@ -68,8 +69,8 @@ Deployed ARMv7 CLI, daemon/browser bundle and Slint GUI. All affected workspace
 unit tests passed, as did the isolated Hue browser test and existing Home Assistant
 browser regression. On the physical remote, D-pad discovery, on and 40% brightness
 passed against an isolated HTTPS bridge fixture; production configuration was
-restored afterward. The real BSB002 at `192.168.1.157` responds over HTTPS with
-48 discovered lights (42 reachable). Pairing and read-only discovery succeeded;
+restored afterward. The physical BSB002 responds over HTTPS with 48 discovered
+lights (42 reachable). Pairing and read-only discovery succeeded;
 real household-light command testing remains pending.
 
 ## Remote state cache and response time

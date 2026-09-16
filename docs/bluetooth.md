@@ -192,7 +192,7 @@ socket and reads its state file.
   included) and `forget` alone removes every device. `activate <ADDR>`
   makes that bond the active link and `activate none` lets nobody connect
   (below). Addresses are six colon-separated hex pairs, accepted in either
-  case and written uppercase (`44:27:45:4E:33:25`); a control word with a
+  case and written uppercase (`02:00:00:00:00:01`); a control word with a
   malformed argument is refused with a line in the log, never treated as a
   key. Keyboard words `enter`, `escape`,
   `space`, `tab`, `backspace` and `kbd:<hex>` (`kbd:28`, or `kbd:0204` with
@@ -253,9 +253,9 @@ socket and reads its state file.
   for that device); `{"BluetoothPair":{"action":"stop"}}`;
   `{"BluetoothPair":{"action":"enter"}}`;
   `{"BluetoothPair":{"action":"forget"}}` (every bond);
-  `{"BluetoothPair":{"action":"forget","address":"44:27:45:4E:33:25"}}` (one;
+  `{"BluetoothPair":{"action":"forget","address":"02:00:00:00:00:01"}}` (one;
   add `"device"` to also clear that device's stored bond);
-  `{"BluetoothPair":{"action":"activate","address":"44:27:45:4E:33:25"}}`;
+  `{"BluetoothPair":{"action":"activate","address":"02:00:00:00:00:01"}}`;
   `{"BluetoothPair":{"action":"activate"}}` (= `activate none`). A bad
   address or device id is refused before any word is formed.
 - **Bond request file** `/tmp/couch-bt-bond.request`: written by the system
@@ -454,9 +454,9 @@ are `apk add`ed over SSH on the development remote meanwhile.
   other Bluetooth profile and transport explicitly off. This changes the
   config hash `kernel/release-pin.json` pins, so a Bluetooth kernel is a new
   candidate through `docs/kernel-release-candidate.md`, not a drop-in. Built
-  clean on Ollie 2026-09-14 from the pinned source commit (`ea122a39`, the
+  clean on a dedicated Linux build host 2026-09-14 from the pinned source commit (`ea122a39`, the
   kernel repository's `bluetooth` branch adds only documentation on top of
-  it) into `~/couch-kernel/out-bluetooth`; `kernel/release-pin.json` on this
+  it) into a dedicated Linux build output; `kernel/release-pin.json` on this
   branch pins that build (zImage `9dd8e84c…`, effective config `1568fe8c…`)
   so `prepare_public_boot.py` exports it. `CONFIG_BT` alone pulled no extra
   symbols in; `olddefconfig` kept the rest of the config byte for byte.
@@ -547,12 +547,12 @@ are `apk add`ed over SSH on the development remote meanwhile.
 
 ## Staging checklist
 
-Kernel (couch-kernel `bluetooth` branch, built on Ollie):
+Kernel (couch-kernel `bluetooth` branch, built on a dedicated Linux host):
 
 - [x] `CONFIG_BT=y`, `CONFIG_BT_HCIVHCI=y` in `couch-ha100.config`; keep
       `BT_RFCOMM`, `BT_BNEP`, `BT_HIDP` off unless a profile needs them
       (on this branch; the candidate still needs building and re-pinning).
-- [x] Build `normal` (Ollie `out-bluetooth`, 2026-09-14; pinned on this branch).
+- [x] Build `normal` (dedicated Linux host, 2026-09-14; pinned on this branch).
 - [x] First boot on the HA100 through the `.140.dev` boot image; `/dev/vhci`
       and `/dev/stpbt` both appear; Wi-Fi, IR, display, keys and keypad wake
       validated on the unified kernel (`06b21c74`, `.144.dev`).
@@ -617,7 +617,7 @@ Userland (this repo):
       restored at registration, notifications on air at 0x012e after a
       bluetoothd restart and after a couch-bt-hid restart, entries untouched
       by the shutdown, a mismatched entry dropped. The LG re-pair and the
-      reboot/toggle/TV power cycle acceptance are Bryan's.
+      reboot/toggle/TV power cycle acceptance were completed by the device owner.
 - [x] Which bond the app picks: a bond per device, transport preference and
       fallback, the link following the device being controlled (2026-09-15,
       branch `bluetooth-per-device`; host tests only: model, couch-system,

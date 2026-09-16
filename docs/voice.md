@@ -547,7 +547,7 @@ back deliberately.
 **The one-liner**, which does all of it and brings back a WAV:
 
 ```sh
-COUCH_IP=192.168.1.79 tools/mic-probe.sh          # -> build/mic.wav
+COUCH_IP=remote.local tools/mic-probe.sh          # -> build/mic.wav
 ```
 
 It needs the device on WiFi with `sshd` running and a key enrolled (see
@@ -557,11 +557,13 @@ it, tap its case. Silence proves nothing.
 Or the same steps by hand, if you want to stop between them:
 
 ```sh
+COUCH_IP=remote.local
+COUCH_SSH_KEY=/path/to/couch-key
 tools/build-voice.sh
-scp -i ~/.ssh/couch_dev \
+scp -i "$COUCH_SSH_KEY" \
     clients/target/armv7-unknown-linux-musleabihf/release/couch-mic \
-    root@192.168.1.79:/tmp/couch-mic
-ssh -i ~/.ssh/couch_dev root@192.168.1.79 'chmod 755 /tmp/couch-mic'
+    root@"$COUCH_IP":/tmp/couch-mic
+ssh -i "$COUCH_SSH_KEY" root@"$COUCH_IP" 'chmod 755 /tmp/couch-mic'
 ```
 
 **1. What the card is, and what each capture device will accept.** Uses
@@ -684,7 +686,7 @@ On the device, with a working microphone:
 
 ```sh
 printf %s 'eyJ...' > /opt/couch/ha-token && chmod 600 /opt/couch/ha-token
-/opt/couch/couch-voice --host 192.168.1.20 -D hw:0,1 -t 8 listen
+/opt/couch/couch-voice --host homeassistant.local -D hw:0,1 -t 8 listen
 ```
 
 `--stage stt` stops at the transcription, which is what a text field wants and

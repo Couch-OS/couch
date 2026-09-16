@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package a private RAM-only probe on Ollie; no device or USB operations."""
+"""Package a private RAM-only probe; no device or USB operations."""
 import argparse
 import gzip
 import hashlib

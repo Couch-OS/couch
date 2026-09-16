@@ -20,12 +20,13 @@ the CLI alongside the GUI and configuration server integrations.
 
 ```sh
 couch-sonos discover
-couch-sonos 192.168.1.50 status
-couch-sonos 192.168.1.50 play
-couch-sonos 192.168.1.50 pause
-couch-sonos 192.168.1.50 volume 25
-couch-sonos 192.168.1.50 mute
-couch-sonos 192.168.1.50 unmute
+PLAYER_IP=player.local
+couch-sonos "$PLAYER_IP" status
+couch-sonos "$PLAYER_IP" play
+couch-sonos "$PLAYER_IP" pause
+couch-sonos "$PLAYER_IP" volume 25
+couch-sonos "$PLAYER_IP" mute
+couch-sonos "$PLAYER_IP" unmute
 ```
 
 `play-pause`, `stop`, `next`, and `previous` are also available. Play resumes the
@@ -323,26 +324,26 @@ firmware 97.1-80312, API version 1.54.1, using the placeholder key:
 
 ```
 $ couch-sonos discover
-["192.168.1.27","192.168.1.114","192.168.1.217","192.168.1.245"]
-$ couch-sonos 192.168.1.114 status
-{"player":{"uuid":"RINCON_C43875B87D3B01400","name":"Sonos Arc","model":"Arc"},
- "coordinator":"RINCON_C43875B87D3B01400","coordinator_name":"Sonos Arc",
+["PLAYER_1_IP","PLAYER_2_IP","PLAYER_3_IP","PLAYER_4_IP"]
+$ couch-sonos PLAYER_2_IP status
+{"player":{"uuid":"RINCON_00000000000101400","name":"Sonos Arc","model":"Arc"},
+ "coordinator":"RINCON_00000000000101400","coordinator_name":"Sonos Arc",
  "transport":"IDLE","volume":17,"muted":false}
-$ couch-sonos 192.168.1.217 status
-{"player":{"uuid":"RINCON_38420B7AA9D601400","name":"Laundry Room","model":"One SL"},
- "coordinator":"RINCON_38420B7AA9D601400","coordinator_name":"Laundry Room",
+$ couch-sonos PLAYER_3_IP status
+{"player":{"uuid":"RINCON_00000000000201400","name":"Example Room","model":"One SL"},
+ "coordinator":"RINCON_00000000000201400","coordinator_name":"Example Room",
  "transport":"IDLE","volume":63,"muted":false}
-$ couch-sonos 192.168.1.27 status        # bonded Sub, no PLAYBACK capability
+$ couch-sonos PLAYER_1_IP status        # bonded Sub, no PLAYBACK capability
 couch-sonos: Host is not a Sonos player with local playback control
-$ couch-sonos 192.168.1.217 volume 63    # same value it already had
+$ couch-sonos PLAYER_3_IP volume 63    # same value it already had
 {"acknowledged":true}
-$ couch-sonos 192.168.1.217 mute
+$ couch-sonos PLAYER_3_IP mute
 {"acknowledged":true}                    # status then reported "muted":true
-$ couch-sonos 192.168.1.217 unmute
+$ couch-sonos PLAYER_3_IP unmute
 {"acknowledged":true}                    # restored to volume 63, "muted":false
-$ couch-sonos 192.168.1.217 pause        # group idle with an empty queue
+$ couch-sonos PLAYER_3_IP pause        # group idle with an empty queue
 couch-sonos: Sonos API error ERROR_PLAYBACK_NO_CONTENT
-$ couch-sonos 192.168.1.217 play
+$ couch-sonos PLAYER_3_IP play
 couch-sonos: Sonos API error ERROR_PLAYBACK_NO_CONTENT
 ```
 

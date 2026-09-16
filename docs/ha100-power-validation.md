@@ -15,7 +15,9 @@ does not change charging policy or validate the inherited model.
 ## Take one read-only snapshot
 
 ```sh
-ssh -i ~/.ssh/couch_dev -o IdentitiesOnly=yes root@192.168.1.127 sh -s \
+REMOTE_IP=remote.local
+COUCH_SSH_KEY=/path/to/couch-key
+ssh -i "$COUCH_SSH_KEY" -o IdentitiesOnly=yes root@"$REMOTE_IP" sh -s \
   < tools/diagnostics/ha100-power-snapshot.sh
 ```
 

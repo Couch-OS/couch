@@ -71,8 +71,9 @@ Run from the `clients` workspace, substituting the TV's actual AirPlay port.
 Choose a credential path outside the repository in a private directory:
 
 ```sh
-cargo run -p couch-appletv --example now_playing -- pair 192.168.1.20 7000 /private/path/apple-tv-airplay.json
-cargo run -p couch-appletv --example now_playing -- watch 192.168.1.20 7000 /private/path/apple-tv-airplay.json
+APPLE_TV_IP=tv.local
+cargo run -p couch-appletv --example now_playing -- pair "$APPLE_TV_IP" 7000 /private/path/apple-tv-airplay.json
+cargo run -p couch-appletv --example now_playing -- watch "$APPLE_TV_IP" 7000 /private/path/apple-tv-airplay.json
 ```
 
 `pair` prompts for the displayed PIN and refuses to overwrite an existing file.
