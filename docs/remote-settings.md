@@ -16,10 +16,12 @@ not activate the underlying room/device; holding a wake key does not send repeat
 The microphone key retains its hold-to-talk behavior. Undocking dismisses the clock
 and starts the usual idle timers. Pairing, setup and recording take precedence.
 
-The kernel battery status (`Charging` or `Full`) enables the dock behavior. It
-also applies while charging over USB; this hardware interface does not identify
-the physical dock separately. Charger presence without active charging is not
-sufficient. Normal dim/off timeouts remain adjustable on the remote itself.
+External power reported by the USB/AC/wireless `online` nodes enables the dock
+behavior, including while Full or charging is paused. On older kernels without
+readable supply nodes, `Charging`/`Full` status is the fallback. This hardware
+interface does not distinguish the physical dock from a USB cable. The caption
+reports Charging, Full, or Plugged in independently from percentage availability.
+Normal dim/off timeouts remain adjustable on the remote itself.
 
 Settings are stored in `config.json` under `remote`, with backward-compatible
 defaults. `PUT /api/remote` validates timezone against `GET /api/remote/timezones`.
@@ -41,10 +43,11 @@ then that the remote is advertising as Couch Remote, and "no kernel support"
 on a boot image without `/dev/vhci` and `/dev/stpbt`. Bluetooth is
 experimental — a connected device can slow the remote's Wi-Fi badly, and both
 panels carry a note saying so; see [Bluetooth](bluetooth-tv.md)), **SSH**,
-**Network** (read-only) and **Power**. The
-daemon reads and writes the same file the remote does
-(`/opt/couch/settings.conf`, owned by `couch-system`'s `ui_settings`), and the
-remote notices a change to it within a second and applies it, so the two
+**Network** (read-only) and **Power**, including the status-bar battery
+percentage toggle. The daemon reads and writes the same file the remote does
+(`/opt/couch/settings.conf` inside Alpine; the initramfs GUI reaches it at
+`/mnt/alpine/opt/couch/settings.conf`, owned by `couch-system`'s `ui_settings`).
+The remote notices a change to it within a second and applies it, so the two
 never disagree for long. Clock, wake and appearance stay web-only. The
 endpoints are in [the web UI guide](webui.md).
 
@@ -59,14 +62,26 @@ resolver file, sysfs) every two seconds while the panel is up; nothing is run.
 
 ## Power on the remote
 
-The **Power** section at the end of the menu has three rows: **Power off**,
-**Restart** and **Restart into recovery**. The first two act on one OK.
-Recovery takes two presses within six seconds, because it leaves the remote
-on a screen with no UI: recovery brings up Wi-Fi, SSH and a USB shell and
-stays there until the flag is cleared, see [device recovery](device-recovery.md).
-The rows ask the root system service (`Power { action }`), which answers,
-waits a second, and for recovery writes the same `boot-recovery` marker init
-uses into the bootloader control block before `reboot -f`.
+The **Power** section at the end of the menu starts with **Battery percentage**.
+Left, right or OK toggles the percentage beside the status-bar battery icon;
+it is off by default and persists across GUI restarts. Missing or invalid readings
+show the generic icon without a percentage; the percentage is an uncalibrated
+kernel estimate (see the [battery gauge review](ha100-battery-gauge.md)). The
+charging bolt follows charge status, not external power alone. The remaining rows are
+**Power off**, **Restart** and **Restart into recovery**. The first two act on
+one OK. Recovery takes two presses within six seconds, because it leaves the
+remote on a screen with no UI: recovery brings up Wi-Fi, SSH and a USB shell
+and stays there until the flag is cleared, see
+[device recovery](device-recovery.md). The action rows ask the root system
+service (`Power { action }`), which answers, waits a second, and for recovery
+writes the same `boot-recovery` marker init uses into the bootloader control
+block before `reboot -f`.
+
+Preview examples: [percentage setting](images/battery-percentage.png),
+[full dock clock](images/battery-dock-full.png), and
+[unavailable percentage while plugged in](images/battery-dock-unknown.png).
+These use the bundled Lucide SVG battery icons; the percentage is text beside
+its icon.
 
 ## Updates on the remote
 

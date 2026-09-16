@@ -22,10 +22,11 @@ pub(super) fn timezones() -> Vec<String> {
 
 // --- the remote's own settings, mirrored from its Settings menu ---------------
 //
-// Display, key backlight, standby timeouts and SSH live in the settings file
-// couch-system's `ui_settings` owns; the GUI applies a change it notices
-// there within a second. Network is read from the kernel's tables the way
-// the remote's Network section reads them; Power asks the system service.
+// Display, key backlight, standby timeouts, status-bar battery percentage,
+// SSH and Bluetooth live in the settings file couch-system's `ui_settings`
+// owns; the GUI applies a change it notices there within a second. Network is
+// read from the kernel's tables the way the remote's Network section reads
+// them; Power asks the system service.
 use super::Reply;
 use couch_system::{
     bluetooth::PairAction,
@@ -58,6 +59,7 @@ fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
         "off_index": settings.off_index,
         "dim_choices": DIM_LABELS,
         "off_choices": OFF_LABELS,
+        "battery_percentage": settings.battery_percentage,
         "ssh": {
             "available": ssh_available,
             "enabled": settings.ssh,
@@ -101,7 +103,7 @@ pub(super) fn device(method: &str, body: &[u8]) -> Reply {
             let Ok(wanted) = serde_json::from_slice::<Settings>(body) else {
                 return Reply::error(
                     400,
-                    "Send brightness, keys, dim_index, off_index, ssh and bluetooth",
+                    "Send brightness, keys, dim_index, off_index, battery_percentage, ssh and bluetooth",
                 );
             };
             if wanted.brightness % 10 != 0 || !(10..=100).contains(&wanted.brightness) {
