@@ -13,7 +13,7 @@ import tempfile
 
 from kernel_provenance import PIN, verify
 from clean_stage import require
-from runtime_inventory import arm_static, cpio_files, regular
+from runtime_inventory import arm_alpine, arm_static, BOOT_EXTRA, cpio_files, regular
 from pack import repack, split_dtb
 
 REPO = Path(__file__).resolve().parents[2]
@@ -41,14 +41,22 @@ def clean_ramdisk(root, role):
         shutil.copyfile(root / 'build/fbcon', tree / 'extra/fbcon')
         if role == 'boot':
             shutil.copyfile(root / 'initramfs/boot-health.sh', tree / 'extra/boot-health.sh')
-            # The Bluetooth binaries travel with the kernel that gives them
-            # /dev/vhci: runtime updaters before .142 refuse bundles with new
-            # binaries, so until every remote runs a tolerant updater the boot
-            # payload is the one thing only Bluetooth-capable images get, and
-            # couch-system falls back to /extra when the runtime lacks them.
-            for name in ('couch-bt-bridge', 'couch-bt-hid'):
-                binary = root / 'clients/target/armv7-unknown-linux-musleabihf/release' / name
-                arm_static(regular(binary))
+            # The Bluetooth stack travels with the kernel that gives it
+            # /dev/vhci, and never in the runtime bundle: the oldest deployed
+            # updater refuses a bundle carrying any of these names, which
+            # strands every remote on it (tools/release/update_floor.py). The
+            # boot payload is the one thing only Bluetooth-capable images get,
+            # and couch-system falls back to /extra when the runtime has no
+            # copy. couch-bluetoothd is linked against the Alpine root, so it
+            # is checked as such; it is exec'd from shared /tmp inside the
+            # chroot, never from the initramfs root.
+            for name, (source, kind) in sorted(BOOT_EXTRA.items()):
+                binary = root / source
+                data = regular(binary)
+                if kind == 'alpine':
+                    arm_alpine(data)
+                else:
+                    arm_static(data)
                 shutil.copyfile(binary, tree / 'extra' / name)
                 (tree / 'extra' / name).chmod(0o755)
             # A kernel built without the in-tree Bluetooth core carries the
@@ -64,8 +72,7 @@ def clean_ramdisk(root, role):
         expected = {'init', 'bin/busybox', 'extra/fbcon'}
         if role == 'boot':
             expected.add('extra/boot-health.sh')
-            expected.add('extra/couch-bt-bridge')
-            expected.add('extra/couch-bt-hid')
+            expected.update('extra/' + name for name in BOOT_EXTRA)
             for name in MODULES:
                 if (root / 'build/backports' / name).is_file():
                     expected.add('extra/' + name)

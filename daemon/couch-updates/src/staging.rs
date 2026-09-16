@@ -378,6 +378,77 @@ pub(crate) fn validate_inventory(manifest: &Manifest) -> Result<()> {
     inventory(manifest).map(|_| ())
 }
 
+/// THE COMPATIBILITY FLOOR: the oldest updater that is actually deployed.
+///
+/// The public installer writes an OS image whose bundled runtime, and so whose
+/// updater, is this release. A remote installed today runs it until it updates
+/// itself, so every published runtime bundle has to satisfy it. Two things make
+/// a single unknown name fatal rather than inconvenient: a bundle is refused
+/// *before download*, on the manifest alone, and a check offers only the single
+/// newest release on the channel - it never falls back to an older one. So one
+/// unknown name strands every remote on the floor, on every later release, until
+/// a full OS reinstall.
+///
+/// The floor cannot move until the installer's OS image is rebuilt with a newer
+/// runtime and every remote installed from the current image has updated past
+/// it. Until then a new binary rides in the boot ramdisk's `/extra`, not here
+/// (`tools/release/prepare_boot_candidates.py`, `docs/runtime-updates.md`).
+const FLOOR: &str = "v0.1.0-alpha.20260910.24";
+/// `allowed()` as the floor release has it, transcribed from
+/// `git show v0.1.0-alpha.20260910.24:daemon/couch-updates/src/staging.rs`.
+/// Deliberately a copy and not a call into `allowed()`: this one must not
+/// follow the rules this checkout's updater has grown. The difference today is
+/// the top-level `couch-*` executable, which arrived in .142.
+///
+/// `REQUIRED` is shared because the floor's list is identical to this one;
+/// `the_floor_is_the_tagged_allowlist` pins that, so a name added to REQUIRED
+/// fails there rather than in the field.
+fn floor_allows(name: &str) -> bool {
+    if name.is_empty()
+        || name.len() > 180
+        || !Path::new(name)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
+        || name.contains('\\')
+    {
+        return false;
+    }
+    REQUIRED.contains(&name)
+        || name == "fbcon"
+        || name.strip_prefix("www/").is_some_and(|rest| {
+            !rest.starts_with('.')
+                && (rest.starts_with("cgi-bin/")
+                    && matches!(
+                        rest,
+                        "cgi-bin/save" | "cgi-bin/scan" | "cgi-bin/enroll" | "cgi-bin/setpw"
+                    )
+                    || [".html", ".css", ".js", ".svg", ".png", ".woff2"]
+                        .iter()
+                        .any(|ext| rest.ends_with(ext)))
+        })
+        || name.starts_with("licenses/") && name.ends_with(".txt")
+}
+/// Publisher gate: never sign a runtime bundle the floor would refuse.
+pub(crate) fn check_floor(manifest: &Manifest) -> Result<()> {
+    let refused: Vec<&str> = manifest
+        .files
+        .iter()
+        .map(|f| f.path.as_str())
+        .filter(|path| !floor_allows(path))
+        .collect();
+    if refused.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "The {FLOOR} updater, the oldest deployed one, would refuse this bundle \
+         before downloading it: {}. A remote on that release would then be stuck \
+         on it, because a check offers only the newest release. Ship these in the \
+         boot ramdisk's /extra instead (docs/runtime-updates.md, \"Compatibility \
+         floor\"); tools/release/update_floor.py checks a tree or a manifest.",
+        refused.join(", ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,6 +648,101 @@ mod tests {
         }
         m.files.pop();
         assert!(inventory(&m).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    /// The floor's list, typed out from the tag rather than derived, so that
+    /// adding a name to REQUIRED fails here instead of in the field:
+    /// `git show v0.1.0-alpha.20260910.24:daemon/couch-updates/src/staging.rs`.
+    const FLOOR_REQUIRED: &[&str] = &[
+        "couch-gui",
+        "couch-confd",
+        "couch-system",
+        "couch-sonos",
+        "couch-coreelec",
+        "couch-wmt-properties.so",
+        "stage2.sh",
+        "hardware-init.sh",
+        "gui-start.sh",
+        "system.sh",
+        "confd.sh",
+        "setup-mode.sh",
+        "portal.sh",
+        "station.sh",
+        "wifi-conf.sh",
+        "build.json",
+    ];
+    #[test]
+    fn the_floor_is_the_tagged_allowlist_and_not_this_updaters() {
+        assert_eq!(REQUIRED, FLOOR_REQUIRED);
+        // Taken by both. Licence texts included: the floor has always had the
+        // `licenses/*.txt` rule, so they are not what refuses a bundle.
+        for name in [
+            "fbcon",
+            "www/index.html",
+            "www/app.js",
+            "www/cgi-bin/save",
+            "licenses/Lato-OFL.txt",
+            "licenses/BlueZ-GPL-2.0.txt",
+        ] {
+            assert!(floor_allows(name) && allowed(name), "{name}");
+        }
+        for name in REQUIRED {
+            assert!(floor_allows(name), "{name}");
+        }
+        // The whole difference: a further top-level couch-* executable. This
+        // updater takes one; the floor does not, and the floor is what decides
+        // whether a bundle can be installed.
+        for name in ["couch-bt-bridge", "couch-bt-hid", "couch-bluetoothd"] {
+            assert!(allowed(name), "{name}");
+            assert!(!floor_allows(name), "{name}");
+        }
+        for name in [
+            "",
+            "../boot.img",
+            "/etc/shadow",
+            "os-baseline.json",
+            "runtime-boot.sh",
+            "bin/couch-bt-hid",
+            "www/.env",
+            "www/cgi-bin/sh",
+            "licenses/notice.html",
+        ] {
+            assert!(!floor_allows(name), "{name}");
+        }
+    }
+    #[test]
+    fn a_bundle_the_oldest_deployed_updater_would_refuse_is_never_published() {
+        let (root, m, _) = fixture();
+        // The published .148 shape: required files, web assets, licence texts.
+        let mut ok = m.clone();
+        for (path, mode) in [
+            ("www/index.html", 0o644),
+            ("www/cgi-bin/save", 0o755),
+            ("licenses/Lato-OFL.txt", 0o644),
+            ("licenses/IRDB-CC0.txt", 0o644),
+        ] {
+            ok.files.push(File {
+                path: path.into(),
+                size: 4,
+                sha256: "c".repeat(64),
+                mode,
+            });
+        }
+        assert!(inventory(&ok).is_ok());
+        assert!(check_floor(&ok).is_ok());
+        // One Bluetooth binary, and the whole bundle is unpublishable.
+        let mut refused = ok.clone();
+        refused.files.push(File {
+            path: "couch-bt-hid".into(),
+            size: 4,
+            sha256: "d".repeat(64),
+            mode: 0o755,
+        });
+        // This updater stages it happily; the floor is the one that matters.
+        assert!(inventory(&refused).is_ok());
+        let error = check_floor(&refused).unwrap_err();
+        assert!(error.contains("couch-bt-hid"), "{error}");
+        assert!(error.contains(FLOOR), "{error}");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

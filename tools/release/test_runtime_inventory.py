@@ -17,6 +17,11 @@ def elf(kind=1, machine=40):
     return bytes(data)
 
 
+def alpine_elf():
+    """An ARM32 ELF that names the Alpine musl loader, as arm_alpine() requires."""
+    return elf() + b'/lib/ld-musl-armhf.so.1\x00'
+
+
 def cpio(items):
     output = bytearray()
     for name, content in [*items, ('TRAILER!!!', b'')]:

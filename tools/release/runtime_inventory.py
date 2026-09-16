@@ -15,10 +15,12 @@ from kernel_provenance import boot_kernel, PIN
 
 from clean_stage import REPO, archive_name, build, require, secret_path
 
+# What the runtime bundle carries. Every name here is published in the signed
+# update and must therefore be a name the OLDEST DEPLOYED UPDATER accepts:
+# tools/release/update_floor.py holds that allowlist and the reason it cannot
+# move. Adding a binary here strands every remote that has not updated past it.
 RUNTIME = {
     'couch-coreelec': 'clients/target/armv7-unknown-linux-musleabihf/release/couch-coreelec',
-    'couch-bt-bridge': 'clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-bridge',
-    'couch-bt-hid': 'clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-hid',
     'couch-sonos': 'clients/target/armv7-unknown-linux-musleabihf/release/couch-sonos',
     'couch-gui': 'ui/target/armv7-unknown-linux-musleabihf/release/couch-gui',
     'couch-system': 'daemon/target/armv7-unknown-linux-musleabihf/release/couch-system',
@@ -26,10 +28,23 @@ RUNTIME = {
     'fbcon': 'build/fbcon',
 }
 # Runtime executables linked against the Alpine root's shared libraries, which
-# run inside the chroot: bluetoothd patched to keep bonded devices' CCCs
-# (third_party/bluez/build.sh, run by tools/build-release.sh).
-RUNTIME_ALPINE = {
-    'couch-bluetoothd': 'build/bluez/couch-bluetoothd',
+# run inside the chroot. Empty: couch-bluetoothd was the only one and it now
+# travels in the boot ramdisk with the rest of the Bluetooth stack.
+RUNTIME_ALPINE = {}
+# The Bluetooth stack, which does NOT go in the runtime bundle. These names are
+# newer than the oldest deployed updater's allowlist, so a bundle carrying one
+# is refused before download - by every remote, for every later release, until
+# a full OS reinstall (docs/runtime-updates.md, "Compatibility floor"). They
+# ride in the boot ramdisk's /extra instead, beside the kernel that gives them
+# /dev/vhci and delivered only to images that take the boot payload;
+# tools/release/prepare_boot_candidates.py puts them there and
+# couch_system::bluetooth::base() copies them out of /extra into shared /tmp
+# when the runtime has no copy. 'alpine' is bluetoothd patched to keep bonded
+# devices' CCCs, linked against the Alpine root (third_party/bluez/build.sh).
+BOOT_EXTRA = {
+    'couch-bt-bridge': ('clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-bridge', True),
+    'couch-bt-hid': ('clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-hid', True),
+    'couch-bluetoothd': ('build/bluez/couch-bluetoothd', 'alpine'),
 }
 SCRIPTS = ('stage2.sh', 'runtime-boot.sh', 'hardware-init.sh', 'gui-start.sh', 'confd.sh', 'setup-mode.sh', 'portal.sh', 'system.sh',
            'wifi-conf.sh', 'station.sh')
@@ -199,6 +214,22 @@ def audit(root=REPO, vendor=None, boot='build/couch-board-init-fixed.img', recov
     except ValueError as error:
         blockers.append(str(error))
     clean_runtime_ready = not blockers
+    # The boot ramdisk's /extra, inventoried separately from the runtime tree
+    # because none of it is published in the runtime bundle. Missing pieces are
+    # release blockers, not clean-runtime blockers: the runtime is complete
+    # without them, the Bluetooth-capable boot image is not.
+    boot_extra = []
+    for name, (source, kind) in sorted(BOOT_EXTRA.items()):
+        try:
+            data = regular(root / source)
+            if kind == 'alpine':
+                arm_alpine(data)
+            else:
+                arm_static(data)
+            boot_extra.append({'source': source, 'destination': 'extra/' + name,
+                               'mode': 0o755, 'sha256': sha(data)})
+        except ValueError as error:
+            blockers.append(f'extra/{name}: {error}')
     vendor = vendor or root / 'build/vendor-bundle'
     vendor_files, vendor_missing = [], []
     for name in VENDOR_REQUIRED:
@@ -234,6 +265,7 @@ def audit(root=REPO, vendor=None, boot='build/couch-board-init-fixed.img', recov
     return {'schema': 1, 'kind': 'couch-runtime-payload-inventory', 'installable': False,
             'clean_runtime_ready': clean_runtime_ready, 'payload_complete': False,
             'artifacts': artifacts, 'embedded': embedded, 'boot_images': boot_images,
+            'boot_payload_binaries': boot_extra,
             'boot_sources': sources, 'vendor': {'files': sorted(vendor_files, key=lambda f: f['source']),
             'missing': vendor_missing, 'required_source_images': ['vendor.img', 'system.img'],
             'extraction_recipe': 'tools/extract-vendor.sh (development tool; not invoked)',
