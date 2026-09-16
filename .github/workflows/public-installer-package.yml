@@ -4,6 +4,13 @@ on:
     paths:
       - 'tools/release/package_public_installer.py'
       - 'tools/release/test_package_public_installer.py'
+      - 'tools/release/fresh_os.py'
+      - 'tools/release/test_fresh_os.py'
+      - 'tools/release/verify_integration_set.py'
+      - 'tools/release/tested-integrations.json'
+      - 'tools/release/*host-compatibility.json'
+      - 'tools/release/*host-report.json'
+      - 'tools/tests/denon-v1-host-compatibility.py'
       - 'tools/release/prepare_public_*.py'
       - 'tools/release/ha100_official_runtime.json'
       - 'kernel/release-pin.json'
@@ -23,5 +30,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
+      # The reviewed compatibility evidence is authenticated byte-for-byte.
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
+        with:
+          # Fresh OS admission verifies the tested core's ancestry and contract.
+          fetch-depth: 0
       - run: python -m unittest discover -s tools/release -p test_package_public_installer.py
