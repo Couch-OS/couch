@@ -25,8 +25,9 @@ const catalog = {
   }],
 };
 const calls = [];
-const operations = new Map();
+const operations = new Map([['resume', {polls: 0, message: 'Resuming package operation…'}]]);
 let sequence = 0;
+let catalogReads = 0;
 function operation(message) {
   const id = `op-${++sequence}`;
   operations.set(id, {polls: 0, message});
@@ -48,12 +49,19 @@ await page.route('**/api/**', async route => {
   if (request.method() === 'GET' && path === '/api/config') return json({schema_version: 1, revision: 0, areas: [], rooms: [], scenes: [], activities: []});
   if (request.method() === 'POST' && path === '/api/updates/check') return json({});
   if (request.method() === 'GET' && path === '/api/updates') return json({installed: 'test', channel: 'stable', available: null, notes: '', phase: 'idle', message: '', can_install: false, automatic_checks: false});
-  if (request.method() === 'GET' && path === '/api/integrations/catalog') return json(catalog);
+  if (request.method() === 'GET' && path === '/api/integrations/catalog') {
+    catalogReads += 1;
+    if (catalogReads === 1) return route.fulfill({status: 409, contentType: 'application/json', body: JSON.stringify({error: 'package store is busy'})});
+    return json(catalog);
+  }
   if (request.method() === 'GET' && path === '/api/integrations/recovery') return json({recovery: {integrations_active: false, revision: 4, path: '/opt/couch/legacy-config.json', pending_path: null}});
-  if (request.method() === 'POST' && path === '/api/integrations/refresh') return json(operation('Refreshing trusted catalogs…'));
+  if (request.method() === 'GET' && path === '/api/integrations/operations/current') return json({operation: {id: 'resume', state: 'running', phase: 'download', message: 'Resuming package operation…'}});
+  if (request.method() === 'POST' && path === '/api/integrations/refresh') return json({operation_id: 'expired'});
   if (request.method() === 'POST' && /^\/api\/integrations\/(install|update|remove|rollback)$/.test(path)) return json(operation('Verifying package signature…'));
   if (request.method() === 'GET' && path.startsWith('/api/integrations/operations/')) {
-    const current = operations.get(path.split('/').pop());
+    const id = path.split('/').pop();
+    if (id === 'expired') return route.fulfill({status: 404, contentType: 'application/json', body: JSON.stringify({error: 'operation unavailable'})});
+    const current = operations.get(id);
     current.polls += 1;
     return json(current.polls === 1 ? {state: 'running', phase: 'download', message: current.message} : {state: 'succeeded', message: 'Package operation complete.'});
   }
@@ -79,6 +87,8 @@ try {
   await page.getByRole('heading', {name: 'Integrations', exact: true}).waitFor();
   await page.getByText('Saved integration configuration found').waitFor();
   await page.getByRole('link', {name: 'Download saved integration configuration', exact: true}).waitFor();
+  await page.getByText('Package operation complete.').waitFor();
+  assert(catalogReads >= 2, 'a transient catalog lock reloads after the resumed operation completes');
   await page.getByRole('heading', {name: 'Denon AVR', exact: true}).waitFor();
   await page.getByText('Saved connection settings are retained.').waitFor();
   await page.getByRole('button', {name: 'Update to 1.5.0', exact: true}).click();
@@ -98,9 +108,14 @@ try {
   await page.getByLabel(/I compared this fingerprint/).check();
   await trust.click();
   await page.getByRole('heading', {name: 'Living room', exact: true}).waitFor();
+  await page.getByText('Repository trusted. Refresh packages to load its catalog.').waitFor();
   await page.getByRole('button', {name: 'Remove repository', exact: true}).click();
   await page.getByRole('button', {name: 'Confirm delete', exact: true}).click();
   await page.getByRole('heading', {name: 'Living room', exact: true}).waitFor({state: 'detached'});
+
+  await page.getByRole('button', {name: 'Refresh packages', exact: true}).click();
+  await page.getByRole('alert').filter({hasText: 'The package operation is no longer available after the remote restarted.'}).waitFor();
+  assert(calls.some(call => call.path === '/api/integrations/operations/current'), 'opening the page restores a daemon-owned operation');
 
   await page.getByRole('button', {name: 'Remove package', exact: true}).click();
   await page.getByRole('button', {name: 'Confirm delete', exact: true}).click();

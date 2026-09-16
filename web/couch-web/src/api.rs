@@ -255,7 +255,11 @@ pub async fn ha(method: &str, path: &str, body: Option<Value>) -> Result<Value, 
         return Err(ApiError {
             message: value["error"].as_str().unwrap_or("Operation failed").into(),
             unauthorized: status == 401,
-            stale: false,
+            // Live endpoints do not carry the config revision header, but a
+            // missing object and a temporary operation lock have the same
+            // recovery shape: refresh the live view rather than leaving a
+            // caller waiting on an object the daemon no longer has.
+            stale: status == 404 || status == 409,
         });
     }
     Ok(value)

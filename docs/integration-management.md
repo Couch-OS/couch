@@ -49,7 +49,7 @@ To add a custom repository:
 2. Paste its public PEM signing key from a source you trust.
 3. Select **Check public-key fingerprint**, compare the displayed SHA-256 of
    the normalized PEM with the owner's fingerprint, and confirm the comparison.
-4. Select **Trust repository**, then review its refreshed catalog.
+4. Select **Trust repository**, then **Refresh packages** to load its catalog.
 
 Couch persists the custom URL and key only after confirmation. It does not fetch
 and trust a custom key automatically. Each repository's key is scoped to that
@@ -103,6 +103,7 @@ All management routes require the existing paired session:
 | `GET /api/integrations/catalog` | Installed state, available catalog entries, repositories and refresh errors |
 | `POST /api/integrations/refresh` | Verify and refresh repository indexes |
 | `POST /api/integrations/{install,update,rollback,remove}` | Start an explicit operation; removal must preserve connection configuration |
+| `GET /api/integrations/operations/current` | Reattach to the current operation after returning to the page |
 | `GET /api/integrations/operations/ID` | Poll the returned operation ID |
 | `POST /api/integrations/repositories` | Stage a custom URL/key for fingerprint review |
 | `POST /api/integrations/repositories/ID/confirm` | Persist the reviewed fingerprint's repository |

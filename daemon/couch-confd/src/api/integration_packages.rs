@@ -40,6 +40,9 @@ impl Api {
                 });
                 manager.catalog(&configured)
             }
+            ("GET", ["operations", "current"]) => {
+                return Reply::json(200, &json!({"operation":manager.current_operation()}))
+            }
             ("GET", ["operations", id]) => {
                 return match manager.operation(id) {
                     Some(operation) => Reply::json(200, &operation),

@@ -338,6 +338,13 @@ impl Manager {
             .map_err(|_| busy())?;
         Ok(BusyGuard(self.0.clone()))
     }
+    pub fn current_operation(&self) -> Option<Operation> {
+        self.0
+            .operation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     pub fn operation(&self, id: &str) -> Option<Operation> {
         self.0
             .operation

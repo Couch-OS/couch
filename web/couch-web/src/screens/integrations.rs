@@ -102,6 +102,23 @@ struct OperationStatus {
     message: String,
 }
 
+#[derive(Default, Deserialize)]
+struct CurrentOperation {
+    id: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    phase: String,
+    #[serde(default)]
+    message: String,
+}
+
+#[derive(Default, Deserialize)]
+struct CurrentOperationResponse {
+    #[serde(default)]
+    operation: Option<CurrentOperation>,
+}
+
 #[derive(Clone, Default, Deserialize)]
 struct RecoveryStatus {
     #[serde(default)]
@@ -173,8 +190,16 @@ fn load_catalog(
             Err(next) => {
                 if next.unauthorized {
                     app.paired.set(Some(false));
+                } else if next.stale {
+                    // Store::list takes the same package lock as an install.
+                    // A 409 here is a short-lived view of a daemon-owned
+                    // operation, not a failed catalog request; the current
+                    // operation lookup below will reattach and reload when it
+                    // reaches a terminal state.
+                    message.set("Package list is updating…".into());
+                } else {
+                    error.set(next.message);
                 }
-                error.set(next.message);
             }
         }
     });
@@ -190,6 +215,64 @@ fn load_recovery(app: App, recovery: RwSignal<RecoveryStatus>) {
             }
             Err(next) if next.unauthorized => app.paired.set(Some(false)),
             Err(_) => {}
+        }
+    });
+}
+
+/// Reattach after navigation or a reload. The package worker belongs to the
+/// daemon, not this page, so the catalog is only a hint; this endpoint gives
+/// the live operation identity that can safely be polled.
+fn restore_current_operation(
+    app: App,
+    catalog: RwSignal<Catalog>,
+    busy: RwSignal<bool>,
+    operation: RwSignal<Option<String>>,
+    message: RwSignal<String>,
+    error: RwSignal<String>,
+    result: RwSignal<String>,
+) {
+    spawn_local(async move {
+        match api::ha("GET", "/api/integrations/operations/current", None).await {
+            Ok(value) => match serde_json::from_value::<CurrentOperationResponse>(value) {
+                Ok(CurrentOperationResponse {
+                    operation: Some(current),
+                }) if !finished(&current.state) => {
+                    busy.set(true);
+                    operation.set(Some(current.id));
+                    message.set(operation_text(&OperationStatus {
+                        state: current.state,
+                        phase: current.phase,
+                        message: current.message,
+                    }));
+                }
+                Ok(CurrentOperationResponse {
+                    operation: Some(current),
+                }) if current.state == "succeeded" => {
+                    result.set(if current.message.is_empty() {
+                        "Package operation completed.".into()
+                    } else {
+                        current.message
+                    });
+                    load_catalog(app, catalog, message, error);
+                }
+                Ok(CurrentOperationResponse {
+                    operation: Some(current),
+                }) if !current.message.is_empty() => {
+                    error.set(current.message);
+                    load_catalog(app, catalog, message, error);
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    error.set("The remote sent an unreadable package-operation update.".into())
+                }
+            },
+            Err(next) => {
+                if next.unauthorized {
+                    app.paired.set(Some(false));
+                } else {
+                    error.set(next.message);
+                }
+            }
         }
     });
 }
@@ -303,7 +386,14 @@ fn poll_operation(
                 if next.unauthorized {
                     app.paired.set(Some(false));
                 }
-                error.set(next.message);
+                if next.stale {
+                    operation.set(None);
+                    busy.set(false);
+                    error.set("The package operation is no longer available after the remote restarted. Review installed packages, then try the operation again.".into());
+                    load_catalog(app, catalog, message, error);
+                } else {
+                    error.set(next.message);
+                }
             }
         }
         polling.set(false);
@@ -328,6 +418,7 @@ pub fn screen(app: App) -> AnyView {
 
     load_catalog(app, catalog, message, error);
     load_recovery(app, recovery);
+    restore_current_operation(app, catalog, busy, operation, message, error, result);
     let timer = set_interval_with_handle(
         move || {
             poll_operation(
@@ -422,7 +513,7 @@ pub fn screen(app: App) -> AnyView {
                     repo_name.set(String::new());
                     repo_url.set(String::new());
                     public_key.set(String::new());
-                    message.set("Repository trusted. Refreshing its package catalog…".into());
+                    result.set("Repository trusted. Refresh packages to load its catalog.".into());
                     load_catalog(app, catalog, message, error);
                 }
                 Err(next) => {
