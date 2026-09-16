@@ -10,6 +10,15 @@ from test_runtime_inventory import alpine_elf, elf
 
 
 class BootCandidateTests(unittest.TestCase):
+    def test_unverified_busybox_receipt_blocks_new_ramdisks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = root / 'build/busybox-source/receipt.json'
+            receipt.parent.mkdir(parents=True)
+            receipt.write_text('{malformed')
+            with self.assertRaisesRegex(ValueError, 'verified BusyBox 1.37'):
+                candidate.verified_busybox(root)
+
     def test_clean_full_size_images_keep_distinct_kernels_and_noninstallable_state(self):
         fixture = fixtures.KernelProvenanceTests()
         fixture.setUp()
@@ -32,7 +41,8 @@ class BootCandidateTests(unittest.TestCase):
             recovery.write_bytes(other)
             manifest.write_text(json.dumps(fixture.manifest))
             pin.write_text(json.dumps(fixture.pin))
-            with patch.object(candidate, 'PIN', pin):
+            with patch.object(candidate, 'PIN', pin), \
+                    patch.object(candidate, 'verified_busybox', return_value=root / 'build/busybox-armv7l'):
                 result = candidate.prepare(normal, recovery, manifest, root / 'out', root)
                 self.assertIs(result['installable'], False)
                 for role in ('boot', 'recovery'):

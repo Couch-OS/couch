@@ -9,7 +9,7 @@ import sys
 def check(tree, pin):
     commit = pin['source_commit']
     if subprocess.call(['git', '-C', str(tree), 'merge-base', '--is-ancestor', commit, 'HEAD']):
-        raise ValueError(f'Normal kernel source must include promoted board fixes {commit}; update the Ollie tree')
+        raise ValueError(f'Normal kernel source must include promoted board fixes {commit}; update the configured source tree')
 
 
 if __name__ == '__main__':

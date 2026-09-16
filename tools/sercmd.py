@@ -1,10 +1,36 @@
 #!/usr/bin/env python3
-"""Use Ollie's USB serial connection (SER_HOST=local for a local cable)."""
-import os, sys, termios, time, select, glob, fcntl, shlex, subprocess
+"""Use an explicitly configured USB serial host (SER_HOST=local for a local cable)."""
+import os, sys, termios, time, select, glob, fcntl, re, shlex, subprocess
 from pathlib import Path
 
-def port():
-    explicit = os.environ.get("SER_PORT")
+ROOT = Path(__file__).resolve().parents[1]
+
+def local_settings():
+    values = {}
+    path = Path(os.environ.get('COUCH_LOCAL_CONFIG', ROOT / 'local.env'))
+    if not path.is_file():
+        return values
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        match = re.fullmatch(r'(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)', line)
+        if not match:
+            continue
+        key, raw_value = match.groups()
+        if key not in {'SER_HOST', 'SER_PORT', 'SER_SETTLE', 'SER_TIMEOUT'}:
+            continue
+        try:
+            parsed = shlex.split(raw_value, comments=True, posix=True)
+        except ValueError as error:
+            raise ValueError(f'invalid {key} in {path}: {error}') from error
+        if len(parsed) != 1:
+            raise ValueError(f'{key} in {path} must be one quoted or unquoted value')
+        values[key] = parsed[0]
+    return values
+
+def port(settings=None):
+    explicit = os.environ.get("SER_PORT") or (settings or {}).get("SER_PORT")
     if explicit:
         return explicit
     p = sorted(glob.glob("/dev/serial/by-id/usb-Android_Android_*-if00"))
@@ -16,20 +42,23 @@ def port():
 
 # Commands that sleep go quiet mid-run, so the idle "settle" window has to be
 # longer than the longest sleep or we cut the reply off. SER_SETTLE raises it.
-def run(cmd, settle=float(os.environ.get("SER_SETTLE", 1.5)),
-        timeout=float(os.environ.get("SER_TIMEOUT", 6.0))):
-    host = os.environ.get("SER_HOST", "ollie")
+def run(cmd, settle=None, timeout=None):
+    settings = local_settings()
+    settle = float(settle if settle is not None else os.environ.get("SER_SETTLE", settings.get("SER_SETTLE", 1.5)))
+    timeout = float(timeout if timeout is not None else os.environ.get("SER_TIMEOUT", settings.get("SER_TIMEOUT", 6.0)))
+    host = os.environ.get("SER_HOST", settings.get("SER_HOST", "local"))
     if host != "local":
         env = ["SER_HOST=local", f"SER_SETTLE={settle}", f"SER_TIMEOUT={timeout}"]
-        if os.environ.get("SER_PORT"):
-            env.append(f"SER_PORT={os.environ['SER_PORT']}")
+        serial_port = os.environ.get("SER_PORT", settings.get("SER_PORT"))
+        if serial_port:
+            env.append(f"SER_PORT={serial_port}")
         remote = shlex.join(["env", *env, "python3", "-", cmd])
         result = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote],
             input=Path(__file__).read_text(), text=True, capture_output=True, check=True,
         )
         return result.stdout
-    fd = os.open(port(), os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    fd = os.open(port(settings), os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     try:
         # Lock the actual device inode, including when callers use a by-id alias.
         # Another sercmd reader must not consume this command's response.

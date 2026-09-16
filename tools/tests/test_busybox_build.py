@@ -29,8 +29,8 @@ class BusyBoxBuildTests(unittest.TestCase):
             (self.root / name).write_text('fixture')
         (self.root / 'applets.txt').write_bytes((build.RECIPE / 'required-applets.txt').read_bytes())
         self.sha = build.digest(self.root / 'busybox-source.tar.bz2')
-        self.receipt = {'schema': 1, 'source_sha256': self.sha, 'builder_image': build.IMAGE,
-                        'recipe_sha256': {p.name: build.digest(p) for p in build.RECIPE.iterdir() if p.is_file()},
+        self.receipt = {'schema': 1, 'source_url': build.SOURCE_URL, 'source_sha256': self.sha, 'builder_image': build.IMAGE,
+                        'recipe_sha256': build.recipe_hashes(),
                         'artifacts': {p.name: build.digest(p) for p in self.root.iterdir()}}
 
     def verify(self):
@@ -47,10 +47,26 @@ class BusyBoxBuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'recipe changed'):
             self.verify()
 
+    def test_historical_readme_hash_is_ignored_but_build_inputs_are_not(self):
+        self.receipt['recipe_sha256']['README.md'] = 'historical-documentation-hash'
+        self.verify()
+        self.receipt['recipe_sha256']['build.sh'] = 'not-the-build-script'
+        with self.assertRaisesRegex(ValueError, 'recipe changed'):
+            self.verify()
+
     def test_incomplete_applet_inventory_cannot_be_attested(self):
         (self.root / 'applets.txt').write_text('sh\n')
         self.receipt['artifacts']['applets.txt'] = build.digest(self.root / 'applets.txt')
         with self.assertRaisesRegex(ValueError, 'applet missing'):
+            self.verify()
+
+    def test_malformed_or_wrong_version_receipt_is_rejected(self):
+        (self.root / 'receipt.json').write_text('{not json')
+        with self.assertRaisesRegex(ValueError, 'malformed'):
+            build.verify(self.root)
+        self.receipt['source_url'] = 'https://example.invalid/busybox.tar.bz2'
+        (self.root / 'receipt.json').write_text(json.dumps(self.receipt))
+        with self.assertRaisesRegex(ValueError, 'source/builder'):
             self.verify()
 
     def test_dynamic_or_soft_float_binaries_are_rejected(self):

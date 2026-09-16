@@ -15,6 +15,7 @@ SOURCE_URL = 'https://busybox.net/downloads/busybox-1.37.0.tar.bz2'
 SOURCE_SHA = '3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4'
 # ARMv7 child of the existing Alpine 3.21.7 multi-architecture index.
 IMAGE = 'alpine@sha256:e2d6b24023ccaac17dba05f7f085b89bd3a29eb4ee029f7ba71f5a0652ea0067'
+RECIPE_INPUTS = ('build.sh', 'busybox.config', 'required-applets.txt', 'smoke.sh')
 
 
 def digest(path):
@@ -25,6 +26,10 @@ def digest(path):
 def require(value, message):
     if not value:
         raise ValueError(message)
+
+
+def recipe_hashes():
+    return {name: digest(RECIPE / name) for name in RECIPE_INPUTS}
 
 
 def static_arm(path):
@@ -41,10 +46,17 @@ def static_arm(path):
 
 def verify(directory):
     directory = Path(directory)
-    receipt = json.loads((directory / 'receipt.json').read_text())
-    require(receipt.get('schema') == 1 and receipt.get('source_sha256') == SOURCE_SHA
+    try:
+        receipt = json.loads((directory / 'receipt.json').read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError('Missing or malformed BusyBox build receipt') from error
+    require(receipt.get('schema') == 1 and receipt.get('source_url') == SOURCE_URL
+            and receipt.get('source_sha256') == SOURCE_SHA
             and receipt.get('builder_image') == IMAGE, 'BusyBox source/builder receipt differs')
-    require(receipt['recipe_sha256'] == {p.name: digest(p) for p in RECIPE.iterdir() if p.is_file()},
+    recorded_recipe = receipt.get('recipe_sha256')
+    require(isinstance(recorded_recipe, dict)
+            and all(recorded_recipe.get(name) == checksum
+                    for name, checksum in recipe_hashes().items()),
             'BusyBox recipe changed; rebuild required')
     for name, checksum in receipt['artifacts'].items():
         require(Path(name).name == name and not (directory / name).is_symlink(), 'Invalid artifact path')
@@ -71,7 +83,7 @@ def build(source, cache, output):
     output.mkdir()  # Failed builds stay separate; never replace a prior binary.
     recipe = output / 'recipe'
     shutil.copytree(RECIPE, recipe)
-    recipe_hashes = {p.name: digest(p) for p in recipe.iterdir() if p.is_file()}
+    recipe_hashes = {name: digest(recipe / name) for name in RECIPE_INPUTS}
     shutil.copyfile(source, output / 'busybox-source.tar.bz2')
     shutil.copyfile(cache / 'closure.json', output / 'toolchain-closure.json')
     subprocess.run(['docker', 'run', '--rm', '--platform=linux/arm/v7', '--network=none',

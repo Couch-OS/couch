@@ -4,12 +4,14 @@ import argparse
 import gzip
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+import importlib.util
 
 from kernel_provenance import PIN, verify
 from clean_stage import require
@@ -30,6 +32,18 @@ def kernel(image):
 MODULES = ('compat.ko', 'bluetooth.ko', 'hci_vhci.ko', 'hci_stp.ko')
 
 
+def verified_busybox(root):
+    directory = Path(os.environ.get('BUSYBOX_BUILD_DIR', root / 'build/busybox-source'))
+    spec = importlib.util.spec_from_file_location('couch_busybox_build', REPO / 'tools/build-busybox.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        module.verify(directory)
+    except (OSError, KeyError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError('New ramdisk assembly requires a verified BusyBox 1.37 receipt; use tools/build-busybox.py verify') from error
+    return directory / 'busybox-armv7l'
+
+
 def clean_ramdisk(root, role):
     require(role in ("boot", "recovery"), "Unknown ramdisk role")
     init = 'initramfs/init' if role == 'boot' else 'recovery/init'
@@ -37,7 +51,7 @@ def clean_ramdisk(root, role):
         tree = Path(scratch)
         (tree / 'extra').mkdir()
         shutil.copyfile(root / init, tree / 'init')
-        shutil.copyfile(root / 'build/busybox-armv7l', tree / 'busybox')
+        shutil.copyfile(verified_busybox(root), tree / 'busybox')
         shutil.copyfile(root / 'build/fbcon', tree / 'extra/fbcon')
         if role == 'boot':
             shutil.copyfile(root / 'initramfs/boot-health.sh', tree / 'extra/boot-health.sh')
@@ -88,8 +102,8 @@ def prepare(normal, recovery, manifest, output, root=REPO):
     pin = json.loads(PIN.read_text())
     verify(normal_data, json.loads(regular(manifest)), pin)
     require(kernel(recovery_data) != kernel(normal_data), 'Recovery must retain independent stock kernel')
-    for binary in ('build/busybox-armv7l', 'build/fbcon'):
-        arm_static(regular(root / binary))
+    arm_static(regular(verified_busybox(root)))
+    arm_static(regular(root / 'build/fbcon'))
     output.mkdir(parents=True, mode=0o700)
     results = {}
     for role, template, init in [('boot', normal_data, 'initramfs/init'),

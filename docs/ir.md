@@ -60,8 +60,9 @@ wave, requires a zero baseline before or during the current transfer, and waits
 the full computed waveform duration after configuration returns. A stale count
 cannot complete the next frame. No shared IRQ is enabled. Error diagnostics read
 only the powered channel and shared controller before acknowledgement/disable.
-`kernel/test-irtx-completion.c` tests the actual helper's stale-count and duration
-guards on a dedicated Linux build host.
+The kernel repository's
+[`tools/testing/ha100-irtx-completion-test.c`](https://github.com/dangerouslaser/couch-kernel/blob/couch-ha100/tools/testing/ha100-irtx-completion-test.c)
+tests the actual helper's stale-count and duration guards on a Linux host.
 
 An earlier driver revision hung during transmission. Compilation and successful
 probe do **not** validate LED output, carrier frequency, completion interrupts,
