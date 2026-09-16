@@ -123,6 +123,7 @@ class BoundedWriter:
 
 
 def prepare(attestation, source_archive, userdata, ramdisk, boot, logo, output, version):
+    from fresh_os import validate_binding
     require(isinstance(version, str) and len(version) <= 128 and re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', version), 'Invalid release version')
     require(not output.exists() and not output.is_symlink(), 'Public output must be new')
     with ExitStack() as stack:
@@ -149,6 +150,7 @@ def prepare(attestation, source_archive, userdata, ramdisk, boot, logo, output, 
                     'Private or unsupported builder receipt')
             receipts[kind] = receipt
         u, r, b, l = (receipts[kind] for kind in ('userdata', 'ramdisk', 'boot', 'logo'))
+        validate_binding(u.get('fresh_core'), build['source_commit'], u.get('rootfs_archive_sha256'))
         official = json.loads((ROOT / 'tools/release/ha100_official_runtime.json').read_text())
         kernel = json.loads((ROOT / 'kernel/release-pin.json').read_text())
         require(u['kind'] == 'couch-owner-neutral-userdata' and u.get('installable') is False
@@ -216,6 +218,7 @@ def prepare(attestation, source_archive, userdata, ramdisk, boot, logo, output, 
         receipt = {'schema': 1, 'kind': 'couch-public-installer-package', 'source_commit': build['source_commit'],
                    'source_archive_sha256': build['source_archive_sha256'], 'source_kernel_commit': b['source_kernel_commit'],
                    'build_attestation_sha256': build_hash, 'builder_receipts': build['builder_receipts'],
+                   'fresh_core': u['fresh_core'],
                    'files': expected, 'payload': descriptor['payload'],
                    'installer_json_sha256': hashlib.sha256(encoded(descriptor)).hexdigest(), 'published': False}
         durable_write(output / 'package.json', encoded(receipt))

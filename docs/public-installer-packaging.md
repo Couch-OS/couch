@@ -18,6 +18,14 @@ proof that an arbitrary supplied binary was compiled from its claimed source.
 It must describe the actual frozen build; never generate it by inspecting a later
 checkout's HEAD or by relabeling old candidate outputs.
 
+The userdata receipt must also carry the `fresh_core` binding produced by
+`fresh_os.py` and retained by `prepare_public_userdata.py --fresh-core`. Its
+source commit, rootfs digest, bootstrap/package baseline, official integration
+key and same-source verified integration set must agree with this build.
+Older userdata without that evidence is refused even if a newly written build
+attestation hashes it correctly. See the [fresh rootfs binding
+workflow](integration-release-rollout.md#bind-the-fresh-rootfs-before-image-assembly).
+
 ```json
 {
   "schema": 1,

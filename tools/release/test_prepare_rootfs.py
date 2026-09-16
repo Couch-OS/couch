@@ -1,11 +1,24 @@
 import io
 import tarfile
+import tempfile
+from pathlib import Path
 import unittest
+from unittest.mock import patch
 from clean_stage import GENERATED, StageError
-from prepare_rootfs import normalize
+from prepare_rootfs import normalize, prepare
 
 
 class PackagedRootfsTests(unittest.TestCase):
+    def test_old_closure_fails_before_container_or_output_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'closure.json').write_text('{}')
+            with patch('prepare_rootfs.verify', return_value={}), patch('prepare_rootfs.subprocess.run') as run:
+                with self.assertRaisesRegex(StageError, 'reviewed FFmpeg package closure'):
+                    prepare({}, root, root / 'output')
+                run.assert_not_called()
+            self.assertFalse((root / 'output').exists())
+
     def fixture(self, extra=(), defaults=True, stamp=1):
         output = io.BytesIO()
         items = [(name, data, tarfile.REGTYPE, '') for name, data in GENERATED.items()] if defaults else []

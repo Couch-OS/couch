@@ -177,11 +177,17 @@ A fresh install currently boots the older `.24` software embedded in the public
 OS image and then asks the owner to update. A pilot that starts with the host
 available requires a new full OS build from the final integration-capable core:
 
-1. On the dedicated Linux release host, build the web bundle and all ARM runtime
-   artifacts with `tools/build-wmt-properties.sh` and
-   `tools/build-release.sh`. Run the tested-set verifier and runtime inventory
+1. On the dedicated Linux release host, run
+   `python3 tools/release/build_fresh_core.py --output BUILD/five-runtime-build.json`.
+   It builds the web bundle and all ARM runtime artifacts through
+   `tools/build-wmt-properties.sh` and `tools/build-release.sh`, checks the clean
+   source commit before and after building, and writes the original core receipt
+   only after both builds and executable checks pass. Run the tested-set verifier and runtime inventory
    in that same frozen checkout.
-2. Assemble the pinned offline Alpine package closure and rootfs, then produce
+2. Assemble the pinned offline Alpine package closure and rootfs, then run
+   `fresh_os.py` to bind their actual bytes to the original five-executable build
+   receipt, runtime inventory and verified integration receipt. Pass that binding
+   to `prepare_public_userdata.py --fresh-core`. Then produce
    the owner-neutral userdata, installer RAM stage, boot/recovery payloads and
    logo through the existing public installer workflow. The exact-source build
    attestation must name the final Couch commit and the actual new file hashes.
@@ -197,6 +203,63 @@ available requires a new full OS build from the final integration-capable core:
 The full OS image may contain the core host and embedded public key. It must not
 contain the Denon APK, an installed package slot, connection settings or an
 automatic migration instruction.
+
+### Bind the fresh rootfs before image assembly
+
+This binding schema covers the protocol-1 tested set used by core commit
+`61217bce2ac5e37fb34000a3101c6f4d04cef82f`. A core with protocol-2 changes needs a
+new frozen tested-core identity and explicit compatibility evidence; this
+receipt does not establish protocol-2 Denon behavior or hardware acceptance.
+
+Keep the original `couch-unsigned-runtime-build` receipt emitted for the frozen
+ARM build. It names `source_commit`, target `armv7-unknown-linux-musleabihf`, and
+exactly the five `runtime_inventory.RUNTIME` Cargo executables (excluding
+`fbcon`) with checkout-relative `path`, `size` and `sha256`. Do not regenerate it
+from reused binaries and a later checkout's commit. Like the public OS build
+attestation, this is trusted build evidence; it cannot independently prove that
+an arbitrary supplied executable was compiled from its claimed source.
+
+```sh
+python3 tools/release/prepare_rootfs.py \
+  BUILD/runtime-inventory/staging-input.json REVIEWED_ARM_APK_CLOSURE BUILD/packaged-rootfs
+python3 tools/release/fresh_os.py \
+  --staging BUILD/packaged-rootfs \
+  --runtime-inventory BUILD/runtime-inventory/payload-inventory.json \
+  --runtime-build BUILD/five-runtime-build.json \
+  --integration-receipt BUILD/tested-integrations-receipt.json \
+  --output BUILD/fresh-core.json
+python3 tools/release/prepare_public_userdata.py \
+  BUILD/packaged-rootfs REVIEWED_E2FSPROGS_CLOSURE \
+  tools/release/ha100_userdata_geometry.json BUILD/public-userdata \
+  --fresh-core BUILD/fresh-core.json
+```
+
+Run these commands in the frozen payload checkout. `fresh_os.py` verifies every
+inventoried runtime file inside the packaged archive, checks the five executable
+hashes against the original build receipt, and requires the official tested key
+bytes inside `couch-confd`. All source identities and the tested integration
+receipt must agree. It independently checks the stable bootstrap SHA-256 and
+package closure against `ha100_os_baseline.json`; the baseline ID alone is not
+evidence of the BCB-clear fix. A rootfs carrying an earlier bootstrap under the
+same baseline ID is rejected. Installed package/runtime slots and APK files are
+also refused. The existing rootfs checks continue to reject private state,
+archive traversal, links below directories and changed onboarding defaults.
+
+The binding remains `installable: false`. `image.json` carries it alongside the
+rootfs and image hashes. The public packager requires this binding to match its
+exact source attestation and rootfs receipt and retains it in `package.json`.
+Missing bindings from older userdata builds fail closed: preserve those images'
+original provenance; rebuild to advertise the new core. The public archive's
+wire format is unchanged, so the native `verify-public` admission step still
+checks the final artifact without device access.
+
+Core/rootfs binding does not supply missing boot, BusyBox, kernel, installer RAM
+stage, source closure or desktop binary receipts. Keep their original source
+identities when unchanged inputs are reused, and retain a distinct exact-source
+public OS build attestation for the assembled set. Hardware acceptance must
+exercise first-boot protocol support, candidate health timeout, interrupted
+candidate rollback, BCB clearing and independent recovery. Neither a successful
+runtime OTA nor a passing offline installer admission establishes these results.
 
 ## Candidate state and remaining gates
 

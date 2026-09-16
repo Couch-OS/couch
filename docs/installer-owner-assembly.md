@@ -18,6 +18,9 @@ Release builders produce these neutral artifacts without contacting a device:
   checked and compacted with the pinned offline e2fsprogs closure. It rejects the
   proprietary inventory's paths and content hashes. Filesystem growth occurs on
   the remote before the owner overlay; unused partition space is not transferred.
+  Its required `--fresh-core` receipt binds the actual rootfs to the reviewed
+  bootstrap and exact integration-capable core; see the
+  [binding workflow](integration-release-rollout.md#bind-the-fresh-rootfs-before-image-assembly).
 
 These builders prepare artifacts, not a published/signed release. Runtime source,
 package/source closure receipts, public manifest signing and platform launcher

@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import package_public_installer as package
+from test_fresh_os import binding_fixture
 
 
 class PublicInstallerTests(unittest.TestCase):
@@ -44,6 +45,8 @@ class PublicInstallerTests(unittest.TestCase):
             'logo': dict(schema=1, kind='couch-public-logo-frame', file='logo.bgra',
                          source_sha256=hashlib.sha256(b'canonical PNG fixture').hexdigest(), **self.files['logo.bgra'])}
         self.source_bytes = self.git_archive('a'*40)
+        self.receipts['userdata']['fresh_core'] = binding_fixture()
+        self.receipts['userdata']['rootfs_archive_sha256'] = 'b' * 64
         (self.root / 'source.tar.gz').write_bytes(self.source_bytes)
         self.attestation = dict(schema=1, kind='couch-public-os-build', source_commit='a'*40,
                                 source_archive_sha256=hashlib.sha256(self.source_bytes).hexdigest(), complete=True, private_inputs=False,
@@ -111,6 +114,15 @@ class PublicInstallerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.build()
         self.assertFalse((self.root / 'output').exists())
+
+    def test_old_userdata_cannot_be_relabelled_by_a_new_build_attestation(self):
+        for binding in [None, {**binding_fixture(), 'source_commit': 'b' * 40},
+                        {**binding_fixture(), 'runtime_boot_sha256': '0' * 64}]:
+            self.receipts['userdata']['fresh_core'] = binding
+            self.write_receipts()
+            with self.assertRaises(ValueError):
+                self.build()
+            self.assertFalse((self.root / 'output').exists())
 
     def test_private_kinds_extra_names_and_incomplete_attestation_are_refused(self):
         for field, value in [('private_inputs', True), ('complete', False), ('source_commit', 'main')]:

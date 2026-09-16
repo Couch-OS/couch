@@ -14,7 +14,7 @@ import tempfile
 from clean_stage import (GENERATED, StageError, archive_name, build, checksum,
                          require, secret_path)
 from package_closure import verify
-from os_baseline import seed as seed_os_baseline
+from os_baseline import PIN as BASELINE_PIN, seed as seed_os_baseline
 
 
 def normalize(data, epoch, private_files=None):
@@ -78,6 +78,9 @@ def prepare(spec, closure, output):
     require(not output.exists(), 'Output directory must be new')
     closure = closure.resolve()
     manifest = verify(closure)
+    require(checksum((closure / 'closure.json').read_bytes()) ==
+            json.loads(BASELINE_PIN.read_text())['package_closure_sha256'],
+            'OS baseline requires the reviewed FFmpeg package closure')
     require(manifest['architecture'] == 'armv7', 'Wrong package architecture')
     require(spec['alpine']['version'].startswith(manifest['branch'][1:] + '.'),
             'Alpine base and package branch differ')
