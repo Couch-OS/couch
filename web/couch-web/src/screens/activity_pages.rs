@@ -18,7 +18,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         let items=page.widgets.iter().enumerate().map(|(widget_index,widget)| {
             let label=widget.label.clone();let action=widget.action.clone();
             let device=config.devices().find(|(_,d)|d.id==action.device).map(|(_,d)|d.name.clone()).unwrap_or_default();
-            let function=config.devices().find(|(_,d)|d.id==action.device).and_then(|(_,d)|config.resolve_integration(&d.integration)).and_then(|i|couch_model::buttons::functions(&i).iter().find(|f|f.0==action.command).map(|f|f.1.to_string())).or_else(||super::device_commands::value_label(&action.command)).unwrap_or(action.command);
+            let function=config.devices().find(|(_,d)|d.id==action.device).and_then(|(_,d)|config.resolve_integration(&d.integration)).and_then(|i|couch_model::buttons::function_choices(&i).into_iter().find(|f|f.0==action.command).map(|f|f.1)).or_else(||super::device_commands::value_label(&action.command)).unwrap_or(action.command);
             view!{<div class="custom-widget-editor">
                 <div class="custom-widget-heading"><strong>{format!("Button {}",widget_index+1)}</strong><span>{format!("{device} · {function}")}</span></div>
                 {ui::text_field("Button label",label,"Play / pause",move |label|{let mut a=base.get_value();a.setup.pages[index].widgets[widget_index].label=label;save(a);})}
@@ -44,7 +44,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
     }).collect_view();
     view!{<section class="custom-pages">
         <h3>"Custom pages"</h3><p class="dim">"Build up to 8 pages with 6 command buttons each. Buttons appear left to right, then top to bottom. Use the page arrows or D-pad edges to switch pages on the remote."</p>
-        <label class="activity-screen-choice"><input type="radio" name="activity-screen" checked=activity.setup.custom_screen disabled={move ||app.busy.get()||base.get_value().setup.pages.is_empty()} on:change=move |_|{let mut a=base.get_value();a.setup.custom_screen=true;save(a);}/><span><strong>"Open custom pages first"</strong><small>"Keep a Kodi or TV source to switch to its media controls. Physical button mappings still take precedence."</small></span></label>
+        <label class="activity-screen-choice"><input type="radio" name="activity-screen" checked=activity.setup.custom_screen disabled={move ||app.busy.get()||base.get_value().setup.pages.is_empty()} on:change=move |_|{let mut a=base.get_value();a.setup.custom_screen=true;save(a);}/><span><strong>"Open custom pages first"</strong><small>"Keep a device source to switch to its native controls. Physical button mappings still take precedence."</small></span></label>
         {pages}
         <button class="ghost" disabled={move ||app.busy.get()||base.get_value().setup.pages.len()>=8} on:click=move |_|{let mut a=base.get_value();a.setup.pages.push(ActivityPage{title:format!("Page {}",a.setup.pages.len()+1),widgets:vec![]});save(a);}>"＋ Add page"</button>
     </section>}.into_any()

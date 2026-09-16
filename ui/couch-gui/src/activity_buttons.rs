@@ -874,9 +874,40 @@ fn send_network(
         }
         .map(|_| Outcome::default())
         .map_err(Failure::Command),
+        Integration::Plugin { connection_id, .. } => {
+            let timeout = couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1);
+            let result = couch_plugin::local_request(
+                &crate::home::path("plugin.sock"),
+                connection_id.as_str(),
+                couch_plugin::Request::Command {
+                    function: command.id(),
+                },
+                timeout,
+            );
+            match result {
+                Ok(couch_plugin::Response::Ok) => Ok(Outcome::default()),
+                Ok(couch_plugin::Response::Error { code }) => {
+                    Err(plugin_failure(code, code.to_string()))
+                }
+                Ok(_) => Err(Failure::Command(
+                    "The external integration returned an invalid command response".into(),
+                )),
+                Err(error) => Err(plugin_failure(error, error.to_string())),
+            }
+        }
         _ => Err(Failure::Command(
             "This integration cannot send button commands yet".into(),
         )),
+    }
+}
+
+fn plugin_failure(error: couch_plugin::Error, message: String) -> Failure {
+    match error {
+        couch_plugin::Error::Transport
+        | couch_plugin::Error::Timeout
+        | couch_plugin::Error::Busy
+        | couch_plugin::Error::Expired => Failure::Unavailable(message),
+        _ => Failure::Command(message),
     }
 }
 

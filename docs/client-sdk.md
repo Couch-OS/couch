@@ -12,18 +12,106 @@ credential to write a client and know that it is correct up to the wire
 format.** What you cannot do without hardware is prove that a real device
 behaves as you assumed; that boundary is spelled out at the end.
 
-## What a client is, and what it is not
+## Choosing a built-in client or an integration package
 
-It **is** a crate the configuration daemon and the device GUI link directly.
+Existing clients remain directly linked into the configuration daemon and
+device GUI. New network integrations can also implement `DeviceClient` and
+run through `clients/couch-plugin` as independent executables. Echo and Denon
+provide both forms. The SDK is still an in-tree crate, not a crates.io release;
+the installation boundary is a versioned JSON protocol, not a Rust ABI.
 
-It is **not** a plugin. There is no runtime loading, no stable ABI, no
-`couch install <client>`, and no published package: `couch-sdk` is an in-tree
-crate at version 0.1.0 that has never been released to crates.io. Adding a new
-integration means seven manual edits across five workspaces, and they are
-listed under [Registering a provider](#registering-a-provider). The
-SDK makes the client itself correct, testable and consistent. It does not make
-it discoverable, installable, or shippable by anyone but a maintainer building
-an image.
+An external package supplies `plugin.json` with its identity, protocol version,
+capabilities, relative executable path, and declarative settings. The daemon
+discovers installed manifests, the browser renders their settings, and both
+browser and panel commands use the daemon's persistent subprocess owner.
+Adding such a package requires no provider enum, daemon, or UI registration
+edits. The [registration instructions](#registering-a-provider) below apply to
+directly linked clients. Package build, sideload, activation, and rollback
+instructions are in [Integration packages](integration-packages.md).
+
+## Building and testing an external integration
+
+Start with `clients/couch-echo`: its ordinary SDK implementation, standalone
+`src/bin/couch-plugin-echo.rs` adapter, `plugin.json`, and `tests/plugin.rs`
+form a complete example. The adapter is small:
+
+```rust,ignore
+fn main() {
+    let manifest = serde_json::from_str(include_str!("../../plugin.json"))
+        .expect("embedded integration manifest");
+    if couch_plugin::serve::<couch_echo::EchoTv>(manifest).is_err() {
+        std::process::exit(1);
+    }
+}
+```
+
+Build just the example and run fake-device subprocess tests from the repository
+root:
+
+```sh
+cargo build --manifest-path clients/Cargo.toml -p couch-echo --bin couch-plugin-echo
+cargo test --manifest-path clients/Cargo.toml -p couch-plugin -p couch-echo -p couch-denon
+```
+
+Copy and rename the crate for your integration, change `DeviceClient::KIND`,
+settings, capabilities, and device transport, and make its embedded manifest
+match. Register the new crate only in the clients workspace when developing
+in-tree. Build the ARM executable with `--target armv7-unknown-linux-musleabihf`
+for the remote. A host binary cannot run on the remote.
+
+The manifest's `capabilities` must exactly match `DeviceClient::capabilities()`.
+Settings use `text`, `secret`, `integer`, or `boolean` fields; secret fields
+cannot have defaults. Configuration validates schema and typed settings without
+connecting to the device. The first command/status/input request connects;
+an offline receiver therefore cannot make package activation fail.
+
+The daemon sends credentials over the inherited socket, never argv or the
+environment. Reserve stdout entirely for framed protocol traffic. The SDK
+adapter owns one client per configured connection; never retry failed commands
+inside your transport. Tests exercise actual child processes, fake devices,
+malformed replies, protocol mismatches, partial-frame deadlines, queue overflow,
+stale requests, and restart on the next explicit request after child failure.
+The frame limit is 64 KiB, the endpoint queue holds eight requests, and queued
+requests expire after 750 ms. Startup and configuration each have a three-second
+deadline; device operations have a twelve-second absolute deadline.
+
+Version 1 covers fixed commands, status, and enumerated inputs. Advanced pairing
+flows, automatic discovery, apps, and unsolicited events require future protocol
+extensions or a built-in integration. Capability changes beyond the shared
+command vocabulary also require a core update. This is a network integration
+pilot; it does not expose privileged hardware access to plugins.
+
+### Composing native integration controls
+
+The optional `presentation` array selects from Couch's component library. The
+browser and remote panel render these declarations with their own controls and
+styling; packages supply no HTML, JavaScript, Slint, or arbitrary layouts. An
+omitted array remains compatible with the basic command list.
+
+| Component | Fields | Binding |
+| --- | --- | --- |
+| `command_group` | `title`, `commands` | One to 32 distinct declared capability IDs |
+| `status_text` | `label`, `field` | `on`, `playing`, `muted`, `volume`, `input`, or `title` |
+| `toggle` | `label`, `state`, `on`, `off` | Boolean status field plus two distinct declared commands |
+| `input_selector` | `label` | Enumerated inputs; requires `supports_inputs: true` |
+
+For example, a receiver can declare:
+
+```json
+"presentation": [
+  {"kind":"toggle", "label":"Power", "state":"on", "on":"power-on", "off":"power-off"},
+  {"kind":"command_group", "title":"Volume", "commands":["volume-up", "volume-down"]},
+  {"kind":"toggle", "label":"Mute", "state":"muted", "on":"mute-on", "off":"mute-off"},
+  {"kind":"input_selector", "label":"Source"}
+]
+```
+
+Declarations are limited to sixteen components with bounded plain-text labels.
+Undeclared commands, unsupported input selectors, and toggles bound to nonboolean
+state are rejected during package validation. `clients/couch-denon/plugin.json`
+and `clients/couch-echo/plugin.json` contain working examples. Use only state
+your device actually reports: Denon's decibel scale must not appear as a
+percentage volume reading.
 
 ## The architecture, in one screen
 

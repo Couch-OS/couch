@@ -14,6 +14,9 @@ impl Api {
         body: &[u8],
         revision: Option<u64>,
     ) -> Reply {
+        if let [id, "plugin", rest @ ..] = path {
+            return self.plugin_route(method, id, rest, body);
+        }
         if let [id, "androidtv", "apps"] = path {
             let id = Id::new(*id);
             if !self.with(|s| {
@@ -178,16 +181,53 @@ impl Api {
         }
         match (method, path) {
             ("POST", []) | ("PUT", [_]) => {
-                let input: Setup = match parse(body) {
+                let mut input: Setup = match parse(body) {
                     Ok(v) => v,
                     Err(r) => return r,
                 };
+                if let Provider::Plugin {
+                    id,
+                    label,
+                    capabilities,
+                    supports_inputs,
+                    presentation,
+                } = &mut input.provider
+                {
+                    match self.plugins.manifest(id) {
+                        Ok(manifest) => {
+                            *label = manifest.label;
+                            *capabilities = manifest
+                                .capabilities
+                                .into_iter()
+                                .map(|c| couch_model::PluginCapability {
+                                    id: c.id,
+                                    label: c.label,
+                                })
+                                .collect();
+                            *supports_inputs = manifest.supports_inputs;
+                            *presentation = manifest.presentation;
+                        }
+                        Err(_) => {
+                            return Reply::error(
+                                400,
+                                "Install this integration before adding or changing its connection",
+                            )
+                        }
+                    }
+                }
                 if method == "PUT" {
                     let id = Id::new(path[0]);
                     if !self.with(|s| {
-                        s.config()
-                            .connection(&id)
-                            .is_some_and(|c| c.provider.kind() == input.provider.kind())
+                        s.config().connection(&id).is_some_and(|c| {
+                            c.provider.kind() == input.provider.kind()
+                                && match (&c.provider, &input.provider) {
+                                    (
+                                        Provider::Plugin { id: a, .. },
+                                        Provider::Plugin { id: b, .. },
+                                    ) => a == b,
+                                    _ => true,
+                                }
+                        })
                     }) {
                         return Reply::error(
                             400,
@@ -248,7 +288,7 @@ impl Api {
     }
 }
 
-pub(super) fn lock_for(path: &std::path::Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+pub(crate) fn lock_for(path: &std::path::Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     use std::sync::{Arc, Mutex, OnceLock};
     static LOCKS: OnceLock<
         Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<Mutex<()>>>>,

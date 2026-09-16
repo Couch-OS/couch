@@ -1,6 +1,6 @@
 import { Theme } from "../theme.slint";
 import { MediaBack } from "../widgets/media-back.slint";
-export struct ActivityTile { label: string, detail: string, icon: image }
+export struct ActivityTile { label: string, detail: string, icon: image, enabled: bool }
 export component ActivityPages inherits Rectangle {
     in property <bool> shown;
     in property <string> title;
@@ -25,11 +25,11 @@ export component ActivityPages inherits Rectangle {
         background:root.selected==i ? Theme.surface-raised : Theme.surface;
         border-width:root.selected==i ? 3px : 1px;
         border-color:root.selected==i ? Theme.accent : Theme.border-raised;
-        opacity:root.busy ? 0.55 : 1;
+        opacity:root.busy || !tile.enabled ? 0.55 : 1;
         Image { source:tile.icon; x:18px; y:17px; width:30px; height:30px; colorize:Theme.accent; }
         Text { x:18px; y:58px; width:parent.width - 36px; height:52px; text:tile.label; color:Theme.text; font-size:22px; font-weight:600; wrap:word-wrap; overflow:elide; }
         Text { x:18px; y:116px; width:parent.width - 36px; height:22px; text:tile.detail; color:Theme.text-secondary; font-size:15px; overflow:elide; }
-        TouchArea { enabled:!root.busy; clicked=>{root.selected=i;root.action("command",i);} }
+        TouchArea { enabled:!root.busy && tile.enabled; clicked=>{root.selected=i;root.action("command",i);} }
     }
     if root.tiles.length==0: Text { x:32px; y:260px; width:parent.width - 64px; height:120px; text:"Add command buttons to this page in the web UI."; color:Theme.text-secondary; font-size:24px; wrap:word-wrap; horizontal-alignment:center; }
     Text { x:24px; y:654px; width:parent.width - 48px; height:48px; text:root.status; color:Theme.text-secondary; font-size:18px; wrap:word-wrap; overflow:elide; }
@@ -52,7 +52,7 @@ export component ActivityPages inherits Rectangle {
             if(e.text==Key.DownArrow){root.selected=min(max(0,root.tiles.length - 1),root.selected+2);}
             if(e.text==Key.LeftArrow){if(mod(root.selected,2)==0){root.action("page",-1);}else{root.selected -= 1;}}
             if(e.text==Key.RightArrow){if(mod(root.selected,2)==1 || root.selected+1>=root.tiles.length){root.action("page",1);}else{root.selected+=1;}}
-            if(e.text==Key.Return && !root.busy && root.tiles.length>0){root.action("command",root.selected);}
+            if(e.text==Key.Return && !root.busy && root.tiles.length>0 && root.tiles[root.selected].enabled){root.action("command",root.selected);}
             if(e.text==Key.Escape || e.text==Key.Home){root.action("back",0);}
             return accept;
         }

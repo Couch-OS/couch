@@ -20,7 +20,7 @@
 //! load in order to ask for the PIN, and the page on its own says nothing about
 //! anybody's house.
 
-mod connections;
+pub(crate) mod connections;
 mod coreelec;
 mod denon;
 mod device_ir;
@@ -29,6 +29,7 @@ mod hue;
 mod ir;
 mod kodi;
 mod matter;
+mod plugins;
 mod protect;
 mod remote;
 mod sonos;
@@ -61,6 +62,7 @@ pub struct Api {
     store: Mutex<Store>,
     assets: Assets,
     auth: Arc<Auth>,
+    plugins: crate::plugins::Runtime,
 }
 
 /// What a `POST` to a collection needs: everything else is defaulted and then
@@ -221,10 +223,16 @@ impl Reply {
 
 impl Api {
     pub fn new(store: Store, assets: Assets, auth: Arc<Auth>) -> Api {
+        let home = store
+            .path()
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
         Api {
             store: Mutex::new(store),
             assets,
             auth,
+            plugins: crate::plugins::Runtime::new(home),
         }
     }
 
@@ -347,6 +355,9 @@ impl Api {
         }
         if rest.first() == Some(&"connections") {
             return self.connection_route(&method, &rest[1..], &body, if_match);
+        }
+        if rest.first() == Some(&"integrations") {
+            return self.integration_route(&method, &rest[1..], &body);
         }
         if rest.first() == Some(&"webos") {
             return webos::route(&method, &rest[1..], &body);
@@ -1176,6 +1187,7 @@ impl Api {
     /// configuration, which is why the outcome is applied here and not where
     /// the window was opened (the remote's GUI has no write path to it).
     pub fn tick(&self) {
+        self.refresh_plugin_metadata();
         let Some(request) = couch_system::bluetooth::take_pending_bond() else {
             return;
         };
@@ -1255,6 +1267,7 @@ fn store_error(e: &store::Error) -> Reply {
             },
         ),
         store::Error::Stale { .. } => Reply::error(409, e.to_string()),
+        store::Error::Compatibility(_) => Reply::error(409, e.to_string()),
         store::Error::Parse(_) => Reply::error(400, e.to_string()),
         store::Error::Io(_) => Reply::error(500, e.to_string()),
     }

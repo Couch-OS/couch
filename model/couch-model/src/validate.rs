@@ -150,6 +150,48 @@ impl Config {
                     });
                 }
             }
+            if let crate::Provider::Plugin {
+                id,
+                label,
+                capabilities,
+                supports_inputs,
+                presentation,
+                ..
+            } = &c.provider
+            {
+                if !valid_plugin_id(id) || !valid_plugin_label(label) || capabilities.len() > 128 {
+                    problems.push(Problem {
+                        at: alloc::format!("connections[{i}].provider"),
+                        message: "External integration metadata is invalid".into(),
+                    });
+                }
+                let mut capability_ids = Vec::new();
+                for capability in capabilities {
+                    if crate::commands::Function::parse(&capability.id).is_none()
+                        || !valid_plugin_label(&capability.label)
+                        || capability.id.starts_with("input:")
+                        || capability.id.starts_with("app:")
+                        || capability_ids.contains(&&capability.id)
+                    {
+                        problems.push(Problem {
+                            at: alloc::format!("connections[{i}].provider.capabilities"),
+                            message: "External integration advertises an unsupported command"
+                                .into(),
+                        });
+                    }
+                    capability_ids.push(&capability.id);
+                }
+                if presentation.len() > 16
+                    || presentation.iter().any(|component| {
+                        !valid_plugin_component(component, capabilities, *supports_inputs)
+                    })
+                {
+                    problems.push(Problem {
+                        at: alloc::format!("connections[{i}].provider.presentation"),
+                        message: "External integration presentation is invalid".into(),
+                    });
+                }
+            }
             if c.provider == crate::Provider::Ir
                 && self.connections[..i]
                     .iter()
@@ -211,6 +253,7 @@ impl Config {
                             crate::Provider::HomeAssistant=>valid_ha_resource(resource_id, device.kind),
                             crate::Provider::Matter=>valid_matter_resource(resource_id),
                             crate::Provider::Hue=>{ let id=resource_id.strip_prefix("room:").unwrap_or(resource_id); id.len()==36 && id.bytes().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){b==b'-'}else{b.is_ascii_hexdigit()}) },
+                            crate::Provider::Plugin{..}=>resource_id.len()<=128 && resource_id.bytes().all(|b|b.is_ascii_alphanumeric()||b"._/-+".contains(&b)),
                             crate::Provider::Ir=>!resource_id.is_empty() && resource_id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'||b==b'-'),
                         };
                         if !valid {problems.push(Problem{at,message:"Choose a valid device from this connection".into()});}
@@ -377,6 +420,59 @@ impl Config {
             Ok(())
         } else {
             Err(ValidationError { problems })
+        }
+    }
+}
+
+fn valid_plugin_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+fn valid_plugin_label(label: &str) -> bool {
+    !label.is_empty() && label.len() <= 128 && !label.chars().any(char::is_control)
+}
+
+fn valid_plugin_component(
+    component: &crate::PluginComponent,
+    capabilities: &[crate::PluginCapability],
+    supports_inputs: bool,
+) -> bool {
+    let declared = |command: &str| {
+        capabilities
+            .iter()
+            .any(|capability| capability.id == command)
+    };
+    match component {
+        crate::PluginComponent::CommandGroup { title, commands } => {
+            let mut seen = Vec::new();
+            valid_plugin_label(title)
+                && !commands.is_empty()
+                && commands.len() <= 32
+                && commands.iter().all(|command| {
+                    let unique = !seen.contains(&command);
+                    seen.push(command);
+                    unique && declared(command)
+                })
+        }
+        crate::PluginComponent::StatusText { label, .. } => valid_plugin_label(label),
+        crate::PluginComponent::Toggle {
+            label,
+            state,
+            on,
+            off,
+        } => {
+            valid_plugin_label(label)
+                && state.is_boolean()
+                && on != off
+                && declared(on)
+                && declared(off)
+        }
+        crate::PluginComponent::InputSelector { label } => {
+            valid_plugin_label(label) && supports_inputs
         }
     }
 }

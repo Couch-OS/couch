@@ -5,6 +5,14 @@ Multiple Hue bridges, Home Assistant servers, Kodi players, LG TVs and Samsung T
 A device keeps its upstream resource ID and a separate connection ID. The same
 Home Assistant entity ID or Hue resource ID can appear on different servers.
 
+Installed integration packages appear in the same **Add a connection** picker.
+Creating one copies only its public manifest label, command capabilities,
+input-discovery flag and native presentation recipe into `config.json`. Its declarative settings form appears
+on the new connection's page. Text, integer, boolean and secret fields are
+rendered by Couch; packages cannot inject JavaScript or markup into the editor.
+Secret fields are blank after every load, say when a value is already saved,
+and must be explicitly selected for clearing.
+
 Infrared has one connection: the remote's built-in blaster. Each IR device in a
 room chooses its own codeset. No external IR transmitter is required. Actual IR
 sending/learning remains unavailable on the current kernel.
@@ -20,6 +28,9 @@ Private files are beside `config.json`, under `connections/<connection-id>/`:
 - `kodi-connection.json`: bound host, HTTP port, username/password, control mode.
 - `matter/`: the remote's own Matter fabric: CA and controller keys, node
   addresses and endpoint inventory. See [Matter devices](matter.md).
+- `plugin-connection.json`: one external integration's manifest-defined
+  settings. Secret values never appear in the settings response or house
+  configuration.
 
 Credentials are mode 0600 and absent from exported house configuration. The daemon
 copies former singleton files into their original named connection on startup,
@@ -33,6 +44,29 @@ Legacy provider-only routes reject ambiguous requests when several connections
 exist. Per-connection operation locks allow independent servers to operate at once.
 Hue state and SSE subscriptions are separate per bridge; UI cache keys include the
 connection ID. The upstream ID is stripped before sending any command.
+
+External integrations use `GET /api/integrations` for the installed manifest
+catalog and `/api/connections/<id>/plugin/{settings,status,inputs,action}` for
+one connection. The action body carries one typed function string already
+declared by the installed manifest. The physical-button, sequence and custom
+page pickers use the cached capability labels; selectable inputs are loaded
+from the package when requested. On the panel, commands travel over the
+owner-only `plugin.sock` beside `config.json` to the daemon's integration host.
+The GUI never starts a package process or reads its private settings.
+
+A package may compose its on-screen controls from Couch's curated native
+components: command groups, status text, boolean toggles and an input selector.
+The browser and physical remote render the same manifest recipe with their own
+built-in styling. Status and inputs come from the versioned protocol. Packages
+cannot ship executable UI code, arbitrary HTML, JavaScript or Slint.
+
+Removing or temporarily losing a package does not discard its connection,
+devices or mappings. The cached manifest fields keep the configuration valid
+and readable; settings and live controls remain disabled until a compatible
+package is installed again. Because the `Plugin` provider is a new enum variant
+that older cores cannot deserialize, the daemon refuses the first external
+connection until both the active and retained rollback core understand
+integration protocol 1. Package rollback is independent after that guard.
 
 ## Kodi credentials
 
@@ -54,3 +88,5 @@ privacy, rejected login preservation and legacy migration; model tests cover
 repeated server resource IDs and one blaster with multiple codesets.
 Browser/device fixture checks additionally cover two bridges, HA servers and TVs,
 custom authenticated Kodi playback/artwork, and creating multiple named connections.
+Integration tests cover manifest validation, private setting redaction, adapter
+dispatch and missing-package configuration round trips.

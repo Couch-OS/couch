@@ -248,17 +248,17 @@ fn manual(app: App, cfg: &Config, connection: Connection, room: Id) -> AnyView {
         return super::infrared::device_setup(app, room, None);
     }
     let television = matches!(
-        connection.provider,
+        &connection.provider,
         Provider::WebOs
             | Provider::AndroidTv
             | Provider::AppleTv
             | Provider::Tizen
             | Provider::BluetoothTv
-    );
+    ) || matches!(&connection.provider,Provider::Plugin{capabilities,..} if capabilities.iter().any(|capability|matches!(capability.id.as_str(),"up"|"down"|"left"|"right"|"ok"|"home")));
     let receiver = matches!(
-        connection.provider,
+        &connection.provider,
         Provider::Denon { .. } | Provider::Sonos { .. }
-    );
+    ) || matches!(&connection.provider,Provider::Plugin{capabilities,..} if !television && capabilities.iter().any(|capability|matches!(capability.id.as_str(),"volume-up"|"volume-down"|"mute")));
     let existing = assigned(cfg, &connection, "");
     let name = RwSignal::new(connection.name.clone());
     view!{<form on:submit=move |e|{e.prevent_default();let title=name.get_untracked().trim().to_string();if title.is_empty(){return}app.run(api::post(format!("/api/rooms/{room}/devices"),json!({"name":title,"kind":if television{"tv"}else if receiver{"speaker"}else{"media-player"},"integration":{"via":"connection","connection_id":connection.id,"resource_id":""}})));}>

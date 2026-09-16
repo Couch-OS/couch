@@ -382,10 +382,13 @@ dependencies = [
  "couch-denon",
  "couch-ha",
  "couch-hue",
+ "couch-integrations",
  "couch-ir",
  "couch-kodi",
  "couch-matter",
  "couch-model",
+ "couch-plugin",
+ "couch-sdk",
  "couch-sonos",
  "couch-system",
  "couch-tizen",
@@ -393,6 +396,7 @@ dependencies = [
  "couch-webos",
  "flate2",
  "if-addrs",
+ "libc",
  "log",
  "mdns-sd",
  "serde",
@@ -429,6 +433,7 @@ dependencies = [
 name = "couch-denon"
 version = "0.1.0"
 dependencies = [
+ "couch-plugin",
  "couch-sdk",
  "serde",
  "serde_json",
@@ -456,6 +461,19 @@ dependencies = [
  "serde_json",
  "ureq",
  "url",
+]
+
+[[package]]
+name = "couch-integrations"
+version = "0.1.0"
+dependencies = [
+ "couch-plugin",
+ "flate2",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
 ]
 
 [[package]]
@@ -492,6 +510,16 @@ name = "couch-model"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "couch-plugin"
+version = "0.1.0"
+dependencies = [
+ "couch-sdk",
+ "libc",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

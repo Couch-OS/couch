@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "protocol_version": 1,
+  "integrations": [
+    {
+      "id": "denon",
+      "manifest": "clients/couch-denon/plugin.json",
+      "crate": "clients/couch-denon",
+      "cargo_package": "couch-denon",
+      "binary": "couch-plugin-denon",
+      "tier": "preview",
+      "synthetic": false,
+      "limitations": [
+        "Read-only status and input enumeration passed on one physical receiver; full command validation and exact model/firmware evidence remain outstanding.",
+        "The client covers the receiver main zone only."
+      ],
+      "tests": {
+        "conformance": {"target": "admission", "case": "conformance"},
+        "failure": {"target": "admission", "case": "failure"},
+        "timeout_no_retry": {"target": "admission", "case": "timeout_no_retry"},
+        "spike": {"target": "admission", "case": "spike"}
+      },
+      "hardware_validation": {
+        "status": "not-tested",
+        "evidence": [],
+        "notes": "HA100 package-host trial passed read-only status and input enumeration against a configured physical receiver. The receiver model/firmware and command behavior are not certified, so complete hardware validation remains not-tested and the integration stays preview."
+      }
+    },
+    {
+      "id": "echo",
+      "manifest": "clients/couch-echo/plugin.json",
+      "crate": "clients/couch-echo",
+      "cargo_package": "couch-echo",
+      "binary": "couch-plugin-echo",
+      "tier": "test-only",
+      "synthetic": true,
+      "limitations": [
+        "Echo TV is a deliberately fictional device used only for SDK and host tests."
+      ],
+      "tests": {
+        "conformance": {"target": "admission", "case": "conformance"},
+        "failure": {"target": "admission", "case": "failure"},
+        "timeout_no_retry": {"target": "admission", "case": "timeout_no_retry"},
+        "spike": {"target": "admission", "case": "spike"}
+      },
+      "hardware_validation": {
+        "status": "not-applicable",
+        "evidence": [],
+        "notes": "There is no Echo TV hardware; all peers are local test fixtures."
+      }
+    }
+  ]
+}

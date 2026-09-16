@@ -95,6 +95,7 @@ pub fn connection_summary(integration: &Integration) -> String {
         Integration::AndroidTv => "Android / Google TV".into(),
         Integration::UnifiProtect { .. } => "UniFi Protect".into(),
         Integration::Matter { device } => format!("Matter · {device}"),
+        Integration::Plugin { id, .. } => format!("External · {id}"),
         Integration::AppleTv => "Apple TV".into(),
         Integration::Tizen => "Samsung Tizen TV".into(),
         Integration::BluetoothTv => "Bluetooth TV".into(),

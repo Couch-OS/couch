@@ -104,12 +104,7 @@ fn merge(config: &Config, device: &Device, names: &[String], dynamic: Rows) -> R
     let mut rows = integration
         .as_ref()
         .filter(|i| !matches!(i, Integration::Ir { .. }))
-        .map(|i| {
-            couch_model::buttons::functions(i)
-                .iter()
-                .map(|(id, label)| (id.to_string(), label.to_string()))
-                .collect::<Rows>()
-        })
+        .map(|i| couch_model::buttons::function_choices(i))
         .unwrap_or_default();
     for row in dynamic {
         if !rows.iter().any(|(id, _)| id == &row.0) {

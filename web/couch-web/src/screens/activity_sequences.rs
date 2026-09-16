@@ -67,11 +67,15 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
             _ => None,
         };
         let Some(connection) = connection else { return };
-        let prefix = match connection.provider {
+        let prefix = match &connection.provider {
             Provider::Denon { .. } => "denon",
             Provider::WebOs => "webos",
             Provider::AppleTv => "appletv",
             Provider::Tizen => "tizen",
+            Provider::Plugin {
+                supports_inputs: true,
+                ..
+            } => "plugin",
             _ => return,
         };
         status.set("Loading inputs and apps…".into());
@@ -101,6 +105,20 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
                         rows.extend(v.into_iter().map(|(id, label)| {
                             (format!("input:{id}"), format!("Input · {label}"))
                         }));
+                    }
+                } else if prefix == "plugin" {
+                    for item in value
+                        .as_array()
+                        .or_else(|| value["inputs"].as_array())
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(id) = item["id"].as_str() {
+                            rows.push((
+                                format!("input:{id}"),
+                                format!("Input · {}", item["name"].as_str().unwrap_or(id)),
+                            ));
+                        }
                     }
                 } else if let Some(items) = value["devices"].as_array() {
                     for item in items {
@@ -162,7 +180,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         view!{
             <ol class="activity-sequence-list">
                 {steps.into_iter().enumerate().map(move |(index,step)| {
-                    let label=match step {SequenceStep::Delay{ms}=>format!("Wait {:.1} seconds",ms as f64/1000.),SequenceStep::Command{action}=>{let c=cfg.get_value();let label=c.devices().find(|(_,d)|d.id==action.device).and_then(|(_,d)|c.resolve_integration(&d.integration)).and_then(|i|couch_model::buttons::functions(&i).iter().find(|f|f.0==action.command).map(|f|f.1.to_string())).or_else(||super::device_commands::value_label(&action.command)).unwrap_or(action.command);format!("{} · {label}",super::device_name(&c,&action.device))}};
+                    let label=match step {SequenceStep::Delay{ms}=>format!("Wait {:.1} seconds",ms as f64/1000.),SequenceStep::Command{action}=>{let c=cfg.get_value();let label=c.devices().find(|(_,d)|d.id==action.device).and_then(|(_,d)|c.resolve_integration(&d.integration)).and_then(|i|couch_model::buttons::function_choices(&i).into_iter().find(|f|f.0==action.command).map(|f|f.1)).or_else(||super::device_commands::value_label(&action.command)).unwrap_or(action.command);format!("{} · {label}",super::device_name(&c,&action.device))}};
                     let modify=move |operation:i32|{let mut a=base.get_value();let steps=if on{&mut a.setup.on}else{&mut a.setup.off};match operation{-1 if index>0=>steps.swap(index,index-1),1 if index+1<steps.len()=>steps.swap(index,index+1),0=>{steps.remove(index);},_=>return}save(a);};
                     view!{<li class="activity-sequence-step" draggable="true" on:dragstart=move |_|dragged.set(Some(index)) on:dragover=move |ev|ev.prevent_default() on:drop=move |ev|{
                         ev.prevent_default();if let Some(from)=dragged.get_untracked(){let mut a=base.get_value();let steps=if on{&mut a.setup.on}else{&mut a.setup.off};if from<steps.len()&&index<steps.len(){let step=steps.remove(from);steps.insert(index,step);save(a);}}dragged.set(None);
