@@ -102,6 +102,43 @@ impl Light {
         })
     }
 }
+/// One entity's contribution to a hub room row, for any domain a device can
+/// name. Separate from `Light` because the room rows want on/off from covers,
+/// climates and media players too, and none of those parse as a light.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Power {
+    pub entity_id: String,
+    /// None means unknown/unavailable, never an inferred off state.
+    pub on: Option<bool>,
+    /// Only ever a light's, and only while it is on.
+    pub brightness_percent: Option<u8>,
+}
+impl Power {
+    pub fn from_state(v: &Value) -> Option<Self> {
+        if let Some(light) = Light::from_state(v) {
+            return Some(Self {
+                entity_id: light.entity_id,
+                on: light.on,
+                brightness_percent: light.brightness_percent,
+            });
+        }
+        let id = v.get("entity_id")?.as_str()?;
+        let state = v.get("state")?.as_str()?;
+        let on = match state {
+            "unavailable" | "unknown" => None,
+            // A speaker is active while it plays, not while it is merely
+            // powered: an idle Sonos must not light its room up.
+            _ if id.starts_with("media_player.") => Some(matches!(state, "playing" | "buffering")),
+            "off" | "closed" | "idle" | "paused" | "standby" | "not_home" | "docked" => Some(false),
+            _ => Some(true),
+        };
+        Some(Self {
+            entity_id: id.into(),
+            on,
+            brightness_percent: None,
+        })
+    }
+}
 fn valid_light(id: &str) -> bool {
     id.strip_prefix("light.").is_some_and(|s| {
         !s.is_empty()
@@ -185,6 +222,23 @@ impl HomeAssistant {
             .collect();
         lights.sort_by(|a, b| a.name.cmp(&b.name).then(a.entity_id.cmp(&b.entity_id)));
         Ok(lights)
+    }
+    /// One `/api/states` read narrowed to the entities the caller names. The
+    /// hub polls a handful of rooms; a house can hold hundreds of entities,
+    /// and every domain but lights would be parsed for nothing.
+    pub fn power(&self, wanted: &std::collections::BTreeSet<String>) -> Result<Vec<Power>> {
+        let values = self.get("/api/states")?;
+        Ok(values
+            .as_array()
+            .ok_or(Error::Response)?
+            .iter()
+            .filter(|v| {
+                v["entity_id"]
+                    .as_str()
+                    .is_some_and(|id| wanted.contains(id))
+            })
+            .filter_map(Power::from_state)
+            .collect())
     }
     pub fn light(&self, id: &str) -> Result<Light> {
         if !valid_light(id) {
@@ -304,6 +358,53 @@ mod tests {
         assert!(lights.iter().any(|l| l.entity_id == "light.offline"
             && l.on.is_none()
             && l.brightness_percent.is_none()));
+        assert_eq!(s.join().unwrap()[0].1, "/api/states");
+    }
+    /// The hub's room rows read every domain a device can name, and ask for
+    /// only the entities a room actually references.
+    #[test]
+    fn power_reads_named_entities_of_any_domain_and_plays_only_when_playing() {
+        let (url, s) = server(vec![(
+            200,
+            json!([state("on",json!(["brightness"])),
+                {"entity_id":"media_player.sonos","state":"playing"},
+                {"entity_id":"media_player.other","state":"paused"},
+                {"entity_id":"cover.blind","state":"open"},
+                {"entity_id":"climate.hall","state":"off"},
+                {"entity_id":"switch.gone","state":"unavailable"},
+                {"entity_id":"light.unwanted","state":"on","attributes":{}}]),
+        )]);
+        let wanted = [
+            "light.test",
+            "media_player.sonos",
+            "media_player.other",
+            "cover.blind",
+            "climate.hall",
+            "switch.gone",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let power = HomeAssistant::new(&url, "test-secret")
+            .unwrap()
+            .power(&wanted)
+            .unwrap();
+        let find = |id: &str| power.iter().find(|p| p.entity_id == id).unwrap().clone();
+        assert_eq!(power.len(), 6);
+        assert_eq!(
+            find("light.test"),
+            Power {
+                entity_id: "light.test".into(),
+                on: Some(true),
+                brightness_percent: Some(50),
+            }
+        );
+        assert_eq!(find("media_player.sonos").on, Some(true));
+        assert_eq!(find("media_player.other").on, Some(false));
+        assert_eq!(find("cover.blind").on, Some(true));
+        assert_eq!(find("climate.hall").on, Some(false));
+        assert_eq!(find("switch.gone").on, None);
+        assert!(find("cover.blind").brightness_percent.is_none());
         assert_eq!(s.join().unwrap()[0].1, "/api/states");
     }
     #[test]

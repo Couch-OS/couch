@@ -2,11 +2,14 @@
 use crate::{api, ui, App};
 use couch_model::{Action, Activity, ActivityPage, ActivityWidget, Config, Id};
 use leptos::prelude::*;
+use std::sync::Arc;
 
 pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
     let ir_commands=super::device_commands::Commands::new(config);
     let base = StoredValue::new(activity.clone());
-    let cfg = StoredValue::new(config.clone());
+    // One snapshot, shared with every page's picker, instead of two copies of
+    // the document per page.
+    let house = Arc::new(config.clone());
     let save =
         move |next: Activity| app.run(api::put(format!("/api/activities/{}", next.id), next));
     let pages=activity.setup.pages.iter().enumerate().map(|(index,page)| {
@@ -15,7 +18,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         let items=page.widgets.iter().enumerate().map(|(widget_index,widget)| {
             let label=widget.label.clone();let action=widget.action.clone();
             let device=config.devices().find(|(_,d)|d.id==action.device).map(|(_,d)|d.name.clone()).unwrap_or_default();
-            let function=config.devices().find(|(_,d)|d.id==action.device).and_then(|(_,d)|config.resolve_integration(&d.integration)).and_then(|i|couch_model::buttons::functions(&i).iter().find(|f|f.0==action.command).map(|f|f.1.to_string())).unwrap_or(action.command);
+            let function=config.devices().find(|(_,d)|d.id==action.device).and_then(|(_,d)|config.resolve_integration(&d.integration)).and_then(|i|couch_model::buttons::functions(&i).iter().find(|f|f.0==action.command).map(|f|f.1.to_string())).or_else(||super::device_commands::value_label(&action.command)).unwrap_or(action.command);
             view!{<div class="custom-widget-editor">
                 <div class="custom-widget-heading"><strong>{format!("Button {}",widget_index+1)}</strong><span>{format!("{device} · {function}")}</span></div>
                 {ui::text_field("Button label",label,"Play / pause",move |label|{let mut a=base.get_value();a.setup.pages[index].widgets[widget_index].label=label;save(a);})}
@@ -27,7 +30,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
                 </div>
             </div>}
         }).collect_view();
-        let picker=add_widget(app,&cfg.get_value(),&base.get_value(),index,ir_commands);
+        let picker=add_widget(app,house.clone(),activity,index,ir_commands);
         view!{<section class="card custom-page-editor" aria-label=format!("Custom page {}",index+1)>
             <div class="custom-page-heading"><h3>{format!("Page {}",index+1)}</h3><div class="custom-page-actions">
                 <button class="ghost" aria-label=format!("Move page {} up",index+1) disabled={move ||app.busy.get()||index==0} on:click=move |_|{let mut a=base.get_value();a.setup.pages.swap(index,index-1);save(a);}>"↑"</button>
@@ -46,12 +49,12 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         <button class="ghost" disabled={move ||app.busy.get()||base.get_value().setup.pages.len()>=8} on:click=move |_|{let mut a=base.get_value();a.setup.pages.push(ActivityPage{title:format!("Page {}",a.setup.pages.len()+1),widgets:vec![]});save(a);}>"＋ Add page"</button>
     </section>}.into_any()
 }
-fn add_widget(app: App, config: &Config, activity: &Activity, page: usize, ir_commands:super::device_commands::Commands) -> AnyView {
+fn add_widget(app: App, house: Arc<Config>, activity: &Activity, page: usize, ir_commands:super::device_commands::Commands) -> AnyView {
     if activity.setup.pages[page].widgets.len() >= 6 {
         return view!{<p class="dim">"This page has 6 buttons. Add another page for more controls."</p>}.into_any();
     }
     let base = StoredValue::new(activity.clone());
-    let cfg = StoredValue::new(config.clone());
+    let cfg = StoredValue::new(house);
     let device = RwSignal::new(
         activity
             .setup
@@ -74,7 +77,7 @@ fn add_widget(app: App, config: &Config, activity: &Activity, page: usize, ir_co
     };
     view!{<div class="custom-add-widget"><h4>"Add a command button"</h4>
         <label class="field"><span class="label">"Device"</span><select aria-label=format!("Button device for page {}",page+1) prop:value=move ||device.get() on:change=move |ev|{device.set(event_target_value(&ev));command.set(String::new());}>
-            {config.devices().filter(|(_,d)|activity.setup.devices.contains(&d.id)).map(|(_,d)|view!{<option value=d.id.to_string()>{d.name.clone()}</option>}).collect_view()}
+            {cfg.get_value().devices().filter(|(_,d)|activity.setup.devices.contains(&d.id)).map(|(_,d)|view!{<option value=d.id.to_string()>{d.name.clone()}</option>}).collect_view()}
         </select></label>
         <label class="field"><span class="label">"Function"</span><select aria-label=format!("Button function for page {}",page+1) prop:value=move ||command.get() on:change=move |ev|command.set(event_target_value(&ev))><option value="">"Choose a function…"</option>{options}</select></label>
         <p class="dim" role="status">{move ||ir_commands.status()}</p>

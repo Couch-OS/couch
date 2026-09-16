@@ -14,6 +14,33 @@ struct Ssh {
     running: bool,
 }
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+struct Pairing {
+    #[serde(default)]
+    phase: String,
+    #[serde(default)]
+    detail: String,
+    /// The device the window was opened for, from its own section.
+    #[serde(default)]
+    device: Option<String>,
+}
+impl Pairing {
+    /// The daemon's window is open: the page polls and offers Send key.
+    fn in_window(&self) -> bool {
+        matches!(self.phase.as_str(), "pairing" | "connected" | "paired")
+    }
+    fn text(&self) -> String {
+        match self.phase.as_str() {
+            "pairing" => "Pairing mode: on the TV, open Bluetooth settings and choose Couch Remote. A TV already connected over Bluetooth is disconnected until the window ends.".into(),
+            "connected" => format!("Connected to {}…", self.detail),
+            "paired" => format!("Paired with {}. If the TV asks you to press a key, use Send key.", self.detail),
+            "done" => format!("Done: {} is paired.", self.detail),
+            "failed" if self.detail == "timeout" => "No TV paired (timed out).".into(),
+            "failed" => "Pairing cancelled.".into(),
+            _ => String::new(),
+        }
+    }
+}
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 struct Bluetooth {
     available: bool,
     enabled: bool,
@@ -22,6 +49,10 @@ struct Bluetooth {
     state: String,
     #[serde(default)]
     detail: String,
+    #[serde(default)]
+    pairing: Pairing,
+    #[serde(default)]
+    peer: Option<String>,
 }
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 struct Device {
@@ -61,6 +92,57 @@ pub fn sections(app: App) -> AnyView {
     let network = RwSignal::new(Network::default());
     let error = RwSignal::new(String::new());
     let power_note = RwSignal::new(String::new());
+    let bt_note = RwSignal::new(String::new());
+    // Re-read the device view: every second while a pairing window is open,
+    // so the status line follows the TV's steps, and every few seconds while
+    // Bluetooth is on, so the toggle settles and the link line stays true.
+    let refresh = move || {
+        spawn_local(async move {
+            if let Ok(v) = api::ha("GET", "/api/remote/device", None).await {
+                if let Ok(v) = serde_json::from_value::<Device>(v) {
+                    device.set(v);
+                }
+            }
+        })
+    };
+    let ticks = RwSignal::new(0u32);
+    let timer = leptos::prelude::set_interval_with_handle(
+        move || {
+            let b = device.get_untracked().bluetooth;
+            let n = ticks.get_untracked().wrapping_add(1);
+            ticks.set(n);
+            if b.pairing.in_window() || (b.enabled && n.is_multiple_of(5)) {
+                refresh();
+            }
+        },
+        std::time::Duration::from_secs(1),
+    )
+    .ok();
+    on_cleanup(move || {
+        if let Some(timer) = timer {
+            timer.clear();
+        }
+    });
+    let bluetooth = move |action: &'static str| {
+        bt_note.set(String::new());
+        spawn_local(async move {
+            match api::ha(
+                "POST",
+                "/api/remote/bluetooth",
+                Some(serde_json::json!({"action": action})),
+            )
+            .await
+            {
+                Ok(_) => refresh(),
+                Err(e) => {
+                    if e.unauthorized {
+                        app.paired.set(Some(false));
+                    }
+                    bt_note.set(e.message);
+                }
+            }
+        });
+    };
     spawn_local(async move {
         match api::ha("GET", "/api/remote/device", None).await {
             Ok(v) => {
@@ -158,9 +240,19 @@ pub fn sections(app: App) -> AnyView {
             <label><input type="checkbox" disabled=move || !device.get().ssh.available prop:checked=move || device.get().ssh.enabled on:change=move |e| { let mut d = device.get_untracked(); d.ssh.enabled = event_target_checked(&e); save(d); }/>"SSH access"</label>
             <p class="dim">{move || { let s = device.get().ssh; if !s.available { "Nothing enrolled".to_string() } else if s.running { "sshd is running".into() } else { "sshd is stopped".into() } }}</p>
         }.into_any())}
-        {ui::section("Bluetooth", Some("The remote advertises as \"Couch Remote\" while this is on; pair it from the TV's Bluetooth menu. Needs the current boot image; older kernels have no Bluetooth."), view! {
+        {ui::section("Bluetooth · experimental", Some("Pair each TV from its device in Rooms & devices, so the bond is stored on that device. Pair with TV here pairs a TV without attaching it to a device (useful before the device exists); Forget pairings drops every bond the remote holds, devices included. Needs the current boot image; older kernels have no Bluetooth."), view! {
+            <p class="notice">"Experimental. While a Bluetooth device is connected the remote's Wi-Fi can slow badly, so Home Assistant control, this page and update downloads may be slow or fail. Turning Bluetooth off restores them."</p>
             <label><input type="checkbox" disabled=move || { let b = device.get().bluetooth; !b.available || b.state == "starting" } prop:checked=move || device.get().bluetooth.enabled on:change=move |e| { let mut d = device.get_untracked(); d.bluetooth.enabled = event_target_checked(&e); save(d); }/>"Bluetooth"</label>
-            <p class="dim">{move || { let b = device.get().bluetooth; if !b.available { "No kernel support".to_string() } else if b.running { "On: advertising as Couch Remote".into() } else if b.state == "starting" { "Starting the Bluetooth stack…".into() } else if b.state == "error" { format!("Failed: {}", b.detail) } else { "Off".into() } }}</p>
+            <p class="dim">{move || { let b = device.get().bluetooth; if !b.available { "No kernel support".to_string() } else if b.running { match b.peer { Some(peer) => format!("On: connected to {peer}"), None => "On: no TV connected".into() } } else if b.state == "starting" { "Starting the Bluetooth stack…".into() } else if b.state == "error" { format!("Failed: {}", b.detail) } else { "Off".into() } }}</p>
+            <div class="power-actions">
+                <button type="button" disabled=move || { let b = device.get().bluetooth; !b.running || b.pairing.in_window() } on:click=move |_| bluetooth("pair")>"Pair with TV"</button>
+                {move || device.get().bluetooth.pairing.in_window().then(|| view! {
+                    <button type="button" on:click=move |_| bluetooth("enter")>"Send key"</button>
+                    <button type="button" on:click=move |_| bluetooth("stop")>"Cancel"</button>
+                })}
+                <button type="button" class="link" disabled=move || !device.get().bluetooth.running on:click=move |_| bluetooth("forget")>"Forget pairings"</button>
+            </div>
+            <p role="status">{move || { let p = device.get().bluetooth.pairing; let text = match &p.device { Some(d) if p.in_window() => format!("{} (for device {d})", p.text()), _ => p.text() }; if bt_note.get().is_empty() { text } else { bt_note.get() } }}</p>
         }.into_any())}
         {ui::section("Network", None, view! {
             <dl class="facts">

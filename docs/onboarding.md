@@ -18,8 +18,12 @@ again on its next boot.
 ## Outages and recovery
 
 Saved networks suppress first-boot onboarding even when association or DHCP
-fails. The station supplicant remains running, and the normal remote interface
-stays available. Use Settings → Wi-Fi → Change network to repair a connection.
+fails, and they suppress it from the first frame: the remote's UI now starts
+before the radio, so `/tmp/couch.network-pending` tells it the setup decision
+is still being made rather than letting it read an absent marker as "no saved
+networks" (see the boot order in [system service](system-service.md)). The
+station supplicant remains running, and the normal remote interface stays
+available. Use Settings → Wi-Fi → Change network to repair a connection.
 A transient outage never automatically exposes a hotspot.
 
 Settings → Wi-Fi → Recovery hotspot (also on the welcome screen) explicitly

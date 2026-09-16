@@ -74,6 +74,14 @@ impl Store {
                     }
                 }
                 store.migrate_connection_credentials()?;
+                // Older shapes the model can bring forward itself (a
+                // Bluetooth TV connection into a per-device bond): rewritten
+                // once, so every reader sees the current shape.
+                if store.config.migrate() {
+                    store.config.revision = store.config.revision.wrapping_add(1);
+                    store.config.validate().map_err(Error::Invalid)?;
+                    store.write()?;
+                }
                 Ok(store)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -87,7 +95,6 @@ impl Store {
 
     /// Bind former singleton credentials once, preserving originals and existing scoped pairings.
     fn migrate_connection_credentials(&mut self)->Result<(),Error> {
-        use std::os::unix::fs::OpenOptionsExt;
         let root=self.path.parent().unwrap_or(Path::new("."));
         let marker=root.join("connection-legacy-map.json");
         let mut mapped:std::collections::BTreeMap<String,String>=match fs::read(&marker) {
@@ -101,10 +108,7 @@ impl Store {
             for filename in [format!("{prefix}-connection.json"),format!("{prefix}-wake.json")] {
                 let source=root.join(&filename);let target=directory.join(&filename);
                 if source.is_file() && !target.exists() {
-                    let data=fs::read(source)?;
-                    let tmp=target.with_extension("migrate-new");
-                    let mut f=fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-                    std::io::Write::write_all(&mut f,&data)?;f.sync_all()?;fs::rename(tmp,target)?;
+                    let data=fs::read(source)?;write_private(&target,&data)?;
                 }
             }
             mapped.insert(kind.into(),c.id.to_string());
@@ -124,10 +128,7 @@ impl Store {
         if changed {self.config.revision=self.config.revision.wrapping_add(1);self.config.validate().map_err(Error::Invalid)?;self.write()?;}
         let data=serde_json::to_vec(&mapped).map_err(Error::Parse)?;
         if fs::read(&marker).ok().as_deref()!=Some(data.as_slice()) {
-            let tmp=marker.with_extension("new");
-            let mut f=fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-            std::io::Write::write_all(&mut f,&data)?;f.sync_all()?;fs::rename(tmp,marker)?;
-            fs::File::open(root)?.sync_all()?;
+            write_private(&marker,&data)?;
         }
         Ok(())
     }
@@ -161,6 +162,9 @@ impl Store {
         }
         let mut next = self.config.clone();
         let out = f(&mut next);
+        // An edit may carry the old shape (a whole-config PUT of an export,
+        // a device set to the old integration); it lands in the current one.
+        next.migrate();
         next.revision = self.config.revision.wrapping_add(1);
         next.validate().map_err(Error::Invalid)?;
 
@@ -209,6 +213,24 @@ impl Store {
         }
         Ok(())
     }
+}
+
+/// Write a credential file at 0600, atomically: a temp only this process can
+/// have named, removed again if any step fails. The migration used a fixed
+/// name with `create_new`, so one battery pull between the open and the rename
+/// left the temp on the rootfs and every later `Store::open` failed
+/// `AlreadyExists` - which `main` turns into `exit(1)`, so the web UI was gone
+/// until somebody got a shell. Same shape as `access::atomic` in couch-system.
+fn write_private(target:&Path,data:&[u8])->io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let temp=target.with_extension(format!("migrate-{}",std::process::id()));
+    let result=(||->io::Result<()> {
+        let mut file=fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+        file.write_all(data)?;file.sync_all()?;fs::rename(&temp,target)?;
+        fs::File::open(target.parent().unwrap_or_else(||Path::new(".")))?.sync_all()
+    })();
+    if result.is_err() {let _=fs::remove_file(&temp);}
+    result
 }
 
 #[cfg(test)]
@@ -283,6 +305,37 @@ mod tests {
     }
 
     #[test]
+    fn an_old_bluetooth_tv_connection_becomes_a_device_bond_on_open_and_on_edit() {
+        let path = scratch("bt-migrate");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, br#"{"schema_version":1,"revision":7,
+            "connections":[{"id":"bt","name":"Bluetooth TV","provider":{"kind":"bluetooth-tv"}}],
+            "rooms":[{"id":"r","name":"R","devices":[{"id":"tv","name":"Bedroom TV","kind":"tv","integration":{"via":"connection","connection_id":"bt"}}]}]}"#).unwrap();
+        let store = Store::open(&path).unwrap();
+        assert!(store.config().connections.is_empty());
+        let tv = &store.config().rooms[0].devices[0];
+        assert_eq!(tv.integration, couch_model::Integration::None);
+        assert_eq!(tv.bluetooth.as_ref().map(|b| b.name.as_str()), Some("Bedroom TV"));
+        assert_eq!(store.revision(), 8, "rewritten once, with a new revision");
+        // The file on disk is in the new shape: a second open changes nothing.
+        let again = Store::open(&path).unwrap();
+        assert_eq!(again.revision(), 8);
+        assert!(!fs::read_to_string(&path).unwrap().contains("bluetooth-tv"));
+        // An edit that brings the old shape back (a whole-config PUT of an
+        // export) lands in the new one too.
+        let mut store = again;
+        store
+            .mutate(None, |cfg| {
+                cfg.rooms[0].devices[0].integration = couch_model::Integration::BluetoothTv;
+            })
+            .unwrap();
+        assert_eq!(
+            store.config().rooms[0].devices[0].integration,
+            couch_model::Integration::None
+        );
+    }
+
+    #[test]
     fn writes_leave_no_temp_file_behind() {
         let path = scratch("atomic");
         let mut store = Store::open(&path).unwrap();
@@ -308,6 +361,22 @@ mod connection_migration_tests {
 #[cfg(test)]
 mod scoped_credentials_tests {
     use super::*;
+    #[test]
+    fn a_temp_left_by_an_interrupted_migration_does_not_block_startup() {
+        let dir=std::env::temp_dir().join(format!("couch-migration-leftover-{}",std::process::id()));
+        let _=fs::remove_dir_all(&dir);fs::create_dir_all(dir.join("connections/bridge")).unwrap();
+        let mut config=Config::default();
+        config.connections.push(couch_model::Connection{id:"bridge".into(),name:"Philips Hue".into(),provider:couch_model::Provider::Hue});
+        fs::write(dir.join("config.json"),serde_json::to_vec(&config).unwrap()).unwrap();
+        fs::write(dir.join("hue-connection.json"),b"private-pairing").unwrap();
+        // What a battery pull between the open and the rename used to leave.
+        fs::write(dir.join("connections/bridge/hue-connection.migrate-new"),b"half").unwrap();
+        fs::write(dir.join("connection-legacy-map.new"),b"half").unwrap();
+        Store::open(dir.join("config.json")).unwrap();
+        assert_eq!(fs::read(dir.join("connections/bridge/hue-connection.json")).unwrap(),b"private-pairing");
+        assert!(dir.join("connection-legacy-map.json").is_file());
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn legacy_pairing_is_copied_once_and_never_reassigned_to_second_tv() {
         use std::os::unix::fs::PermissionsExt;

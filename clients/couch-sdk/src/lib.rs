@@ -15,6 +15,9 @@
 //!   to do it, in `couch-model`'s existing [`Function`](couch_model::commands::Function)
 //!   vocabulary rather than a new one.
 //! - [`Status`] and [`Selectable`] - what it can report back.
+//! - `couch_sdk::tls` (feature `tls`) and `couch_sdk::wol` - the pinned
+//!   certificate verifier, the plain-or-TLS socket and the magic packet that
+//!   the LAN TV clients used to keep one copy of each.
 //! - `couch_sdk::testing` - a scripted TCP host and a conformance check, so
 //!   all of the above can be developed and proved with no hardware and no
 //!   credentials. It is behind the `testing` feature, so pass
@@ -83,11 +86,16 @@ pub mod settings;
 pub mod status;
 #[cfg(feature = "testing")]
 pub mod testing;
+#[cfg(feature = "tls")]
+pub mod tls;
+pub mod wol;
 
 pub use client::{catalog_differences, Capability, DeviceClient};
 pub use discovery::{Discover, Discovered};
 pub use error::{Error, Result};
-pub use settings::{connection_file, load_private, save_private, ClientSettings};
+pub use settings::{
+    connection_file, load_private, save_private, save_private_bytes, ClientSettings,
+};
 pub use status::{Selectable, Status};
 
 /// Re-exported so a client crate needs one dependency, not two, to speak the

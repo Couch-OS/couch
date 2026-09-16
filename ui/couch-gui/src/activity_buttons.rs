@@ -63,6 +63,10 @@ pub struct Controller {
     generation: Arc<AtomicU64>,
     tx: mpsc::SyncSender<Request>,
     rx: mpsc::Receiver<(u64, Feedback)>,
+    // A press the worker queue had no room for. The key is consumed either
+    // way, so without this the remote's primary input disappears in silence;
+    // poll turns it into the same toast every other dispatch path raises.
+    dropped: bool,
 }
 impl Controller {
     pub fn new() -> Self {
@@ -80,6 +84,7 @@ impl Controller {
             generation,
             tx,
             rx: out,
+            dropped: false,
         }
     }
     fn binding(&self, button: Button, gesture: Gesture) -> Option<&Binding> {
@@ -87,20 +92,22 @@ impl Controller {
             .iter()
             .find(|b| b.button == button && b.gesture == gesture)
     }
-    fn fire(&self, button: Button, gesture: Gesture, repeat: bool) -> bool {
+    fn fire(&mut self, button: Button, gesture: Gesture, repeat: bool) -> bool {
         let Some(binding) = self.binding(button, gesture) else {
             return false;
         };
-        if let Some(action) = &binding.action {
-            if !repeat || couch_model::buttons::repeatable(&action.command) {
-                let _ = self.tx.try_send(Request {
-                    generation: self.generation.load(Ordering::SeqCst),
-                    at: Instant::now(),
-                    config: self.config.clone(),
-                    action: action.clone(),
-                    repeat,
-                });
-            }
+        let Some(action) = binding.action.clone() else {
+            return true;
+        };
+        if !repeat || couch_model::buttons::repeatable(&action.command) {
+            let sent = self.tx.try_send(Request {
+                generation: self.generation.load(Ordering::SeqCst),
+                at: Instant::now(),
+                config: self.config.clone(),
+                action,
+                repeat,
+            });
+            self.dropped |= sent.is_err();
         }
         true
     }
@@ -202,12 +209,22 @@ impl Controller {
         for button in due {
             self.fire(button, Gesture::Long, false);
         }
+        self.feedback()
+    }
+    /// What the workers and `fire` left for the main loop. Separate from
+    /// `poll` because it needs no App, and so can be tested without a panel.
+    fn feedback(&mut self) -> Option<Feedback> {
         let generation = self.generation.load(Ordering::SeqCst);
-        self.rx
+        let latest = self
+            .rx
             .try_iter()
             .filter(|(g, _)| *g == generation)
             .map(|(_, e)| e)
-            .last()
+            .last();
+        if std::mem::take(&mut self.dropped) {
+            return Some(Feedback::Error("Still sending the last command".into()));
+        }
+        latest
     }
 }
 // An idle recv() would retain an AVR's scarce control socket forever after
@@ -277,6 +294,10 @@ fn connection_worker(
     let mut denon = HashMap::new();
     let mut tv = HashMap::new();
     let mut streaming = HashMap::new();
+    let mut sonos = HashMap::new();
+    // Not cleared with the other caches on a generation change: the fabrics are
+    // shared with the room list, which is still holding them open.
+    let matter = connections::matter();
     let mut generation = current.load(Ordering::SeqCst);
     loop {
         let request = rx.recv_timeout(Duration::from_millis(100));
@@ -285,6 +306,7 @@ fn connection_worker(
             denon.clear();
             tv.clear();
             streaming.clear();
+            sonos.clear();
             generation = now;
         }
         let r = match request {
@@ -301,6 +323,8 @@ fn connection_worker(
             &mut denon,
             &mut tv,
             &mut streaming,
+            &mut sonos,
+            &matter,
             r.repeat,
             &|| {
                 current.load(Ordering::SeqCst) == r.generation
@@ -320,24 +344,80 @@ fn connection_worker(
     }
 }
 
+/// Whether a failed Sonos command says anything about the session. A press
+/// abandoned at the deadline and a word that is not a Sonos command are both
+/// decided here rather than by the player, and dropping the cached client for
+/// either would throw the session away exactly when presses are being missed.
+fn session_is_suspect(error: &couch_sonos::Error) -> bool {
+    !matches!(
+        error,
+        couch_sonos::Error::Cancelled | couch_sonos::Error::Command
+    )
+}
+
 pub(crate) fn execute(
     config: &Config,
     action: &Action,
     denon: &mut HashMap<String, couch_control::Denon>,
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
+    sonos: &mut HashMap<String, couch_sonos::Client>,
+    matter: &connections::MatterFleet,
 ) -> Result<(), String> {
-    execute_with_input(config, action, denon, tv, streaming, false, &|| true).map(|_| ())
+    execute_with_input(
+        config,
+        action,
+        denon,
+        tv,
+        streaming,
+        sonos,
+        matter,
+        false,
+        &|| true,
+    )
+    .map(|_| ())
+}
+
+/// Why a transport did not take a key. `Unavailable` means it was not in a
+/// position to try (no IR code for that key, the device's TV not on the
+/// Bluetooth link, a network client that could not connect), so the next
+/// transport in the device's order gets the key; `Command` means it tried and
+/// failed, which ends the press: a failed IR write is never retried over the
+/// network, and a network command that was refused is not re-sent by IR.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Failure {
+    Unavailable(String),
+    Command(String),
+}
+impl From<String> for Failure {
+    fn from(e: String) -> Self {
+        Failure::Command(e)
+    }
+}
+impl From<&str> for Failure {
+    fn from(e: &str) -> Self {
+        Failure::Command(e.into())
+    }
+}
+fn unreachable(e: impl std::fmt::Display) -> Failure {
+    Failure::Unavailable(e.to_string())
 }
 
 /// Physical input preserves hold edges; other callers represent distinct presses.
 /// `current` is rechecked after loading a codeset and opening the blaster.
+///
+/// The key goes down the device's transport order (`Device::transport_order`:
+/// the preferred transport first) and stops at the first that takes it. Which
+/// transports a device has is configuration; whether one can take the key now
+/// is decided here, per press.
 pub(crate) fn execute_with_input(
     config: &Config,
     action: &Action,
     denon: &mut HashMap<String, couch_control::Denon>,
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
+    sonos: &mut HashMap<String, couch_sonos::Client>,
+    matter: &connections::MatterFleet,
     repeat: bool,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, String> {
@@ -350,58 +430,146 @@ pub(crate) fn execute_with_input(
         .map(|(_, d)| d)
         .ok_or("Mapped device was removed")?;
     let command = F::parse(&action.command).ok_or("Unsupported button function")?;
-    if try_device_ir(config, device.id.as_str(), &command, repeat, current)? {
-        return Ok(Outcome::default());
+    let order = device.transport_order(config);
+    if order.is_empty() {
+        return Err("Mapped connection was removed".into());
     }
+    if !order
+        .iter()
+        .any(|t| command.supports_transport(device, config, *t))
+    {
+        return Err("Unsupported button function".into());
+    }
+    let mut skipped: Option<String> = None;
+    for transport in order {
+        if !command.supports_transport(device, config, transport) {
+            continue;
+        }
+        let result = match transport {
+            couch_model::Transport::Ir => {
+                match try_device_ir(config, device.id.as_str(), &command, repeat, current) {
+                    Ok(true) => Ok(Outcome::default()),
+                    Ok(false) => Err(Failure::Unavailable(format!(
+                        "No IR code assigned to {}",
+                        command.id()
+                    ))),
+                    Err(e) => Err(Failure::Command(e)),
+                }
+            }
+            couch_model::Transport::Bluetooth => send_bluetooth(device, &command),
+            couch_model::Transport::Ip => send_network(
+                config, device, &command, denon, tv, streaming, sonos, matter, current,
+            ),
+        };
+        match result {
+            Ok(outcome) => return Ok(outcome),
+            Err(Failure::Unavailable(why)) => {
+                println!(
+                    "couch-gui: {} over {transport} unavailable for {}: {why}",
+                    command.id(),
+                    device.name
+                );
+                skipped = Some(why);
+            }
+            Err(Failure::Command(e)) => return Err(e),
+        }
+        if !current() {
+            return Ok(Outcome::default());
+        }
+    }
+    Err(skipped.unwrap_or_else(|| "Unsupported button function".into()))
+}
+
+/// The remote is the HID peripheral: one datagram with the function's id to
+/// the HID daemon, which turns it into a consumer-control report for the TV
+/// on the link. Only when that TV is this device's: a bond that is not the
+/// link right now (the TV is off, or another device holds the link) makes
+/// the transport unavailable rather than sending a key to the wrong TV. A
+/// migrated bond with no address takes whatever TV is on the link, as it
+/// always did; so does a daemon that reports the link without an address.
+fn send_bluetooth(device: &couch_model::Device, command: &F) -> Result<Outcome, Failure> {
+    let bond = device
+        .bluetooth
+        .as_ref()
+        .ok_or_else(|| Failure::Unavailable("No Bluetooth pairing".into()))?;
+    let link = crate::system::bluetooth_link();
+    let linked = link
+        .link
+        .as_ref()
+        .is_some_and(|l| !bond.addressed() || l.address.is_empty() || l.address == bond.address);
+    if !linked {
+        return Err(Failure::Unavailable(format!(
+            "{} is not connected over Bluetooth",
+            device.name
+        )));
+    }
+    crate::system::bluetooth_word(&command.id()).map_err(Failure::Command)?;
+    Ok(Outcome::default())
+}
+
+/// The device's network integration. A client that cannot connect makes the
+/// transport unavailable (the TV is asleep, the box is off) so a key can fall
+/// through to infrared or Bluetooth; a command the connected device refused
+/// is an error.
+#[allow(clippy::too_many_arguments)]
+fn send_network(
+    config: &Config,
+    device: &couch_model::Device,
+    command: &F,
+    denon: &mut HashMap<String, couch_control::Denon>,
+    tv: &mut HashMap<String, couch_control::WebOs>,
+    streaming: &mut HashMap<String, couch_control::StreamingTv>,
+    sonos: &mut HashMap<String, couch_sonos::Client>,
+    matter: &connections::MatterFleet,
+    current: &dyn Fn() -> bool,
+) -> Result<Outcome, Failure> {
+    let command = command.clone();
     // A volume or mute press on a device that can report its level gets the
     // level read back for the volume card; everything else reports nothing.
     let sound = matches!(
         command,
-        F::VolumeUp | F::VolumeDown | F::Mute | F::MuteOn | F::MuteOff
+        F::VolumeUp | F::VolumeDown | F::Volume(_) | F::Mute | F::MuteOn | F::MuteOff
     );
     let name = device.name.clone();
-    let integration = config
-        .resolve_integration(&device.integration)
-        .ok_or("Mapped connection was removed")?;
-    if !command.supports(&integration) {
-        return Err("Unsupported button function".into());
-    }
+    let integration = device
+        .network_integration(config)
+        .ok_or_else(|| Failure::Unavailable("This device has no network connection".into()))?;
     let connection = match &device.integration {
         Integration::Connection { connection_id, .. } => connection_id.as_str(),
         _ => "",
     };
     match integration {
+        // Connecting cost a TLS handshake and a GET /players/local/info before
+        // the press could even be sent, inside the same 750 ms deadline the
+        // receiver and the TVs beat by keeping their client. This one is kept
+        // per host the same way.
         Integration::Sonos { host } => {
-            let client = couch_sonos::Client::connect(
-                host.parse().map_err(|_| "Sonos requires an IPv4 address")?,
-            )
-            .map_err(|e| e.to_string())?;
-            client
-                .command_if_current(&command.id(), current)
-                .map_err(|e| e.to_string())?;
+            if !sonos.contains_key(&host) {
+                let address = host.parse().map_err(|_| "Sonos requires an IPv4 address")?;
+                sonos.insert(
+                    host.clone(),
+                    couch_sonos::Client::connect(address).map_err(unreachable)?,
+                );
+            }
+            let client = sonos.get(&host).expect("just inserted");
+            let result = match command {
+                // One absolute write: no preparatory read to go stale between.
+                F::Volume(percent) => client.set_volume(percent),
+                _ => client.command_if_current(&command.id(), current),
+            };
+            if result.as_ref().is_err_and(|e| session_is_suspect(e)) {
+                sonos.remove(&host);
+            }
+            result.map_err(|e| e.to_string())?;
             let volume = if sound {
-                client
-                    .volume_state()
-                    .ok()
+                sonos
+                    .get(&host)
+                    .and_then(|client| client.volume_state().ok())
                     .and_then(|(level, muted)| volume_reading(&name, Some(i64::from(level)), muted))
             } else {
                 None
             };
             Ok(Outcome { volume })
-        }
-        Integration::Ir { .. } => Err(format!("No IR code assigned to {}", command.id())),
-        // The remote is the HID peripheral: one datagram with the function's
-        // id to the HID daemon, which turns it into a consumer-control report
-        // for the TV paired to it. No connection state to keep here.
-        Integration::BluetoothTv => {
-            let socket = ["/tmp/couch-bt-hid.sock", "/mnt/alpine/tmp/couch-bt-hid.sock"]
-                .into_iter()
-                .find(|p| std::path::Path::new(p).exists())
-                .ok_or("Turn Bluetooth on in Settings first")?;
-            std::os::unix::net::UnixDatagram::unbound()
-                .and_then(|s| s.send_to(command.id().as_bytes(), socket))
-                .map_err(|_| "Bluetooth is not running; turn it on in Settings")?;
-            Ok(Outcome::default())
         }
         Integration::AndroidTv | Integration::AppleTv | Integration::Tizen => {
             let kind = match integration {
@@ -426,7 +594,7 @@ pub(crate) fn execute_with_input(
             {
                 streaming.insert(
                     key.clone(),
-                    couch_control::StreamingTv::connect(&settings).map_err(|e| e.to_string())?,
+                    couch_control::StreamingTv::connect(&settings).map_err(unreachable)?,
                 );
             }
             let result = streaming
@@ -437,7 +605,7 @@ pub(crate) fn execute_with_input(
             if result.is_err() {
                 streaming.remove(&key);
             }
-            result.map(|_| Outcome::default())
+            result.map(|_| Outcome::default()).map_err(Failure::Command)
         }
         Integration::Denon { host, port } => {
             let key = format!("{host}:{port}");
@@ -445,7 +613,7 @@ pub(crate) fn execute_with_input(
                 denon.insert(
                     key.clone(),
                     couch_control::Denon::connect(&couch_denon::Settings { host, port })
-                        .map_err(|e| e.to_string())?,
+                        .map_err(unreachable)?,
                 );
             }
             let c = denon.get_mut(&key).unwrap();
@@ -522,6 +690,7 @@ pub(crate) fn execute_with_input(
                 F::Mute => c
                     .call("Application.SetMute", json!({"mute":"toggle"}))
                     .map(|_| ()),
+                F::Volume(percent) => c.set_volume(i64::from(percent)).map(|_| ()),
                 _ => {
                     let p = c
                         .playback()
@@ -558,23 +727,28 @@ pub(crate) fn execute_with_input(
                             F::PowerOff => "power-off",
                             _ => "power",
                         })
-                        .map(|_| Outcome::default());
+                        .map(|_| Outcome::default())
+                        .map_err(Failure::Command);
                 }
                 if command == F::Toggle {
-                    return crate::tv::toggle_power(&settings, &path).map(|_| Outcome::default());
+                    return crate::tv::toggle_power(&settings, &path)
+                    .map(|_| Outcome::default())
+                    .map_err(Failure::Command);
                 }
             }
             if command == F::PowerOn {
                 let path = connections::file(connection, "webos");
                 let settings = couch_webos::Settings::load(&path).map_err(|e| e.to_string())?;
-                return crate::tv::wake_tv(&settings, &path).map(|_| Outcome::default());
+                return crate::tv::wake_tv(&settings, &path)
+                    .map(|_| Outcome::default())
+                    .map_err(Failure::Command);
             }
             if !tv.contains_key(connection) {
                 let settings = couch_webos::Settings::load(&connections::file(connection, "webos"))
                     .map_err(|e| e.to_string())?;
                 tv.insert(
                     connection.into(),
-                    couch_control::WebOs::connect(&settings).map_err(|e| e.to_string())?,
+                    couch_control::WebOs::connect(&settings).map_err(unreachable)?,
                 );
             }
             let result = crate::tv::mapped_command(tv.get_mut(connection).unwrap(), &command);
@@ -607,6 +781,12 @@ pub(crate) fn execute_with_input(
             let c = couch_hue::settings::Settings::load(&connections::file(id, "hue"))
                 .and_then(|s| s.client())
                 .map_err(|e| e.to_string())?;
+            if let F::Dim(percent) = command {
+                return c
+                    .command(raw, couch_hue::Command::Brightness(percent))
+                    .map(|_| Outcome::default())
+                    .map_err(|e| Failure::Command(e.to_string()));
+            }
             let on = match command {
                 F::On => true,
                 F::Off => false,
@@ -618,10 +798,49 @@ pub(crate) fn execute_with_input(
             };
             c.set_power(raw, on)
                 .map(|_| Outcome::default())
-                .map_err(|e| e.to_string())
+                .map_err(|e| Failure::Command(e.to_string()))
         }
         Integration::HomeAssistant { entity_id } => {
             let (c, raw) = connections::ha(&entity_id)?;
+            // One entity domain per device kind, each with its own service set.
+            let cover = match command {
+                F::Open => Some(couch_ha::CoverCommand::Open),
+                F::Close => Some(couch_ha::CoverCommand::Close),
+                F::Stop => Some(couch_ha::CoverCommand::Stop),
+                F::Position(percent) => Some(couch_ha::CoverCommand::Position(percent)),
+                _ => None,
+            };
+            if let Some(cover) = cover {
+                return c
+                    .cover_command(&raw, cover)
+                    .map(|_| Outcome::default())
+                    .map_err(|e| Failure::Command(e.to_string()));
+            }
+            // Stepping the target reads it first: the increment, the limits and
+            // whether the thermostat is in range mode are the entity's, not ours.
+            let climate = match command {
+                F::Mode(ref mode) => Some(couch_ha::ClimateCommand::HvacMode(mode.clone())),
+                F::TemperatureUp | F::TemperatureDown => Some(
+                    c.climate(&raw)
+                        .and_then(|state| {
+                            state.adjusted_target(if command == F::TemperatureUp { 1 } else { -1 }, None)
+                        })
+                        .map_err(|e| e.to_string())?,
+                ),
+                _ => None,
+            };
+            if let Some(climate) = climate {
+                return c
+                    .climate_command(&raw, climate)
+                    .map(|_| Outcome::default())
+                    .map_err(|e| Failure::Command(e.to_string()));
+            }
+            if let F::Dim(percent) = command {
+                return c
+                    .command(&raw, couch_ha::Command::Brightness(percent))
+                    .map(|_| Outcome::default())
+                    .map_err(|e| Failure::Command(e.to_string()));
+            }
             let on = match command {
                 F::On => true,
                 F::Off => false,
@@ -640,9 +859,21 @@ pub(crate) fn execute_with_input(
                 },
             )
             .map(|_| Outcome::default())
-            .map_err(|e| e.to_string())
+            .map_err(|e| Failure::Command(e.to_string()))
         }
-        _ => Err("This integration cannot send button commands yet".into()),
+        // The fleet is the one the room list and the shortcut keys use, so a
+        // mapped key reuses whatever CASE session those already opened.
+        Integration::Matter { device } => match command {
+            F::On => matter.power(&device, true),
+            F::Off => matter.power(&device, false),
+            F::Dim(percent) => matter.brightness(&device, percent),
+            _ => matter.toggle_or_on(&device),
+        }
+        .map(|_| Outcome::default())
+        .map_err(Failure::Command),
+        _ => Err(Failure::Command(
+            "This integration cannot send button commands yet".into(),
+        )),
     }
 }
 
@@ -921,6 +1152,26 @@ mod tests {
         assert!(rx.try_recv().unwrap().repeat);
     }
 
+    #[test]
+    fn a_press_dropped_by_a_full_queue_is_reported() {
+        let (mut c, rx) = fixture();
+        c.bindings = vec![Binding {
+            button: Button::VolumeUp,
+            gesture: Gesture::Short,
+            action: Some(Action::new("tv", "volume-up")),
+        }];
+        for _ in 0..8 {
+            assert!(c.handle_press(&press(115, false)));
+        }
+        assert!(c.feedback().is_none());
+        assert!(c.handle_press(&press(115, false)));
+        assert!(
+            matches!(c.feedback(), Some(Feedback::Error(m)) if m == "Still sending the last command")
+        );
+        assert!(c.feedback().is_none());
+        assert_eq!(rx.try_iter().count(), 8);
+    }
+
     fn fixture() -> (Controller, mpsc::Receiver<Request>) {
         let (tx, rx) = mpsc::sync_channel(8);
         let (_, out) = mpsc::channel();
@@ -934,6 +1185,7 @@ mod tests {
                 generation: Arc::new(AtomicU64::new(1)),
                 tx,
                 rx: out,
+                dropped: false,
             },
             rx,
         )
@@ -1013,6 +1265,134 @@ mod tests {
         p.repeat = false;
         c.handle_press(&p);
         assert_eq!(rx.try_recv().unwrap().action.command, "mute");
+    }
+
+    #[test]
+    fn matter_devices_dispatch_instead_of_reporting_an_unsupported_integration() {
+        let mut config = Config::default();
+        config.rooms.push(couch_model::Room {
+            id: "room".into(),
+            name: "Room".into(),
+            icon: None,
+            devices: vec![couch_model::Device::new(
+                "lamp".into(),
+                "Lamp",
+                couch_model::DeviceKind::Light,
+            )
+            .with_integration(Integration::Matter {
+                device: "fabric/1/1".into(),
+            })],
+        });
+        let matter = connections::MatterFleet::default();
+        for command in ["on", "off", "toggle", "dim:30"] {
+            let error = execute_with_input(
+                &config,
+                &Action::new("lamp", command),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &matter,
+                false,
+                &|| true,
+            )
+            .unwrap_err();
+            // No fabric on a test host, so the fleet refuses the connection.
+            // The point is that the dispatch reaches Matter at all.
+            assert_ne!(
+                error, "This integration cannot send button commands yet",
+                "{command}"
+            );
+            assert_eq!(error, "Matter connection was removed", "{command}");
+        }
+    }
+
+    #[test]
+    fn a_key_walks_the_transport_order_and_skips_a_bluetooth_tv_that_is_not_linked() {
+        let mut config = Config::default();
+        config.connections.push(couch_model::Connection {
+            id: "lg".into(),
+            name: "LG".into(),
+            provider: couch_model::Provider::WebOs,
+        });
+        let bond = couch_model::DeviceBluetooth {
+            address: "44:27:45:4E:33:25".into(),
+            name: "LG".into(),
+        };
+        config.rooms.push(couch_model::Room {
+            id: "room".into(),
+            name: "Room".into(),
+            icon: None,
+            devices: vec![
+                couch_model::Device {
+                    bluetooth: Some(bond.clone()),
+                    ..couch_model::Device::new("bt-only".into(), "Bedroom TV", couch_model::DeviceKind::Tv)
+                },
+                couch_model::Device {
+                    bluetooth: Some(bond),
+                    preferred_transport: Some(couch_model::Transport::Bluetooth),
+                    ..couch_model::Device::new("lg".into(), "LG TV", couch_model::DeviceKind::Tv)
+                        .with_integration(Integration::Connection {
+                            connection_id: "lg".into(),
+                            resource_id: String::new(),
+                        })
+                },
+            ],
+        });
+        let matter = connections::MatterFleet::default();
+        let run = |device: &str, command: &str| {
+            execute_with_input(
+                &config,
+                &Action::new(device, command),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &matter,
+                false,
+                &|| true,
+            )
+            .unwrap_err()
+        };
+        // No HID daemon on a test host, so the bond is never the link: a
+        // Bluetooth-only TV says so, and says nothing about other transports.
+        assert_eq!(run("bt-only", "volume-up"), "Bedroom TV is not connected over Bluetooth");
+        // Power-on is not a Bluetooth key at all, and the device has nothing else.
+        assert_eq!(run("bt-only", "power-on"), "Unsupported button function");
+        // The LG prefers Bluetooth; with its TV not on the link the key falls
+        // through to webOS, whose error (no credentials here) is what comes
+        // back, not the Bluetooth one.
+        let error = run("lg", "volume-up");
+        assert!(!error.contains("Bluetooth"), "{error}");
+        assert!(!error.is_empty());
+        assert_eq!(
+            Failure::from("x"),
+            Failure::Command("x".into()),
+            "a plain error ends the press"
+        );
+        assert!(matches!(unreachable("gone"), Failure::Unavailable(m) if m == "gone"));
+    }
+
+    #[test]
+    fn an_abandoned_sonos_press_keeps_the_session_and_a_silent_player_loses_it() {
+        use couch_sonos::Error as E;
+        // The deadline and an unknown word are decided here, not by the
+        // player; throwing the session away for those would reconnect on
+        // exactly the presses the cache exists to save.
+        assert!(!session_is_suspect(&E::Cancelled));
+        assert!(!session_is_suspect(&E::Command));
+        for error in [
+            E::Transport,
+            E::Response,
+            E::Unsupported,
+            E::Http(503),
+            E::Api("ERROR_PLAYER_NOT_FOUND".into()),
+            E::NotCoordinator {
+                coordinator: "Kitchen".into(),
+            },
+        ] {
+            assert!(session_is_suspect(&error), "{error}");
+        }
     }
 }
 

@@ -162,6 +162,17 @@ fn main() {
     couch_control::serve(&store.path().with_file_name("control.sock"))
         .expect("start private control socket");
     let api = Arc::new(Api::new(store, assets, auth));
+    // A Bluetooth pairing window opened for a device ends on the HID daemon's
+    // side; the bond it made is stored on the device from here, once a
+    // second, because nothing else that sees the daemon's state can write
+    // the configuration.
+    {
+        let api = api.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            api.tick();
+        });
+    }
     let mut workers = Vec::new();
     for _ in 1..WORKERS {
         let (server, api) = (server.clone(), api.clone());

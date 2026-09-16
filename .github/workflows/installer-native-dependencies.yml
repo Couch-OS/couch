@@ -10,6 +10,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: installer-native-dependencies-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   bootstrap:
     strategy:
@@ -23,6 +26,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Cache the dependency build: couch-installer-host pulls reqwest, rustls,
+      # ring and zip, and four workflows rebuilt all of it on every runner.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/installer/host
       - name: Check native dependency preparation
         working-directory: tools/installer/host
         run: |

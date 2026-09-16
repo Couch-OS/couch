@@ -17,8 +17,8 @@ import tarfile
 
 REPO = Path(__file__).resolve().parents[2]
 BINARIES = frozenset(('couch-gui', 'couch-confd', 'couch-system', 'couch-kodi', 'couch-webos', 'couch-tizen',
-    'couch-coreelec', 'couch-bt-bridge', 'couch-bt-hid', 'couch-sonos', 'couch-hue', 'couch-ha', 'couch-denon', 'couch-ir', 'couch-voice', 'fbcon'))
-LICENSE_FILES = frozenset(('Lato-OFL.txt', 'Inter-OFL.txt', 'Lucide-ISC.txt', 'IRDB-MIT.txt', 'IRDB-CC0.txt'))
+    'couch-coreelec', 'couch-bt-bridge', 'couch-bt-hid', 'couch-sonos', 'couch-hue', 'couch-ha', 'couch-denon', 'couch-ir', 'couch-voice', 'couch-bluetoothd', 'fbcon'))
+LICENSE_FILES = frozenset(('Lato-OFL.txt', 'Inter-OFL.txt', 'Lucide-ISC.txt', 'IRDB-MIT.txt', 'IRDB-CC0.txt', 'BlueZ-GPL-2.0.txt'))
 RECOVERY_CGI = frozenset(('save', 'setpw', 'scan', 'enroll'))
 GENERATED = {
     'opt/couch/config.json': b'{"schema_version":1}\n',

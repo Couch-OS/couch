@@ -6,15 +6,22 @@
 //! because for most providers creating the record is the first of two steps
 //! and the second (address, pairing, credentials) is only offered there.
 use crate::{api, route::Route, ui, App};
-use couch_model::{Config, Connection, Id, Provider};
+use couch_model::{Connection, Id, Integration, Provider};
 use leptos::prelude::*;
 use serde_json::{json, Value};
 
-pub fn screen(app: App, config: &Config) -> AnyView {
+pub fn screen(app: App) -> AnyView {
     let choice = RwSignal::new(String::new());
-    let existing: Vec<_> = config.connections.iter().filter(|c|c.provider!=Provider::Ir).cloned().collect();
-    let no_connections = existing.is_empty();
-    let usage: Vec<usize> = existing.iter().map(|c| assigned(config, &c.id).len()).collect();
+    // Infrared is not a connection anyone adds here; it is built into the
+    // remote and configured on each device.
+    let order = Memo::new(move |_| {
+        app.connections.with(|all| {
+            all.iter()
+                .filter(|c| c.provider != Provider::Ir)
+                .map(|c| c.id.clone())
+                .collect::<Vec<_>>()
+        })
+    });
     let available: Vec<_> = [
         ("kodi", "Kodi"),
         ("core-elec", "CoreELEC"),
@@ -25,7 +32,6 @@ pub fn screen(app: App, config: &Config) -> AnyView {
         ("android-tv", "Android / Google TV · experimental"),
         ("apple-tv", "Apple TV · experimental"),
         ("tizen", "Samsung Tizen TV · experimental"),
-        ("bluetooth-tv", "Bluetooth TV · pairs to the remote"),
         ("denon", "Denon AVR"),
         ("unifi-protect", "UniFi Protect"),
         ("matter", "Matter · experimental"),
@@ -33,24 +39,25 @@ pub fn screen(app: App, config: &Config) -> AnyView {
     .into_iter()
     .collect();
     view!{
-        {ui::page_header(app,"Connections".into(),None)}
+        {ui::page_header(app,"Connections",None)}
         <p class="lead">"Connections tell Couch how to reach your TVs, speakers, servers and bridges. Open one to change its address, pair it or test it. Add devices and assign their infrared commands in Rooms & devices."</p>
         <p class="notice">"Using infrared? Open a device in Rooms & devices and choose Add IR commands. No infrared connection is needed."</p>
-        <h2 class="section">"Saved connections" <span class="count">{ui_count(existing.len())}</span></h2>
-        {no_connections.then(||ui::empty("No connections yet. Add your first connection below."))}
-        <div class="destination-grid">{existing.into_iter().zip(usage).map(|(c,used)|card(app,c,used)).collect_view()}</div>
+        <h2 class="section">"Saved connections" <span class="count">{move ||ui_count(order.with(Vec::len))}</span></h2>
+        {move ||order.with(Vec::is_empty).then(||ui::empty("No connections yet. Add your first connection below."))}
+        <div class="destination-grid"><For each=move ||order.get() key=|id|id.clone() children=move |id|card(app,id)/></div>
         <section class="creation"><h2>"Add a connection"</h2>
         <label class="field">"Connection type"<select aria-label="Connection type" prop:value=move || choice.get() on:change=move |e|choice.set(event_target_value(&e))><option value="">"Choose a type"</option>{available.into_iter().map(|(kind,label)|view!{<option value=kind>{label}</option>}).collect_view()}</select></label>
-        {move || match choice.get().as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"matter"=>create_named(app,Provider::Matter),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"denon"=>denon_form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"hue"=>create_named(app,Provider::Hue),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),"tizen"=>create_named(app,Provider::Tizen),"bluetooth-tv"=>create_named(app,Provider::BluetoothTv),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}
+        {move || match choice.get().as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"matter"=>create_named(app,Provider::Matter),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"denon"=>denon_form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"hue"=>create_named(app,Provider::Hue),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),"tizen"=>create_named(app,Provider::Tizen),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}
         </section>
     }.into_any()
 }
 
-/// A Bluetooth TV has nothing to configure here: the remote is the peripheral
-/// and the TV does the pairing.
+/// A Bluetooth TV connection from before per-device pairing. The daemon
+/// migrates it away on its next start; until then the page says where the
+/// feature went.
 fn bluetooth_notes() -> AnyView {
     view!{
-        <p>"The remote itself is the Bluetooth device. Turn Bluetooth on under Remote, then open the TV's Bluetooth or remote-control settings and pair \"Couch Remote\". Add the TV to a room from this connection; its mapped buttons then go straight over Bluetooth."</p>
+        <p>"Bluetooth pairing now belongs to each device: open the device in Rooms & devices and use its Bluetooth section. This connection carries nothing and is removed automatically."</p>
         <p class="dim">"Keys are standard consumer-control usages (volume, navigation, playback, power toggle). Which ones a TV honours depends on its make."</p>
     }.into_any()
 }
@@ -60,12 +67,27 @@ fn ui_count(n: usize) -> String {
 }
 
 /// The devices that reach the house through this connection, with their rooms.
-fn assigned(config: &Config, id: &Id) -> Vec<(Id, String, String)> {
-    config
-        .devices()
-        .filter(|(_, d)| matches!(&d.integration, couch_model::Integration::Connection{connection_id,..} if connection_id==id))
-        .map(|(room, d)| (room.id.clone(), room.name.clone(), d.name.clone()))
-        .collect()
+///
+/// Read from the device and room slices rather than the document, so adding a
+/// device updates the list without the connection's page being rebuilt.
+fn assigned(app: App, id: StoredValue<Id>) -> Memo<Vec<(Id, String, String)>> {
+    Memo::new(move |_| {
+        app.devices.with(|all| {
+            all.iter()
+                .filter(|(_, d)| matches!(&d.integration, Integration::Connection{connection_id,..} if id.with_value(|id| connection_id==id)))
+                .map(|(room, d)| {
+                    let name = app.rooms.with(|rooms| {
+                        rooms
+                            .iter()
+                            .find(|r| &r.id == room)
+                            .map(|r| r.name.clone())
+                            .unwrap_or_default()
+                    });
+                    (room.clone(), name, d.name.clone())
+                })
+                .collect()
+        })
+    })
 }
 
 /// One line saying where a connection points, without any secret.
@@ -80,27 +102,45 @@ fn address(c: &Connection) -> String {
 }
 
 /// A saved connection in the list: what it is, what depends on it, and a way in.
-fn card(app: App, c: Connection, used: usize) -> AnyView {
-    let route = Route::Connection(c.id.clone());
-    let devices = super::counts(&[(used, "assigned device", "assigned devices")]);
+fn card(app: App, id: Id) -> AnyView {
+    let connection = app.connection(id.clone());
+    let used = assigned(app, StoredValue::new(id.clone()));
+    let route = Route::Connection(id);
     view! { <button class="destination" on:click=move |_| app.go(route.clone())>
-        <strong>{c.name.clone()}</strong>
-        <span>{format!("{} · {devices}", c.provider.label())}</span>
-        <span>{address(&c)}</span>
+        <strong>{move ||connection.get().map(|c|c.name)}</strong>
+        <span>{move ||connection.get().map(|c|format!("{} · {}", c.provider.label(), super::counts(&[(used.with(Vec::len), "assigned device", "assigned devices")])))}</span>
+        <span>{move ||connection.get().map(|c|address(&c))}</span>
         <span class="destination-action">"Open →"</span>
     </button> }.into_any()
 }
 
 /// One connection's own page: what it is, what uses it, its settings, and
 /// the way to remove it.
-pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
-    let Some(c) = config.connection(id).cloned() else {
-        return super::gone(app, "That connection has been removed.");
+pub fn detail(app: App, id: Id) -> AnyView {
+    let connection = app.connection(id.clone());
+    view! {
+        <Show
+            when=move || connection.with(Option::is_some)
+            fallback=move || super::gone(app, "That connection has been removed.")
+        >
+            {page(app, id.clone())}
+        </Show>
+    }
+    .into_any()
+}
+
+fn page(app: App, id: Id) -> AnyView {
+    let connection = app.connection(id.clone());
+    let key = StoredValue::new(id);
+    let used = assigned(app, key);
+    let Some(c) = connection.get_untracked() else {
+        return ().into_any();
     };
-    let used = assigned(config, id);
-    let usage = used.len();
+    // Built once, from the record as it stands. Every provider form seeds its
+    // own drafts from it and keeps them across a write, which is the point: a
+    // rejected save must not lose what was typed and a pairing under way must
+    // not be torn down. A connection never changes provider, so this is safe.
     let label = c.provider.label();
-    let delete_id = c.id.clone();
     let settings = match c.provider {
         Provider::Sonos { .. } => view!{{titled("Connection",super::sonos::form(app,Some(c.clone())))}{super::sonos::controls(app,c.id.to_string())}}.into_any(),
         Provider::CoreElec { .. } => view!{{titled("Connection",super::coreelec::form(app,Some(c.clone())))}{super::kodi::setup(app,&c)}{super::coreelec::setup(app,&c)}}.into_any(),
@@ -117,15 +157,15 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
         Provider::BluetoothTv => titled(label, bluetooth_notes()),
     };
     view!{
-        {ui::page_header(app, c.name.clone(), Some(Route::Connections))}
-        <p class="lead">{format!("{label} · {}", address(&c))}</p>
+        {ui::page_header(app, move ||connection.get().map(|c|c.name), Some(Route::Connections))}
+        <p class="lead">{move ||connection.get().map(|c|format!("{label} · {}", address(&c)))}</p>
 
         <div class="connection-settings">{settings}</div>
 
         <section class="card">
-            <h2>"Assigned devices" <span class="count">{super::counts(&[(usage, "device", "devices")])}</span></h2>
-            {(usage == 0).then(|| view!{<p class="dim">"No device uses this connection yet. Add one in Rooms & devices and choose From connection."</p>})}
-            <ul class="rows">{used.into_iter().map(|(room_id, room, device)| {
+            <h2>"Assigned devices" <span class="count">{move ||super::counts(&[(used.with(Vec::len), "device", "devices")])}</span></h2>
+            {move ||used.with(Vec::is_empty).then(|| view!{<p class="dim">"No device uses this connection yet. Add one in Rooms & devices and choose From connection."</p>})}
+            <ul class="rows">{move ||used.get().into_iter().map(|(room_id, room, device)| {
                 let route = Route::Room(room_id);
                 view!{<li class="row"><button class="row-main" on:click=move |_| app.go(route.clone())>
                     <span class="row-title">{device}</span><span class="row-sub">{room}</span>
@@ -136,7 +176,7 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
         <section class="card danger-zone">
             <h2>"Remove connection"</h2>
             <p class="dim">"Removing a connection requires removing its assigned devices first. Bridge credentials are retained for reconnecting."</p>
-            {ui::danger_button("Remove connection",move ||app.run_then(api::delete(format!("/api/connections/{delete_id}")), move |_| app.go(Route::Connections)))}
+            {ui::danger_button("Remove connection",move ||app.run_then(api::delete(format!("/api/connections/{}", key.get_value())), move |_| app.go(Route::Connections)))}
         </section>
     }.into_any()
 }

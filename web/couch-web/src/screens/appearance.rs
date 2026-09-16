@@ -1,10 +1,13 @@
 use crate::{api, App};
-use couch_model::{Appearance, Config};
+use couch_model::Appearance;
 use leptos::prelude::*;
 
-pub fn editor(app: App, config: &Config) -> AnyView {
-    let saved = config.appearance.accent.clone();
-    let draft = RwSignal::new(saved.clone());
+pub fn editor(app: App) -> AnyView {
+    // The draft is seeded once and kept across writes; Discard reads whatever
+    // is saved at the moment it is pressed rather than what this editor opened
+    // with, which is the same value until somebody else changes it.
+    let saved = move || app.appearance.with_untracked(|a| a.accent.clone());
+    let draft = RwSignal::new(saved());
     let error = RwSignal::new(String::new());
     let valid = move || {
         Appearance {
@@ -28,6 +31,6 @@ pub fn editor(app: App, config: &Config) -> AnyView {
         <p class="dim">"Use a bright color to keep focus outlines visible. Changes apply after saving and persist after reboot."</p>
         <p role="alert">{move ||error.get()}</p><div class="actions"><button class="primary" disabled=move ||app.busy.get() on:click=move |_|{
             let value=Appearance{accent:draft.get_untracked().trim().to_uppercase()};if value.rgb().is_none(){error.set("Use a color in #RRGGBB format".into());return}error.set(String::new());app.run(api::put("/api/appearance",value));
-        }>"Save appearance"</button><button class="ghost" on:click=move |_|{draft.set(saved.clone());error.set(String::new());}>"Discard color changes"</button></div>
+        }>"Save appearance"</button><button class="ghost" on:click=move |_|{draft.set(saved());error.set(String::new());}>"Discard color changes"</button></div>
     </section>}.into_any()
 }

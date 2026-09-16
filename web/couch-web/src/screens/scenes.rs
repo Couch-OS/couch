@@ -1,83 +1,90 @@
 //! Scene details opened from rooms or areas.
+//!
+//! Steps have no ids of their own, so the list is keyed by position. Editing a
+//! step's command leaves every key alone and only that row's memo changes;
+//! removing one shifts the rows below it, which is the one case here that
+//! still rebuilds anything.
 
-use couch_model::{Action, Config, Icon, Id, Scene};
+use couch_model::{Action, Id, Scene};
 use leptos::prelude::*;
 
 use crate::route::Route;
-use crate::screens::{device_name, device_select, gone};
+use crate::screens::{device_label, device_select, gone};
 use crate::{api, ui, App};
 
-pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
-    let Some(scene) = config.scene(id) else {
-        return gone(app, "That scene has been deleted.");
-    };
-    let id = id.clone();
+pub fn detail(app: App, id: Id) -> AnyView {
+    let scene = app.scene(id.clone());
+    view! {
+        <Show
+            when=move || scene.with(Option::is_some)
+            fallback=move || gone(app, "That scene has been deleted.")
+        >
+            {page(app, id.clone())}
+        </Show>
+    }
+    .into_any()
+}
 
-    let save = {
-        let id = id.clone();
-        move |next: Scene| app.run(api::put(format!("/api/scenes/{id}"), next))
-    };
-    let base = scene.clone();
-    let (for_name, for_icon, for_steps, for_add) =
-        (save.clone(), save.clone(), save.clone(), save.clone());
-    let (name_base, icon_base, steps_base, add_base) =
-        (base.clone(), base.clone(), base.clone(), base.clone());
-    let delete_id = id.clone();
-    let back = scene
-        .rooms
-        .first()
-        .cloned()
-        .map(Route::Room)
-        .unwrap_or(Route::Rooms);
-    let after_delete = back.clone();
+/// Nothing here may read a slice while it is being built - see [`super::rooms`].
+fn page(app: App, id: Id) -> AnyView {
+    let scene = app.scene(id.clone());
+    let key = StoredValue::new(id);
+    let save = move |next: Scene| app.run(api::put(format!("/api/scenes/{}", next.id), next));
+    // The scene as it is now, read on the click rather than captured: every
+    // handler here sends a whole scene back.
+    let base = move || scene.get_untracked();
+    let name = Memo::new(move |_| scene.with(|s| s.as_ref().map(|s| s.name.clone())));
+    let icon = RwSignal::new(scene.with_untracked(|s| s.as_ref().and_then(|s| s.icon)));
+    let steps =
+        Memo::new(move |_| scene.with(|s| s.as_ref().map(|s| s.steps.clone()).unwrap_or_default()));
+    // Positions, not steps: editing a command leaves the list alone and only
+    // that row's own memo changes.
+    let positions = Memo::new(move |_| (0..steps.with(Vec::len)).collect::<Vec<_>>());
+    // Back goes to the scene's first room, which assigning it to another room
+    // changes, so the header follows it.
+    let home = Memo::new(move |_| {
+        scene
+            .with(|s| s.as_ref().and_then(|s| s.rooms.first().cloned()))
+            .map(Route::Room)
+            .unwrap_or(Route::Rooms)
+    });
 
     view! {
-        {ui::page_header(app, scene.name.clone(), Some(back))}
+        {move || ui::page_header(app, name.get(), Some(home.get()))}
 
         <section class="card">
-            {ui::text_field("Name", scene.name.clone(), "Movie night", move |name| {
-                for_name(Scene { name, ..name_base.clone() })
+            {move || ui::text_field("Name", name.get().unwrap_or_default(), "Movie night", move |name| {
+                if let Some(scene) = base() { save(Scene { name, ..scene }) }
             })}
-            {ui::icon_select(scene.icon, move |icon: Option<Icon>| {
-                for_icon(Scene { icon, ..icon_base.clone() })
+            {ui::icon_select_signal(icon, move |icon| {
+                if let Some(scene) = base() { save(Scene { icon, ..scene }) }
             })}
         </section>
 
-        {room_assignment(app,config,scene)}
-        {scene.hue.as_ref().map(|_|view!{<section class="card"><h2>"Hue scene"</h2><p>"This recalls the scene saved on your bridge. Edit its lighting in the Hue app."</p></section>})}
-        <div hidden=scene.hue.is_some()>
+        {room_assignment(app, scene)}
+        {move || scene.get().and_then(|s|s.hue).map(|_|view!{<section class="card"><h2>"Hue scene"</h2><p>"This recalls the scene saved on your bridge. Edit its lighting in the Hue app."</p></section>})}
+        <div hidden=move || scene.get().is_some_and(|s| s.hue.is_some())>
         {ui::section(
             "Device commands",
             Some("Add commands in the order they should run. For example, turn on the TV, then select its input. Command names depend on the integration; saving does not test or send them."),
             view! {
-        {scene.steps.is_empty().then(|| {
-            ui::empty("This scene does nothing yet. Add a step below.")
-        })}
+        {move || steps.with(Vec::is_empty).then(|| ui::empty("This scene does nothing yet. Add a step below."))}
         <ul class="rows">
-            {scene.steps
-                .iter()
-                .enumerate()
-                .map(|(index, step)| {
-                    let commit = for_steps.clone();
-                    let base = steps_base.clone();
-                    step_row(config, step, move |next| {
-                        let mut scene = base.clone();
-                        match next {
-                            Some(action) => scene.steps[index] = action,
-                            None => {
-                                scene.steps.remove(index);
-                            }
-                        }
-                        commit(scene);
-                    })
-                })
-                .collect_view()}
+            <For each=move ||positions.get() key=|index| *index
+                children=move |index| step_row(app, steps, index, move |next| {
+                    let Some(mut scene) = base() else { return };
+                    match next {
+                        Some(action) => scene.steps[index] = action,
+                        None => { scene.steps.remove(index); }
+                    }
+                    save(scene);
+                })/>
         </ul>
 
-        {add_step(config, move |action| {
-            let mut scene = add_base.clone();
+        {add_step(app, move |action| {
+            let Some(mut scene) = base() else { return };
             scene.steps.push(action);
-            for_add(scene);
+            save(scene);
         })}
             }
             .into_any(),
@@ -86,8 +93,8 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
         <div class="pad"><button class="ghost" on:click=move |_| app.go(Route::Areas)>"Add this scene to an area →"</button></div>
         <div class="pad">
             {ui::danger_button("Delete this scene", move || {
-                app.go(after_delete.clone());
-                app.run(api::delete(format!("/api/scenes/{delete_id}")));
+                app.go(home.get_untracked());
+                app.run(api::delete(format!("/api/scenes/{}", key.get_value())));
             })}
         </div>
     }
@@ -96,30 +103,35 @@ pub fn detail(app: App, config: &Config, id: &Id) -> AnyView {
 
 /// One step. `commit(None)` removes it.
 fn step_row(
-    config: &Config,
-    step: &Action,
-    commit: impl Fn(Option<Action>) + Clone + 'static,
+    app: App,
+    steps: Memo<Vec<Action>>,
+    index: usize,
+    commit: impl Fn(Option<Action>) + Clone + Send + Sync + 'static,
 ) -> AnyView {
-    let label = device_name(config, &step.device);
+    let step = Memo::new(move |_| steps.with(|steps| steps.get(index).cloned()));
     let (for_command, for_delete) = (commit.clone(), commit);
-    let base = step.clone();
 
     view! {
         <li class="row step">
-            <span class="row-title">{label}</span>
-            <input
-                class="command"
-                aria-label="Device command"
-                type="text"
-                value=step.command.clone()
-                placeholder="on"
-                on:change=move |ev| {
-                    let command = event_target_value(&ev).trim().to_string();
-                    if !command.is_empty() && command != base.command {
-                        for_command(Some(Action { command, ..base.clone() }));
+            <span class="row-title">{move || step.get().map(|step| device_label(app, &step.device))}</span>
+            {move || step.get().map(|base| view! {
+                <input
+                    class="command"
+                    aria-label="Device command"
+                    type="text"
+                    value=base.command.clone()
+                    placeholder="on"
+                    on:change={
+                        let for_command = for_command.clone();
+                        move |ev| {
+                            let command = event_target_value(&ev).trim().to_string();
+                            if !command.is_empty() && command != base.command {
+                                for_command(Some(Action { command, ..base.clone() }));
+                            }
+                        }
                     }
-                }
-            />
+                />
+            })}
             <button class="ghost" on:click=move |_| for_delete(None)>"Remove"</button>
         </li>
     }
@@ -128,27 +140,39 @@ fn step_row(
 
 /// Picking a device is what adds the step; the command starts at "on" and is
 /// edited in place, which is one interaction rather than a form.
-fn add_step(config: &Config, commit: impl Fn(Action) + 'static) -> AnyView {
-    if config.devices().next().is_none() {
-        return ui::empty("Add a device to a room before building a scene.");
-    }
+fn add_step(app: App, commit: impl Fn(Action) + Clone + Send + Sync + 'static) -> AnyView {
     view! {
-        <div class="add-row">
-            <span class="label">"Add a step"</span>
-            {device_select(config, None, true, false, move |picked| {
-                if let Some(device) = picked {
-                    commit(Action::new(device, "on"));
-                }
-            })}
+        {move || {
+            if app.devices.with(Vec::is_empty) {
+                return ui::empty("Add a device to a room before building a scene.");
+            }
+            // Tracked so a device added or renamed elsewhere shows up here; the
+            // document itself is only read for the room grouping.
+            app.rooms.track();
+            let commit = commit.clone();
+            view! {
+                <div class="add-row">
+                    <span class="label">"Add a step"</span>
+                    {device_select(&app.house(), None, true, false, move |picked| {
+                        if let Some(device) = picked {
+                            commit(Action::new(device, "on"));
+                        }
+                    })}
 
-        </div>
+                </div>
+            }
+            .into_any()
+        }}
     }
     .into_any()
 }
 
-fn room_assignment(app: App, config: &Config, scene: &Scene) -> AnyView {
-    let scene = scene.clone();
+fn room_assignment(app: App, scene: Memo<Option<Scene>>) -> AnyView {
+    let order = super::ids(app.rooms, |r| &r.id);
     view!{<section class="card"><h2>"Show in rooms"</h2><p>"Selected rooms get this scene in their bottom Scenes button. Home screen scene selection stays in Areas."</p>
-        {config.rooms.iter().map(|r|{let id=r.id.clone();let name=r.name.clone();let base=scene.clone();let checked=scene.rooms.contains(&id);view!{<label class="room-assignment"><input type="checkbox" checked=checked on:change=move |e|{let mut next=base.clone();if event_target_checked(&e){if !next.rooms.contains(&id){next.rooms.push(id.clone());}}else{next.rooms.retain(|r|r!=&id);}app.run(api::put(format!("/api/scenes/{}",next.id),next));}/>{name}</label>}}).collect_view()}
+        <For each=move ||order.get() key=|id|id.clone() children=move |id|{
+            let room=app.room(id.clone());let checked=id.clone();
+            view!{<label class="room-assignment"><input type="checkbox" prop:checked=move ||scene.get().is_some_and(|s|s.rooms.contains(&checked)) on:change=move |e|{let Some(mut next)=scene.get_untracked() else{return};if event_target_checked(&e){if !next.rooms.contains(&id){next.rooms.push(id.clone());}}else{next.rooms.retain(|r|r!=&id);}app.run(api::put(format!("/api/scenes/{}",next.id),next));}/>{move ||room.get().map(|r|r.name)}</label>}
+        }/>
     </section>}.into_any()
 }

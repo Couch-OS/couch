@@ -53,7 +53,7 @@ try{
   const rejected=await fetch(`${base}/api/connections/${connectionId}/ha/connection`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:ha,token:'wrong'})});assert.equal(rejected.status,502);assert.equal(await readFile(saved,'utf8'),before);
   await page.getByRole('navigation').getByRole('button',{name:'Rooms & devices',exact:true}).click();await page.getByRole('button',{name:/^Test room/}).click();
   await page.getByRole('button',{name:'Add to this room',exact:true}).click();await page.locator('.device').getByRole('heading',{name:'Test light',exact:true}).waitFor();
-  await page.getByRole('button',{name:'Show light controls',exact:true}).click();
+  await page.getByRole('button',{name:'Show device controls',exact:true}).click();
   await page.getByRole('button',{name:'Turn off',exact:true}).click();await page.getByText('Off',{exact:true}).waitFor();
   await page.getByLabel('Brightness (%)',{exact:true}).fill('37');await page.getByRole('button',{name:'Apply brightness'}).click();await page.getByText('On · 37%',{exact:true}).waitFor();
   assert(commands.some(([url,body])=>url.endsWith('turn_off')));assert(commands.some(([,body])=>body.brightness_pct===37));

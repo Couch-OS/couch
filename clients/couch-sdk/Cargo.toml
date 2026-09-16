@@ -17,6 +17,12 @@ description = "The contract a Couch integration client implements: settings, cap
 # JSON in a private per-connection file, and the atomic 0600 write that makes
 # that safe is currently copied into five clients by hand.
 #
+# rustls only behind the `tls` feature, and it is the exception that proves the
+# rule: five clients pin a device certificate with the same verifier, so the
+# verifier belongs here, but ring is C and assembly and a client that speaks no
+# TLS (couch-ir, couch-kodi, couch-echo) must keep cross-compiling with no C
+# toolchain at all. Off by default, so it only appears where it is asked for.
+#
 # Nothing here opens a socket on a client's behalf: transports stay in the
 # client crate, which is what keeps couch-ir's libc-only and couch-kodi's
 # dependency-free builds possible.
@@ -24,9 +30,12 @@ description = "The contract a Couch integration client implements: settings, cap
 couch-model = { path = "../../model/couch-model" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 
 [features]
 # Off by default: `testing` links a TCP fake host and a conformance harness that
 # a shipped client binary has no reason to contain. Enable it in dev-dependencies.
 default = []
 testing = []
+# The pinned-certificate verifier and the plain-or-TLS socket. See above.
+tls = ["dep:rustls"]

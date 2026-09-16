@@ -292,12 +292,89 @@ pub fn activate(root: &Path, device: &Path) -> Result<()> {
         &serde_json::to_vec_pretty(&serde_json::json!({
             "schema": 1,
             "version": m.version,
+            "kernel": kernel_commit(&m.notes).unwrap_or_default(),
             "zimage_sha256": files[ZIMAGE].sha256,
             "ramdisk_sha256": files[RAMDISK].sha256,
         }))
         .unwrap(),
     )?;
     fs::remove_file(root.join("boot/staged")).map_err(|_| "Could not finalize activation")?;
+    Ok(())
+}
+/// The kernel commit the publisher wrote into the payload's notes ("Couch boot
+/// image VERSION: kernel COMMIT and boot ramdisk"). The manifest has no field
+/// for it and its bytes are signed, so the notes are where it travels.
+fn kernel_commit(notes: &str) -> Option<&str> {
+    notes
+        .split_once(" kernel ")
+        .map(|(_, rest)| rest.split_whitespace().next().unwrap_or_default())
+        .filter(|commit| commit.len() >= 7 && commit.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+/// What the update status says about the boot partition: the version this
+/// updater last wrote, the kernel commit its notes named, and whether a saved
+/// previous image is there to go back to. Nothing read here is trusted for a
+/// write; `restore` verifies the image itself.
+pub(crate) fn record(root: &Path) -> (String, String, bool) {
+    let installed = fs::read(root.join("boot/installed.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or_default();
+    let field = |key: &str| installed[key].as_str().unwrap_or_default().to_owned();
+    (
+        field("version"),
+        field("kernel"),
+        root.join("boot/previous.json").is_file() && root.join("boot/previous.img").is_file(),
+    )
+}
+/// Write the saved previous boot image back to the partition, verified against
+/// its own record and read back from the medium the way an install is. The
+/// caller restarts on Ok.
+///
+/// The saved image is consumed: once it is back on the partition the image it
+/// replaced is not installed any more, so keeping a 16 MiB file offering to
+/// write the kernel that was just undone would be worse than keeping nothing.
+/// The next check offers that boot payload again, as the partition no longer
+/// carries it.
+pub fn restore(root: &Path, device: &Path) -> Result<()> {
+    let boot = root.join("boot");
+    let record: serde_json::Value = serde_json::from_slice(
+        &fs::read(boot.join("previous.json")).map_err(|_| "No previous boot image is saved")?,
+    )
+    .map_err(|_| "The saved boot image record is unreadable")?;
+    let saved =
+        fs::read(boot.join("previous.img")).map_err(|_| "No previous boot image is saved")?;
+    if saved.len() != PARTITION {
+        return Err("The saved boot image is not the size of the boot partition".into());
+    }
+    let parsed = parse(&saved)?;
+    let (zimage, _) = split(parsed.kernel)?;
+    let (zimage_sha256, ramdisk_sha256) =
+        (release::digest(zimage), release::digest(parsed.ramdisk));
+    if record["replaced_zimage_sha256"].as_str() != Some(zimage_sha256.as_str())
+        || record["replaced_ramdisk_sha256"].as_str() != Some(ramdisk_sha256.as_str())
+    {
+        return Err("The saved boot image does not match its record".into());
+    }
+    if read_partition(device)? != saved {
+        write_partition(device, &saved)?;
+    }
+    staging::atomic(
+        &boot.join("installed.json"),
+        &serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": 1,
+            // The saved image predates any boot payload this updater wrote.
+            "version": "",
+            "kernel": "",
+            "zimage_sha256": zimage_sha256,
+            "ramdisk_sha256": ramdisk_sha256,
+            "restored_from": record["written_version"],
+        }))
+        .unwrap(),
+    )?;
+    // Image first: a crash between the two leaves a record with no image, which
+    // `restore` refuses, rather than a record promising an image that is gone.
+    let _ = fs::remove_file(boot.join("previous.img"));
+    let _ = fs::remove_file(boot.join("previous.json"));
     Ok(())
 }
 fn write_partition(device: &Path, image: &[u8]) -> Result<()> {
@@ -573,6 +650,60 @@ pub(crate) mod tests {
         .unwrap();
         assert!(crate::activate_with(&root, &device).is_err());
         let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn rollback_writes_the_saved_image_back_and_refuses_one_that_does_not_verify() {
+        let root = root("rollback");
+        let device = root.join("mmcblk0p8");
+        let (old_z, old_r) = (zimage(1, 5000), ramdisk(2, 3000));
+        let original = image(&old_z, &old_r);
+        fs::write(&device, &original).unwrap();
+        // Nothing has been written, so there is nothing to go back to.
+        assert!(restore(&root, &device).is_err());
+        assert_eq!(record(&root), (String::new(), String::new(), false));
+        let (new_z, new_r) = (zimage(3, 7000), ramdisk(4, 100));
+        let mut m = manifest(&new_z, &new_r);
+        m.notes = "Couch boot image v1.2.3: kernel ea122a39f434 and boot ramdisk".into();
+        stage_fixture(&root, &m, &new_z, &new_r);
+        activate(&root, &device).unwrap();
+        assert_eq!(
+            record(&root),
+            ("v1.2.3".into(), "ea122a39f434".into(), true)
+        );
+        let saved = root.join("boot/previous.json");
+        let kept: serde_json::Value = serde_json::from_slice(&fs::read(&saved).unwrap()).unwrap();
+        let mut wrong = kept.clone();
+        wrong["replaced_zimage_sha256"] = serde_json::json!("f".repeat(64));
+        fs::write(&saved, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        let written = fs::read(&device).unwrap();
+        assert!(restore(&root, &device).is_err());
+        assert_eq!(fs::read(&device).unwrap(), written);
+        fs::write(&saved, serde_json::to_vec(&kept).unwrap()).unwrap();
+        restore(&root, &device).unwrap();
+        assert_eq!(fs::read(&device).unwrap(), original);
+        assert!(installed(&device, &manifest(&old_z, &old_r)).unwrap());
+        assert!(!root.join("boot/previous.img").exists());
+        assert!(!saved.exists());
+        assert_eq!(record(&root), (String::new(), String::new(), false));
+        let now: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("boot/installed.json")).unwrap()).unwrap();
+        assert_eq!(now["restored_from"], "v1.2.3");
+        assert_eq!(now["zimage_sha256"], release::digest(&old_z));
+        // The save is consumed: a second rollback has nothing to put back.
+        assert!(restore(&root, &device).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn only_a_commit_shaped_token_is_read_out_of_the_payload_notes() {
+        assert_eq!(
+            kernel_commit("Couch boot image v1.2.3: kernel ea122a39f434 and boot ramdisk"),
+            Some("ea122a39f434")
+        );
+        assert_eq!(
+            kernel_commit("Couch boot image v1.2.3: kernel and boot"),
+            None
+        );
+        assert_eq!(kernel_commit("Couch apps and services v1.2.3"), None);
     }
     #[test]
     fn activation_refuses_a_tampered_slot_and_a_partition_that_is_not_a_boot_image() {

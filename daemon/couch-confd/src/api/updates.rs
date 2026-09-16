@@ -26,6 +26,9 @@ pub(super) fn route(method: &str, path: &[&str], body: &[u8]) -> Reply {
             }
         }
         ("POST", ["restart"]) if value["confirm"] == true => Request::UpdateRestart,
+        // Writing a partition back is as consequential as writing it: same
+        // explicit confirmation as the install it undoes.
+        ("POST", ["boot-rollback"]) if value["confirm"] == true => Request::BootRollback,
         ("PUT", ["settings"]) => {
             let channel = match serde_json::from_value(value["channel"].clone()) {
                 Ok(v) => v,
@@ -60,7 +63,9 @@ mod tests {
             br#"{"confirm":false}"#,
             br#"{"confirm":"true"}"#,
         ] {
-            assert_eq!(route("POST", &["restart"], body).status, 400);
+            for path in ["restart", "boot-rollback"] {
+                assert_eq!(route("POST", &[path], body).status, 400);
+            }
         }
     }
 

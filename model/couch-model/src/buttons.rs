@@ -90,6 +90,18 @@ impl Button {
         })
     }
 }
+const POWER: &[(&str, &str)] = &[("on", "On"), ("off", "Off"), ("toggle", "Toggle on / off")];
+/// The entity's domain: saved devices carry `<connection_id>/<entity_id>`, and
+/// `validate::valid_ha_resource` has already tied each domain to one DeviceKind.
+pub(crate) fn ha_domain(entity_id: &str) -> &str {
+    entity_id
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .next()
+        .unwrap_or("")
+}
 /// Deliberately finite: never accept arbitrary RPC or shell commands in mappings.
 pub fn functions(integration: &Integration) -> &'static [(&'static str, &'static str)] {
     match integration {
@@ -291,10 +303,29 @@ pub fn functions(integration: &Integration) -> &'static [(&'static str, &'static
             ("rewind", "Rewind"),
             ("fast-forward", "Fast forward"),
         ],
-        Integration::HomeAssistant { entity_id } if !entity_id.rsplit('/').next().unwrap_or("").starts_with("light.") => &[],
-        Integration::Hue { .. } | Integration::HomeAssistant { .. } | Integration::Matter { .. } => {
-            &[("on", "On"), ("off", "Off"), ("toggle", "Toggle on / off")]
-        }
+        // Per entity domain, not per integration: couch-ha drives lights, covers
+        // and climates through three separate service sets, and validation has
+        // already tied each domain to one DeviceKind. `position:<n>` and
+        // `dim:<n>` are not here because a level needs a number from the picker.
+        Integration::HomeAssistant { entity_id } => match ha_domain(entity_id) {
+            "light" => POWER,
+            "cover" => &[("open", "Open"), ("close", "Close"), ("stop", "Stop")],
+            // set_hvac_mode and one step of the thermostat's own increment;
+            // an entity that lacks a mode rejects it rather than guessing.
+            "climate" => &[
+                ("mode:off", "Off"),
+                ("mode:heat", "Heat"),
+                ("mode:cool", "Cool"),
+                ("mode:heat_cool", "Heat / cool"),
+                ("mode:auto", "Auto"),
+                ("mode:dry", "Dry"),
+                ("mode:fan_only", "Fan only"),
+                ("temperature-up", "Warmer"),
+                ("temperature-down", "Cooler"),
+            ],
+            _ => &[],
+        },
+        Integration::Hue { .. } | Integration::Matter { .. } => POWER,
         _ => &[],
     }
 }
@@ -305,11 +336,25 @@ mod tests {
     use super::*;
     use alloc::{vec, vec::Vec};
     #[test]
-    fn ha_environment_entities_do_not_advertise_light_commands() {
-        for entity_id in ["cover.office", "climate.office", "ha-one/cover.office", "ha-two/climate.office"] {
-            assert!(functions(&Integration::HomeAssistant { entity_id: entity_id.into() }).is_empty());
+    fn ha_entities_advertise_their_own_domain_and_nothing_else() {
+        let ids = |entity_id: &str| -> Vec<&str> {
+            functions(&Integration::HomeAssistant { entity_id: entity_id.into() }).iter().map(|f| f.0).collect()
+        };
+        for entity_id in ["light.office", "ha-one/light.office"] {
+            assert_eq!(ids(entity_id), ["on", "off", "toggle"], "{entity_id}");
         }
-        assert!(!functions(&Integration::HomeAssistant { entity_id: "ha-one/light.office".into() }).is_empty());
+        for entity_id in ["cover.office", "ha-one/cover.office"] {
+            assert_eq!(ids(entity_id), ["open", "close", "stop"], "{entity_id}");
+        }
+        for entity_id in ["climate.office", "ha-two/climate.office"] {
+            let offered = ids(entity_id);
+            assert!(offered.contains(&"mode:heat") && offered.contains(&"temperature-up"), "{entity_id}");
+            assert!(!offered.contains(&"on") && !offered.contains(&"open"), "{entity_id}");
+        }
+        // An unknown domain never inherits another domain's keys.
+        for entity_id in ["switch.office", "ha-one/sensor.office", "nonsense"] {
+            assert!(ids(entity_id).is_empty(), "{entity_id}");
+        }
     }
     #[test]
     fn old_activities_keep_defaults_and_new_bindings_validate() {

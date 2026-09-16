@@ -9,15 +9,14 @@
 pub mod discovery;
 pub mod rest;
 pub mod settings;
-mod tls;
 use base64::Engine;
+use couch_sdk::tls::{self, Socket};
 use serde_json::{json, Value};
 pub use settings::Settings;
 use std::{
     collections::VecDeque,
     fmt,
-    io::{Read, Write},
-    net::{IpAddr, SocketAddr, TcpStream, UdpSocket},
+    net::{IpAddr, SocketAddr, TcpStream},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -198,44 +197,6 @@ pub struct App {
     /// launched as a deep link, which is what the reference client defaults to.
     pub app_type: u64,
 }
-enum Socket {
-    Plain(TcpStream),
-    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
-}
-impl Socket {
-    fn timeout(&self, t: Duration) -> Result<()> {
-        let s = match self {
-            Self::Plain(s) => s,
-            Self::Tls(s) => &s.sock,
-        };
-        s.set_read_timeout(Some(t.max(Duration::from_millis(1))))
-            .map_err(|_| Error::Transport)?;
-        s.set_write_timeout(Some(t.max(Duration::from_millis(1))))
-            .map_err(|_| Error::Transport)
-    }
-}
-impl Read for Socket {
-    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Plain(s) => s.read(b),
-            Self::Tls(s) => s.read(b),
-        }
-    }
-}
-impl Write for Socket {
-    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Plain(s) => s.write(b),
-            Self::Tls(s) => s.write(b),
-        }
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Plain(s) => s.flush(),
-            Self::Tls(s) => s.flush(),
-        }
-    }
-}
 /// A base URL: `ws://IP:8001/` or `wss://IP:8002/`, nothing else.
 pub(crate) fn endpoint(raw: &str) -> Result<(Url, IpAddr, u16)> {
     let u = Url::parse(raw).map_err(|_| Error::Configuration)?;
@@ -292,6 +253,8 @@ fn channel_url(base: &str, token: Option<&str>) -> Result<String> {
     }
     Ok(channel)
 }
+/// Reported by the pinned verifier and shown to the user, so it names the TV.
+const CERTIFICATE_CHANGED: &str = "Samsung TV certificate changed; pair again";
 fn connect_socket(
     base: &str,
     token: Option<&str>,
@@ -307,14 +270,8 @@ fn connect_socket(
     tcp.set_write_timeout(Some(timeout))
         .map_err(|_| Error::Transport)?;
     let socket = if url.scheme() == "wss" {
-        let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|_| Error::Transport)?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(tls::Pin { certificate: pin }))
-        .with_no_client_auth();
+        let cfg = tls::pinned_client_config(Arc::new(tls::Pin::new(pin, CERTIFICATE_CHANGED)))
+            .map_err(|_| Error::Transport)?;
         let name = rustls::pki_types::ServerName::IpAddress(host.into());
         let conn =
             rustls::ClientConnection::new(Arc::new(cfg), name).map_err(|_| Error::Transport)?;
@@ -407,7 +364,10 @@ impl Client {
         })
     }
     fn write(&mut self, value: Value) -> Result<()> {
-        self.socket.get_ref().timeout(self.timeout)?;
+        self.socket
+            .get_ref()
+            .timeout(self.timeout)
+            .map_err(|_| Error::Transport)?;
         self.socket
             .send(Message::Text(value.to_string().into()))
             .map_err(|_| Error::Transport)
@@ -417,7 +377,10 @@ impl Client {
             let left = until
                 .checked_duration_since(Instant::now())
                 .ok_or(Error::Timeout)?;
-            self.socket.get_ref().timeout(left)?;
+            self.socket
+                .get_ref()
+                .timeout(left)
+                .map_err(|_| Error::Transport)?;
             match self.socket.read() {
                 Ok(Message::Text(text)) => {
                     return serde_json::from_str(&text).map_err(|_| Error::Protocol)
@@ -611,31 +574,13 @@ fn valid_id(id: &str) -> Result<()> {
     }
 }
 pub fn magic_packet(mac: &str) -> Result<[u8; 102]> {
-    let compact = mac.replace([':', '-'], "");
-    if compact.len() != 12 || !compact.is_ascii() {
-        return Err(Error::Configuration);
-    }
-    let mut address = [0; 6];
-    for (i, b) in address.iter_mut().enumerate() {
-        *b =
-            u8::from_str_radix(&compact[i * 2..i * 2 + 2], 16).map_err(|_| Error::Configuration)?;
-    }
-    let mut packet = [0xff; 102];
-    for i in 0..16 {
-        packet[6 + i * 6..12 + i * 6].copy_from_slice(&address);
-    }
-    Ok(packet)
+    couch_sdk::wol::magic_packet(mac).ok_or(Error::Configuration)
 }
 /// A TV in standby answers nothing on the remote channel. Waking needs the
 /// MAC the TV reported while paired and its network-standby setting enabled.
 /// Sending the packet proves nothing about the TV; check its REST state after.
 pub fn wake(mac: &str, broadcast: std::net::Ipv4Addr) -> Result<()> {
-    let packet = magic_packet(mac)?;
-    let sock = UdpSocket::bind("0.0.0.0:0").map_err(|_| Error::Transport)?;
-    sock.set_broadcast(true).map_err(|_| Error::Transport)?;
-    sock.send_to(&packet, (broadcast, 9))
-        .map_err(|_| Error::Transport)?;
-    Ok(())
+    couch_sdk::wol::wake(&magic_packet(mac)?, broadcast).map_err(|_| Error::Transport)
 }
 /// Wake the paired TV: limited broadcast plus a directed packet to its last
 /// address, which reaches it while the router still has its ARP entry.

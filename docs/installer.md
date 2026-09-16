@@ -2,7 +2,7 @@
 
 The integrated native installer prepares the host dependencies, enrolls the
 remote over USB, and uses authenticated Wi-Fi for backups and OS transfer.
-Release `v0.1.0-alpha.20260913.148` is published as a prerelease. Its
+Release `v0.1.0-alpha.20260913.165` is published as a prerelease. Its
 launchers passed download, checksum and safe-Cancel tests on Linux, macOS and
 Windows. Complete installations have run on hardware from Linux, from macOS
 with the elevated USB worker (2026-09-13), and from Windows with the serial-port
@@ -96,13 +96,13 @@ Linux x64 and macOS, from an interactive terminal:
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.148/install.sh | sh
+  https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.165/install.sh | sh
 ```
 
 Windows x64, from PowerShell:
 
 ```powershell
-Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.148/install.ps1' | Invoke-Expression
+Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260913.165/install.ps1' | Invoke-Expression
 ```
 
 The release launcher verifies the native host, terminal and release configuration
@@ -145,6 +145,69 @@ Installation writes a compact filesystem image and grows it on the remote; it
 does not transfer a full partition of unused zeros. An interrupted operation
 retains its originals and journal. Do not automatically retry an ambiguous write.
 Follow the saved restore instructions and [device recovery guide](device-recovery.md).
+
+## What version a fresh install runs
+
+The installer writes a **full OS image**, and that image carries its own bundled
+Couch software - currently the **.24** release, no matter which release the
+install command came from. (The exact tag is in
+[runtime updates](runtime-updates.md#compatibility-floor); it is deliberately
+not spelled out here, because every dated tag in this file is an install command
+a release bump rewrites.) So immediately after installing, the web UI and
+**Settings → Updates** report .24.
+
+That is expected. The version on the remote is the version of the software in
+the image that was written; it is not the version of the installer that wrote
+it. The two are decoupled on purpose: the OS image changes only when the Alpine
+package set or the stable boot scripts change, while application releases are
+cut continuously and the remote installs them itself.
+
+**Finish the install by updating.** Open the paired web UI, or hold Menu on the
+home screen for **Settings → Updates**, set the channel to **Alpha**, **Check
+for updates**, then **Download & verify** and **Install & restart**. The remote
+comes back on the current release, and only then does its reported version match
+the releases page.
+
+### Known task: rebuild the installer OS image
+
+A fresh install should start current rather than weeks behind. The same stale
+image is also what pins the [compatibility
+floor](runtime-updates.md#compatibility-floor): .24's updater is the oldest in
+the field, so no release may contain a file name it does not know. Rebuilding
+the OS image with a current runtime fixes both. Not done yet - it is a full OS
+build (`tools/release/prepare_rootfs.py` and the package closure), not a release
+cut, and it needs its own physical install acceptance.
+
+## Troubleshooting
+
+### The web UI reports an older version than the installer I used
+
+Expected; see [what version a fresh install runs](#what-version-a-fresh-install-runs).
+The remote boots the software bundled in the OS image (.24) and updates itself
+from **Settings → Updates**. Check for updates there; nothing is wrong.
+
+### Checking for updates fails, or says the build cannot be installed
+
+An update is checked and refused on its signed manifest, before anything is
+downloaded, and a check only ever offers the single newest release on the
+channel - it does not fall back to an older one. So a newest release the remote
+cannot accept leaves it stuck rather than one version behind.
+
+That happened: the `.160.dev`, `.163.dev` and `.164.dev` prereleases were
+published carrying `couch-bt-bridge`, `couch-bt-hid` and `couch-bluetoothd` in
+the runtime bundle. The .24 updater's file list has no entry for those names, so
+it refuses the whole bundle; and because it predates the Dev channel it reads a
+`.dev` tag as an ordinary alpha, so an Alpha remote is offered `.164.dev` and
+nothing else. .148 itself is perfectly installable by a .24 remote - it is only
+unreachable.
+
+The bundle side is fixed: the Bluetooth binaries travel in the boot ramdisk
+again and the release tooling now refuses to sign a bundle the oldest deployed
+updater would reject ([compatibility
+floor](runtime-updates.md#compatibility-floor)). The releases already published
+are the remaining half: until those three `.dev` prereleases are withdrawn, or a
+newer promoted release is cut above them, an affected remote is still offered
+`.164.dev`. Retry **Check for updates** after the next release.
 
 ## Reinstalling Couch on a new computer
 

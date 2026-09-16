@@ -62,17 +62,35 @@ pub fn clear_recovery(bcb: &Path) -> io::Result<()> {
     device.sync_all()
 }
 
+/// What an action leaves in the bootloader control block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bcb {
+    Arm,
+    Clear,
+}
+
+/// The decision, on its own, because `perform` shells out and cannot be tested.
+///
+/// Powering off clears the marker for the same reason a restart does: init
+/// arms it before its own checks and clears it only once the GUI is healthy,
+/// so leaving during that first ~105 s would strand the *next* press in
+/// recovery with no explanation, and nothing is lost because that boot arms
+/// the marker again before anything can hang.
+pub fn bcb(action: Action) -> Bcb {
+    match action {
+        Action::Recovery => Bcb::Arm,
+        Action::Off | Action::Restart => Bcb::Clear,
+    }
+}
+
 /// Perform the action. Only returns on failure: the busybox call replaces the
 /// system state. The caller has already answered the request.
-pub fn perform(action: Action, bcb: &Path) -> Result<(), String> {
-    match action {
-        Action::Recovery => {
-            arm_recovery(bcb).map_err(|e| format!("Could not arm recovery: {e}"))?
+pub fn perform(action: Action, block: &Path) -> Result<(), String> {
+    match bcb(action) {
+        Bcb::Arm => arm_recovery(block).map_err(|e| format!("Could not arm recovery: {e}"))?,
+        Bcb::Clear => {
+            clear_recovery(block).map_err(|e| format!("Could not clear the recovery flag: {e}"))?
         }
-        Action::Restart => {
-            clear_recovery(bcb).map_err(|e| format!("Could not clear the recovery flag: {e}"))?
-        }
-        Action::Off => {}
     }
     let _ = Command::new("/bin/busybox").arg("sync").status();
     let verb = match action {
@@ -122,6 +140,13 @@ mod tests {
         assert_eq!(&bytes[..512], &recovery_block());
         assert!(bytes[512..].iter().all(|b| *b == 0xaa));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn powering_off_clears_the_recovery_flag_like_a_restart() {
+        assert_eq!(bcb(Action::Off), Bcb::Clear);
+        assert_eq!(bcb(Action::Restart), Bcb::Clear);
+        assert_eq!(bcb(Action::Recovery), Bcb::Arm);
     }
 
     #[test]

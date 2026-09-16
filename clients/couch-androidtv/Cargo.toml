@@ -6,6 +6,7 @@ license.workspace = true
 description = "Android TV Remote v2 pairing and persistent control for Couch"
 
 [dependencies]
+couch-sdk = { path = "../couch-sdk", features = ["tls"] }
 serde = { version = "1", features = ["derive"] }
 prost = "0.13"
 serde_json = "1"

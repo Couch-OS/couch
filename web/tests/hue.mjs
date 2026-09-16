@@ -44,7 +44,7 @@ try{
  const before=await readFile(saved,'utf8');pressed=false;assert.equal((await named('connection','PUT',{url:bridge})).status,502);assert.equal(await readFile(saved,'utf8'),before);
  await page.getByRole('navigation').getByRole('button',{name:'Rooms & devices',exact:true}).click();await page.getByRole('button',{name:/^Test room/}).click();
  await page.getByRole('button',{name:'Add to this room',exact:true}).click();await page.locator('.device').getByRole('heading',{name:'Test Hue light',exact:true}).waitFor();
- await page.getByRole('button',{name:'Show light controls',exact:true}).click();
+ await page.getByRole('button',{name:'Show device controls',exact:true}).click();
  await page.locator('.device').getByRole('button',{name:'Turn off',exact:true}).click();await page.locator('.device').getByText('Off',{exact:true}).waitFor();
  await page.locator('.device').getByLabel('Brightness (%)',{exact:true}).fill('37');await page.locator('.device').getByRole('button',{name:'Apply brightness'}).click();await page.locator('.device').getByText('On · 37%',{exact:true}).waitFor();
  assert(commands.some(b=>b.on.on===false));assert(commands.some(b=>b.dimming?.brightness===37));

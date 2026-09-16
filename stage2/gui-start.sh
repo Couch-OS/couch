@@ -15,22 +15,18 @@ $BB ln -sf "$A/etc/resolv.conf" /etc/resolv.conf
 $BB ln -sf "$A/etc/hosts" /etc/hosts
 
 # --- the UI ------------------------------------------------------------------
-# Start it last, so anything above still reports to the screen through fbcon.
-# couch-gui takes the panel over when it starts and shows its own splash.
-# With no saved networks the GUI opens local Wi-Fi onboarding.
+# Started as soon as the panel, the input nodes and the Alpine root are ready,
+# which is well before the radio. Everything above still reports to the screen
+# through fbcon; the radio block stage2.sh backgrounded already writes to
+# /tmp/stage2.log instead, because couch-gui takes the panel over here and shows
+# its own splash. With no saved networks the GUI still opens local Wi-Fi
+# onboarding, just when the setup decision lands rather than at its first frame.
 GUI="$(dirname "$0")/couch-gui"
-# With no network, portal.sh has already left /tmp/couch.setup behind and the
-# GUI reads it at startup, showing the join QR instead of the room UI. Nothing
-# to pass here: a variable set in this loop's environment could never be
-# cleared again without killing the loop.
+# Setup mode is /tmp/couch.setup, which portal.sh writes and the GUI re-reads
+# every second, so a hotspot the background setup decision asks for after this
+# point is picked up too. Nothing to pass here: a variable set in this loop's
+# environment could never be cleared again without killing the loop.
 [ -f /tmp/couch.setup ] && echo "= couch-gui starting in setup mode"
-# Claim the boot. init arms a 15-minute dead-man timer that reboots unless
-# /tmp/stay exists - the bring-up safety net, so a build that never gets this
-# far falls back to Android. The tools claim it over serial when they boot
-# the device; a self-boot had nobody to do it and rebooted at 906s, twice in
-# one evening. Getting here means the rootfs, WiFi and the GUI are all in
-# hand, which is what "claimed" was always meant to mean.
-touch /tmp/stay
 # Hold a three-core hotplug floor. The keypad and touch EINT interrupts land
 # only on CPU 0, and their handlers run 46-62ms in hard-IRQ with interrupts
 # off (see README): whatever runs on CPU 0 during a key press stalls for that
@@ -86,6 +82,18 @@ if [ -x "$GUI" ]; then
         $BB sleep 2
       done ) &
     echo "= couch-gui started"
+    # Claim the boot. init arms a 15-minute dead-man timer that reboots unless
+    # /tmp/stay exists - the bring-up safety net, so a build that never gets
+    # this far falls back to Android. The tools claim it over serial when they
+    # boot the device; a self-boot had nobody to do it and rebooted at 906s,
+    # twice in one evening. Inside this branch because "claimed" means the
+    # rootfs and the GUI are in hand: touched ahead of the -x test, a runtime
+    # with no couch-gui disarmed the dead-man and was then left to init's 150s
+    # health gate instead of falling back to Android. WiFi is no longer part of
+    # the claim - it comes up beside the GUI now - and never belonged in it: a
+    # remote that renders and answers its keypad is not an Android fallback
+    # case because it missed a lease.
+    touch /tmp/stay
     # The GUI owns the panel from here, so the rest of the boot narration goes
     # to the log instead of on top of it. fbcon cannot be relied on to stop by
     # itself: stage1 resolves $FBCON before /mnt/alpine is mounted, so it always
@@ -95,7 +103,9 @@ else
     echo "= no couch-gui at $GUI"
 fi
 
-$BB dmesg | $BB dd of=$LOG bs=512 seek=$DMESG2_SECTOR conv=notrunc 2>/dev/null
+# S4 says this script is done, not that the boot is: the radio block and its
+# dmesg snapshot are still running behind it, and mark() stamps the uptime, so
+# S4 now reads earlier than S5/S6 above it.
 mark $((BASE+4)) "S4 stage2 done"
 echo ""
 echo "= READY  uptime $($BB cut -d. -f1 /proc/uptime)s"

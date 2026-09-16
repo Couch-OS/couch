@@ -72,7 +72,11 @@ mod id;
 mod seed;
 mod validate;
 
-pub use device::{Action, Device, DeviceIr, DeviceKind, Integration, ALL_DEVICE_KINDS};
+pub use device::{
+    Action, Device, DeviceBluetooth, DeviceIr, DeviceKind, Integration, Transport, ALL_DEVICE_KINDS,
+    ALL_TRANSPORTS,
+};
+mod transport;
 pub use icon::{Icon, ALL_ICONS};
 pub use id::Id;
 pub use validate::{Problem, ValidationError};

@@ -1,0 +1,96 @@
+name: Runtime workspaces
+# The code that ships on the remote. Before this workflow the only cargo jobs
+# in CI built the installer, couch-updates, couch-appletv and couch-unifi-protect,
+# so a pull request breaking couch-model (which every other workspace reads),
+# couch-confd, couch-system, couch-gui or couch-web merged green and the break
+# was found during a release cut.
+#
+# One paths list shared by every leg, rather than a filter per workspace:
+# model/ is a dependency of all four other workspaces and clients/ and daemon/
+# are dependencies of ui/, so a per-leg filter would have to reproduce that
+# dependency graph to stay honest, and would go stale the first time it moved.
+on:
+  pull_request:
+    paths:
+      - 'model/**'
+      - 'clients/**'
+      - 'daemon/**'
+      - 'ui/**'
+      - 'web/**'
+      - '.github/workflows/runtime.yml'
+  push:
+    branches: [dev, main]
+    paths:
+      - 'model/**'
+      - 'clients/**'
+      - 'daemon/**'
+      - 'ui/**'
+      - 'web/**'
+      - '.github/workflows/runtime.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: runtime-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  workspace:
+    name: ${{ matrix.id }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: model
+            workspace: model
+            command: cargo test --locked
+          - id: clients
+            workspace: clients
+            command: cargo test --locked
+          # couch-confd's build.rs treats a missing web/couch-web/dist as the
+          # normal state of a fresh clone, so the daemon tests need no trunk
+          # build first; they compile against the placeholder asset table.
+          - id: daemon
+            workspace: daemon
+            command: cargo test --locked
+          # No fontconfig, X11 or display packages: ui/couch-gui builds Slint
+          # with default-features = false and without its "std" feature, which
+          # is the feature that would drag in yeslogic-fontconfig-sys, and the
+          # software renderer draws into a plain buffer. That is why these same
+          # tests already run headless on a developer's macOS machine.
+          - id: gui
+            workspace: ui
+            command: cargo test --locked --bin couch-gui
+          # cargo check, not trunk: this leg exists to catch a wasm compile
+          # break in a pull request. pages.yml still does the real trunk build
+          # of the site preview on push to main.
+          - id: web-wasm
+            workspace: web
+            target: wasm32-unknown-unknown
+            command: cargo check --locked --target wasm32-unknown-unknown
+          # The release target, as far as it goes without a C compiler.
+          # couch-bt-hid is pure Rust (zbus and tokio), so a stock runner can
+          # check it. Everything else that ships for ARM reaches ring through
+          # rustls or ureq, and ring's build script compiles C for the target:
+          # that needs the pinned Zig shim from tools/fetch-zig.sh and
+          # tools/arm-cc-env.sh, which is a release-host setup rather than
+          # something to install on every pull request. So this leg protects
+          # the target's std and libc assumptions, not the whole ARM link.
+          - id: clients-armv7
+            workspace: clients
+            target: armv7-unknown-linux-musleabihf
+            command: cargo check --locked --target armv7-unknown-linux-musleabihf -p couch-bt-hid
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the cross target
+        if: matrix.target != ''
+        run: rustup target add ${{ matrix.target }}
+      # Five separate lockfiles and five separate target directories, so the
+      # cache is scoped to the one workspace this leg builds.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.workspace }}
+      - run: ${{ matrix.command }}
+        working-directory: ${{ matrix.workspace }}

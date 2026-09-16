@@ -9,8 +9,13 @@ import couch_tui
 from couch_install import InstallError
 import release_discovery as discovery
 
+# The shapes the repository actually publishes: a dated alpha, the dev build
+# cut after it, and the release they lead to.
+ALPHA = 'v0.1.0-alpha.20260913.148'
+DEV = 'v0.1.0-alpha.20260913.148.dev'
 
-def fixture(tag='v0.1.0-alpha.1'):
+
+def fixture(tag=ALPHA):
     metadata = {'schema': 1, 'model': discovery.MODEL, 'version': tag, 'installable': False, 'files': []}
     data = json.dumps(metadata).encode()
     name = f'couch-{tag}-{discovery.MODEL}.json'
@@ -24,15 +29,38 @@ def fixture(tag='v0.1.0-alpha.1'):
 class DiscoveryTests(unittest.TestCase):
     def test_drafts_channels_exact_version_and_numeric_sort(self):
         alpha, _ = fixture()
-        newer, _ = fixture('v0.1.0-alpha.10')
+        newer, _ = fixture('v0.1.0-alpha.20260914.150')
+        old_scheme, _ = fixture('v0.1.0-alpha.9')
         stable, _ = fixture('v0.1.0')
         draft, _ = fixture('v0.2.0')
         draft['draft'] = True
-        values = [alpha, draft, stable, newer]
+        values = [alpha, draft, stable, newer, old_scheme]
         self.assertEqual([v.tag for v in discovery.selections(values)], ['v0.1.0'])
-        self.assertEqual([v.tag for v in discovery.selections(values, 'alpha')], ['v0.1.0-alpha.10', 'v0.1.0-alpha.1'])
-        self.assertEqual(len(discovery.selections(values, 'alpha', 'v0.1.0-alpha.1')), 1)
+        self.assertEqual([v.tag for v in discovery.selections(values, 'alpha')],
+                         ['v0.1.0-alpha.20260914.150', ALPHA, 'v0.1.0-alpha.9'])
+        self.assertEqual(len(discovery.selections(values, 'alpha', ALPHA)), 1)
         self.assertEqual(discovery.selections(values, 'stable', 'v0.2.0'), [])
+
+    def test_dev_tags_are_their_own_channel_and_sort_above_their_alpha(self):
+        alpha, _ = fixture()
+        dev, _ = fixture(DEV)
+        later, _ = fixture('v0.1.0-alpha.20260914.150')
+        values = [alpha, dev, later]
+        # A dev build is not an alpha the way release.rs sees it either.
+        self.assertEqual([v.tag for v in discovery.selections(values, 'alpha')],
+                         ['v0.1.0-alpha.20260914.150', ALPHA])
+        self.assertEqual([v.tag for v in discovery.selections(values, 'dev')], [DEV])
+        self.assertEqual([discovery.order(t) > discovery.order(ALPHA) for t in (DEV, 'v0.1.0-alpha.20260914.150')],
+                         [True, True])
+        self.assertTrue(discovery.order('v0.1.0-alpha.20260914.150') > discovery.order(DEV))
+        self.assertTrue(discovery.order('v0.1.0') > discovery.order('v0.1.0-alpha.20260914.150'))
+
+    def test_unpublishable_tag_shapes_are_ignored(self):
+        for tag in ['v0.1.0-beta.1', 'v0.1.0-alpha', 'v0.1.0-alpha.01', 'v0.1.0-dev', 'v01.0.0', 'latest']:
+            release, _ = fixture(tag)
+            release['prerelease'] = True
+            self.assertEqual(discovery.selections([release], 'alpha'), [], tag)
+            self.assertEqual(discovery.selections([release], 'dev'), [], tag)
 
     def test_empty_and_source_only_releases_are_not_installation_choices(self):
         release, _ = fixture()
@@ -52,8 +80,9 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_bad_filters_fail_before_network(self):
         with patch.object(discovery, 'fetch_bytes') as fetch:
-            with self.assertRaises(InstallError):
-                discovery.discover('nightly', fetch=fetch)
+            for channel, exact in [('nightly', None), ('alpha', 'v0.1.0-alpha.148.'), ('alpha', ALPHA + '.beta')]:
+                with self.assertRaises(InstallError):
+                    discovery.discover(channel, exact, fetch=fetch)
             fetch.assert_not_called()
 
     def test_asset_pin_rejects_path_size_hash_and_duplicate_confusion(self):
@@ -91,7 +120,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_manifest_valid_versioned_file_metadata_still_not_authorization(self):
         release, data = fixture()
         metadata = json.loads(data)
-        name = 'couch-installer-v0.1.0-alpha.1-linux-x86_64.tar.gz'
+        name = f'couch-installer-{ALPHA}-linux-x86_64.tar.gz'
         metadata['files'] = [{'name': name, 'size': 1024, 'sha256': 'a'*64,
                               'url': discovery.DOWNLOAD + metadata['version'] + '/' + name}]
         metadata['installable'] = True

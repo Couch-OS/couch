@@ -5,7 +5,10 @@ use std::{
     fs,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock, RwLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock, RwLock,
+    },
     time::{Duration, Instant},
 };
 pub struct Snapshot {
@@ -15,6 +18,10 @@ pub struct Snapshot {
 #[derive(Default)]
 struct Cache {
     value: RwLock<Option<Arc<Snapshot>>>,
+    /// How many updates have been thrown away. A rejection means the remote is
+    /// knowingly showing stale configuration, which is worth a toast, and a
+    /// counter is all the UI needs to notice one.
+    rejected: AtomicU64,
 }
 impl Cache {
     fn reload(&self, path: &Path) -> bool {
@@ -27,12 +34,16 @@ impl Cache {
             if raw.len() > 4 * 1024 * 1024 {
                 return None;
             }
-            let c: Config = serde_json::from_slice(&raw).ok()?;
+            let mut c: Config = serde_json::from_slice(&raw).ok()?;
+            // couch-confd rewrites an old file on its next start; until then
+            // (and for a file it never opened) the same migration runs here.
+            c.migrate();
             c.validate().ok()?;
             Some(c)
         })();
         let Some(config) = next else {
             eprintln!("couch-gui: configuration update rejected; retaining last valid snapshot");
+            self.rejected.fetch_add(1, Ordering::Relaxed);
             return false;
         };
         let mut value = self.value.write().unwrap();
@@ -78,6 +89,11 @@ pub fn start(path: PathBuf) {
         cache
     });
 }
+/// Updates rejected so far. Monotonic, so a caller keeps the last value it saw
+/// rather than a flag somebody has to clear.
+pub fn rejected() -> u64 {
+    CACHE.get().map_or(0, |c| c.rejected.load(Ordering::Relaxed))
+}
 pub fn current() -> Option<Arc<Snapshot>> {
     if CACHE.get().is_none() {
         start(crate::home::path("config.json"));
@@ -100,6 +116,7 @@ mod tests {
         fs::write(&path, b"incomplete JSON").unwrap();
         assert!(!cache.reload(&path));
         assert!(Arc::ptr_eq(&first, &cache.get().unwrap()));
+        assert_eq!(cache.rejected.load(Ordering::Relaxed), 1);
         c.revision += 1;
         c.rooms[0].name = "Changed".into();
         let tmp = path.with_extension("new");

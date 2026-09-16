@@ -11,6 +11,7 @@ description = "Matter controller for Couch: its own small fabric, joined by shar
 # keeps that runtime private on one worker thread and exposes blocking calls,
 # so the daemon and GUI keep their thread-per-request shape.
 [dependencies]
+couch-sdk = { path = "../couch-sdk" }
 matc = "=0.1.3"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
 anyhow = "1"

@@ -9,6 +9,7 @@
 use crate::{api, App};
 use couch_model::{buttons::Button, Area, Config, Id, Shortcut, ShortcutAction, SHORTCUT_BUTTONS};
 use leptos::prelude::*;
+use std::sync::Arc;
 
 /// Key, label and glyph, in front-panel order.
 fn key_name(button: Button) -> (&'static str, &'static str) {
@@ -117,7 +118,9 @@ fn choices(config: &Config, area: &Id) -> Vec<Choice> {
 }
 
 pub fn editor(app: App, config: &Config, area: &Area) -> AnyView {
-    let config = StoredValue::new(config.clone());
+    // Reference counted: one read per key slot, and one per keystroke in the
+    // picker's search box, all of which wanted the whole document.
+    let config = StoredValue::new(Arc::new(config.clone()));
     let area = StoredValue::new(area.clone());
     let selected = RwSignal::new(Button::Lights);
     let query = RwSignal::new(String::new());

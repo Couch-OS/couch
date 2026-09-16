@@ -5,6 +5,7 @@ use couch_model::{
     Action, Activity, Config,
 };
 use leptos::prelude::*;
+use std::sync::Arc;
 
 // Physical keys in familiar panel order; repeat keys have only a short slot.
 const KEYS: &[(Button, &str, &str, i32, i32)] = &[
@@ -34,19 +35,22 @@ const KEYS: &[(Button, &str, &str, i32, i32)] = &[
 ];
 pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
     let ir_commands=super::device_commands::Commands::new(config);
-    let config = StoredValue::new(config.clone());
+    // Reference counted: the device effect and the search box below both want
+    // the whole document, and `StoredValue<Config>` hands each read a copy of
+    // the house.
+    let config = StoredValue::new(Arc::new(config.clone()));
     let activity = StoredValue::new(activity.clone());
     let selected = RwSignal::new(Button::Ok);
     let gesture = RwSignal::new(Gesture::Short);
     let device = RwSignal::new(String::new());
     let query = RwSignal::new(String::new());
+    let level = RwSignal::new(50i32);
     let dynamic = RwSignal::new(Vec::<(String, String)>::new());
     let discovery = RwSignal::new(String::new());
     let dialog = NodeRef::<leptos::html::Dialog>::new();
     let open = move |button, press| {
         selected.set(button);
         gesture.set(press);
-        app.button_selection.set((button, press));
         query.set(String::new());
         let target = activity
             .get_value()
@@ -180,51 +184,27 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         });
     });
 
-    let mapping_label = move |button, press| {
+    // Both labels for all 23 keys from one borrow of the document. Called as a
+    // closure per slot, this was two copies of the house and of the activity
+    // per key.
+    let labels: Vec<((String, String), (String, String))> = activity.with_value(|current| {
         let cfg = config.get_value();
-        let activity = activity.get_value();
-        match activity
-            .buttons
-            .iter()
-            .find(|b| b.button == button && b.gesture == press)
-        {
-            None => ("Activity default".to_string(), String::new()),
-            Some(Binding { action: None, .. }) => ("Do nothing".to_string(), String::new()),
-            Some(Binding {
-                action: Some(a), ..
-            }) => {
-                let target = cfg.devices().find(|(_, d)| d.id == a.device);
-                let function = target
-                    .and_then(|(_, d)| cfg.resolve_integration(&d.integration))
-                    .and_then(|i| {
-                        functions(&i)
-                            .iter()
-                            .find(|f| f.0 == a.command)
-                            .map(|f| f.1.to_string())
-                    })
-                    .unwrap_or_else(|| {
-                        a.command
-                            .replace("input:", "Input · ")
-                            .replace("app:", "App · ")
-                    });
+        KEYS.iter()
+            .map(|&(button, ..)| {
                 (
-                    function,
-                    target
-                        .map(|(_, d)| d.name.clone())
-                        .unwrap_or_else(|| "Removed device".into()),
+                    mapping_label(&cfg, current, button, Gesture::Short),
+                    mapping_label(&cfg, current, button, Gesture::Long),
                 )
-            }
-        }
-    };
-    let options: Vec<_> = config
-        .get_value()
+            })
+            .collect()
+    });
+    let cfg = config.get_value();
+    let options: Vec<_> = cfg
         .devices()
         .filter(|(_, d)| {
-            config
-                .get_value()
-                .resolve_integration(&d.integration)
+            cfg.resolve_integration(&d.integration)
                 .is_some_and(|i| !functions(&i).is_empty())
-                || d.effective_ir_codeset(&config.get_value()).is_some()
+                || d.effective_ir_codeset(&cfg).is_some()
         })
         .map(|(r, d)| (d.id.to_string(), format!("{} · {}", r.name, d.name)))
         .collect();
@@ -233,9 +213,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         <p class="dim">"Select a press slot to choose its command. Mix devices freely — for example, Kodi navigation and receiver volume."</p>
         <section class="card button-editor" aria-label="Physical button mappings">
             <div class="mapping-columns"><span>"Button"</span><span>"● Short press"</span><span>"━ Long press"</span></div>
-            {KEYS.iter().map(move |&(button, name, glyph, _, _)| {
-                let short = mapping_label(button, Gesture::Short);
-                let long = mapping_label(button, Gesture::Long);
+            {KEYS.iter().zip(labels).map(move |(&(button, name, glyph, _, _), (short, long))| {
                 view! {
                     <div class="mapping-row">
                         <div class="mapping-key"><span class="mapping-key-glyph" aria-hidden="true">{glyph}</span><span>{name}</span></div>
@@ -263,6 +241,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
             <label class="field">"Device"<select aria-label="Filter commands by device" prop:value=move ||device.get() on:change=move |e|device.set(event_target_value(&e))>
                 <option value="">"All devices"</option>{options.into_iter().map(|(id,name)|view!{<option value=id>{name}</option>}).collect_view()}
             </select></label>
+            <label class="field">"Level (%)"<input type="number" aria-label="Level percent" min="0" max="100" prop:value=move ||level.get().to_string() on:input=move |e|{if let Ok(v)=event_target_value(&e).parse::<i32>(){level.set(v.clamp(0,100));}}/></label>
             <div class="mapping-reset-actions">
                 <button disabled=move ||app.busy.get() on:click=move |_|save(None)>"Use activity default"</button>
                 <button disabled=move ||app.busy.get() on:click=move |_|save(Some(None))>"Do nothing"</button>
@@ -274,14 +253,22 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
                     let cfg=config.get_value(); let filter=device.get(); let search=query.get().to_lowercase();
                     let mut groups=Vec::new();
                     for (room,d) in cfg.devices().filter(|(_,d)|filter.is_empty()||d.id.as_str()==filter) {
+                        let matches=|id:&str,name:&str|format!("{} {} {id} {name}",room.name,d.name).to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ").contains(&search);
                         let mut choices=ir_commands.choices(&cfg,d,if !filter.is_empty(){dynamic.get()}else{Vec::new()});
-                        choices.retain(|(id,name)|format!("{} {} {id} {name}",room.name,d.name).to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ").contains(&search));
-                        if choices.is_empty(){continue;}
+                        choices.retain(|(id,name)|matches(id,name));
+                        // A level needs the number above, so it is a control here rather than a catalog row.
+                        let levels:Vec<_>=super::device_commands::levels(&cfg,d).into_iter().filter(|(kind,label)|matches(kind,label)).collect();
+                        if choices.is_empty()&&levels.is_empty(){continue;}
                         let device_id=d.id.clone();
+                        let level_device=d.id.clone();
                         groups.push(view! {<section class="command-group"><h3>{d.name.clone()}<span>{room.name.clone()}</span></h3>
                             {choices.into_iter().map(move |(id,name)| {
                                 let action=Action::new(device_id.clone(),id);
                                 view!{<button class="command-option" disabled=move ||app.busy.get() on:click=move |_|save(Some(Some(action.clone())))><span>{name}</span><span aria-hidden="true">"＋"</span></button>}
+                            }).collect_view()}
+                            {levels.into_iter().map(move |(kind,label)| {
+                                let id=level_device.clone();
+                                view!{<button class="command-option" disabled=move ||app.busy.get() on:click=move |_|save(Some(Some(Action::new(id.clone(),format!("{kind}:{}",level.get_untracked())))))><span>{move ||format!("{label} · set to {}%",level.get())}</span><span aria-hidden="true">"＋"</span></button>}
                             }).collect_view()}
                         </section>}.into_any());
                     }
@@ -290,4 +277,46 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
             </div>
         </dialog>
     }.into_any()
+}
+
+/// What one press slot shows: the function it runs, and the device it runs on.
+fn mapping_label(
+    cfg: &Config,
+    activity: &Activity,
+    button: Button,
+    press: Gesture,
+) -> (String, String) {
+    match activity
+        .buttons
+        .iter()
+        .find(|b| b.button == button && b.gesture == press)
+    {
+        None => ("Activity default".to_string(), String::new()),
+        Some(Binding { action: None, .. }) => ("Do nothing".to_string(), String::new()),
+        Some(Binding {
+            action: Some(a), ..
+        }) => {
+            let target = cfg.devices().find(|(_, d)| d.id == a.device);
+            let function = target
+                .and_then(|(_, d)| cfg.resolve_integration(&d.integration))
+                .and_then(|i| {
+                    functions(&i)
+                        .iter()
+                        .find(|f| f.0 == a.command)
+                        .map(|f| f.1.to_string())
+                })
+                .or_else(|| super::device_commands::value_label(&a.command))
+                .unwrap_or_else(|| {
+                    a.command
+                        .replace("input:", "Input · ")
+                        .replace("app:", "App · ")
+                });
+            (
+                function,
+                target
+                    .map(|(_, d)| d.name.clone())
+                    .unwrap_or_else(|| "Removed device".into()),
+            )
+        }
+    }
 }

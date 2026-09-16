@@ -257,8 +257,8 @@ class Terminal:
 
     def browse_releases(self):
         from release_discovery import discover, inspect_manifest
-        channel = self.ask("Release channel [stable/alpha, default stable]: ") or 'stable'
-        version = self.ask("Exact version (for example v0.1.0-alpha.1), or Enter to browse: ") or None
+        channel = self.ask("Release channel [stable/alpha/dev, default stable]: ") or 'stable'
+        version = self.ask("Exact version (for example v0.1.0-alpha.20260913.148), or Enter to browse: ") or None
         choices = discover(channel, version)
         if not choices:
             self.line("No published releases with verified manifest metadata match this selection.")

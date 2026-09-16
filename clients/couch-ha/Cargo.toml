@@ -6,6 +6,7 @@ license.workspace = true
 description = "Home Assistant light, cover and climate discovery and control for Couch"
 
 [dependencies]
+couch-sdk = { path = "../couch-sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "3.4", default-features = false, features = ["rustls", "json"] }

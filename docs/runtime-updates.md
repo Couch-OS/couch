@@ -36,10 +36,8 @@ archive SHA-256, and each allowlisted file's size/hash/mode. Archives cannot
 contain links, special files, configuration, or partition images. The file
 list is closed: the required binaries and scripts, `fbcon`, web assets and
 licence texts, and (from .142 on) further top-level `couch-*` executables.
-Before .142 a bundle carrying any other name was refused outright, which is
-why a new binary cannot simply be added to the runtime until every deployed
-remote runs an updater that tolerates it; the Bluetooth bridge ships in the
-boot ramdisk meanwhile. Download and
+What a bundle may actually contain is decided by the *oldest deployed* updater,
+not this one - see [compatibility floor](#compatibility-floor). Download and
 extraction limits are enforced. Files are staged under
 `/opt/couch/runtime/slots/<archive-sha256>` while the running version remains
 active. The user separately confirms **Install & restart**.
@@ -73,8 +71,114 @@ bootstrap and is not carried by runtime updates, so the fix ships only with a ne
 full OS image.
 An interrupted pointer preparation can be retried after boot clears its pending
 journal; the updater reclaims only its stale temporary symlink.
-Completed slots are retained; automatic slot garbage collection is not yet
-implemented. Do not manually remove the active or previous slot.
+The system service prunes runtime slots once, before it serves its first
+request: the active slot, the one kept for rollback (`runtime/previous`, written
+by the bootstrap when a candidate is accepted) and a staged candidate are kept,
+and every other slot directory is removed. Nothing is pruned while a candidate
+still awaits its boot confirmation, and only names that are slot ids are
+considered, so the private staging temporary survives. Do not manually remove
+the active or previous slot.
+
+## Compatibility floor
+
+A runtime bundle is refused **before it is downloaded**, on the signed manifest
+alone, by any updater whose allowlist does not know every file name in it. And a
+check offers only the single newest release on the channel: there is no fallback
+to an older one when the newest is unusable. Together those two facts turn one
+unknown name into a permanent stop. One published bundle carrying one unknown
+name strands every remote whose updater predates that name - not only on that
+release, but on every release after it, until someone reinstalls the full OS.
+
+So the rule is not "the updater in this checkout accepts it". It is:
+
+> A published runtime bundle may contain only names the **oldest deployed
+> updater** accepts.
+
+That updater is the one in the OS image the public installer writes, today
+**v0.1.0-alpha.20260910.24**. A remote installed this morning runs .24's runtime
+and .24's updater until it updates itself, so .24 is the floor.
+
+### What the floor accepts
+
+Transcribed from `git show v0.1.0-alpha.20260910.24:daemon/couch-updates/src/staging.rs`:
+
+- the sixteen `REQUIRED` names: `couch-gui`, `couch-confd`, `couch-system`,
+  `couch-sonos`, `couch-coreelec`, `couch-wmt-properties.so`, `stage2.sh`,
+  `hardware-init.sh`, `gui-start.sh`, `system.sh`, `confd.sh`, `setup-mode.sh`,
+  `portal.sh`, `station.sh`, `wifi-conf.sh`, `build.json` - all of them, or the
+  bundle is incomplete;
+- `fbcon`;
+- `www/` files ending `.html`, `.css`, `.js`, `.svg`, `.png` or `.woff2`, and
+  exactly `www/cgi-bin/{save,scan,enroll,setpw}`;
+- `licenses/*.txt`;
+- with every file at mode 0644 or 0755, scripts, `couch-*` and the CGI at 0755,
+  no file over 64 MiB and no bundle over 128 MiB.
+
+Note what is **absent**: any `couch-*` wildcard. This checkout's updater accepts
+a further top-level `couch-*` executable - that arrived in .142 - and the
+floor's does not, so **a new binary cannot enter the runtime bundle**. Note also
+what is **present**: `licenses/*.txt`, which the floor has taken since the first
+signed update. Licence texts have never been what a floor updater refuses.
+
+### Where a new binary goes instead
+
+The boot ramdisk's `/extra`, delivered by the signed
+[boot payload](#boot-image-updates) and so only to images that take it. The
+whole Bluetooth stack lives there - `couch-bt-bridge`, `couch-bt-hid` and
+`couch-bluetoothd` - beside the kernel that gives it `/dev/vhci`.
+`tools/release/prepare_boot_candidates.py` puts them in the ramdisk from
+`runtime_inventory.BOOT_EXTRA`; `couch_system::bluetooth::base()` prefers a
+runtime copy if one is ever there, then `/extra` (copied into `/tmp`, which is
+bind-mounted into the Alpine root), then Alpine's own `bluetoothd`.
+
+### Checking a bundle before publishing
+
+`tools/release/update_floor.py` holds the floor's rules, once, with the reason
+they cannot move. It prints the bundle contents and every reason the floor would
+refuse them, and exits non-zero on a refusal:
+
+```sh
+python3 tools/release/update_floor.py --inventory                  # this checkout's lists
+python3 tools/release/update_floor.py --tree CLEAN_RUNTIME         # a staged clean tree
+python3 tools/release/update_floor.py --manifest couch-VERSION-ha100-update.json
+```
+
+It is not the only gate. `couch_updates::bundle` runs the same check in Rust
+(`staging::check_floor`) and **refuses to sign** a bundle that fails it, so a
+promotion cannot produce an unpublishable release by accident. CI runs the
+`--inventory` form and the unit tests in
+`tools/release/test_update_floor.py`, which assert that nothing in
+`runtime_inventory.RUNTIME` is a name the floor refuses.
+
+### When the floor can move
+
+Only when both are true: the installer's OS image has been rebuilt with a newer
+runtime, **and** every remote installed from the older image has updated past
+it. Rebuilding that image is the real fix and a known task - see
+[installer](installer.md#what-version-a-fresh-install-runs). Until then, moving
+the constant in `update_floor.py` and `staging.rs` breaks remotes in the field,
+which is exactly what the constant exists to prevent.
+
+### What this cost, twice
+
+- **.141.dev** could not be installed anywhere: `couch-bt-bridge` had been added
+  to the runtime bundle. Fixed by moving the bridge into the boot ramdisk, and
+  by teaching the updater the `couch-*` wildcard so that a *future* release
+  could add one.
+- **.160.dev, .163.dev and .164.dev** repeated it: the wildcard made the bundles
+  installable by a current remote, so the binaries came back into the runtime -
+  `couch-bt-bridge`, `couch-bt-hid`, then `couch-bluetoothd` - and a remote on
+  the floor refuses all three. These are published, non-draft prereleases, and
+  .164.dev sorts above .148, so `discover()` offers them and nothing else. The
+  floor's updater has no dev channel: to it `alpha.20260913.164.dev` is an
+  ordinary `alpha.*` prerelease, so an Alpha remote is offered it and refuses
+  it, with no fallback to .148. (A Stable remote is offered nothing at all,
+  because every release so far is a prerelease.) That is the report this section
+  exists to answer: see
+  [the installer FAQ](installer.md#the-web-ui-reports-an-older-version-than-the-installer-i-used).
+
+A released `.dev` prerelease is visible to every remote whose updater predates
+the Dev channel. Until the floor moves past .142, a `.dev` tag is not private.
 
 ## Boot image updates
 
@@ -101,7 +205,9 @@ cache and reads the partition back before it counts as applied. A readback
 mismatch writes the saved image back and reports it. Nothing is written when the
 partition does not parse as an Android boot image, when the staged files differ
 from their manifest, or when the baseline differs. `installed.json` records the
-version and digests written.
+version, the kernel commit the manifest notes named, and the digests written;
+the Updates page and the remote's **Settings → Updates** show it as the
+installed boot image.
 
 What protects the boot after that is the existing one: init arms `boot-recovery`
 before anything can hang and clears it only after a healthy GUI, so a kernel
@@ -109,8 +215,74 @@ that boots but never gets there lands in recovery on its own. A kernel that
 dies before init cannot arm anything and loops on the bad image; that needs the
 physical route, hold **Back** while powering on, and then the saved image, see
 [restoring the previous boot image](device-recovery.md#restoring-the-previous-boot-image).
-The boot payload is not a runtime slot: there is no automatic rollback to
-`previous.img`, and the recovery partition is never written by an update.
+The boot payload is not a runtime slot: nothing rolls back to `previous.img` on
+its own, and the recovery partition is never written by an update. While the
+saved image is there the Updates page offers to write it back
+(`POST /api/updates/boot-rollback` with `{"confirm":true}`, the system service's
+`BootRollback`). That path parses `previous.img`, checks its kernel and ramdisk
+against the digests in `previous.json` and refuses if either is missing or does
+not verify, then writes and reads the partition back exactly as an install does.
+It does not restart: use the Power menu. The saved image is consumed once it is
+back, because the image it replaced is no longer installed, so the next check
+offers that boot payload again.
+
+### What the two steps look like
+
+A release carrying both payloads is one update in the user's head and two
+installs on the device, and both UIs say so rather than offering "an update"
+twice. `Status` carries what they read:
+
+* `steps` is 2 when the offered release publishes a boot payload as well as a
+  runtime and 1 when it publishes software alone. It comes from the asset
+  listing the check already holds, no extra request, so step 1 can name step 2
+  before it runs. `kind` says which step is on the table: a boot payload is
+  only ever offered for the release whose runtime is installed, so
+  `kind: "boot"` is always the second step.
+* `boot_release` is the release whose kernel and boot ramdisk the partition
+  carries: the boot payload this updater wrote, or, when it has written none,
+  the build the full OS image shipped. That image's `build.json` sits at the
+  root of `/opt/couch` rather than inside a runtime slot, so runtime updates
+  never replace it and it still names the image the partition was written
+  from. This is what lets a remote installed from the .124 image say its
+  kernel is .124 without asking anyone.
+* `boot_behind` says that release is older than the installed software.
+* `boot_pending` says the second step is still outstanding: its boot payload is
+  on offer, or step 1 left the note below. An older kernel on its own is not an
+  unfinished update - most releases publish software alone, and the kernel then
+  stays where the last boot payload left it - so only `boot_pending` produces
+  the "not finished" wording, and a merely older kernel is shown without
+  comment.
+* `guidance` is the one sentence both UIs put above the buttons: "Update to
+  .165 - step 1 of 2: Couch software. The kernel ships as a second signed image
+  and needs its own restart...", "Update to .165 - step 2 of 2: kernel and boot
+  image. The Couch software is already .165; the kernel is still .124...", or
+  "This update is not finished...". Composing it in the daemon is what keeps
+  the remote's screen and the web page from telling different stories about the
+  same state.
+
+Step 1 writes `/opt/couch/updates/pending-boot.json`, naming the version it
+staged, when that release publishes a boot payload too. After the restart the
+updater reads it back: if that build is the one now installed and the partition
+does not carry its kernel, the second step is outstanding, and the remote says
+so with no network at all. A note naming some other build, or one whose kernel
+has caught up, is deleted rather than believed.
+
+Finishing without a fresh check: opening **Settings > Updates** on a remote
+whose `boot_pending` is set sends one automatic check, the same rate-limited
+call the web UI makes when it opens - at most one per six hours per service
+session, and skipped entirely when automatic checks are off. It downloads and
+installs nothing; it only puts step 2 on the screen, so a user who does not
+know to press **Check for updates** is not left half-updated.
+
+If the new kernel does not work, the image it replaced is still on the remote
+as `/opt/couch/boot/previous.img` with `previous.json` naming what it was. A
+kernel that boots but never brings a healthy GUI up lands in recovery on its
+own, because init arms `boot-recovery` before anything can hang; from there,
+and from the Updates page while the remote is up, the saved image can be
+written back. A kernel that dies before init needs the physical route, holding
+**Back** while powering on. Nothing rolls back by itself, and the recovery
+partition is never written by an update; see
+[restoring the previous boot image](device-recovery.md#restoring-the-previous-boot-image).
 
 ## Publishing
 

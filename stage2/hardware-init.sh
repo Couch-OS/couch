@@ -78,9 +78,12 @@ done
                           $BB ln -s /vendor/firmware /etc/firmware 2>/dev/null; }
 echo "= nodes: ttyMT2 $([ -e /dev/ttyMT2 ] && echo ok || echo MISSING), /system/vendor $([ -e /system/vendor ] && echo ok || echo MISSING)"
 mark $((BASE+1)) "S1 vendor=$VSRC bundle=$BUNDLE mods=$($BB ls /vendor/lib/modules 2>/dev/null | $BB wc -l)"
-$BB mount -t tmpfs tmpfs /dev/__properties__ 2>/dev/null
-( cd /dev/__properties__ && $BB tar xzf "$PROPS" 2>/dev/null )
-echo "= /system $([ -x /system/bin/linker ] && echo ok || echo FAIL)  /vendor $([ -d /vendor/lib/modules ] && echo ok || echo FAIL)  props $($BB ls /dev/__properties__ | $BB wc -l)"
+# No property area is mounted or restored here, deliberately: the wmt detection
+# below has to run without one (see the ordering note further down), and $PROPS
+# is not even assigned until after the loader. This used to be a tmpfs plus a
+# "tar xzf" of an empty variable, which unpacked nothing and then reported
+# "props 0" as if it had measured the restore the comment forbids.
+echo "= /system $([ -x /system/bin/linker ] && echo ok || echo FAIL)  /vendor $([ -d /vendor/lib/modules ] && echo ok || echo FAIL)"
 
 # Expose the Android tree inside the chroot for interactive debugging.
 A=/mnt/alpine
@@ -129,6 +132,22 @@ else
     mark $((BASE+2)) "S2 wifi skipped: no wmt driver (module or built-in)"
 fi
 
+# Populate /dev here, in the serial part. There is no devtmpfs, so the only
+# nodes that exist are the ones baked into the cpio, and /dev/input is not among
+# them: the GUI resolves its keypad and touch nodes by name under
+# /sys/class/input and then opens /dev/input/eventN. That worked only as a side
+# effect of the first "mdev -s" inside the radio block below - which ran before
+# the GUI on a normal boot, and never at all on a device whose radio is parked.
+# The GUI now starts beside that block, so the sweep it depends on happens here.
+$BB mdev -s
+
+# The radio, from here to the end of the file. A function rather than a
+# straight-line block so stage2.sh decides when to wait for it: in the
+# background on a normal boot, because the GUI needs none of it and would
+# otherwise sit through ~19s of association and DHCP, and inline in recovery,
+# which runs this script for its connectivity alone. Nothing inside moved, and
+# the ordering notes above still hold.
+radio_up() {
 if [ "$WIFI" = "1" ]; then
     $BB umount /dev/__properties__ 2>/dev/null
     $BB umount $A/dev/__properties__ 2>/dev/null
@@ -228,14 +247,25 @@ if [ "$WIFI" = "1" ]; then
         echo "= wlan mac: no device id, leaving the driver's random one"
     fi
 
+    # Wait for the netdev to register rather than guessing at how long the
+    # probe takes. Every other wait in this file polls for its event; this one
+    # was a flat "sleep 3", and a slow probe - a cold chip, a contended boot,
+    # mdev -s racing the registration - reported "wlan0 MISSING", skipped the
+    # supplicant, dhcp and NETS below, and dropped a perfectly configured
+    # device into local onboarding.
     $BB echo 1 > /dev/wmtWifi 2>/tmp/wifion.err
-    $BB sleep 3; $BB mdev -s
+    w=0
+    while [ ! -d /sys/class/net/wlan0 ] && [ $w -lt 40 ]; do
+        $BB sleep 0.25; w=$((w+1))
+    done
+    WLANMS=$((w * 250))
+    $BB mdev -s
     $BB ifconfig wlan0 up 2>/dev/null
     if [ -d /sys/class/net/wlan0 ]; then
-        echo "= wlan0 UP $($BB cat /sys/class/net/wlan0/address)"
+        echo "= wlan0 UP after ${WLANMS}ms $($BB cat /sys/class/net/wlan0/address)"
         echo 'file *gen2* -p' > /sys/kernel/debug/dynamic_debug/control 2>/dev/null
     else
-        echo "= wlan0 MISSING  $($BB cat /tmp/wifion.err 2>/dev/null)"
+        echo "= wlan0 MISSING after ${WLANMS}ms  $($BB cat /tmp/wifion.err 2>/dev/null)"
         echo "= wlan probe log:"; $BB dmesg | $BB grep -E "wlan_gen2.*(ERROR|WARN)|WMT-FUNC" | $BB tail -6
     fi
 
@@ -294,7 +324,7 @@ if [ "$WIFI" = "1" ]; then
                 echo "= dhcp FAILED $($BB tail -1 /tmp/dhcp.log 2>/dev/null)"
             fi
         fi
-        mark $((BASE+6)) "S6 assoc=$ST ip=${IP:-none}"
+        mark $((BASE+6)) "S6 wlan0=${WLANMS}ms assoc=$ST ip=${IP:-none}"
         # The combo chip's whole-chip reset (a firmware assert, or Bluetooth
         # coming up at the wrong moment) bounces wlan0: the driver flushes the
         # address and re-associates, but udhcpc holds its 24 h lease and never
@@ -323,3 +353,4 @@ if [ "$WIFI" = "1" ]; then
 else
     echo "= wifi parked"
 fi
+}

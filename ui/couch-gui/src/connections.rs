@@ -75,23 +75,35 @@ pub fn ha_assist() -> Result<crate::mic::Endpoint, String> {
         .map_err(|_| "The Home Assistant connection has no saved URL and token yet".to_string())?;
     crate::mic::Endpoint::from_url(&settings.url, &settings.token)
 }
-pub fn ha_lights() -> Vec<couch_ha::Light> {
-    ids(Provider::HomeAssistant)
-        .into_iter()
-        .flat_map(|id| {
-            couch_ha::settings::Settings::load(&file(&id, "ha"))
-                .and_then(|s| s.client())
-                .and_then(|c| c.lights())
-                .unwrap_or_default()
-                .into_iter()
-                .map(move |mut l| {
-                    if !id.is_empty() {
-                        l.entity_id = format!("{id}/{}", l.entity_id);
-                    }
-                    l
-                })
-        })
-        .collect()
+/// Room-row state for exactly the entities the hub names, one `/api/states`
+/// read per connection, plus the connections whose read failed: a room behind
+/// a Home Assistant that is down is offline, which is not the same as off.
+pub fn ha_power(wanted: &[String]) -> (Vec<couch_ha::Power>, Vec<String>) {
+    use std::collections::BTreeSet;
+    let (mut states, mut failed) = (Vec::new(), Vec::new());
+    for id in ids(Provider::HomeAssistant) {
+        let mine: BTreeSet<String> = wanted
+            .iter()
+            .filter(|w| split(w).0 == id)
+            .map(|w| split(w).1.to_owned())
+            .collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let read = couch_ha::settings::Settings::load(&file(&id, "ha"))
+            .and_then(|s| s.client())
+            .and_then(|c| c.power(&mine));
+        match read {
+            Ok(list) => states.extend(list.into_iter().map(|mut p| {
+                if !id.is_empty() {
+                    p.entity_id = format!("{id}/{}", p.entity_id);
+                }
+                p
+            })),
+            Err(_) => failed.push(id),
+        }
+    }
+    (states, failed)
 }
 /// Fetch all room-supported HA entities once per connection. Preserve the
 /// connection prefix because entity IDs are only unique within one server.
@@ -135,24 +147,31 @@ impl HueFleet {
             .or_insert_with(|| Arc::new(couch_hue::live::Live::new(file(id, "hue"))))
             .clone())
     }
-    pub fn lights(&self) -> Result<Vec<couch_ha::Light>, String> {
+    /// Also which bridges failed their last read, for the same reason
+    /// `ha_power` reports them: an unreachable bridge is not an off room.
+    pub fn states(&self) -> (Vec<couch_ha::Light>, Vec<String>) {
         let ids = ids(Provider::Hue);
         self.clients
             .lock()
             .unwrap()
             .retain(|id, _| ids.contains(id));
-        let mut lights = vec![];
+        let (mut lights, mut failed) = (vec![], vec![]);
         for id in ids {
-            if let Ok(client) = self.get(&id) {
-                for mut light in client.lights().unwrap_or_default() {
-                    if !id.is_empty() {
-                        light.entity_id = format!("{id}/{}", light.entity_id);
-                    }
-                    lights.push(light);
+            let Ok(list) = self.get(&id).and_then(|c| c.lights().map_err(|e| e.to_string())) else {
+                failed.push(id);
+                continue;
+            };
+            for mut light in list {
+                if !id.is_empty() {
+                    light.entity_id = format!("{id}/{}", light.entity_id);
                 }
+                lights.push(light);
             }
         }
-        Ok(lights)
+        (lights, failed)
+    }
+    pub fn lights(&self) -> Result<Vec<couch_ha::Light>, String> {
+        Ok(self.states().0)
     }
     pub fn toggle(&self, resource: &str) -> Result<couch_ha::Light, String> {
         let (id, raw) = split(resource);
@@ -171,6 +190,13 @@ impl HueFleet {
     }
 }
 
+/// The one fleet in the process. Opening a fabric twice would open a second
+/// CASE session to every node it holds, so the room list, the shortcut keys and
+/// mapped buttons share these controllers rather than each keeping their own.
+pub fn matter() -> Arc<MatterFleet> {
+    static FLEET: std::sync::OnceLock<Arc<MatterFleet>> = std::sync::OnceLock::new();
+    FLEET.get_or_init(Default::default).clone()
+}
 /// Matter fabrics, one controller per connection, opened on first use and kept
 /// so light reads reuse the bound sockets. Lights carry `<connection>/<node>/<endpoint>`
 /// like Hue resources, so the room list needs no new state shape.
@@ -230,9 +256,51 @@ impl MatterFleet {
             .map_err(|e| e.to_string())
     }
     pub fn brightness(&self, resource: &str, percent: u8) -> Result<couch_ha::Light, String> {
+        self.send(resource, couch_matter::Command::Brightness(percent))
+    }
+    /// A mapped `on` or `off`: the binding already says which way it wants the
+    /// light, so there is nothing to read first.
+    pub fn power(&self, resource: &str, on: bool) -> Result<couch_ha::Light, String> {
+        self.send(
+            resource,
+            if on {
+                couch_matter::Command::On
+            } else {
+                couch_matter::Command::Off
+            },
+        )
+    }
+    /// A mapped `toggle`. The read decides, as it does for the room list, but a
+    /// device that will not report its state is turned on rather than refused:
+    /// a key press has to leave the room different.
+    pub fn toggle_or_on(&self, resource: &str) -> Result<couch_ha::Light, String> {
         let (id, raw) = split(resource);
-        self.get(id)?
-            .command(raw, couch_matter::Command::Brightness(percent))
+        let controller = self.get(id)?;
+        let on = controller
+            .light(raw)
+            .ok()
+            .and_then(|l| l.on)
+            .unwrap_or(false);
+        let command = if on {
+            couch_matter::Command::Off
+        } else {
+            couch_matter::Command::On
+        };
+        Self::sent(id, controller.command(raw, command))
+    }
+    fn send(
+        &self,
+        resource: &str,
+        command: couch_matter::Command,
+    ) -> Result<couch_ha::Light, String> {
+        let (id, raw) = split(resource);
+        Self::sent(id, self.get(id)?.command(raw, command))
+    }
+    fn sent(
+        id: &str,
+        result: Result<couch_matter::Light, couch_matter::Error>,
+    ) -> Result<couch_ha::Light, String> {
+        result
             .map(|l| Self::light(id, l))
             .map_err(|e| e.to_string())
     }

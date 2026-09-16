@@ -19,7 +19,10 @@ use crate::App;
 /// The browser's own Back does the same thing - the router pushes real history
 /// entries - but a visible affordance is not optional on a phone in a kiosk-ish
 /// context where the chrome may be hidden.
-pub fn page_header(app: App, title: String, back: Option<Route>) -> AnyView {
+///
+/// The title is `impl IntoView` so a converted screen can pass a closure over
+/// its own memo and have the heading follow a rename without being rebuilt.
+pub fn page_header(app: App, title: impl IntoView + 'static, back: Option<Route>) -> AnyView {
     view! {
         <div class="page-head">
             {back.map(|route| view! {

@@ -121,6 +121,20 @@ impl Config {
             if c.id.as_str().len()>128 || !c.id.as_str().bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-' || b==b'_') { problems.push(Problem{at:alloc::format!("connections[{i}]"),message:"Connection IDs must be safe alphanumeric identifiers".into()}); }
         }
         for (room,device) in self.devices() {
+            if let Some(bond) = &device.bluetooth {
+                if !bond.address.is_empty() && !crate::DeviceBluetooth::valid_address(&bond.address) {
+                    problems.push(Problem {
+                        at: alloc::format!("rooms.{}.devices.{}.bluetooth", room.id, device.id),
+                        message: "A Bluetooth address is six uppercase hex pairs separated by colons".into(),
+                    });
+                }
+                if bond.name.len() > 128 {
+                    problems.push(Problem {
+                        at: alloc::format!("rooms.{}.devices.{}.bluetooth", room.id, device.id),
+                        message: "The Bluetooth name must be at most 128 bytes".into(),
+                    });
+                }
+            }
             if let crate::Integration::Sonos { host } = &device.integration {
                 if host.parse::<core::net::Ipv4Addr>().is_err() {
                     problems.push(Problem {
@@ -204,12 +218,23 @@ impl Config {
         }
 
 
+        // A step is run by the same executor as a button binding, which parses
+        // the command and gives up on anything it does not know, so a step that
+        // does not parse saves and then fails on the first press. Only the parse
+        // is checked here, not `supports_device`: a binding picks from a
+        // device's button catalog, while a step says "on" or "off" to a device
+        // whose catalog has neither.
         for (i, scene) in self.scenes.iter().enumerate() {
             for (j, step) in scene.steps.iter().enumerate() {
                 if !device_ids.contains(&&step.device) {
                     problems.push(Problem {
                         at: alloc::format!("scenes[{i}].steps[{j}]"),
                         message: alloc::format!("no device \"{}\"", step.device),
+                    });
+                } else if crate::commands::Function::parse(&step.command).is_none() {
+                    problems.push(Problem {
+                        at: alloc::format!("scenes[{i}].steps[{j}]"),
+                        message: alloc::format!("unsupported command \"{}\"", step.command),
                     });
                 }
             }
@@ -245,6 +270,11 @@ impl Config {
                     problems.push(Problem {
                         at: alloc::format!("activities[{i}].steps[{j}]"),
                         message: alloc::format!("no device \"{}\"", step.device),
+                    });
+                } else if crate::commands::Function::parse(&step.command).is_none() {
+                    problems.push(Problem {
+                        at: alloc::format!("activities[{i}].steps[{j}]"),
+                        message: alloc::format!("unsupported command \"{}\"", step.command),
                     });
                 }
             }
@@ -391,6 +421,89 @@ mod tests {
             ..Config::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn a_step_command_the_executor_cannot_parse_is_rejected() {
+        let mut living = room("living", "Living room");
+        living.devices.push(Device::new(Id::new("lamp"), "Lamp", DeviceKind::Light));
+        for (command, valid) in [("on", true), ("toggle", true), ("dim:30", true), ("dim:101", false), ("dim:", false), ("bright", false)] {
+            let steps = vec![Action::new(Id::new("lamp"), command)];
+            let cfg = Config {
+                rooms: vec![living.clone()],
+                scenes: vec![crate::Scene { hue: None, rooms: vec![], id: Id::new("s"), name: "S".to_string(), icon: None, steps: steps.clone() }],
+                activities: vec![crate::Activity {
+                    setup: Default::default(),
+                    id: Id::new("a"),
+                    name: "A".to_string(),
+                    kind: Default::default(),
+                    room: Id::new("living"),
+                    source: None,
+                    buttons: vec![],
+                    steps,
+                }],
+                ..Config::default()
+            };
+            if valid {
+                assert!(cfg.validate().is_ok(), "{command}");
+            } else {
+                let problems = cfg.validate().unwrap_err().problems;
+                let at: Vec<&str> = problems.iter().map(|p| p.at.as_str()).collect();
+                assert_eq!(at, ["scenes[0].steps[0]", "activities[0].steps[0]"], "{command}");
+                assert!(problems.iter().all(|p| p.message.contains(command)), "{command}");
+            }
+        }
+    }
+
+    #[test]
+    fn home_assistant_blinds_and_thermostats_can_be_bound_to_a_key() {
+        let mut living = room("living", "Living room");
+        for (id, name, kind, entity) in [
+            ("blind", "Blind", DeviceKind::Blind, "cover.office"),
+            ("stat", "Thermostat", DeviceKind::Thermostat, "climate.office"),
+        ] {
+            living.devices.push(Device::new(Id::new(id), name, kind).with_integration(
+                crate::Integration::Connection { connection_id: Id::new("ha"), resource_id: entity.to_string() },
+            ));
+        }
+        let base = Config {
+            connections: vec![crate::Connection { id: Id::new("ha"), name: "HA".to_string(), provider: crate::Provider::HomeAssistant }],
+            rooms: vec![living],
+            activities: vec![crate::Activity {
+                setup: Default::default(),
+                id: Id::new("a"),
+                name: "A".to_string(),
+                kind: Default::default(),
+                room: Id::new("living"),
+                source: None,
+                buttons: vec![],
+                steps: vec![],
+            }],
+            ..Config::default()
+        };
+        for (device, command, valid) in [
+            ("blind", "open", true),
+            ("blind", "close", true),
+            ("blind", "stop", true),
+            ("blind", "position:70", true),
+            ("blind", "position:101", false),
+            ("blind", "mode:heat", false),
+            ("blind", "on", false),
+            ("stat", "mode:heat", true),
+            ("stat", "mode:off", true),
+            ("stat", "temperature-up", true),
+            ("stat", "temperature-down", true),
+            ("stat", "open", false),
+            ("stat", "dim:30", false),
+        ] {
+            let mut config = base.clone();
+            config.activities[0].buttons = vec![crate::buttons::Binding {
+                button: crate::buttons::Button::Lights,
+                gesture: crate::buttons::Gesture::Short,
+                action: Some(Action::new(Id::new(device), command)),
+            }];
+            assert_eq!(config.validate().is_ok(), valid, "{device} {command}");
+        }
     }
 
     #[test]

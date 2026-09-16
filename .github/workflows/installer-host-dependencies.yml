@@ -8,6 +8,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: installer-host-dependencies-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   adb:
     strategy:

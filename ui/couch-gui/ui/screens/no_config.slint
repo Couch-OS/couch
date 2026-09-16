@@ -1,0 +1,80 @@
+import { Theme } from "../theme.slint";
+
+// Nothing has been configured yet, or the file could not be read. The hub
+// behind this is empty: a demo house used to stand here instead, which looked
+// like a real one and did nothing on OK, with only a log line to say why.
+// Built from the same tokens and sizes as the setup screen.
+export component NoConfig inherits Rectangle {
+    // The web UI's address, as the Network panel shows it.
+    in property <string> address;
+    in property <image> qr;
+    in property <bool> has-qr;
+
+    background: Theme.bg;
+
+    VerticalLayout {
+        padding-top: 40px;
+        padding-left: Theme.pad-side;
+        padding-right: Theme.pad-side;
+        spacing: 0px;
+        alignment: start;
+
+        Text {
+            text: "No configuration yet";
+            font-size: 26px;
+            font-weight: 600;
+            color: Theme.text;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 18px; }
+
+        Text {
+            text: "OPEN THE WEB UI AT";
+            font-size: 14px;
+            letter-spacing: 0.14 * 14px;
+            color: Theme.text-quaternary;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.address;
+            font-size: 19px;
+            color: Theme.text-secondary;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        Rectangle { height: 22px; }
+
+        // A QR needs a light quiet zone to scan, so the card stays white. The
+        // image keeps its own size and is centred, as on the setup screen: a
+        // QR drawn into a box of a different size is rescaled fractionally and
+        // becomes measurably harder to read.
+        if root.has-qr: HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                height: 208px;
+                width: 208px;
+                background: #FFFFFF;
+                border-radius: Theme.r-row;
+                Image {
+                    source: root.qr;
+                    width: self.source.width * 1px;
+                    height: self.source.height * 1px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    image-rendering: pixelated;
+                }
+            }
+        }
+
+        Rectangle { height: 22px; }
+
+        Text {
+            text: "Add your rooms and devices there;\nthis screen fills itself in.";
+            font-size: 19px;
+            color: Theme.text-tertiary;
+            horizontal-alignment: center;
+        }
+    }
+}
