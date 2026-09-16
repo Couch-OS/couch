@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "kind": "couch-tested-integration-set",
+  "name": "denon-preview-0.1.1",
+  "core": {
+    "repository": "https://github.com/dangerouslaser/couch.git",
+    "tested_commit": "b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb",
+    "protocol_version": 1,
+    "compatibility_floor": "v0.1.0-alpha.20260910.24",
+    "contract_paths": [
+      "clients/couch-plugin",
+      "clients/couch-control",
+      "daemon/couch-integrations",
+      "daemon/couch-confd/src/api.rs",
+      "daemon/couch-confd/src/api/integration_migrations.rs",
+      "daemon/couch-confd/src/api/integration_packages.rs",
+      "daemon/couch-confd/src/api/plugins.rs",
+      "daemon/couch-confd/src/main.rs",
+      "daemon/couch-confd/src/plugins.rs",
+      "daemon/couch-confd/src/store.rs",
+      "model/couch-model/src/integration_migration.rs",
+      "model/couch-model/src/lib.rs",
+      "model/couch-model/src/seed.rs",
+      "model/couch-model/src/storage.rs",
+      "model/couch-model/src/validate.rs"
+    ]
+  },
+  "feed": {
+    "repository": "https://github.com/dangerouslaser/couch-integrations.git",
+    "source_commit": "33ecd15083e3aa001f97fcb71b6a5640ca737712",
+    "base_url": "https://dangerouslaser.github.io/couch-integrations/preview",
+    "channel": "preview",
+    "architecture": "armv7",
+    "public_key": {
+      "file": "couch-integrations.rsa.pub",
+      "size": 800,
+      "sha256": "80f3a73d86759cda103cb4f9a876cd4caee9d25c235c6d782b4be8a900b2696c"
+    },
+    "index": {
+      "file": "armv7/APKINDEX.tar.gz",
+      "size": 958,
+      "sha256": "608786ce3416b61f2adab7547a6118b1337b4914cc50ebe04ccbfd1654270cad"
+    }
+  },
+  "integrations": [
+    {
+      "id": "denon",
+      "package": "couch-integration-denon",
+      "version": "0.1.1",
+      "release": "0.1.1-r0",
+      "tier": "preview",
+      "evidence_level": "package-lifecycle-and-read-only-device",
+      "validated_behaviors": [
+        "signed package admission and lifecycle",
+        "read-only receiver status",
+        "receiver input enumeration"
+      ],
+      "not_validated": [
+        "full receiver command behavior",
+        "receiver model and firmware compatibility"
+      ],
+      "artifact": {
+        "file": "armv7/couch-integration-denon-0.1.1-r0.apk",
+        "size": 278277,
+        "sha256": "61e135854816bd4f996e46d918386937913860e583ccdb3bda7eac739252b270"
+      },
+      "provenance": {
+        "file": "armv7/couch-integration-denon-0.1.1-r0.provenance.json",
+        "size": 680,
+        "sha256": "528e0142a024575f34980d1f7c899de99f5493e43d2d1c4278d7a17db0a8a2a0",
+        "source_repository": "https://github.com/dangerouslaser/couch-integration-denon.git",
+        "source_commit": "828719e054d7855d2a9b374021cbc1b44db871d3",
+        "sdk_repository": "https://github.com/dangerouslaser/couch.git",
+        "sdk_commit": "5e0cc20adad6ea54032002a8adf0888e80499bca",
+        "tooling_repository": "https://github.com/dangerouslaser/couch.git",
+        "tooling_commit": "5e0cc20adad6ea54032002a8adf0888e80499bca",
+        "binary": "couch-plugin-denon",
+        "binary_sha256": "f9d5bc52c7e0a8a77d0f456aaf876a47be5586c0e996e172119ac1efd084a24d",
+        "manifest_sha256": "3abd01c3863b1e540d2d1317614c844071e3fd0900e1dcc403ba16680d4df540"
+      }
+    }
+  ],
+  "rollout": {
+    "bundle_packages_in_runtime": false,
+    "bundle_packages_in_installer": false,
+    "automatic_install": false,
+    "automatic_configuration_migration": false
+  }
+}

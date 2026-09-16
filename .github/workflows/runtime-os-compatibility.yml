@@ -20,6 +20,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tested package sets compare their recorded core contract to HEAD.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --manifest-path daemon/Cargo.toml -p couch-updates --check
       - run: cargo test --manifest-path daemon/Cargo.toml -p couch-updates --locked

@@ -99,6 +99,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Release verification follows the tested integration source ancestry.
+          fetch-depth: 0
       # Cheap and first: the install commands a reader copies must all name the
       # tag in tools/release/current-release.txt.
       - name: Check the published release literals
