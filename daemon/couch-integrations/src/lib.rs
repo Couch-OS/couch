@@ -32,6 +32,13 @@ const MAX_FILES: usize = 512;
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);
+impl Error {
+    /// Store contention is transient and must not be reported as an invalid
+    /// package by request paths that can wait briefly before device I/O.
+    pub fn is_busy(&self) -> bool {
+        self.0 == STORE_BUSY
+    }
+}
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
@@ -43,6 +50,10 @@ fn err(s: impl Into<String>) -> Error {
 }
 fn io(s: &str, e: std::io::Error) -> Error {
     err(format!("{s}: {e}"))
+}
+const STORE_BUSY: &str = "integration store is busy";
+fn busy() -> Error {
+    err(STORE_BUSY)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,8 +202,14 @@ impl Store {
         Ok(result)
     }
     pub fn resolve(&self, id: &str) -> Result<(PathBuf, Manifest)> {
+        self.resolve_wait(id, Duration::ZERO)
+    }
+    /// Resolve an installed payload after waiting briefly for an in-progress
+    /// store operation. The bound belongs to the caller's request budget; APK
+    /// mutations continue to use fail-fast locking.
+    pub fn resolve_wait(&self, id: &str, wait: Duration) -> Result<(PathBuf, Manifest)> {
         self.layout()?;
-        let _lock = Lock::acquire(self.root.join(".lock"))?;
+        let _lock = Lock::acquire_wait(self.root.join(".lock"), wait)?;
         self.recover()?;
         self.resolve_locked(id)
     }
@@ -608,16 +625,30 @@ pub fn run_cli(args: Vec<String>) -> Result<String> {
 struct Lock(File);
 impl Lock {
     fn acquire(path: PathBuf) -> Result<Self> {
+        Self::acquire_wait(path, Duration::ZERO)
+    }
+    fn acquire_wait(path: PathBuf, wait: Duration) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .open(path)
             .map_err(|e| io("open integration lock", e))?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(err("integration store is busy"));
+        let started = Instant::now();
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self(file));
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EWOULDBLOCK) {
+                return Err(io("lock integration store", error));
+            }
+            let remaining = wait.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(busy());
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(5)));
         }
-        Ok(Self(file))
     }
 }
 fn validate_manifest(manifest: &Manifest) -> Result<()> {
@@ -1117,6 +1148,46 @@ mod tests {
         assert!(store.generation("example").is_err());
         assert!(store.resolve("example").is_err());
         assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolve_wait_survives_brief_store_contention() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let active = slot(&store, "1.0.0");
+        store
+            .select(
+                "example",
+                &Selection {
+                    active: Some(active),
+                    previous: None,
+                },
+            )
+            .unwrap();
+        let held = Lock::acquire(store.root.join(".lock")).unwrap();
+        let waiting = store.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let task = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            waiting.resolve_wait("example", Duration::from_millis(250))
+        });
+        started_rx.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        drop(held);
+        assert_eq!(task.join().unwrap().unwrap().1.version, "1.0.0");
+    }
+
+    #[test]
+    fn resolve_wait_reports_typed_busy_when_its_bound_is_exhausted() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let _held = Lock::acquire(store.root.join(".lock")).unwrap();
+        let started = Instant::now();
+        let error = store
+            .resolve_wait("example", Duration::from_millis(20))
+            .unwrap_err();
+        assert!(error.is_busy());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

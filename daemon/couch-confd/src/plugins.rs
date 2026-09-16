@@ -12,6 +12,15 @@ use std::{
 
 const IDLE: Duration = Duration::from_secs(60);
 const MAX_ENDPOINTS: usize = 64;
+const STORE_READ_WAIT: Duration = Duration::from_millis(250);
+
+fn store_request_error(error: couch_integrations::Error) -> Error {
+    if error.is_busy() {
+        Error::Busy
+    } else {
+        Error::Invalid
+    }
+}
 
 /// Introducing a new config enum variant cannot be made readable by an older
 /// binary. Wait until the retained rollback runtime also understands plugins.
@@ -107,7 +116,7 @@ impl Runtime {
 
     pub fn manifest(&self, id: &str) -> Result<Manifest, String> {
         self.packages
-            .resolve(id)
+            .resolve_wait(id, STORE_READ_WAIT)
             .map(|(_, manifest)| manifest)
             .map_err(|e| e.to_string())
     }
@@ -153,7 +162,10 @@ impl Runtime {
         plugin: &str,
         patch: Value,
     ) -> Result<Value, String> {
-        let (directory, manifest) = self.packages.resolve(plugin).map_err(|e| e.to_string())?;
+        let (directory, manifest) = self
+            .packages
+            .resolve_wait(plugin, STORE_READ_WAIT)
+            .map_err(|e| e.to_string())?;
         let path = self.settings_path(connection).map_err(|e| e.to_string())?;
         let lock = crate::api::connections::lock_for(&path);
         let _guard = lock
@@ -228,8 +240,14 @@ impl Runtime {
         } else {
             // Handshake one child without holding the global registry lock:
             // another room's dead integration must not block healthy devices.
-            let (directory, manifest) =
-                self.packages.resolve(plugin).map_err(|_| Error::Invalid)?;
+            let remaining = couch_plugin::QUEUE_TTL.saturating_sub(queued.elapsed());
+            if remaining.is_zero() {
+                return Err(Error::Expired);
+            }
+            let (directory, manifest) = self
+                .packages
+                .resolve_wait(plugin, STORE_READ_WAIT.min(remaining))
+                .map_err(store_request_error)?;
             manifest.validate_settings(&settings)?;
             let endpoint = Arc::new(Endpoint::start(&directory, manifest, settings.clone())?);
             let mut endpoints = self.endpoints.lock().map_err(|_| Error::Transport)?;
@@ -319,6 +337,38 @@ fn redacted(manifest: &Manifest, saved: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs::OpenOptions, os::fd::AsRawFd};
+
+    #[test]
+    fn store_lock_contention_is_reported_as_busy_not_invalid() {
+        let home = std::env::temp_dir().join(format!(
+            "couch-plugin-store-busy-{}-{:?}",
+            std::process::id(),
+            Instant::now()
+        ));
+        fs::create_dir_all(home.join("integrations")).unwrap();
+        let runtime = Runtime::new(home.clone());
+        // Create and validate the store layout before taking its advisory lock.
+        assert!(runtime.packages.resolve("sample").is_err());
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(runtime.packages.root().join(".lock"))
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        let error = runtime
+            .packages
+            .resolve_wait("sample", Duration::ZERO)
+            .unwrap_err();
+        assert!(error.is_busy());
+        assert_eq!(store_request_error(error), Error::Busy);
+        drop(lock);
+        let _ = fs::remove_dir_all(home);
+    }
+
     fn manifest() -> Manifest {
         serde_json::from_value(json!({
             "protocol_version":1,"id":"sample","label":"Sample","version":"1.0.0","executable":"plugin",
