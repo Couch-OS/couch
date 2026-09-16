@@ -229,6 +229,119 @@ mod tests {
         );
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(saved["port"], 25);
+        assert_eq!(fixture.action("restore-native", 1).status, 200);
+        // Removing the receipt must not remove protection for the now-native
+        // receiver. Settings continue to share the same config mutex.
+        assert_eq!(
+            fixture
+                .api
+                .plugin_route("POST", "manual", &["settings"], br#"{"port":23}"#)
+                .status,
+            400
+        );
+    }
+
+    #[test]
+    fn manual_saves_and_retained_settings_imports_cannot_duplicate_native_receivers() {
+        for inline in [false, true] {
+            let name = if inline {
+                "inline-native-target"
+            } else {
+                "native-target"
+            };
+            let fixture = Fixture::new(name, false);
+            let host = format!("{name}.invalid");
+            if inline {
+                fixture
+                    .api
+                    .store
+                    .lock()
+                    .unwrap()
+                    .mutate(None, |config| {
+                        config.connections.clear();
+                        config.rooms.push(couch_model::Room {
+                            id: Id::new("room"),
+                            name: "Room".into(),
+                            icon: None,
+                            devices: vec![couch_model::Device::new(
+                                Id::new("avr"),
+                                "AVR",
+                                couch_model::DeviceKind::Speaker,
+                            )
+                            .with_integration(
+                                couch_model::Integration::Denon {
+                                    host: host.clone(),
+                                    port: 23,
+                                },
+                            )],
+                        });
+                    })
+                    .unwrap();
+            }
+            fixture.install_package_fixture();
+            let path = couch_sdk::connection_file(&fixture.home, "manual", "plugin").unwrap();
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            couch_sdk::save_private(&path, &json!({"host":host,"port":23})).unwrap();
+            let before = fixture.api.with(|store| store.config().clone());
+            assert!(fixture
+                .api
+                .store
+                .lock()
+                .unwrap()
+                .mutate(None, |config| config.connections.push(manual_denon()))
+                .is_err());
+            assert_eq!(fixture.api.with(|store| store.config().clone()), before);
+
+            fs::remove_file(&path).unwrap();
+            fixture
+                .api
+                .store
+                .lock()
+                .unwrap()
+                .mutate(None, |config| config.connections.push(manual_denon()))
+                .unwrap();
+            let request = serde_json::to_vec(&json!({"host":host})).unwrap();
+            assert_eq!(
+                fixture
+                    .api
+                    .plugin_route("POST", "manual", &["settings"], &request)
+                    .status,
+                400
+            );
+            assert!(!path.exists());
+            let request = serde_json::to_vec(&json!({"host":host,"port":24})).unwrap();
+            assert_eq!(
+                fixture
+                    .api
+                    .plugin_route("POST", "manual", &["settings"], &request)
+                    .status,
+                200
+            );
+
+            // The reverse direction is also an import/edit: moving the native
+            // target onto the package's saved endpoint must fail atomically.
+            let before = fixture.api.with(|store| store.config().clone());
+            assert!(fixture
+                .api
+                .store
+                .lock()
+                .unwrap()
+                .mutate(None, |config| {
+                    if inline {
+                        config.rooms[0].devices[0].integration = couch_model::Integration::Denon {
+                            host: host.clone(),
+                            port: 24,
+                        };
+                    } else {
+                        config.connections[0].provider = Provider::Denon {
+                            host: host.clone(),
+                            port: 24,
+                        };
+                    }
+                })
+                .is_err());
+            assert_eq!(fixture.api.with(|store| store.config().clone()), before);
+        }
     }
 
     #[test]

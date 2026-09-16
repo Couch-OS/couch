@@ -125,7 +125,7 @@ impl Runtime {
                 .into_iter()
                 .any(|original| original.host == target.host && original.port == target.port)
             {
-                return Err("This receiver is already owned by a migrated Denon connection".into());
+                return Err("This receiver already has a built-in or migrated Denon owner".into());
             }
             Ok(())
         })
@@ -346,6 +346,46 @@ impl Runtime {
             });
         }
     }
+}
+
+/// Native receivers remain protected before migration and after restoration.
+/// Include legacy inline integrations because they use the same native broker.
+pub(crate) fn protected_denon_targets(
+    config: &couch_model::Config,
+) -> impl Iterator<Item = couch_model::DenonMigration> + '_ {
+    config
+        .denon_migrations
+        .values()
+        .cloned()
+        .chain(
+            config
+                .connections
+                .iter()
+                .filter_map(|connection| match &connection.provider {
+                    couch_model::Provider::Denon { host, port } => {
+                        Some(couch_model::DenonMigration {
+                            host: host.clone(),
+                            port: *port,
+                        })
+                    }
+                    _ => None,
+                }),
+        )
+        .chain(
+            config
+                .rooms
+                .iter()
+                .flat_map(|room| &room.devices)
+                .filter_map(|device| match &device.integration {
+                    couch_model::Integration::Denon { host, port } => {
+                        Some(couch_model::DenonMigration {
+                            host: host.clone(),
+                            port: *port,
+                        })
+                    }
+                    _ => None,
+                }),
+        )
 }
 
 /// A filesystem-only ownership check shared by config imports and migrations.

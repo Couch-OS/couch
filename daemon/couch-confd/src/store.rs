@@ -344,7 +344,8 @@ impl Store {
         next.migrate();
         next.revision = self.config.revision.wrapping_add(1);
         next.validate().map_err(Error::Invalid)?;
-        if !next.denon_migrations.is_empty() {
+        let protected_denon = crate::plugins::protected_denon_targets(&next).collect::<Vec<_>>();
+        if !protected_denon.is_empty() {
             // An import can attach retained private settings to a newly added
             // package connection without using the settings API. Protect the
             // pilot's ownership boundary on that path too.
@@ -358,12 +359,13 @@ impl Store {
                 let target = crate::plugins::saved_denon_target(home, connection.id.as_str())
                     .map_err(Error::Compatibility)?;
                 if target.is_some_and(|target| {
-                    next.denon_migrations.values().any(|original| {
+                    protected_denon.iter().any(|original| {
                         original.host == target.host && original.port == target.port
                     })
                 }) {
                     return Err(Error::Compatibility(
-                        "A Denon package connection overlaps a migrated receiver".into(),
+                        "A Denon package connection overlaps a built-in or migrated receiver"
+                            .into(),
                     ));
                 }
             }

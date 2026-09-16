@@ -131,7 +131,7 @@ impl Api {
                         self.plugins.save_denon_settings(
                             connection,
                             value,
-                            store.config().denon_migrations.values().cloned(),
+                            crate::plugins::protected_denon_targets(store.config()),
                         )
                     } else {
                         self.plugins.save_settings(connection, &id, value)
