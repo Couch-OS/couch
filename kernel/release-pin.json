@@ -21,11 +21,12 @@
     "81d180fc normal kernel built from clean couch-ha100 source with the pinned compiler/container and unchanged normal config (2026-09-16).",
     "All four Bluetooth backport modules rebuilt for vermagic 3.18.79-couch-normal-g81d180fc19ec (2026-09-16).",
     "81d180fc boot payload installed through the existing OTA activation path on HA100 .167.dev: new uname, healthy GUI/system service, ready cached gauge with advancing sequence, Discharging while unplugged, health Unknown, and no standard modeled-current/forced-temperature exports (2026-09-16).",
-    "OTA boot readback matches the pin; owner header and DTB preserved, previous boot backup verified, recovery partition unchanged, and boot-recovery flag cleared after healthy GUI startup (.167.dev, 2026-09-16)."
+    "OTA boot readback matches the pin; owner header and DTB preserved, previous boot backup verified, recovery partition unchanged, and boot-recovery flag cleared after healthy GUI startup (.167.dev, 2026-09-16).",
+    "Owner acceptance on .167.dev: undocked display standby/wake with keys, IR before and after wake, Bluetooth with the existing bond after reboot, and dock/undock status (2026-09-16)."
   ],
   "pending": [
     "Battery pack capacity, maximum charge voltage and thermistor calibration remain unverified; this candidate does not change charge limits, pack profile or temperature calibration.",
-    "Repeat full hardware acceptance including undocked standby/wake, IR and Bluetooth bond persistence on the new kernel.",
-    "Clean installer image and recovery validation; corresponding-source/license review before promotion."
+    "Clean installer image and recovery validation remain separate full-installer gates and do not limit OTA alpha eligibility.",
+    "Corresponding-source/license review for the OTA kernel and boot dependencies remains required before production promotion."
   ]
 }

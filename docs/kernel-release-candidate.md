@@ -32,19 +32,21 @@ The `.167.dev` candidate booted through the existing OTA activation path with
 the new kernel, healthy GUI/system service and advancing cached battery gauge
 samples. Its four Bluetooth backport modules match the new kernel's vermagic.
 See [the battery audit](ha100-battery-gauge.md) for the reporting checks and
-remaining calibration questions. The hardware checks below were performed on
-earlier candidates; repeat the full round on this kernel before promotion.
+remaining calibration questions.
 
 Confirmed: LG B4 volume up with one repeat while awake and USB docked; button
 backlight changes affect GPIO58 without changing touch-reset GPIO4 or board
 GPIO17/14/61; advancing GUI heartbeat, recovery BCB clearance and USB serial.
 
-Subsequent user checks confirmed normal-UI power off/on, Volume Up and held
-repeats, plus IR before and after side-button sleep/wake while undocked.
+Owner acceptance on `.167.dev` confirmed undocked display standby/wake with
+keys, IR before and after wake, Bluetooth with the existing bond after reboot,
+and dock/undock status. These checks establish the OTA kernel/boot update
+behavior; they do not claim quantitative standby savings or battery
+calibration.
 
-Still required: charging transitions and clean installer payload boot/recovery
-validation. Preserve the working boot image and separate recovery
-before any further kernel experiments.
+Clean installer payload boot/recovery validation remains a separate full
+installer gate. It does not limit this OTA alpha's eligibility. Preserve the
+working boot image and separate recovery before any further kernel experiments.
 
 Output telemetry remains compiled into this exact tested binary but defaults
 off. Leave `couch_irtx.output_telemetry` disabled for normal use. Removing compiled
