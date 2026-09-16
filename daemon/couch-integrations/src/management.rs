@@ -909,4 +909,58 @@ mod tests {
             OFFICIAL_KEY.as_bytes()
         );
     }
+    #[test]
+    fn catalog_reports_fallback_and_invalid_packages_without_false_rollback() {
+        let fixture = Fixture::new();
+        let manager = fixture.manager();
+        manager.layout().unwrap();
+        let store = &manager.0.store;
+        let mut slots = Vec::new();
+        for version in ["1.0.0", "2.0.0"] {
+            let path = store.slot_path("example", version);
+            fs::create_dir_all(path.join("bin")).unwrap();
+            fs::write(path.join("bin/plugin"), version).unwrap();
+            fs::set_permissions(path.join("bin/plugin"), fs::Permissions::from_mode(0o755))
+                .unwrap();
+            fs::write(
+                path.join("manifest.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "protocol_version":1,"id":"example","label":"Example","version":version,
+                    "executable":"bin/plugin","capabilities":[],"settings":[]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            slots.push(Slot {
+                version: version.into(),
+                sha256: tree_digest(&path).unwrap(),
+            });
+        }
+        store
+            .select(
+                "example",
+                &Selection {
+                    active: Some(slots[1].clone()),
+                    previous: Some(slots[0].clone()),
+                },
+            )
+            .unwrap();
+        fs::write(
+            store.slot_path("example", "2.0.0").join("bin/plugin"),
+            "corrupted",
+        )
+        .unwrap();
+        let catalog = manager.catalog(&[]).unwrap();
+        assert_eq!(catalog["installed"][0]["version"], "1.0.0");
+        assert_eq!(catalog["installed"][0]["status"]["kind"], "fallback");
+        assert_eq!(catalog["installed"][0]["can_rollback"], false);
+        fs::write(
+            store.slot_path("example", "1.0.0").join("bin/plugin"),
+            "corrupted",
+        )
+        .unwrap();
+        let catalog = manager.catalog(&[]).unwrap();
+        assert_eq!(catalog["installed"][0]["status"]["kind"], "invalid");
+        assert_eq!(catalog["installed"][0]["can_rollback"], false);
+    }
 }

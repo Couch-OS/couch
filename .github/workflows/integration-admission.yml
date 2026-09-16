@@ -12,6 +12,7 @@ on:
       - 'daemon/**'
       - 'model/**'
       - 'web/**'
+      - 'web/**'
       - 'integrations/**'
       - 'tools/integrations/**'
       - 'tools/tests/integrations-e2e.py'
