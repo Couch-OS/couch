@@ -40,8 +40,15 @@ retried. A later explicit request may restart a failed child.
 Private settings live beside the house configuration in the daemon's connection
 store. They travel to the child over its inherited socket, not in arguments or
 environment variables. On Linux the host drops the child's root privileges and
-sets `no_new_privs`. Plugins share an unprivileged UID and retain network access;
-they are trusted code, not a safe way to execute arbitrary hostile software.
+sets `no_new_privs`. On the HA100's ARMv7 musl target, the Android-derived
+kernel enables `CONFIG_ANDROID_PARANOID_NETWORK`; the host gives the child only
+the `AID_INET` supplementary group (GID 3003), after clearing inherited groups,
+so normal TCP/UDP sockets work without `CAP_NET_RAW`. It keeps UID and primary
+GID 65534. This applies when the daemon starts it as root; non-root development
+hosts retain their existing credentials. Other root-spawned targets receive no
+supplementary groups. Plugins share an unprivileged UID and retain network
+access; they are trusted code, not a safe way to execute arbitrary hostile
+software.
 
 The package installer invokes `apk` in a temporary root, verifies signatures,
 disables scripts and network access during extraction, and accepts only the

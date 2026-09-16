@@ -1,4 +1,6 @@
-use couch_plugin::{read_frame, write_frame, Error, Host, Manifest, Request, Response, MAX_FRAME};
+use couch_plugin::{
+    read_frame, write_frame, Error, Host, HostPolicy, Manifest, Request, Response, MAX_FRAME,
+};
 use serde_json::json;
 use std::{
     io::Cursor,
@@ -370,6 +372,45 @@ fn child_environment_is_cleared_and_linux_root_is_dropped() {
         host.status().unwrap().title,
         Some(format!("{expected}:unset"))
     );
+}
+
+#[test]
+fn default_policy_selects_only_the_ha100_network_group() {
+    #[cfg(all(target_os = "linux", target_arch = "arm", target_env = "musl"))]
+    assert_eq!(HostPolicy::default().supplementary_gids(), &[3003]);
+    #[cfg(not(all(target_os = "linux", target_arch = "arm", target_env = "musl")))]
+    assert!(HostPolicy::default().supplementary_gids().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn root_spawn_installs_only_the_declared_supplementary_groups() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let p = Package::new();
+    p.script(&format!(
+        "{}groups=$(/usr/bin/id -G)\n{}exec /bin/sleep 10",
+        p.hello(),
+        dynamic_status(2, "$groups")
+    ));
+    let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+    let mut actual: Vec<u32> = host
+        .status()
+        .unwrap()
+        .title
+        .unwrap()
+        .split_whitespace()
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let mut expected = vec![65534];
+    expected.extend(HostPolicy::default().supplementary_gids());
+    actual.sort_unstable();
+    actual.dedup();
+    expected.sort_unstable();
+    expected.dedup();
+    assert_eq!(actual, expected);
 }
 
 // Values in this helper are fixed test shell expressions, never user inputs.

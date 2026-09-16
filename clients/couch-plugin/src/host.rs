@@ -27,6 +27,16 @@ pub const QUEUE_TTL: Duration = Duration::from_millis(750);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
 
+// The HA100's Android-derived ARMv7 kernel enables
+// CONFIG_ANDROID_PARANOID_NETWORK. Its inet_create() accepts a normal TCP/UDP
+// socket only for AID_INET (3003) or CAP_NET_RAW. Give plugins the narrow
+// group, never the capability. Keep this target-specific: desktop Linux does
+// not use that Android kernel policy.
+#[cfg(all(target_os = "linux", target_arch = "arm", target_env = "musl"))]
+const DEFAULT_SUPPLEMENTARY_GIDS: &[libc::gid_t] = &[3003];
+#[cfg(not(all(target_os = "linux", target_arch = "arm", target_env = "musl")))]
+const DEFAULT_SUPPLEMENTARY_GIDS: &[libc::gid_t] = &[];
+
 /// The production policy drops root before exec on Linux. Unprivileged host
 /// development inherits its uid. This is privilege separation, not a sandbox:
 /// integrations still share a uid and can access the LAN.
@@ -34,13 +44,25 @@ pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
 pub struct HostPolicy {
     pub uid: u32,
     pub gid: u32,
+    supplementary_gids: &'static [libc::gid_t],
 }
 impl Default for HostPolicy {
     fn default() -> Self {
         Self {
             uid: 65534,
             gid: 65534,
+            supplementary_gids: DEFAULT_SUPPLEMENTARY_GIDS,
         }
+    }
+}
+impl HostPolicy {
+    /// The complete supplementary set applied while dropping privileges.
+    ///
+    /// Couch's ARMv7 musl target carries Android's `AID_INET` (3003) so an
+    /// unprivileged plugin can create ordinary Internet sockets on the HA100.
+    /// Other targets receive no supplementary groups.
+    pub const fn supplementary_gids(self) -> &'static [libc::gid_t] {
+        self.supplementary_gids
     }
 }
 
@@ -145,7 +167,10 @@ impl Host {
                         if policy.uid == 0 || policy.gid == 0 {
                             return Err(std::io::ErrorKind::PermissionDenied.into());
                         }
-                        if libc::setgroups(0, std::ptr::null()) != 0
+                        if libc::setgroups(
+                            policy.supplementary_gids.len(),
+                            policy.supplementary_gids.as_ptr(),
+                        ) != 0
                             || libc::setgid(policy.gid) != 0
                             || libc::setuid(policy.uid) != 0
                         {
