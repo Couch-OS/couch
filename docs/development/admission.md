@@ -4,10 +4,12 @@ Order: 7
 
 # Catalog admission
 
-The catalog in `integrations/catalog.json` is the review boundary for external
-integrations in the Couch monorepo. It records what is being tested and what has
-actually been validated. It is a developer-preview gate for this repository,
-not an announcement of a public package repository or enabled branch protection.
+The catalog in `integrations/catalog.json` is the review boundary for native
+integration sources retained in the Couch monorepo. An independent integration
+repository carries the equivalent identity in `integration.json`, its runtime
+manifest, locked source, and admission tests. The curated feed separately pins
+that repository at a full commit; a branch, tag, or mutable default branch is
+not an admission identity.
 
 ## Admission tiers
 
@@ -41,6 +43,12 @@ that each exact `#[test]` exists and CI executes it:
 Shared `couch-plugin` protocol tests still cover framing, process containment,
 deadlines, and manifest validation. The per-integration cases prove that the
 package adapter and its device transport preserve those properties.
+
+Independent repositories reuse these cases through the `testing` feature on a
+full-revision Git dependency on `couch-plugin`. Their normal and development
+dependencies on `couch-plugin` and `couch-sdk` must all name the same Couch
+commit. Vendoring protocol types or copying the harness is not equivalent: it
+allows the source under test to redefine the contract it is supposed to meet.
 
 ## Hardware evidence
 
@@ -105,16 +113,21 @@ blocked on a check they cannot produce. Keep the final job on every PR, without
 workflow-level path filters. If enabling a merge queue, first add a
 `merge_group` trigger and validate the gate on queue commits. A separate
 integration repository needs its own equivalent workflow and branch rule;
-protection in this monorepo does not transfer automatically.
+protection in this monorepo does not transfer automatically. The feed adds a
+second gate: it checks the exact source commit again, runs the locked repository
+suite, builds the ARM binary without secrets, and passes only that reviewed
+artifact to the protected signer.
 
 See GitHub's [required status check rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-status-checks-to-pass-before-merging).
 
 ## Review checklist
 
 An integration change should include its manifest, adapter, fake device tests,
-catalog entry, limitations, and documentation in one review. Use the
-integration pull-request template in `.github/pull_request_template/` to record
-the commands and any physical-device evidence.
+source metadata, limitations, and documentation in one review. A monorepo
+integration also updates the catalog. An independent release updates its own
+lock file first, then a separate feed review advances only its immutable source
+pin. Use the integration pull-request template to record the commands and any
+physical-device evidence.
 
 ## Source references
 

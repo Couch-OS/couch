@@ -9,11 +9,14 @@ retry_state=none
 
 # This is the sole producer of lifecycle state consumed by the fixed debug
 # probe. It never accepts a PID, command, path, or host input. Keep the line
-# short and allowlisted so a partially written or corrupt RAM file fails closed
-# to "unknown" in the probe instead of becoming a shell/control channel.
+# short and allowlisted. Write it beside the published record and rename it
+# only after printf completes: the probe must see either the preceding complete
+# record or this complete replacement, never the O_TRUNC window of a direct
+# redirection.
 lifecycle() {
     printf 'supervisor=couch-wifi-debug-supervisor-v1 generation=%s phase=%s retry=%s marker=%s worker=%s worker_exit=%s\n' \
-        "$generation" "$1" "$retry_state" "$2" "$3" "$4" > /tmp/couch-wifi-debug.lifecycle
+        "$generation" "$1" "$retry_state" "$2" "$3" "$4" > /tmp/couch-wifi-debug.lifecycle.new && \
+        $BB mv -f /tmp/couch-wifi-debug.lifecycle.new /tmp/couch-wifi-debug.lifecycle
 }
 
 worker_result() {
@@ -40,6 +43,7 @@ while true; do
     generation=$((generation + 1))
     echo "$generation" > /tmp/couch-wifi-debug.generation
     $BB rm -f /tmp/couch-wifi-debug.retry /tmp/couch-wifi.status /tmp/couch-wifi.error \
+        /tmp/couch-wifi-debug.lifecycle.new \
         /tmp/couch-wifi.ip /tmp/couch-wifi.request /tmp/couch-wpa_supplicant.conf \
         /tmp/couch-wpa_supplicant.conf.pending
     $BB rm -rf /tmp/couch-wpa

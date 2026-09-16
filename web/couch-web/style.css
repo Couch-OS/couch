@@ -27,7 +27,7 @@ body {
   color:var(--fg);
   -webkit-text-size-adjust:100%;
 }
-button,input,select {
+button,input,select,textarea {
   font:inherit;
 }
 button {
@@ -220,6 +220,43 @@ main {
   display:grid;
   grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));
   gap:14px;
+}
+.integration-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));
+  gap:14px;
+}
+.integration-card {
+  margin:0;
+  min-width:0;
+}
+.integration-card .mono {
+  overflow-wrap:anywhere;
+}
+.integration-operation {
+  border-left:4px solid var(--accent);
+}
+.integration-repositories > h3 {
+  margin-top:30px;
+}
+.integration-confirmation {
+  margin-top:18px;
+}
+.integration-confirmation .mono {
+  overflow-wrap:anywhere;
+}
+textarea {
+  width:100%;
+  min-height:110px;
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:#fff;
+  color:var(--fg);
+  resize:vertical;
+  font-family:ui-monospace,monospace;
+  font-size:13px;
+  line-height:1.45;
 }
 .destination {
   display:flex;

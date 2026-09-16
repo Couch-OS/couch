@@ -67,13 +67,13 @@ impl Api {
             let _ = store.mutate(None, |cfg| cfg.connections = next.connections);
         }
     }
-    pub(super) fn integration_route(&self, method: &str, path: &[&str], _body: &[u8]) -> Reply {
+    pub(super) fn integration_route(&self, method: &str, path: &[&str], body: &[u8]) -> Reply {
         match (method, path) {
             ("GET", []) => match self.plugins.catalog() {
                 Ok(integrations) => Reply::json(200, &json!({"integrations":integrations})),
                 Err(_) => Reply::error(503, "Cannot read the installed integration catalog"),
             },
-            _ => Reply::error(404, "Unknown integration operation"),
+            _ => self.integration_package_route(method, path, body),
         }
     }
 

@@ -83,14 +83,27 @@ fn upgrade_and_rollback_validate_saved_settings_and_preserve_atomic_history() {
         .contains("different contents"));
     assert_eq!(store.generation("fixture").unwrap(), generation);
 
+    let mut config = couch_model::Config::default();
+    config.connections.push(couch_model::Connection {
+        id: couch_model::Id::new("connection"),
+        name: "Fixture".into(),
+        provider: couch_model::Provider::Plugin {
+            id: "fixture".into(),
+            label: "Fixture".into(),
+            capabilities: vec![],
+            supports_inputs: false,
+            presentation: vec![],
+        },
+    });
+    config.validate().unwrap();
+    // Admission must inspect the full envelope, not the old-runtime projection
+    // whose top-level connections intentionally omit packaged integrations.
     fs::write(
         fixture.0.join("config.json"),
-        serde_json::to_vec(&json!({"connections":[{
-            "id":"connection","provider":{"kind":"plugin","id":"fixture"}
-        }]}))
-        .unwrap(),
+        serde_json::to_vec(&couch_model::StoredConfig::new(&config)).unwrap(),
     )
     .unwrap();
+
     let settings = fixture
         .0
         .join("connections/connection/plugin-connection.json");

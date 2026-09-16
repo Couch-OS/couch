@@ -31,14 +31,55 @@ saved Wi-Fi, SSH enrollment, and per-device data.
 
 External [integration packages](integration-packages.md) have their own signed
 APK admission and version store beside `config.json`; a core runtime update
-does not replace them. Plugin-bearing configuration requires a plugin-capable
-core. Before the first external connection is saved (including a whole-config
-import), the daemon checks that no core update is pending and that the retained
-rollback runtime understands integration protocol 1. On an older OS image this
-requires two successful plugin-capable runtime upgrades before enabling external
-integrations. Host development directories without a runtime installation are
-exempt. Package rollback selects compatible retained versions without rewriting
-the core runtime or connection credentials.
+does not replace them. Integrations can be enabled after the **first** capable
+core update, including when skipping intermediate releases. The retained core
+rollback slot and the stable bootstrap are unchanged. Package rollback selects
+compatible retained versions without rewriting the core or connection credentials.
+
+### Integration configuration across core rollback
+
+The daemon writes `config.json` as one atomic compatibility envelope. Its ordinary
+fields remain readable by the previous core: built-in connections are unchanged,
+external connections are omitted, and external devices retain their IDs and names
+with an unconfigured integration. Their commands in activity buttons, custom
+pages, start/stop sequences and scenes are disabled in this projection, so the
+old core's supported-command validation still succeeds. The complete current
+configuration lives in the additional `integration_config` field; current daemon
+and GUI disk readers use that field. Normal API exports retain the ordinary
+complete configuration shape. Existing files from an earlier plugin-capable
+build are converted on open without advancing their revision.
+
+Old binaries ignore the additional field and continue to use built-in devices.
+If no configuration is saved while rolled back, upgrading again restores all
+external connections and controls directly from the envelope. If an old daemon
+**saves an edit**, its serializer drops the unknown field. That edited document
+becomes authoritative on the next upgrade: deleted devices, renamed rooms and
+other old-core edits are preserved, and integrations are not silently restored.
+Installed packages and private connection credentials remain on disk.
+
+For deliberate recovery the current daemon also maintains a mode-0600 complete
+export at `/opt/couch/config.integration-recovery.json`. The Integrations page
+reports when an export is available; download it through the paired endpoint
+`GET /api/integrations/recovery/config`, inspect it, and use the normal
+whole-configuration import (`PUT /api/config`, with the current revision in
+`If-Match`) to restore it. Export the current configuration first: importing the
+recovery document replaces the whole configuration, including edits made while
+rolled back. Restoring only selected integrations requires copying the desired
+connections and device bindings into the current export before importing it.
+
+Recovery preparation is separate from confirmation. A save first writes
+`config.integration-recovery.pending.json`, then atomically commits `config.json`,
+then promotes that candidate to the confirmed recovery export. Startup promotes
+a leftover candidate only if it exactly matches the active complete envelope.
+An unmatched candidate is retained separately and is never automatically restored
+or offered as the confirmed export. A power cut can therefore leave a confirmed
+older export and an unconfirmed attempted save; inspect the latter locally if
+needed. `GET /api/integrations/recovery` reports these states separately. Neither
+recovery file is consulted to replace or merge an old daemon's configuration. Package
+admission and rollback hold an exclusive store lock while validating saved
+settings and selecting a version. Configuration and credential saves hold a
+shared lease through their atomic writes, so a save cannot bypass that check
+by racing activation.
 
 ## Installation and recovery
 
@@ -327,6 +368,13 @@ runtime slots, process/heartbeat fixtures and an intercepted reboot command; the
 never access device partitions. They cover healthy acceptance, failed or hung
 health checks, intermittent heartbeats, interrupted activation and rollback to
 the base or previous runtime.
+
+Integration configuration compatibility is covered by `cargo test --locked` in
+`model/` and `cargo test --locked -p couch-confd store::` in `daemon/`.
+These check pre-plugin enum decoding, projected activity validation, first-update
+adoption, normal and interrupted recovery-export commits, old-core edits and
+private export permissions. The GUI snapshot tests exercise the disk envelope
+reader. Host fixtures do not replace a physical first-update and rollback test.
 
 Physical acceptance on the development HA100, 2026-09-13, on the .24 full OS
 image: the signed .115 runtime installed through the paired web UI and passed

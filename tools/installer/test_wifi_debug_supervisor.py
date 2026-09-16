@@ -163,6 +163,53 @@ class DebugSupervisorTests(unittest.TestCase):
                          ['killall wpa_supplicant wmt_launcher wmt_loader'])
         self.assertNotIn('couch-installer-probe', self.supervisor)
 
+    @unittest.skipUnless(os.name == 'posix', 'requires POSIX shell redirection semantics')
+    def test_lifecycle_publication_keeps_previous_record_until_replacement_is_ready(self):
+        """The destination remains readable while the replacement writer is paused."""
+        lifecycle = extract(self.supervisor, 'lifecycle').replace('/tmp', str(self.root))
+        path = self.root / 'couch-wifi-debug.lifecycle'
+        ready = self.root / 'printf-ready'
+        release = self.root / 'printf-release'
+        prior = ('supervisor=couch-wifi-debug-supervisor-v1 generation=1 phase=prior '
+                 'retry=none marker=absent worker=waiting worker_exit=none\n')
+        script = self.root / 'test.sh'
+        script.write_text(
+            f'BB={self.harness.wrapper}\n'
+            'generation=1\nretry_state=none\n'
+            f'{lifecycle}\n'
+            'lifecycle prior absent waiting none\n'
+            'printf() {\n'
+            f'    touch {ready}\n'
+            f'    while [ ! -f {release} ]; do sleep .01; done\n'
+            '    command printf "$@"\n'
+            '}\n'
+            'generation=2\n'
+            'lifecycle replacement absent running none &\n'
+            'writer=$!\n'
+            'wait "$writer"\n')
+        process = subprocess.Popen(self.harness.shell + [str(script)], text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 3
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertTrue(ready.exists(), 'timed out waiting for paused lifecycle writer')
+            # A direct redirection opens and truncates `path` before printf runs.
+            # Atomic replacement leaves this complete prior record visible instead.
+            self.assertEqual(path.read_text(), prior)
+            release.touch()
+            _, stderr = process.communicate(timeout=2)
+            self.assertEqual(process.returncode, 0, stderr)
+        finally:
+            release.touch(exist_ok=True)
+            if process.poll() is None:
+                try:
+                    process.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+        self.assertIn('generation=2 phase=replacement', path.read_text())
+
     @unittest.skipUnless(shutil.which('busybox'), 'requires BusyBox ash lifecycle semantics')
     def test_worker_is_reaped_and_the_supplicant_cleaned_up_on_a_plain_exit(self):
         # `wait` is the shell's, so the status is the worker's rather than

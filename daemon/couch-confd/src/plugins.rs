@@ -22,67 +22,6 @@ fn store_request_error(error: couch_integrations::Error) -> Error {
     }
 }
 
-/// Introducing a new config enum variant cannot be made readable by an older
-/// binary. Wait until the retained rollback runtime also understands plugins.
-/// A host development directory has neither a base identity nor runtime slots.
-pub fn check_core_rollback(home: &Path) -> Result<(), String> {
-    let runtime = home.join("runtime");
-    if !home.join("build.json").exists() && !runtime.exists() {
-        return Ok(());
-    }
-    if runtime.join("pending").exists() {
-        return Err(
-            "Wait for the current core update to finish before enabling integrations".into(),
-        );
-    }
-    let previous = match fs::read_to_string(runtime.join("previous")) {
-        Ok(value) => value.trim().to_owned(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "base".into(),
-        Err(_) => return Err("Cannot inspect the rollback runtime".into()),
-    };
-    let binary = if previous == "base" {
-        home.join("couch-confd")
-    } else if previous.len() == 64
-        && previous
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        runtime.join("slots").join(previous).join("couch-confd")
-    } else {
-        return Err("The rollback runtime identity is invalid".into());
-    };
-    if supports_protocol(&binary) {
-        Ok(())
-    } else {
-        Err("Install a second integration-capable core runtime before enabling integrations, so the retained rollback can still read your configuration".into())
-    }
-}
-
-fn supports_protocol(binary: &Path) -> bool {
-    use std::process::{Command, Stdio};
-    let Ok(mut child) = Command::new(binary)
-        .arg("--supports-integration-protocol=1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return false;
-    };
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return false;
-            }
-        }
-    }
-}
-
 struct Running {
     generation: String,
     settings: Value,
@@ -162,6 +101,10 @@ impl Runtime {
         plugin: &str,
         patch: Value,
     ) -> Result<Value, String> {
+        // Admission validates every saved connection before activating a new
+        // package. Keep its selection stable until these settings are durable,
+        // so validation by an old child cannot race a package activation.
+        let _lease = self.packages.read_lease().map_err(|e| e.to_string())?;
         let (directory, manifest) = self
             .packages
             .resolve_wait(plugin, STORE_READ_WAIT)
@@ -409,90 +352,5 @@ mod tests {
             assert!(merge_settings(&manifest, None, patch).is_err());
         }
         assert_eq!(redacted(&manifest, None)["configured"], false);
-    }
-}
-
-#[cfg(test)]
-mod rollback_tests {
-    use super::*;
-    use std::{
-        os::unix::fs::PermissionsExt,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    struct Home(PathBuf);
-    impl Home {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "couch-plugin-rollback-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-        fn binary(&self, path: &Path, body: &str) {
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-    }
-    impl Drop for Home {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-    const SUPPORT: &str = "test \"$#\" -eq 1 && test \"$1\" = '--supports-integration-protocol=1'";
-
-    #[test]
-    fn host_development_is_allowed_but_device_base_must_support_protocol() {
-        let home = Home::new();
-        assert!(check_core_rollback(&home.0).is_ok());
-        fs::write(home.0.join("build.json"), "{}").unwrap();
-        assert!(check_core_rollback(&home.0).is_err());
-        home.binary(&home.0.join("couch-confd"), "exit 2");
-        assert!(check_core_rollback(&home.0).is_err());
-        home.binary(&home.0.join("couch-confd"), SUPPORT);
-        assert!(check_core_rollback(&home.0).is_ok());
-    }
-
-    #[test]
-    fn retained_slot_is_probed_and_pending_or_invalid_identity_fails_closed() {
-        let home = Home::new();
-        let runtime = home.0.join("runtime");
-        fs::create_dir_all(&runtime).unwrap();
-        let digest = "a".repeat(64);
-        fs::write(runtime.join("previous"), format!("{digest}\n")).unwrap();
-        let binary = runtime.join("slots").join(&digest).join("couch-confd");
-        home.binary(&home.0.join("couch-confd"), SUPPORT);
-        assert!(
-            check_core_rollback(&home.0).is_err(),
-            "a compatible base cannot stand in for the selected rollback slot"
-        );
-        home.binary(&binary, SUPPORT);
-        assert!(check_core_rollback(&home.0).is_ok());
-        fs::write(runtime.join("pending"), "update").unwrap();
-        assert!(check_core_rollback(&home.0).is_err());
-        fs::remove_file(runtime.join("pending")).unwrap();
-        for invalid in [
-            "../base",
-            "",
-            "BASE",
-            "a",
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        ] {
-            fs::write(runtime.join("previous"), invalid).unwrap();
-            assert!(check_core_rollback(&home.0).is_err());
-        }
-    }
-
-    #[test]
-    fn stalled_probe_has_a_bounded_deadline() {
-        let home = Home::new();
-        let binary = home.0.join("probe");
-        home.binary(&binary, "exec /bin/sleep 10");
-        let start = Instant::now();
-        assert!(!supports_protocol(&binary));
-        assert!(start.elapsed() < Duration::from_secs(4));
     }
 }

@@ -19,7 +19,9 @@ EXEMPT = (SOURCE, 'tools/installer/couch_tui.py', 'tools/installer/release_disco
           'tools/installer/test_release_discovery.py',
           # Version-rendering and boot-release tests: sample tags, not install
           # instructions, and one of them is whatever number a promotion takes.
-          'daemon/couch-updates/src/lib.rs')
+          'daemon/couch-updates/src/lib.rs',
+          # Historical decoder vocabulary used to validate first-upgrade rollback.
+          'model/couch-model/src/storage.rs')
 # v0.1.0-alpha.<date>.<n>. The leading v is optional because the site's JSON-LD
 # softwareVersion omits it, and the bounds keep .dev builds, the <date>.<n>
 # placeholders in the flow documents and older undated alphas out.
