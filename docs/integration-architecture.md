@@ -65,13 +65,22 @@ trust. Removing a repository leaves packages and connections intact.
 
 ## Compatibility and independent source
 
-The integration-capable core writes an atomic configuration envelope: ordinary
-fields retain a legacy-readable projection while `integration_config` preserves
-the complete modern state. If a rollback core writes configuration, those edits
-remain authoritative after re-upgrade. An explicitly restorable recovery export
-can restore a prior state; it never silently resurrects deleted bindings.
-Missing packages leave saved connection and activity configuration intact, with
-execution unavailable.
+The integration-capable core writes an atomic configuration envelope. Ordinary
+fields retain a legacy-native projection. `integration_config` keeps a
+protocol-v1 projection, while optional `integration_config_v2` preserves the
+complete enhanced configuration. The v1 projection strips protocol-v2 dB
+components and actions, and makes space-containing input actions inactive. The
+legacy-native projection also omits bindings the old input parser cannot read.
+This is deliberate degradation for an older core, not v2 package support.
+
+The current core validates the projections against the preserved v2 extension
+before writing. It restores v2-only controls and bindings only from a matching
+extension. If a rollback core writes configuration, that old-core edit drops
+the extension and remains authoritative after re-upgrade; discarded bindings
+do not silently return. An explicitly restorable recovery export can restore a
+prior state. Missing packages leave saved connection and activity configuration
+intact, with execution unavailable. A v2 package remains incompatible with an
+older host; existing v1 previous-slot fallback is unchanged.
 
 Each payload is immutable by integration ID and manifest version. Any payload
 change needs a new manifest version and matching APK `pkgver`; changing only an

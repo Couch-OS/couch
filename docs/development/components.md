@@ -80,10 +80,11 @@ not in labels or HTML-like strings.
 `volume_db_control` is reserved for protocol v2. Its `label` is presentation
 only; the manifest must also declare exactly the bounded `set_volume_db` action
 that it exposes. Pair it with `status_text` using the `volume_db` field when a
-receiver reports that state. The control must not appear for an absent reading,
-and the `minimum` dB state is distinct from any numeric value. This component
-is not available to protocol-v1 packages or to the published `.171.dev`
-protocol-v1 host.
+receiver reports that state. When status is absent, never invent a reading or
+initialize the target to zero. Show the `minimum` dB state distinctly. Entering
+or changing a target stays a local draft; Couch sends it only after the user
+selects **Set volume**. This component is not available to protocol-v1 packages
+or to the published `.171.dev` protocol-v1 host.
 
 ## Validation rules
 

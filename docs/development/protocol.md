@@ -1,5 +1,5 @@
 Title: SDK and protocol
-Description: The DeviceClient contract and protocol-v1 framed JSON messages.
+Description: The DeviceClient contract, protocol-v1 framing, and unreleased typed dB controls.
 Order: 3
 
 # SDK and protocol
