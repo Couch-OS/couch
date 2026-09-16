@@ -135,7 +135,6 @@ pub fn library(app: App, output: RwSignal<String>, power_only: bool) -> AnyView 
     }.into_any()
 }
 
-
 fn assign(text: &mut String, function: &str, code: &str) {
     let fields: Vec<_> = code.split_whitespace().collect();
     if fields.len() < 2 {
@@ -143,7 +142,12 @@ fn assign(text: &mut String, function: &str, code: &str) {
     }
     let mut lines: Vec<String> = text
         .lines()
-        .filter(|line| !line.split_whitespace().next().is_some_and(|key|key.eq_ignore_ascii_case(function)))
+        .filter(|line| {
+            !line
+                .split_whitespace()
+                .next()
+                .is_some_and(|key| key.eq_ignore_ascii_case(function))
+        })
         .map(str::to_string)
         .collect();
     lines.push(format!("{function} {}", fields[1..].join(" ")));
@@ -155,18 +159,27 @@ mod tests {
     use super::*;
     #[test]
     fn common_names_preserve_discrete_power_and_filter_power_only_picker() {
-        assert_eq!(suggested_function("Power",false).as_deref(),Some("toggle"));
-        assert_eq!(suggested_function("Power_off",false).as_deref(),Some("power-off"));
-        assert_eq!(suggested_function("Power",true).as_deref(),Some("power"));
-        assert_eq!(suggested_function("Vol_up",false).as_deref(),Some("volume-up"));
-        assert_eq!(suggested_function("Vol_up",true),None);
-        assert_eq!(suggested_function("Unknown key",false),None);
+        assert_eq!(
+            suggested_function("Power", false).as_deref(),
+            Some("toggle")
+        );
+        assert_eq!(
+            suggested_function("Power_off", false).as_deref(),
+            Some("power-off")
+        );
+        assert_eq!(suggested_function("Power", true).as_deref(), Some("power"));
+        assert_eq!(
+            suggested_function("Vol_up", false).as_deref(),
+            Some("volume-up")
+        );
+        assert_eq!(suggested_function("Vol_up", true), None);
+        assert_eq!(suggested_function("Unknown key", false), None);
     }
     #[test]
     fn remove_is_case_insensitive_and_preserves_other_commands() {
-        let mut text="# custom commands\nToggle nec 4 8\nvolume-up nec 4 2".to_string();
-        remove_assignment(&mut text,"toggle");
-        assert_eq!(assigned_functions(&text),vec!["volume-up"]);
+        let mut text = "# custom commands\nToggle nec 4 8\nvolume-up nec 4 2".to_string();
+        remove_assignment(&mut text, "toggle");
+        assert_eq!(assigned_functions(&text), vec!["volume-up"]);
         assert!(text.contains("# custom commands"));
     }
     #[test]
@@ -203,7 +216,12 @@ impl State {
 }
 
 /// The IR section of a device row, open across a successful revisioned save.
-pub fn device_commands(app: App, config: &couch_model::Config, room: &couch_model::Id, device: &couch_model::Device) -> AnyView {
+pub fn device_commands(
+    app: App,
+    config: &couch_model::Config,
+    room: &couch_model::Id,
+    device: &couch_model::Device,
+) -> AnyView {
     let open = expect_context::<State>().open;
     let configured = device.effective_ir_codeset(config).is_some();
     let id = StoredValue::new(device.id.to_string());
@@ -216,7 +234,11 @@ pub fn device_commands(app: App, config: &couch_model::Config, room: &couch_mode
     </section>}.into_any()
 }
 
-pub fn device_setup(app: App, room: couch_model::Id, existing: Option<couch_model::Device>) -> AnyView {
+pub fn device_setup(
+    app: App,
+    room: couch_model::Id,
+    existing: Option<couch_model::Device>,
+) -> AnyView {
     let open = expect_context::<State>().open;
     let is_new = existing.is_none();
     let name = RwSignal::new(String::new());
@@ -232,11 +254,32 @@ pub fn device_setup(app: App, room: couch_model::Id, existing: Option<couch_mode
     let loaded = RwSignal::new(is_new);
     if let Some(device) = saved.get_value() {
         spawn_local(async move {
-            let result=api::ha("GET",&format!("/api/rooms/{}/devices/{}/ir",room.get_value(),device.id),None).await;
-            if loading.try_get_untracked().is_none(){return;}
+            let result = api::ha(
+                "GET",
+                &format!("/api/rooms/{}/devices/{}/ir", room.get_value(), device.id),
+                None,
+            )
+            .await;
+            if loading.try_get_untracked().is_none() {
+                return;
+            }
             match result {
-                Ok(v)=>{let body=v["text"].as_str().unwrap_or("").to_string();text.set(body.clone());original.set(body);codeset.set(v["codeset"].as_str().unwrap_or("").into());if let Some(error)=v["error"].as_str(){message.set(error.into());}loaded.set(true);},
-                Err(e)=>{if e.unauthorized {app.paired.set(Some(false));}message.set(e.message);}
+                Ok(v) => {
+                    let body = v["text"].as_str().unwrap_or("").to_string();
+                    text.set(body.clone());
+                    original.set(body);
+                    codeset.set(v["codeset"].as_str().unwrap_or("").into());
+                    if let Some(error) = v["error"].as_str() {
+                        message.set(error.into());
+                    }
+                    loaded.set(true);
+                }
+                Err(e) => {
+                    if e.unauthorized {
+                        app.paired.set(Some(false));
+                    }
+                    message.set(e.message);
+                }
             }
             loading.set(false);
         });
@@ -286,25 +329,74 @@ pub fn device_setup(app: App, room: couch_model::Id, existing: Option<couch_mode
 }
 
 fn assigned_functions(text: &str) -> Vec<String> {
-    text.lines().filter_map(|line|{let line=line.trim();if line.starts_with('#'){None}else{line.split_whitespace().next().map(str::to_string)}}).collect()
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.starts_with('#') {
+                None
+            } else {
+                line.split_whitespace().next().map(str::to_string)
+            }
+        })
+        .collect()
 }
 fn remove_assignment(text: &mut String, function: &str) {
-    *text=text.lines().filter(|line|!line.split_whitespace().next().is_some_and(|key|key.eq_ignore_ascii_case(function))).collect::<Vec<_>>().join("\n");
+    *text = text
+        .lines()
+        .filter(|line| {
+            !line
+                .split_whitespace()
+                .next()
+                .is_some_and(|key| key.eq_ignore_ascii_case(function))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 }
 fn function_label(function: &str) -> String {
-    match function {"toggle"|"power"=>"Power toggle".into(),"power-on"=>"Power on".into(),"power-off"=>"Power off".into(),"ok"=>"OK / select".into(),_=>{let label=function.replace('-'," ");let mut chars=label.chars();match chars.next(){Some(c)=>c.to_uppercase().collect::<String>()+chars.as_str(),None=>String::new()}}}
+    match function {
+        "toggle" | "power" => "Power toggle".into(),
+        "power-on" => "Power on".into(),
+        "power-off" => "Power off".into(),
+        "ok" => "OK / select".into(),
+        _ => {
+            let label = function.replace('-', " ");
+            let mut chars = label.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
+    }
 }
 
 fn suggested_function(name: &str, power_only: bool) -> Option<String> {
-    let key=name.to_ascii_lowercase().replace([' ', '_'], "-");
-    let function=match key.as_str(){
-        "power"|"power-toggle"|"toggle"=>if power_only{"power"}else{"toggle"},
-        "on"|"power-on"|"poweron"=>"power-on", "off"|"power-off"|"poweroff"=>"power-off",
-        "vol+"|"vol-up"|"volume-up"|"volume+"=>"volume-up", "vol-"|"vol-down"|"volume-down"|"volume-"=>"volume-down",
-        "ch+"|"ch-up"|"channel-up"=>"channel-up", "ch-"|"ch-down"|"channel-down"=>"channel-down",
-        "enter"|"select"|"ok"=>"ok", "return"|"back"=>"back", "play/pause"|"playpause"|"play-pause"=>"play-pause",
-        "up"|"down"|"left"|"right"|"home"|"menu"|"mute"|"play"|"pause"|"stop"|"next"|"previous"|"rewind"|"fast-forward"|"red"|"green"|"yellow"|"blue"=>key.as_str(),
-        _=>return None,
+    let key = name.to_ascii_lowercase().replace([' ', '_'], "-");
+    let function = match key.as_str() {
+        "power" | "power-toggle" | "toggle" => {
+            if power_only {
+                "power"
+            } else {
+                "toggle"
+            }
+        }
+        "on" | "power-on" | "poweron" => "power-on",
+        "off" | "power-off" | "poweroff" => "power-off",
+        "vol+" | "vol-up" | "volume-up" | "volume+" => "volume-up",
+        "vol-" | "vol-down" | "volume-down" | "volume-" => "volume-down",
+        "ch+" | "ch-up" | "channel-up" => "channel-up",
+        "ch-" | "ch-down" | "channel-down" => "channel-down",
+        "enter" | "select" | "ok" => "ok",
+        "return" | "back" => "back",
+        "play/pause" | "playpause" | "play-pause" => "play-pause",
+        "up" | "down" | "left" | "right" | "home" | "menu" | "mute" | "play" | "pause" | "stop"
+        | "next" | "previous" | "rewind" | "fast-forward" | "red" | "green" | "yellow" | "blue" => {
+            key.as_str()
+        }
+        _ => return None,
     };
-    if power_only&&!matches!(function,"power"|"power-on"|"power-off"){None}else{Some(function.into())}
+    if power_only && !matches!(function, "power" | "power-on" | "power-off") {
+        None
+    } else {
+        Some(function.into())
+    }
 }

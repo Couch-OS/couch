@@ -34,7 +34,7 @@ const KEYS: &[(Button, &str, &str, i32, i32)] = &[
     (Button::Yellow, "Yellow", "Y", 83, 91),
 ];
 pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
-    let ir_commands=super::device_commands::Commands::new(config);
+    let ir_commands = super::device_commands::Commands::new(config);
     // Reference counted: the device effect and the search box below both want
     // the whole document, and `StoredValue<Config>` hands each read a copy of
     // the house.

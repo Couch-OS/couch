@@ -122,8 +122,8 @@ impl Api {
                 None => Reply::error(404, "Denon connection not found"),
             };
         }
-        if let [id, kind @ ("protect" | "hue" | "ha" | "webos" | "kodi" | "androidtv" | "appletv" | "tizen"), rest @ ..] =
-            path
+        if let [id, kind @ ("protect" | "hue" | "ha" | "webos" | "kodi" | "androidtv" | "appletv"
+        | "tizen"), rest @ ..] = path
         {
             let file = self.with(|s| {
                 let c = s.config().connection(&Id::new(*id))?;

@@ -20,11 +20,15 @@ pub(super) fn route(method: &str, path: &[&str], body: &[u8]) -> Reply {
         std::env::var("COUCH_HUE_CONNECTION")
             .unwrap_or_else(|_| "/opt/couch/hue-connection.json".into()),
     );
-    route_at(method,path,body,file)
+    route_at(method, path, body, file)
 }
-pub(super) fn route_at(method: &str,path:&[&str],body:&[u8],file:PathBuf)->Reply {
-    if let Some(parent)=file.parent(){if std::fs::create_dir_all(parent).is_err(){return Reply::error(500,"Cannot create private connection directory");}}
-    let connection_lock=super::connections::lock_for(&file);
+pub(super) fn route_at(method: &str, path: &[&str], body: &[u8], file: PathBuf) -> Reply {
+    if let Some(parent) = file.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return Reply::error(500, "Cannot create private connection directory");
+        }
+    }
+    let connection_lock = super::connections::lock_for(&file);
     let Ok(_guard) = connection_lock.try_lock() else {
         return Reply::error(503, "Hue connection is busy");
     };
@@ -68,12 +72,18 @@ pub(super) fn route_at(method: &str,path:&[&str],body:&[u8],file:PathBuf)->Reply
     };
     match (method, path) {
         ("GET", [kind @ ("rooms" | "scenes")]) => match client.resources() {
-            Ok(items) => Reply::json(200, &items.into_iter().filter(|r|r.resource_kind==if *kind=="rooms" {"room"} else {"scene"}).collect::<Vec<_>>()),
-            Err(e) => Reply::error(502,e.to_string()),
+            Ok(items) => Reply::json(
+                200,
+                &items
+                    .into_iter()
+                    .filter(|r| r.resource_kind == if *kind == "rooms" { "room" } else { "scene" })
+                    .collect::<Vec<_>>(),
+            ),
+            Err(e) => Reply::error(502, e.to_string()),
         },
         ("POST", ["scenes", id, "recall"]) => match client.recall_scene(id) {
-            Ok(()) => Reply::json(200,&json!({"accepted":true})),
-            Err(e) => Reply::error(502,e.to_string()),
+            Ok(()) => Reply::json(200, &json!({"accepted":true})),
+            Err(e) => Reply::error(502, e.to_string()),
         },
         ("GET", ["lights"]) => match client.lights() {
             Ok(l) => Reply::json(200, &l),

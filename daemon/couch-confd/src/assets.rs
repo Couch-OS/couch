@@ -50,7 +50,9 @@ impl Assets {
     }
 
     pub fn from_dir(dir: impl Into<PathBuf>) -> Assets {
-        Assets { dir: Some(dir.into()) }
+        Assets {
+            dir: Some(dir.into()),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -88,12 +90,13 @@ impl Assets {
         if Path::new(name).extension().is_some() {
             return None;
         }
-        self.read("index.html")
-            .or_else(|| Some(Asset {
+        self.read("index.html").or_else(|| {
+            Some(Asset {
                 body: PLACEHOLDER.as_bytes().to_vec(),
                 content_type: "text/html; charset=utf-8",
                 immutable: false,
-            }))
+            })
+        })
     }
 
     fn read(&self, name: &str) -> Option<Asset> {
@@ -125,7 +128,9 @@ fn is_safe(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('/')
         && !name.contains('\\')
-        && !name.split('/').any(|part| part == ".." || part == "." || part.is_empty())
+        && !name
+            .split('/')
+            .any(|part| part == ".." || part == "." || part.is_empty())
 }
 
 /// Trunk names its output `couch-web-<16 hex>.js`, `style-<16 hex>.css` - and,
@@ -145,7 +150,11 @@ fn has_fingerprint(name: &str) -> bool {
 }
 
 fn content_type(name: &str) -> &'static str {
-    match Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("") {
+    match Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+    {
         "html" => "text/html; charset=utf-8",
         "js" => "text/javascript; charset=utf-8",
         // Without this exact type the browser refuses instantiateStreaming and

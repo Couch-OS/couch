@@ -732,8 +732,8 @@ fn send_network(
                 }
                 if command == F::Toggle {
                     return crate::tv::toggle_power(&settings, &path)
-                    .map(|_| Outcome::default())
-                    .map_err(Failure::Command);
+                        .map(|_| Outcome::default())
+                        .map_err(Failure::Command);
                 }
             }
             if command == F::PowerOn {
@@ -823,7 +823,10 @@ fn send_network(
                 F::TemperatureUp | F::TemperatureDown => Some(
                     c.climate(&raw)
                         .and_then(|state| {
-                            state.adjusted_target(if command == F::TemperatureUp { 1 } else { -1 }, None)
+                            state.adjusted_target(
+                                if command == F::TemperatureUp { 1 } else { -1 },
+                                None,
+                            )
                         })
                         .map_err(|e| e.to_string())?,
                 ),
@@ -1326,7 +1329,11 @@ mod tests {
             devices: vec![
                 couch_model::Device {
                     bluetooth: Some(bond.clone()),
-                    ..couch_model::Device::new("bt-only".into(), "Bedroom TV", couch_model::DeviceKind::Tv)
+                    ..couch_model::Device::new(
+                        "bt-only".into(),
+                        "Bedroom TV",
+                        couch_model::DeviceKind::Tv,
+                    )
                 },
                 couch_model::Device {
                     bluetooth: Some(bond),
@@ -1356,7 +1363,10 @@ mod tests {
         };
         // No HID daemon on a test host, so the bond is never the link: a
         // Bluetooth-only TV says so, and says nothing about other transports.
-        assert_eq!(run("bt-only", "volume-up"), "Bedroom TV is not connected over Bluetooth");
+        assert_eq!(
+            run("bt-only", "volume-up"),
+            "Bedroom TV is not connected over Bluetooth"
+        );
         // Power-on is not a Bluetooth key at all, and the device has nothing else.
         assert_eq!(run("bt-only", "power-on"), "Unsupported button function");
         // The LG prefers Bluetooth; with its TV not on the link the key falls

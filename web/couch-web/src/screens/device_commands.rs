@@ -16,7 +16,7 @@ pub(super) struct Commands {
 }
 impl Commands {
     pub fn new(config: &Config) -> Self {
-        let initial: BTreeMap<String,Loaded> = config
+        let initial: BTreeMap<String, Loaded> = config
             .devices()
             .filter(|(_, d)| d.effective_ir_codeset(config).is_some())
             .map(|(_, d)| (d.id.to_string(), Loaded::Loading))

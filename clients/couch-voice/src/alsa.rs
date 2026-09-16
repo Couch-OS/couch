@@ -530,12 +530,14 @@ impl Capture {
             let at = f * channels * width;
             *sample = match width {
                 2 => i16::from_le_bytes([self.raw[at], self.raw[at + 1]]),
-                _ => (i32::from_le_bytes([
-                    self.raw[at],
-                    self.raw[at + 1],
-                    self.raw[at + 2],
-                    self.raw[at + 3],
-                ]) >> 16) as i16,
+                _ => {
+                    (i32::from_le_bytes([
+                        self.raw[at],
+                        self.raw[at + 1],
+                        self.raw[at + 2],
+                        self.raw[at + 3],
+                    ]) >> 16) as i16
+                }
             };
         }
         frames

@@ -19,7 +19,10 @@ pub enum Error {
     Parse(serde_json::Error),
     Invalid(ValidationError),
     /// The client sent an `If-Match` that no longer matches.
-    Stale { expected: u64, actual: u64 },
+    Stale {
+        expected: u64,
+        actual: u64,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -58,17 +61,34 @@ impl Store {
             Ok(bytes) => {
                 let config: Config = serde_json::from_slice(&bytes).map_err(Error::Parse)?;
                 config.validate().map_err(Error::Invalid)?;
-                let legacy = serde_json::from_slice::<serde_json::Value>(&bytes).ok().is_some_and(|v|v.get("connections").is_none());
+                let legacy = serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .ok()
+                    .is_some_and(|v| v.get("connections").is_none());
                 let mut store = Store { path, config };
                 if legacy {
-                    let parent=store.path.parent().unwrap_or_else(||Path::new("."));
-                    for (file, name, provider) in [("ha-connection.json","Home Assistant",couch_model::Provider::HomeAssistant),("hue-connection.json","Philips Hue",couch_model::Provider::Hue)] {
+                    let parent = store.path.parent().unwrap_or_else(|| Path::new("."));
+                    for (file, name, provider) in [
+                        (
+                            "ha-connection.json",
+                            "Home Assistant",
+                            couch_model::Provider::HomeAssistant,
+                        ),
+                        (
+                            "hue-connection.json",
+                            "Philips Hue",
+                            couch_model::Provider::Hue,
+                        ),
+                    ] {
                         if parent.join(file).is_file() {
-                            store.config.connections.push(couch_model::Connection{id:couch_model::Id::from_name(name),name:name.into(),provider});
+                            store.config.connections.push(couch_model::Connection {
+                                id: couch_model::Id::from_name(name),
+                                name: name.into(),
+                                provider,
+                            });
                         }
                     }
                     if !store.config.connections.is_empty() {
-                        store.config.revision=store.config.revision.wrapping_add(1);
+                        store.config.revision = store.config.revision.wrapping_add(1);
                         store.config.validate().map_err(Error::Invalid)?;
                         store.write()?;
                     }
@@ -85,7 +105,10 @@ impl Store {
                 Ok(store)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let store = Store { path, config: Config::default() };
+                let store = Store {
+                    path,
+                    config: Config::default(),
+                };
                 store.write()?;
                 Ok(store)
             }
@@ -94,41 +117,79 @@ impl Store {
     }
 
     /// Bind former singleton credentials once, preserving originals and existing scoped pairings.
-    fn migrate_connection_credentials(&mut self)->Result<(),Error> {
-        let root=self.path.parent().unwrap_or(Path::new("."));
-        let marker=root.join("connection-legacy-map.json");
-        let mut mapped:std::collections::BTreeMap<String,String>=match fs::read(&marker) {
-            Ok(b)=>serde_json::from_slice(&b).map_err(Error::Parse)?,
-            Err(e) if e.kind()==io::ErrorKind::NotFound=>Default::default(),Err(e)=>return Err(e.into()),
+    fn migrate_connection_credentials(&mut self) -> Result<(), Error> {
+        let root = self.path.parent().unwrap_or(Path::new("."));
+        let marker = root.join("connection-legacy-map.json");
+        let mut mapped: std::collections::BTreeMap<String, String> = match fs::read(&marker) {
+            Ok(b) => serde_json::from_slice(&b).map_err(Error::Parse)?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Default::default(),
+            Err(e) => return Err(e.into()),
         };
-        for (kind,prefix) in [("hue","hue"),("home-assistant","ha"),("web-os","webos")] {
-            if mapped.contains_key(kind){continue;}
-            let Some(c)=self.config.connections.iter().find(|c|c.provider.kind()==kind) else{continue;};
-            let directory=root.join("connections").join(c.id.as_str());fs::create_dir_all(&directory)?;
-            for filename in [format!("{prefix}-connection.json"),format!("{prefix}-wake.json")] {
-                let source=root.join(&filename);let target=directory.join(&filename);
-                if source.is_file() && !target.exists() {
-                    let data=fs::read(source)?;write_private(&target,&data)?;
-                }
+        for (kind, prefix) in [
+            ("hue", "hue"),
+            ("home-assistant", "ha"),
+            ("web-os", "webos"),
+        ] {
+            if mapped.contains_key(kind) {
+                continue;
             }
-            mapped.insert(kind.into(),c.id.to_string());
-        }
-        let mut changed=false;
-        for room in &mut self.config.rooms {for device in &mut room.devices {
-            let legacy=match &device.integration {
-                couch_model::Integration::Hue{light_id}=>Some(("hue",light_id.clone())),
-                couch_model::Integration::HomeAssistant{entity_id}=>Some(("home-assistant",entity_id.clone())),_=>None,
+            let Some(c) = self
+                .config
+                .connections
+                .iter()
+                .find(|c| c.provider.kind() == kind)
+            else {
+                continue;
             };
-            if let Some((kind,resource_id))=legacy {
-                if let Some(id)=mapped.get(kind).filter(|id|self.config.connections.iter().any(|c|c.id.as_str()==id.as_str())) {
-                    device.integration=couch_model::Integration::Connection{connection_id:couch_model::Id::new(id.clone()),resource_id};changed=true;
+            let directory = root.join("connections").join(c.id.as_str());
+            fs::create_dir_all(&directory)?;
+            for filename in [
+                format!("{prefix}-connection.json"),
+                format!("{prefix}-wake.json"),
+            ] {
+                let source = root.join(&filename);
+                let target = directory.join(&filename);
+                if source.is_file() && !target.exists() {
+                    let data = fs::read(source)?;
+                    write_private(&target, &data)?;
                 }
             }
-        }}
-        if changed {self.config.revision=self.config.revision.wrapping_add(1);self.config.validate().map_err(Error::Invalid)?;self.write()?;}
-        let data=serde_json::to_vec(&mapped).map_err(Error::Parse)?;
-        if fs::read(&marker).ok().as_deref()!=Some(data.as_slice()) {
-            write_private(&marker,&data)?;
+            mapped.insert(kind.into(), c.id.to_string());
+        }
+        let mut changed = false;
+        for room in &mut self.config.rooms {
+            for device in &mut room.devices {
+                let legacy = match &device.integration {
+                    couch_model::Integration::Hue { light_id } => Some(("hue", light_id.clone())),
+                    couch_model::Integration::HomeAssistant { entity_id } => {
+                        Some(("home-assistant", entity_id.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some((kind, resource_id)) = legacy {
+                    if let Some(id) = mapped.get(kind).filter(|id| {
+                        self.config
+                            .connections
+                            .iter()
+                            .any(|c| c.id.as_str() == id.as_str())
+                    }) {
+                        device.integration = couch_model::Integration::Connection {
+                            connection_id: couch_model::Id::new(id.clone()),
+                            resource_id,
+                        };
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.config.revision = self.config.revision.wrapping_add(1);
+            self.config.validate().map_err(Error::Invalid)?;
+            self.write()?;
+        }
+        let data = serde_json::to_vec(&mapped).map_err(Error::Parse)?;
+        if fs::read(&marker).ok().as_deref() != Some(data.as_slice()) {
+            write_private(&marker, &data)?;
         }
         Ok(())
     }
@@ -157,7 +218,10 @@ impl Store {
     ) -> Result<T, Error> {
         if let Some(expected) = if_match {
             if expected != self.config.revision {
-                return Err(Error::Stale { expected, actual: self.config.revision });
+                return Err(Error::Stale {
+                    expected,
+                    actual: self.config.revision,
+                });
             }
         }
         let mut next = self.config.clone();
@@ -221,15 +285,23 @@ impl Store {
 /// left the temp on the rootfs and every later `Store::open` failed
 /// `AlreadyExists` - which `main` turns into `exit(1)`, so the web UI was gone
 /// until somebody got a shell. Same shape as `access::atomic` in couch-system.
-fn write_private(target:&Path,data:&[u8])->io::Result<()> {
+fn write_private(target: &Path, data: &[u8]) -> io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
-    let temp=target.with_extension(format!("migrate-{}",std::process::id()));
-    let result=(||->io::Result<()> {
-        let mut file=fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
-        file.write_all(data)?;file.sync_all()?;fs::rename(&temp,target)?;
-        fs::File::open(target.parent().unwrap_or_else(||Path::new(".")))?.sync_all()
+    let temp = target.with_extension(format!("migrate-{}", std::process::id()));
+    let result = (|| -> io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        fs::rename(&temp, target)?;
+        fs::File::open(target.parent().unwrap_or_else(|| Path::new(".")))?.sync_all()
     })();
-    if result.is_err() {let _=fs::remove_file(&temp);}
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
     result
 }
 
@@ -298,7 +370,9 @@ mod tests {
         let path = scratch("revision");
         let mut store = Store::open(&path).unwrap();
         let r0 = store.revision();
-        store.mutate(Some(r0), |cfg| cfg.remove_room(&Id::new("loft"))).unwrap();
+        store
+            .mutate(Some(r0), |cfg| cfg.remove_room(&Id::new("loft")))
+            .unwrap();
         assert_eq!(store.revision(), r0 + 1);
         let err = store.mutate(Some(r0), |_| {}).unwrap_err();
         assert!(matches!(err, Error::Stale { .. }));
@@ -315,7 +389,10 @@ mod tests {
         assert!(store.config().connections.is_empty());
         let tv = &store.config().rooms[0].devices[0];
         assert_eq!(tv.integration, couch_model::Integration::None);
-        assert_eq!(tv.bluetooth.as_ref().map(|b| b.name.as_str()), Some("Bedroom TV"));
+        assert_eq!(
+            tv.bluetooth.as_ref().map(|b| b.name.as_str()),
+            Some("Bedroom TV")
+        );
         assert_eq!(store.revision(), 8, "rewritten once, with a new revision");
         // The file on disk is in the new shape: a second open changes nothing.
         let again = Store::open(&path).unwrap();
@@ -339,7 +416,9 @@ mod tests {
     fn writes_leave_no_temp_file_behind() {
         let path = scratch("atomic");
         let mut store = Store::open(&path).unwrap();
-        store.mutate(None, |cfg| cfg.remove_room(&Id::new("porch"))).unwrap();
+        store
+            .mutate(None, |cfg| cfg.remove_room(&Id::new("porch")))
+            .unwrap();
         assert!(!path.with_extension("json.tmp").exists());
     }
 }
@@ -349,12 +428,21 @@ mod connection_migration_tests {
     use super::*;
     #[test]
     fn paired_bridge_is_adopted_once_without_touching_credentials() {
-        let dir=std::env::temp_dir().join(format!("couch-connection-migration-{}",std::process::id()));fs::create_dir_all(&dir).unwrap();
-        let path=dir.join("config.json");let credential=dir.join("hue-connection.json");
-        fs::write(&path,br#"{"schema_version":1,"revision":3,"rooms":[]}"#).unwrap();fs::write(&credential,b"private fixture").unwrap();
-        let mut store=Store::open(&path).unwrap();assert_eq!(store.revision(),4);assert_eq!(store.config().connections.len(),1);
-        store.mutate(Some(4),|c|c.connections.clear()).unwrap();drop(store);
-        assert!(Store::open(&path).unwrap().config().connections.is_empty());assert_eq!(fs::read(&credential).unwrap(),b"private fixture");fs::remove_dir_all(dir).unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("couch-connection-migration-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let credential = dir.join("hue-connection.json");
+        fs::write(&path, br#"{"schema_version":1,"revision":3,"rooms":[]}"#).unwrap();
+        fs::write(&credential, b"private fixture").unwrap();
+        let mut store = Store::open(&path).unwrap();
+        assert_eq!(store.revision(), 4);
+        assert_eq!(store.config().connections.len(), 1);
+        store.mutate(Some(4), |c| c.connections.clear()).unwrap();
+        drop(store);
+        assert!(Store::open(&path).unwrap().config().connections.is_empty());
+        assert_eq!(fs::read(&credential).unwrap(), b"private fixture");
+        fs::remove_dir_all(dir).unwrap();
     }
 }
 
@@ -363,38 +451,78 @@ mod scoped_credentials_tests {
     use super::*;
     #[test]
     fn a_temp_left_by_an_interrupted_migration_does_not_block_startup() {
-        let dir=std::env::temp_dir().join(format!("couch-migration-leftover-{}",std::process::id()));
-        let _=fs::remove_dir_all(&dir);fs::create_dir_all(dir.join("connections/bridge")).unwrap();
-        let mut config=Config::default();
-        config.connections.push(couch_model::Connection{id:"bridge".into(),name:"Philips Hue".into(),provider:couch_model::Provider::Hue});
-        fs::write(dir.join("config.json"),serde_json::to_vec(&config).unwrap()).unwrap();
-        fs::write(dir.join("hue-connection.json"),b"private-pairing").unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("couch-migration-leftover-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("connections/bridge")).unwrap();
+        let mut config = Config::default();
+        config.connections.push(couch_model::Connection {
+            id: "bridge".into(),
+            name: "Philips Hue".into(),
+            provider: couch_model::Provider::Hue,
+        });
+        fs::write(
+            dir.join("config.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        fs::write(dir.join("hue-connection.json"), b"private-pairing").unwrap();
         // What a battery pull between the open and the rename used to leave.
-        fs::write(dir.join("connections/bridge/hue-connection.migrate-new"),b"half").unwrap();
-        fs::write(dir.join("connection-legacy-map.new"),b"half").unwrap();
+        fs::write(
+            dir.join("connections/bridge/hue-connection.migrate-new"),
+            b"half",
+        )
+        .unwrap();
+        fs::write(dir.join("connection-legacy-map.new"), b"half").unwrap();
         Store::open(dir.join("config.json")).unwrap();
-        assert_eq!(fs::read(dir.join("connections/bridge/hue-connection.json")).unwrap(),b"private-pairing");
+        assert_eq!(
+            fs::read(dir.join("connections/bridge/hue-connection.json")).unwrap(),
+            b"private-pairing"
+        );
         assert!(dir.join("connection-legacy-map.json").is_file());
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn legacy_pairing_is_copied_once_and_never_reassigned_to_second_tv() {
         use std::os::unix::fs::PermissionsExt;
-        let dir=std::env::temp_dir().join(format!("couch-multi-migration-{}",std::process::id()));
-        let _=fs::remove_dir_all(&dir);fs::create_dir_all(&dir).unwrap();
-        let mut config=Config::default();
-        for id in ["tv-a","tv-b"] {config.connections.push(couch_model::Connection{id:id.into(),name:id.into(),provider:couch_model::Provider::WebOs});}
-        fs::write(dir.join("config.json"),serde_json::to_vec(&config).unwrap()).unwrap();
-        fs::write(dir.join("webos-connection.json"),b"private-pairing").unwrap();
-        let mut store=Store::open(dir.join("config.json")).unwrap();
-        let first=dir.join("connections/tv-a/webos-connection.json");
-        assert_eq!(fs::read(&first).unwrap(),b"private-pairing");
-        assert_eq!(fs::metadata(first).unwrap().permissions().mode()&0o777,0o600);
+        let dir =
+            std::env::temp_dir().join(format!("couch-multi-migration-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut config = Config::default();
+        for id in ["tv-a", "tv-b"] {
+            config.connections.push(couch_model::Connection {
+                id: id.into(),
+                name: id.into(),
+                provider: couch_model::Provider::WebOs,
+            });
+        }
+        fs::write(
+            dir.join("config.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        fs::write(dir.join("webos-connection.json"), b"private-pairing").unwrap();
+        let mut store = Store::open(dir.join("config.json")).unwrap();
+        let first = dir.join("connections/tv-a/webos-connection.json");
+        assert_eq!(fs::read(&first).unwrap(), b"private-pairing");
+        assert_eq!(
+            fs::metadata(first).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert!(!dir.join("connections/tv-b/webos-connection.json").exists());
-        store.mutate(None,|c|{c.connections.remove(0);}).unwrap();drop(store);
+        store
+            .mutate(None, |c| {
+                c.connections.remove(0);
+            })
+            .unwrap();
+        drop(store);
         Store::open(dir.join("config.json")).unwrap();
         assert!(!dir.join("connections/tv-b/webos-connection.json").exists());
-        assert_eq!(fs::read(dir.join("webos-connection.json")).unwrap(),b"private-pairing");
+        assert_eq!(
+            fs::read(dir.join("webos-connection.json")).unwrap(),
+            b"private-pairing"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }

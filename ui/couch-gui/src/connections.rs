@@ -157,7 +157,10 @@ impl HueFleet {
             .retain(|id, _| ids.contains(id));
         let (mut lights, mut failed) = (vec![], vec![]);
         for id in ids {
-            let Ok(list) = self.get(&id).and_then(|c| c.lights().map_err(|e| e.to_string())) else {
+            let Ok(list) = self
+                .get(&id)
+                .and_then(|c| c.lights().map_err(|e| e.to_string()))
+            else {
                 failed.push(id);
                 continue;
             };

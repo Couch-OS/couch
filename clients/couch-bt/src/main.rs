@@ -81,7 +81,6 @@ fn log(line: &str) {
     let _ = std::io::stdout().flush();
 }
 
-
 /// Wait until the radio answers HCI. On the first open after boot the
 /// firmware takes a moment past WMT's "BT on" before it acknowledges STP
 /// frames, and anything sent before then is lost at the transport, which then
@@ -99,7 +98,11 @@ fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
     // goes down with it) and a probe at 600 ms still provoked one reset; the
     // marker lives in /tmp, which is emptied by every boot.
     let first_open = "/tmp/couch-bt-opened-once";
-    let settle = if std::path::Path::new(first_open).exists() { 600 } else { 2000 };
+    let settle = if std::path::Path::new(first_open).exists() {
+        600
+    } else {
+        2000
+    };
     let _ = std::fs::write(first_open, b"");
     std::thread::sleep(Duration::from_millis(settle));
     // WMT keeps talking to the firmware for a while after the first open
@@ -121,7 +124,9 @@ fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
         }
     }
     if drained > 0 {
-        log(&format!("discarded {drained} bytes of bring-up chatter from the radio"));
+        log(&format!(
+            "discarded {drained} bytes of bring-up chatter from the radio"
+        ));
     }
     // Read Local Version, not HCI Reset: the firmware takes a while to come
     // back from a Reset and does not acknowledge STP frames meanwhile, so a
@@ -140,10 +145,16 @@ fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
                 Ok(n) if n > 0 => {
                     if let Ok(frames) = framer.push(&buf[..n]) {
                         if frames.iter().any(|f| {
-                            f.len() >= 7 && f[0] == h4::EVENT && f[1] == 0x0e && f[4] == 0x01 && f[5] == 0x10
+                            f.len() >= 7
+                                && f[0] == h4::EVENT
+                                && f[1] == 0x0e
+                                && f[4] == 0x01
+                                && f[5] == 0x10
                         }) {
                             if attempt > 1 {
-                                log(&format!("radio answered the readiness probe on try {attempt}"));
+                                log(&format!(
+                                    "radio answered the readiness probe on try {attempt}"
+                                ));
                             }
                             return true;
                         }

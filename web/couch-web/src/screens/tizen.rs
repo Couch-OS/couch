@@ -29,7 +29,9 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
         let name = v["name"].as_str().unwrap_or("");
         let mut text = format!("{name} {model}").trim().to_string();
         if v["wake_supported"] == false {
-            text.push_str(" · No MAC reported: Wake-on-LAN unavailable until paired again with the TV on");
+            text.push_str(
+                " · No MAC reported: Wake-on-LAN unavailable until paired again with the TV on",
+            );
         }
         if v["frame_tv"] == true {
             text.push_str(" · The Frame: power holds the key for three seconds");
@@ -53,7 +55,9 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
                 legacy.set(v["secure"] == false && v["paired"] == true);
                 if v["paired"] == true {
                     detail.set(describe(&v));
-                    message.set("Pairing saved. Test connection to check that the TV is reachable.".into());
+                    message.set(
+                        "Pairing saved. Test connection to check that the TV is reachable.".into(),
+                    );
                 }
             }
             Err(e) => fail(app, message, e),
@@ -89,22 +93,24 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
                 return;
             }
             match result {
-                Ok(v) => match operation {
-                    "discover" => {
-                        let tvs: Vec<Found> = serde_json::from_value(v).unwrap_or_default();
-                        message.set(if tvs.is_empty() { "No Samsung TVs answered. Make sure the TV is on and on this network, or enter its address manually." } else { "Select your TV below." }.into());
-                        found.set(tvs);
+                Ok(v) => {
+                    match operation {
+                        "discover" => {
+                            let tvs: Vec<Found> = serde_json::from_value(v).unwrap_or_default();
+                            message.set(if tvs.is_empty() { "No Samsung TVs answered. Make sure the TV is on and on this network, or enter its address manually." } else { "Select your TV below." }.into());
+                            found.set(tvs);
+                        }
+                        "pair" => {
+                            paired.set(true);
+                            detail.set(describe(&v));
+                            message.set("TV allowed Couch and the pairing is saved. Add it in Rooms & devices.".into());
+                        }
+                        _ => {
+                            let power = v["power_state"].as_str().unwrap_or("not reported");
+                            message.set(format!("TV is reachable · power state {power}. Connection saved; add it in Rooms & devices."));
+                        }
                     }
-                    "pair" => {
-                        paired.set(true);
-                        detail.set(describe(&v));
-                        message.set("TV allowed Couch and the pairing is saved. Add it in Rooms & devices.".into());
-                    }
-                    _ => {
-                        let power = v["power_state"].as_str().unwrap_or("not reported");
-                        message.set(format!("TV is reachable · power state {power}. Connection saved; add it in Rooms & devices."));
-                    }
-                },
+                }
                 Err(e) => fail(app, message, e),
             }
             busy.set(false);
@@ -139,12 +145,22 @@ pub fn controls(app: App, path: String) -> AnyView {
         busy.set(true);
         message.set("Contacting TV…".into());
         spawn_local(async move {
-            let result = api::ha("POST", &format!("{}/command", base.get_value()), Some(json!({"command":command}))).await;
+            let result = api::ha(
+                "POST",
+                &format!("{}/command", base.get_value()),
+                Some(json!({"command":command})),
+            )
+            .await;
             if busy.try_get_untracked().is_none() {
                 return;
             }
             match result {
-                Ok(v) => message.set(v["note"].as_str().unwrap_or("Command sent. Keys have no acknowledgement; watch the TV.").into()),
+                Ok(v) => message.set(
+                    v["note"]
+                        .as_str()
+                        .unwrap_or("Command sent. Keys have no acknowledgement; watch the TV.")
+                        .into(),
+                ),
                 Err(e) => fail(app, message, e),
             }
             busy.set(false);
@@ -164,7 +180,14 @@ pub fn controls(app: App, path: String) -> AnyView {
             match result {
                 Ok(v) => {
                     let items = v["apps"].as_array().cloned().unwrap_or_default();
-                    message.set(if items.is_empty() { "The TV reported no apps." } else { "Choose an app to open it on the TV." }.into());
+                    message.set(
+                        if items.is_empty() {
+                            "The TV reported no apps."
+                        } else {
+                            "Choose an app to open it on the TV."
+                        }
+                        .into(),
+                    );
                     apps.set(items);
                 }
                 Err(e) => fail(app, message, e),

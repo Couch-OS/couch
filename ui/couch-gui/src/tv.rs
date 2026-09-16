@@ -3,14 +3,14 @@
 mod android;
 #[path = "tv_apple.rs"]
 mod apple;
-#[path = "tv_tizen.rs"]
-mod tizen;
 #[path = "tv_ir.rs"]
 mod infrared;
 #[path = "tv_media.rs"]
 mod media;
 #[path = "tv_sonos.rs"]
 mod sonos;
+#[path = "tv_tizen.rs"]
+mod tizen;
 use crate::{home, App, TvChoice};
 use couch_control::WebOs as Client;
 use couch_webos::{Button, Playback, Settings};
@@ -494,10 +494,18 @@ fn worker(rx: mpsc::Receiver<Work>, tx: mpsc::SyncSender<Event>, active: Arc<Ato
                 }
             }
             if w.connection.starts_with("sonos:") {
-                match sonos::run(&w,&active) {
-                    Ok(Some(event)) => { let _=tx.try_send(event); },
-                    Ok(None) => {},
-                    Err(error) => { let _=tx.try_send(Event{generation,details:None,status:Err(error)}); },
+                match sonos::run(&w, &active) {
+                    Ok(Some(event)) => {
+                        let _ = tx.try_send(event);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = tx.try_send(Event {
+                            generation,
+                            details: None,
+                            status: Err(error),
+                        });
+                    }
                 }
                 continue;
             }
@@ -795,8 +803,8 @@ fn resolve_target(
             return Ok((format!("bt:{id}"), Some(id.into())));
         }
     }
-    if matches!(integration,Some(couch_model::Integration::Sonos{..})) {
-        return Ok((format!("sonos:{id}"),Some(id.into())));
+    if matches!(integration, Some(couch_model::Integration::Sonos { .. })) {
+        return Ok((format!("sonos:{id}"), Some(id.into())));
     }
     let provider = match integration {
         Some(couch_model::Integration::AndroidTv) => couch_model::Provider::AndroidTv,
@@ -831,7 +839,12 @@ fn bluetooth_rows(device: Option<&str>) -> Vec<TvChoice> {
     });
     let mut rows = vec![TvChoice {
         action: "bt:pair".into(),
-        title: if bond.is_some() { "Pair over Bluetooth again" } else { "Pair over Bluetooth" }.into(),
+        title: if bond.is_some() {
+            "Pair over Bluetooth again"
+        } else {
+            "Pair over Bluetooth"
+        }
+        .into(),
         detail: match &bond {
             Some(b) => format!("Paired with {}", b.label()),
             None => "The remote becomes discoverable for two minutes".into(),
@@ -962,9 +975,24 @@ impl Controller {
             app.set_tv_source("Checking…".into());
             app.set_tv_sound("Checking…".into());
             app.set_tv_picture("Checking…".into());
-            app.set_tv_status(if app.get_tv_sonos() {"Checking Sonos status…"} else {"Checking TV status…"}.into());
+            app.set_tv_status(
+                if app.get_tv_sonos() {
+                    "Checking Sonos status…"
+                } else {
+                    "Checking TV status…"
+                }
+                .into(),
+            );
             if app.get_tv_sonos() {
-                let _=self.tx.try_send(Work{connection:self.connection.clone(),device:self.device.clone(),generation:self.generation,action:Command::Retry,at:Instant::now(),repeat:false,config:crate::connections::config()});
+                let _ = self.tx.try_send(Work {
+                    connection: self.connection.clone(),
+                    device: self.device.clone(),
+                    generation: self.generation,
+                    action: Command::Retry,
+                    at: Instant::now(),
+                    repeat: false,
+                    config: crate::connections::config(),
+                });
             }
         }
         let inputs = std::mem::take(&mut *self.input.borrow_mut());
@@ -1049,7 +1077,11 @@ impl Controller {
                     } else if app.get_tv_ir() {
                         "Infrared · No device feedback"
                     } else {
-                        if app.get_tv_sonos() {"Connecting to Sonos…"} else {"Connecting to TV…"}
+                        if app.get_tv_sonos() {
+                            "Connecting to Sonos…"
+                        } else {
+                            "Connecting to TV…"
+                        }
                     }
                     .into(),
                 );
@@ -1069,12 +1101,17 @@ impl Controller {
                 continue;
             }
             if ["inputs", "apps", "picture", "sound", "commands"].contains(&action) {
-                if app.get_tv_sonos() { app.set_tv_error("Sonos has no TV inputs or apps".into()); continue; }
+                if app.get_tv_sonos() {
+                    app.set_tv_error("Sonos has no TV inputs or apps".into());
+                    continue;
+                }
                 if app.get_tv_ir() && action != "commands" {
                     app.set_tv_error("This device does not report apps or settings".into());
                     continue;
                 }
-                if (app.get_tv_android() || app.get_tv_apple() || app.get_tv_tizen()) && action != "apps" {
+                if (app.get_tv_android() || app.get_tv_apple() || app.get_tv_tizen())
+                    && action != "apps"
+                {
                     app.set_tv_error("This control is only available for LG webOS TVs".into());
                     continue;
                 }
@@ -1177,7 +1214,10 @@ impl Controller {
                             app.set_bt_pair_phase("pairing".into());
                             app.set_bt_pair_detail("".into());
                             app.set_bt_pair_shown(true);
-                            println!("couch-gui: bluetooth pairing mode opened for {}", self.device.as_deref().unwrap_or(""));
+                            println!(
+                                "couch-gui: bluetooth pairing mode opened for {}",
+                                self.device.as_deref().unwrap_or("")
+                            );
                         } else {
                             app.set_tv_status("Bluetooth pairing removed".into());
                         }
@@ -1229,7 +1269,9 @@ impl Controller {
                 });
                 self.choices = view.choices;
                 self.settings_app = view.settings_app;
-                if (app.get_tv_apple() || app.get_tv_ir() || app.get_tv_tizen()) && app.get_tv_panel() == 2 {
+                if (app.get_tv_apple() || app.get_tv_ir() || app.get_tv_tizen())
+                    && app.get_tv_panel() == 2
+                {
                     app.set_tv_choices(ModelRc::new(VecModel::from(
                         self.choices
                             .iter()
@@ -1293,7 +1335,10 @@ mod tests {
         // A bond alone is the one-way screen keyed by Bluetooth; next to a
         // codeset the screen is keyed by infrared (the executor's transport
         // order still offers both); next to a network TV it changes nothing.
-        let bond = couch_model::DeviceBluetooth { address: "44:27:45:4E:33:25".into(), name: "TV".into() };
+        let bond = couch_model::DeviceBluetooth {
+            address: "44:27:45:4E:33:25".into(),
+            name: "TV".into(),
+        };
         let mut bonded = config.clone();
         for device in &mut bonded.rooms[0].devices {
             device.bluetooth = Some(bond.clone());

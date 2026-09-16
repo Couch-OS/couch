@@ -9,7 +9,7 @@ fn fail(app: App, message: RwSignal<String>, error: api::ApiError) {
     message.set(error.message);
 }
 pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
-    let base=StoredValue::new(format!("/api/connections/{}/ha",connection.id));
+    let base = StoredValue::new(format!("/api/connections/{}/ha", connection.id));
     let url = RwSignal::new(String::new());
     let token = RwSignal::new(String::new());
     let token_set = RwSignal::new(false);
@@ -17,7 +17,7 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
     let message = RwSignal::new(String::new());
 
     spawn_local(async move {
-        match api::ha("GET", &format!("{}/connection",base.get_value()), None).await {
+        match api::ha("GET", &format!("{}/connection", base.get_value()), None).await {
             Ok(s) => {
                 url.set(s["url"].as_str().unwrap_or("").into());
                 token_set.set(s["token_set"].as_bool().unwrap_or(false));
@@ -33,7 +33,13 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
         message.set("Testing the connection…".into());
         let data = json!({"url":url.get_untracked().trim(),"token":token.get_untracked().trim()});
         spawn_local(async move {
-            match api::ha("PUT", &format!("{}/connection",base.get_value()), Some(data)).await {
+            match api::ha(
+                "PUT",
+                &format!("{}/connection", base.get_value()),
+                Some(data),
+            )
+            .await
+            {
                 Ok(_result) => {
                     token.set(String::new());
                     token_set.set(true);
@@ -59,10 +65,13 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
     }.into_any()
 }
 pub(super) fn controls(app: App, initial: Value, path: String) -> AnyView {
-    if initial["entity_id"].as_str().is_some_and(|s| s.starts_with("cover.") || s.starts_with("climate.")) {
+    if initial["entity_id"]
+        .as_str()
+        .is_some_and(|s| s.starts_with("cover.") || s.starts_with("climate."))
+    {
         return environment_controls(app, initial, path);
     }
-    let base=StoredValue::new(path);
+    let base = StoredValue::new(path);
     let light = RwSignal::new(initial);
     let busy = RwSignal::new(false);
     let message = RwSignal::new(String::new());
@@ -80,7 +89,7 @@ pub(super) fn controls(app: App, initial: Value, path: String) -> AnyView {
             if let Some(action) = action {
                 if let Err(e) = api::ha(
                     "POST",
-                    &format!("{}/lights/{id}/command",base.get_value()),
+                    &format!("{}/lights/{id}/command", base.get_value()),
                     Some(action),
                 )
                 .await
@@ -93,7 +102,7 @@ pub(super) fn controls(app: App, initial: Value, path: String) -> AnyView {
             } else {
                 message.set(String::new());
             }
-            match api::ha("GET", &format!("{}/lights/{id}",base.get_value()), None).await {
+            match api::ha("GET", &format!("{}/lights/{id}", base.get_value()), None).await {
                 Ok(value) => light.set(value),
                 Err(e) => fail(app, message, e),
             }
@@ -116,34 +125,94 @@ pub(super) fn controls(app: App, initial: Value, path: String) -> AnyView {
 }
 
 fn environment_controls(app: App, initial: Value, path: String) -> AnyView {
-    let cover = initial["entity_id"].as_str().is_some_and(|id| id.starts_with("cover."));
-    let endpoint = StoredValue::new(format!("{}/{}/{}", path, if cover { "covers" } else { "climates" }, initial["entity_id"].as_str().unwrap_or("")));
-    let temperature = RwSignal::new(initial["target_temperature"].as_f64().map(|n| n.to_string()).unwrap_or_default());
-    let low = RwSignal::new(initial["target_temperature_low"].as_f64().map(|n| n.to_string()).unwrap_or_default());
-    let high = RwSignal::new(initial["target_temperature_high"].as_f64().map(|n| n.to_string()).unwrap_or_default());
-    let position = RwSignal::new(initial["position_percent"].as_u64().unwrap_or(50).to_string());
+    let cover = initial["entity_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("cover."));
+    let endpoint = StoredValue::new(format!(
+        "{}/{}/{}",
+        path,
+        if cover { "covers" } else { "climates" },
+        initial["entity_id"].as_str().unwrap_or("")
+    ));
+    let temperature = RwSignal::new(
+        initial["target_temperature"]
+            .as_f64()
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+    );
+    let low = RwSignal::new(
+        initial["target_temperature_low"]
+            .as_f64()
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+    );
+    let high = RwSignal::new(
+        initial["target_temperature_high"]
+            .as_f64()
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+    );
+    let position = RwSignal::new(
+        initial["position_percent"]
+            .as_u64()
+            .unwrap_or(50)
+            .to_string(),
+    );
     let state = RwSignal::new(initial);
     let busy = RwSignal::new(false);
     let message = RwSignal::new(String::new());
-    let unavailable = move || if cover { state.get()["state"].is_null() } else { state.get()["available"] != true };
+    let unavailable = move || {
+        if cover {
+            state.get()["state"].is_null()
+        } else {
+            state.get()["available"] != true
+        }
+    };
     let perform = move |action: Option<Value>| {
-        if busy.get_untracked() { return; }
+        if busy.get_untracked() {
+            return;
+        }
         busy.set(true);
         spawn_local(async move {
             if let Some(action) = action {
-                if let Err(e) = api::ha("POST", &format!("{}/command", endpoint.get_value()), Some(action)).await {
-                    fail(app, message, e); busy.set(false); return;
+                if let Err(e) = api::ha(
+                    "POST",
+                    &format!("{}/command", endpoint.get_value()),
+                    Some(action),
+                )
+                .await
+                {
+                    fail(app, message, e);
+                    busy.set(false);
+                    return;
                 }
                 message.set("Request accepted. Refresh to check the latest state.".into());
-            } else { message.set(String::new()); }
+            } else {
+                message.set(String::new());
+            }
             match api::ha("GET", &endpoint.get_value(), None).await {
                 Ok(value) => {
-                    temperature.set(value["target_temperature"].as_f64().map(|n|n.to_string()).unwrap_or_default());
-                    low.set(value["target_temperature_low"].as_f64().map(|n|n.to_string()).unwrap_or_default());
-                    high.set(value["target_temperature_high"].as_f64().map(|n|n.to_string()).unwrap_or_default());
+                    temperature.set(
+                        value["target_temperature"]
+                            .as_f64()
+                            .map(|n| n.to_string())
+                            .unwrap_or_default(),
+                    );
+                    low.set(
+                        value["target_temperature_low"]
+                            .as_f64()
+                            .map(|n| n.to_string())
+                            .unwrap_or_default(),
+                    );
+                    high.set(
+                        value["target_temperature_high"]
+                            .as_f64()
+                            .map(|n| n.to_string())
+                            .unwrap_or_default(),
+                    );
                     position.set(value["position_percent"].as_u64().unwrap_or(50).to_string());
                     state.set(value);
-                },
+                }
                 Err(e) => fail(app, message, e),
             }
             busy.set(false);

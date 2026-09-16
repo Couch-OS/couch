@@ -36,12 +36,25 @@ pub fn picker(app: App, config: &Config, room: &Id) -> AnyView {
     // each card asks whether its resource is already in the house. One shared
     // snapshot, rather than a copy of the document per card.
     let house = Arc::new(config.clone());
-    let connections: Vec<_> = config.connections.iter().filter(|c|c.provider!=Provider::Ir).cloned().collect();
+    let connections: Vec<_> = config
+        .connections
+        .iter()
+        .filter(|c| c.provider != Provider::Ir)
+        .cloned()
+        .collect();
     let room = StoredValue::new(room.clone());
-    if picking.source.get_untracked() != "manual-ir" && !connections.iter().any(|c|c.id.as_str()==picking.source.get_untracked()) {
-        picking.source.set(if connections.len()==1 {connections[0].id.to_string()} else {String::new()});
+    if picking.source.get_untracked() != "manual-ir"
+        && !connections
+            .iter()
+            .any(|c| c.id.as_str() == picking.source.get_untracked())
+    {
+        picking.source.set(if connections.len() == 1 {
+            connections[0].id.to_string()
+        } else {
+            String::new()
+        });
     }
-    let options=connections.clone();
+    let options = connections.clone();
     view!{<section class="creation device-picker"><h2>"Add to this room"</h2><p class="dim">"Choose a connected device, or add a device controlled by infrared. You can also add IR commands to any device already in this room."</p>
         <label class="field">"Device source"<select aria-label="From connection" prop:value=move ||picking.source.get() on:change=move |e|{picking.filter.set(String::new());picking.source.set(event_target_value(&e));}>
             <option value="">"Choose a device source"</option>{options.into_iter().map(|c|view!{<option value=c.id.to_string()>{super::connections::label(&c)}</option>}).collect_view()}
@@ -65,18 +78,27 @@ fn discover(app: App, house: Arc<Config>, connection: Connection, room: Id) -> A
     let list = RwSignal::new(Vec::<Value>::new());
     let busy = RwSignal::new(false);
     let message = RwSignal::new(String::new());
-    let prefix = if connection.provider == Provider::UnifiProtect { "protect" } else if connection.provider == Provider::Hue {
+    let prefix = if connection.provider == Provider::UnifiProtect {
+        "protect"
+    } else if connection.provider == Provider::Hue {
         "hue"
     } else if connection.provider == Provider::Matter {
         "matter"
     } else {
         "ha"
     };
-    let base=StoredValue::new(format!("/api/connections/{}/{prefix}",connection.id));
+    let base = StoredValue::new(format!("/api/connections/{}/{prefix}", connection.id));
     let category = if prefix == "hue" {
         picking.hue_category
     } else {
-        RwSignal::new(if prefix == "protect" { "cameras" } else { "lights" }.to_string())
+        RwSignal::new(
+            if prefix == "protect" {
+                "cameras"
+            } else {
+                "lights"
+            }
+            .to_string(),
+        )
     };
     let fetch = move || {
         if busy.get_untracked() {
@@ -86,7 +108,7 @@ fn discover(app: App, house: Arc<Config>, connection: Connection, room: Id) -> A
         message.set("Finding devices…".into());
         let category = category.get_untracked();
         spawn_local(async move {
-            match api::ha("GET", &format!("{}/{category}",base.get_value()), None).await {
+            match api::ha("GET", &format!("{}/{category}", base.get_value()), None).await {
                 Ok(v) => {
                     let values = v.as_array().cloned().unwrap_or_default();
                     message.set(format!(
@@ -120,13 +142,36 @@ fn discover(app: App, house: Arc<Config>, connection: Connection, room: Id) -> A
         }).map(|d| discovery_card(app,&house,&connection,&room,d)).collect_view()}</div>
     }.into_any()
 }
-fn discovery_card(app: App, cfg: &Config, connection: &Connection, room: &Id, value: Value) -> AnyView {
-    let id = value[if connection.provider==Provider::UnifiProtect {"id"}else{"entity_id"}].as_str().unwrap_or("").to_string();
+fn discovery_card(
+    app: App,
+    cfg: &Config,
+    connection: &Connection,
+    room: &Id,
+    value: Value,
+) -> AnyView {
+    let id = value[if connection.provider == Provider::UnifiProtect {
+        "id"
+    } else {
+        "entity_id"
+    }]
+    .as_str()
+    .unwrap_or("")
+    .to_string();
     let name = value["name"].as_str().unwrap_or(&id).to_string();
     let scene = value["resource_kind"] == "scene";
-    let kind = if connection.provider == Provider::UnifiProtect { "camera" } else if connection.provider == Provider::HomeAssistant {
-        if id.starts_with("cover.") { "blind" } else if id.starts_with("climate.") { "thermostat" } else { "light" }
-    } else { "light" };
+    let kind = if connection.provider == Provider::UnifiProtect {
+        "camera"
+    } else if connection.provider == Provider::HomeAssistant {
+        if id.starts_with("cover.") {
+            "blind"
+        } else if id.starts_with("climate.") {
+            "thermostat"
+        } else {
+            "light"
+        }
+    } else {
+        "light"
+    };
     let saved = if scene {
         cfg.scenes
             .iter()
@@ -164,9 +209,17 @@ fn discovery_card(app: App, cfg: &Config, connection: &Connection, room: &Id, va
                 } else if value["resource_kind"] == "room" {
                     "Hue room · Control all its lights together".into()
                 } else if kind == "blind" {
-                    if value["state"].is_null() { "Blind · Unavailable".into() } else { "Blind · Open, close and supported position controls".into() }
+                    if value["state"].is_null() {
+                        "Blind · Unavailable".into()
+                    } else {
+                        "Blind · Open, close and supported position controls".into()
+                    }
                 } else if kind == "thermostat" {
-                    if value["available"] == false { "Thermostat · Unavailable".into() } else { "Thermostat · Temperature and HVAC mode".into() }
+                    if value["available"] == false {
+                        "Thermostat · Unavailable".into()
+                    } else {
+                        "Thermostat · Temperature and HVAC mode".into()
+                    }
                 } else if value["on"].is_null() {
                     "Unavailable".into()
                 } else {
@@ -191,9 +244,21 @@ fn discovery_card(app: App, cfg: &Config, connection: &Connection, room: &Id, va
     </div>}.into_any()
 }
 fn manual(app: App, cfg: &Config, connection: Connection, room: Id) -> AnyView {
-    if connection.provider == Provider::Ir { return super::infrared::device_setup(app, room, None); }
-    let television = matches!(connection.provider, Provider::WebOs | Provider::AndroidTv | Provider::AppleTv | Provider::Tizen | Provider::BluetoothTv);
-    let receiver = matches!(connection.provider, Provider::Denon { .. } | Provider::Sonos { .. });
+    if connection.provider == Provider::Ir {
+        return super::infrared::device_setup(app, room, None);
+    }
+    let television = matches!(
+        connection.provider,
+        Provider::WebOs
+            | Provider::AndroidTv
+            | Provider::AppleTv
+            | Provider::Tizen
+            | Provider::BluetoothTv
+    );
+    let receiver = matches!(
+        connection.provider,
+        Provider::Denon { .. } | Provider::Sonos { .. }
+    );
     let existing = assigned(cfg, &connection, "");
     let name = RwSignal::new(connection.name.clone());
     view!{<form on:submit=move |e|{e.prevent_default();let title=name.get_untracked().trim().to_string();if title.is_empty(){return}app.run(api::post(format!("/api/rooms/{room}/devices"),json!({"name":title,"kind":if television{"tv"}else if receiver{"speaker"}else{"media-player"},"integration":{"via":"connection","connection_id":connection.id,"resource_id":""}})));}>
@@ -207,7 +272,9 @@ pub fn controls(app: App, config: &Config, device: &Device) -> AnyView {
     let (prefix, id) = match config.resolve_integration(&device.integration) {
         Some(Integration::Sonos { .. }) => {
             return match &device.integration {
-                Integration::Connection {connection_id,..} => super::sonos::controls(app,connection_id.to_string()),
+                Integration::Connection { connection_id, .. } => {
+                    super::sonos::controls(app, connection_id.to_string())
+                }
                 _ => ().into_any(),
             };
         }
@@ -237,25 +304,54 @@ pub fn controls(app: App, config: &Config, device: &Device) -> AnyView {
         }
         Some(Integration::Tizen) => {
             return match &device.integration {
-                Integration::Connection { connection_id, .. } => super::tizen::controls(app, format!("/api/connections/{connection_id}/tizen")),
+                Integration::Connection { connection_id, .. } => {
+                    super::tizen::controls(app, format!("/api/connections/{connection_id}/tizen"))
+                }
                 _ => ().into_any(),
             };
         }
         Some(Integration::WebOs) => {
-            let id=match &device.integration {Integration::Connection{connection_id,..}=>Some(connection_id.clone()),_=>config.connections.iter().find(|c|c.provider==Provider::WebOs).map(|c|c.id.clone())};
-            return id.map(|id|super::webos::controls(app,format!("/api/connections/{id}/webos"))).unwrap_or_else(||().into_any());
-        },
+            let id = match &device.integration {
+                Integration::Connection { connection_id, .. } => Some(connection_id.clone()),
+                _ => config
+                    .connections
+                    .iter()
+                    .find(|c| c.provider == Provider::WebOs)
+                    .map(|c| c.id.clone()),
+            };
+            return id
+                .map(|id| super::webos::controls(app, format!("/api/connections/{id}/webos")))
+                .unwrap_or_else(|| ().into_any());
+        }
         Some(Integration::Hue { light_id }) => ("hue", light_id),
         Some(Integration::HomeAssistant { entity_id })
-            if matches!(device.kind, couch_model::DeviceKind::Light | couch_model::DeviceKind::Blind | couch_model::DeviceKind::Thermostat) =>
+            if matches!(
+                device.kind,
+                couch_model::DeviceKind::Light
+                    | couch_model::DeviceKind::Blind
+                    | couch_model::DeviceKind::Thermostat
+            ) =>
         {
             ("ha", entity_id)
         }
         _ => return ().into_any(),
     };
-    let (base,id)=if let Some((connection,resource))=id.split_once('/') {(format!("/api/connections/{connection}/{prefix}"),resource.to_string())}else{(format!("/api/{prefix}"),id)};
-    let category = if prefix == "ha" && id.starts_with("cover.") { "covers" } else if prefix == "ha" && id.starts_with("climate.") { "climates" } else { "lights" };
-    let base=StoredValue::new(base);
+    let (base, id) = if let Some((connection, resource)) = id.split_once('/') {
+        (
+            format!("/api/connections/{connection}/{prefix}"),
+            resource.to_string(),
+        )
+    } else {
+        (format!("/api/{prefix}"), id)
+    };
+    let category = if prefix == "ha" && id.starts_with("cover.") {
+        "covers"
+    } else if prefix == "ha" && id.starts_with("climate.") {
+        "climates"
+    } else {
+        "lights"
+    };
+    let base = StoredValue::new(base);
     let value = RwSignal::new(None::<Value>);
     let message = RwSignal::new(String::new());
     let busy = RwSignal::new(false);

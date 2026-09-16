@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use std::sync::Arc;
 
 pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
-    let ir_commands=super::device_commands::Commands::new(config);
+    let ir_commands = super::device_commands::Commands::new(config);
     let base = StoredValue::new(activity.clone());
     // One snapshot, shared with every page's picker, instead of two copies of
     // the document per page.
@@ -49,7 +49,13 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         <button class="ghost" disabled={move ||app.busy.get()||base.get_value().setup.pages.len()>=8} on:click=move |_|{let mut a=base.get_value();a.setup.pages.push(ActivityPage{title:format!("Page {}",a.setup.pages.len()+1),widgets:vec![]});save(a);}>"＋ Add page"</button>
     </section>}.into_any()
 }
-fn add_widget(app: App, house: Arc<Config>, activity: &Activity, page: usize, ir_commands:super::device_commands::Commands) -> AnyView {
+fn add_widget(
+    app: App,
+    house: Arc<Config>,
+    activity: &Activity,
+    page: usize,
+    ir_commands: super::device_commands::Commands,
+) -> AnyView {
     if activity.setup.pages[page].widgets.len() >= 6 {
         return view!{<p class="dim">"This page has 6 buttons. Add another page for more controls."</p>}.into_any();
     }
@@ -65,8 +71,12 @@ fn add_widget(app: App, house: Arc<Config>, activity: &Activity, page: usize, ir
     );
     let command = RwSignal::new(String::new());
     let functions = move || {
-        let c=cfg.get_value();
-        let rows=c.devices().find(|(_,d)|d.id.as_str()==device.get()).map(|(_,d)|ir_commands.choices(&c,d,Vec::new())).unwrap_or_default();
+        let c = cfg.get_value();
+        let rows = c
+            .devices()
+            .find(|(_, d)| d.id.as_str() == device.get())
+            .map(|(_, d)| ir_commands.choices(&c, d, Vec::new()))
+            .unwrap_or_default();
         rows
     };
     let options = move || {

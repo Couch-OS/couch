@@ -94,7 +94,9 @@ fn assigned(app: App, id: StoredValue<Id>) -> Memo<Vec<(Id, String, String)>> {
 fn address(c: &Connection) -> String {
     match &c.provider {
         Provider::Sonos { host } => format!("{host} · Local Sonos control"),
-        Provider::Kodi { host, port } | Provider::CoreElec { host, port } => format!("{host}:{port} · Saved address"),
+        Provider::Kodi { host, port } | Provider::CoreElec { host, port } => {
+            format!("{host}:{port} · Saved address")
+        }
         Provider::Denon { host, port } => format!("{host}:{port} · Telnet control"),
         Provider::Ir => "Built-in transmitter · Codes are configured per device".into(),
         _ => "Credentials are kept privately on the remote".into(),
@@ -183,7 +185,7 @@ fn page(app: App, id: Id) -> AnyView {
 
 /// A settings form on the connection page, in its own card under a heading.
 fn titled(heading: &'static str, body: AnyView) -> AnyView {
-    view!{<section class="card"><h2>{heading}</h2>{body}</section>}.into_any()
+    view! {<section class="card"><h2>{heading}</h2>{body}</section>}.into_any()
 }
 
 /// Create a connection, then open its page.
@@ -247,8 +249,8 @@ pub(super) fn label(c: &Connection) -> String {
     }
 }
 
-fn create_named(app:App, provider:Provider)->AnyView {
-    let name=RwSignal::new(String::new());
+fn create_named(app: App, provider: Provider) -> AnyView {
+    let name = RwSignal::new(String::new());
     view!{<form on:submit=move |e|{e.prevent_default();let name=name.get_untracked().trim().to_string();if !name.is_empty(){create(app,json!({"name":name,"provider":provider}));}}>
     {field("Connection name",name,"Living room TV / Upstairs bridge")}
     <p class="dim">"Create a named connection. Its page opens next, where you enter its address and pair it."</p>
@@ -256,9 +258,19 @@ fn create_named(app:App, provider:Provider)->AnyView {
 }
 
 fn denon_form(app: App, existing: Option<Connection>) -> AnyView {
-    let name = RwSignal::new(existing.as_ref().map(|c|c.name.clone()).unwrap_or("Denon AVR".into()));
-    let (host, port) = match existing.as_ref().map(|c|&c.provider) {Some(Provider::Denon{host,port})=>(host.clone(),port.to_string()),_=>(String::new(),"23".into())};
-    let host=RwSignal::new(host); let port=RwSignal::new(port); let error=RwSignal::new(String::new());
+    let name = RwSignal::new(
+        existing
+            .as_ref()
+            .map(|c| c.name.clone())
+            .unwrap_or("Denon AVR".into()),
+    );
+    let (host, port) = match existing.as_ref().map(|c| &c.provider) {
+        Some(Provider::Denon { host, port }) => (host.clone(), port.to_string()),
+        _ => (String::new(), "23".into()),
+    };
+    let host = RwSignal::new(host);
+    let port = RwSignal::new(port);
+    let error = RwSignal::new(String::new());
     view!{<form on:submit=move |e|{e.prevent_default();let Ok(port)=port.get_untracked().parse::<u16>() else {error.set("Enter a valid TCP port".into());return};
         let body=json!({"name":name.get_untracked(),"provider":Provider::Denon{host:host.get_untracked().trim().into(),port}});
         match &existing {Some(c)=>app.run(api::put(format!("/api/connections/{}",c.id),body)),None=>create(app,body)}
@@ -269,17 +281,56 @@ fn denon_form(app: App, existing: Option<Connection>) -> AnyView {
 
 pub(super) fn denon_controls(app: App, id: String) -> AnyView {
     use leptos::task::spawn_local;
-    let base=StoredValue::new(format!("/api/connections/{id}/denon"));
-    let status=RwSignal::new(String::new());let busy=RwSignal::new(false);let sources=RwSignal::new(Vec::<(String,String)>::new());
-    let send=move |command:Option<&'static str>, value:Option<serde_json::Value>| {
-        if busy.get_untracked(){return}busy.set(true);
+    let base = StoredValue::new(format!("/api/connections/{id}/denon"));
+    let status = RwSignal::new(String::new());
+    let busy = RwSignal::new(false);
+    let sources = RwSignal::new(Vec::<(String, String)>::new());
+    let send = move |command: Option<&'static str>, value: Option<serde_json::Value>| {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
         spawn_local(async move {
-            let (method,path,body)=match command {Some(command)=>("POST","command",Some(json!({"command":command,"value":value}))),None=>("GET","status",None)};
-            match api::ha(method,&format!("{}/{path}",base.get_value()),body).await {
-                Ok(s)=>{status.set(format!("{} · {} · {}{}",if s["on"]==true{"Main zone on"}else{"Standby"},s["input"].as_str().unwrap_or("Unknown input"),s["volume_db"].as_f64().map(|db|format!("{db:.1} dB")).unwrap_or("Minimum volume".into()),if s["muted"]==true{" · Muted"}else{""}));
-                    if command.is_none(){if let Ok(v)=api::ha("GET",&format!("{}/sources",base.get_value()),None).await {sources.set(serde_json::from_value(v).unwrap_or_default());}}
-                },Err(e)=>{if e.unauthorized {app.paired.set(Some(false));}status.set(e.message);}
-            }busy.set(false);
+            let (method, path, body) = match command {
+                Some(command) => (
+                    "POST",
+                    "command",
+                    Some(json!({"command":command,"value":value})),
+                ),
+                None => ("GET", "status", None),
+            };
+            match api::ha(method, &format!("{}/{path}", base.get_value()), body).await {
+                Ok(s) => {
+                    status.set(format!(
+                        "{} · {} · {}{}",
+                        if s["on"] == true {
+                            "Main zone on"
+                        } else {
+                            "Standby"
+                        },
+                        s["input"].as_str().unwrap_or("Unknown input"),
+                        s["volume_db"]
+                            .as_f64()
+                            .map(|db| format!("{db:.1} dB"))
+                            .unwrap_or("Minimum volume".into()),
+                        if s["muted"] == true { " · Muted" } else { "" }
+                    ));
+                    if command.is_none() {
+                        if let Ok(v) =
+                            api::ha("GET", &format!("{}/sources", base.get_value()), None).await
+                        {
+                            sources.set(serde_json::from_value(v).unwrap_or_default());
+                        }
+                    }
+                }
+                Err(e) => {
+                    if e.unauthorized {
+                        app.paired.set(Some(false));
+                    }
+                    status.set(e.message);
+                }
+            }
+            busy.set(false);
         });
     };
     view!{<section><h3>"Receiver controls"</h3><p class="dim">"Test the saved address from here. Power, volume and mute act on the main zone."</p><p role="status">{move ||status.get()}</p><div class="actions">

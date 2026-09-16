@@ -85,7 +85,10 @@ fn sonos_target(config: &Config, id: &str) -> Option<crate::sonos_player::Target
         let activity = config.activities.iter().find(|a| a.id.as_str() == id)?;
         let room = config.room(&activity.room)?;
         let source = activity.source.as_ref()?;
-        let device = config.devices().find(|(_, d)| &d.id == source).map(|(_, d)| d)?;
+        let device = config
+            .devices()
+            .find(|(_, d)| &d.id == source)
+            .map(|(_, d)| d)?;
         (device, activity.name.clone(), room.name.clone())
     };
     match config.resolve_integration(&device.integration) {
@@ -494,8 +497,14 @@ impl Controller {
             if let Some((_, device)) = config.devices().find(|(_, d)| Some(&d.id) == source) {
                 if matches!(
                     config.resolve_integration(&device.integration),
-                    Some(Integration::WebOs | Integration::AndroidTv | Integration::AppleTv | Integration::Tizen)
-                ) || (device.network_integration(&config).is_none() && device.bluetooth.is_some())
+                    Some(
+                        Integration::WebOs
+                            | Integration::AndroidTv
+                            | Integration::AppleTv
+                            | Integration::Tizen
+                    )
+                ) || (device.network_integration(&config).is_none()
+                    && device.bluetooth.is_some())
                 {
                     self.generation += 1;
                     self.active_generation

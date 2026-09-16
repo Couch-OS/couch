@@ -12,10 +12,21 @@ pub struct Connection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Provider {
-    CoreElec { host: String, port: u16 },
-    Sonos { host: String },
-    Kodi { host: String, port: u16 },
-    Denon { host: String, port: u16 },
+    CoreElec {
+        host: String,
+        port: u16,
+    },
+    Sonos {
+        host: String,
+    },
+    Kodi {
+        host: String,
+        port: u16,
+    },
+    Denon {
+        host: String,
+        port: u16,
+    },
     HomeAssistant,
     Hue,
     WebOs,
@@ -82,21 +93,33 @@ impl Config {
             resource_id,
         } = integration
         else {
-            let legacy = match integration {Integration::Hue{light_id}=>Some(("hue",light_id)),Integration::HomeAssistant{entity_id}=>Some(("home-assistant",entity_id)),_=>None};
-            if let Some((kind,resource))=legacy {
-                if let Some(c)=self.connections.iter().find(|c|c.provider.kind()==kind) {
-                    return self.resolve_integration(&Integration::Connection{connection_id:c.id.clone(),resource_id:resource.clone()});
+            let legacy = match integration {
+                Integration::Hue { light_id } => Some(("hue", light_id)),
+                Integration::HomeAssistant { entity_id } => Some(("home-assistant", entity_id)),
+                _ => None,
+            };
+            if let Some((kind, resource)) = legacy {
+                if let Some(c) = self.connections.iter().find(|c| c.provider.kind() == kind) {
+                    return self.resolve_integration(&Integration::Connection {
+                        connection_id: c.id.clone(),
+                        resource_id: resource.clone(),
+                    });
                 }
             }
             return Some(integration.clone());
         };
         Some(match &self.connection(connection_id)?.provider {
             Provider::Sonos { host } => Integration::Sonos { host: host.clone() },
-            Provider::Kodi { host, port } | Provider::CoreElec { host, port } => Integration::Kodi {
+            Provider::Kodi { host, port } | Provider::CoreElec { host, port } => {
+                Integration::Kodi {
+                    host: host.clone(),
+                    port: *port,
+                }
+            }
+            Provider::Denon { host, port } => Integration::Denon {
                 host: host.clone(),
                 port: *port,
             },
-            Provider::Denon {host,port} => Integration::Denon {host:host.clone(),port:*port},
             Provider::HomeAssistant => Integration::HomeAssistant {
                 entity_id: alloc::format!("{connection_id}/{resource_id}"),
             },
@@ -108,8 +131,12 @@ impl Config {
             Provider::AppleTv => Integration::AppleTv,
             Provider::Tizen => Integration::Tizen,
             Provider::BluetoothTv => Integration::BluetoothTv,
-            Provider::UnifiProtect => Integration::UnifiProtect { camera_id: alloc::format!("{connection_id}/{resource_id}") },
-            Provider::Matter => Integration::Matter { device: alloc::format!("{connection_id}/{resource_id}") },
+            Provider::UnifiProtect => Integration::UnifiProtect {
+                camera_id: alloc::format!("{connection_id}/{resource_id}"),
+            },
+            Provider::Matter => Integration::Matter {
+                device: alloc::format!("{connection_id}/{resource_id}"),
+            },
             Provider::Ir => Integration::Ir {
                 codeset: resource_id.clone(),
             },
@@ -200,40 +227,104 @@ mod tests {
     #[test]
     fn webos_connection_round_trips_and_resolves_room_tv() {
         let mut config = Config::default();
-        config.connections.push(Connection {id:"lg".into(),name:"LG TV".into(),provider:Provider::WebOs});
-        let integration = Integration::Connection {connection_id:"lg".into(),resource_id:String::new()};
-        config.rooms.push(Room {id:"office".into(),name:"Office".into(),icon:None,devices:vec![Device::new("tv".into(),"LG TV",DeviceKind::Tv).with_integration(integration.clone())]});
+        config.connections.push(Connection {
+            id: "lg".into(),
+            name: "LG TV".into(),
+            provider: Provider::WebOs,
+        });
+        let integration = Integration::Connection {
+            connection_id: "lg".into(),
+            resource_id: String::new(),
+        };
+        config.rooms.push(Room {
+            id: "office".into(),
+            name: "Office".into(),
+            icon: None,
+            devices: vec![Device::new("tv".into(), "LG TV", DeviceKind::Tv)
+                .with_integration(integration.clone())],
+        });
         assert!(config.validate().is_ok());
-        assert_eq!(config.resolve_integration(&integration),Some(Integration::WebOs));
-        let saved=serde_json::to_string(&config).unwrap();
+        assert_eq!(
+            config.resolve_integration(&integration),
+            Some(Integration::WebOs)
+        );
+        let saved = serde_json::to_string(&config).unwrap();
         assert!(saved.contains("web-os"));
-        assert_eq!(serde_json::from_str::<Config>(&saved).unwrap(),config);
-        config.connections.push(Connection {id:"second".into(),name:"Second TV".into(),provider:Provider::WebOs});
+        assert_eq!(serde_json::from_str::<Config>(&saved).unwrap(), config);
+        config.connections.push(Connection {
+            id: "second".into(),
+            name: "Second TV".into(),
+            provider: Provider::WebOs,
+        });
         assert!(config.validate().is_ok());
     }
     #[test]
     fn identical_resources_on_different_servers_remain_distinct() {
-        let mut c=Config::default();
-        for (id,provider) in [("ha-a",Provider::HomeAssistant),("ha-b",Provider::HomeAssistant),("hue-a",Provider::Hue),("hue-b",Provider::Hue)] {
-            c.connections.push(Connection{id:id.into(),name:id.into(),provider});
+        let mut c = Config::default();
+        for (id, provider) in [
+            ("ha-a", Provider::HomeAssistant),
+            ("ha-b", Provider::HomeAssistant),
+            ("hue-a", Provider::Hue),
+            ("hue-b", Provider::Hue),
+        ] {
+            c.connections.push(Connection {
+                id: id.into(),
+                name: id.into(),
+                provider,
+            });
         }
         assert!(c.validate().is_ok());
-        for (a,b,resource) in [("ha-a","ha-b","light.same"),("hue-a","hue-b","00000000-0000-0000-0000-000000000001")] {
-            let left=c.resolve_integration(&Integration::Connection{connection_id:a.into(),resource_id:resource.into()});
-            let right=c.resolve_integration(&Integration::Connection{connection_id:b.into(),resource_id:resource.into()});
-            assert_ne!(left,right);
+        for (a, b, resource) in [
+            ("ha-a", "ha-b", "light.same"),
+            ("hue-a", "hue-b", "00000000-0000-0000-0000-000000000001"),
+        ] {
+            let left = c.resolve_integration(&Integration::Connection {
+                connection_id: a.into(),
+                resource_id: resource.into(),
+            });
+            let right = c.resolve_integration(&Integration::Connection {
+                connection_id: b.into(),
+                resource_id: resource.into(),
+            });
+            assert_ne!(left, right);
         }
-        c.connections[0].id="../escape".into();assert!(c.validate().is_err());
+        c.connections[0].id = "../escape".into();
+        assert!(c.validate().is_err());
     }
     #[test]
     fn built_in_ir_is_shared_but_each_device_keeps_its_own_codeset() {
-        let mut c=Config::default();
-        c.connections.push(Connection{id:"ir".into(),name:"Built-in IR".into(),provider:Provider::Ir});
-        c.rooms.push(Room{id:"room".into(),name:"Room".into(),icon:None,devices:vec![
-            Device::new("tv".into(),"TV",DeviceKind::Tv).with_integration(Integration::Connection{connection_id:"ir".into(),resource_id:"lg-tv".into()}),
-            Device::new("amp".into(),"Amplifier",DeviceKind::Speaker).with_integration(Integration::Connection{connection_id:"ir".into(),resource_id:"denon".into()})]});
+        let mut c = Config::default();
+        c.connections.push(Connection {
+            id: "ir".into(),
+            name: "Built-in IR".into(),
+            provider: Provider::Ir,
+        });
+        c.rooms.push(Room {
+            id: "room".into(),
+            name: "Room".into(),
+            icon: None,
+            devices: vec![
+                Device::new("tv".into(), "TV", DeviceKind::Tv).with_integration(
+                    Integration::Connection {
+                        connection_id: "ir".into(),
+                        resource_id: "lg-tv".into(),
+                    },
+                ),
+                Device::new("amp".into(), "Amplifier", DeviceKind::Speaker).with_integration(
+                    Integration::Connection {
+                        connection_id: "ir".into(),
+                        resource_id: "denon".into(),
+                    },
+                ),
+            ],
+        });
         assert!(c.validate().is_ok());
-        c.connections.push(Connection{id:"another-ir".into(),name:"Duplicate blaster".into(),provider:Provider::Ir});assert!(c.validate().is_err());
+        c.connections.push(Connection {
+            id: "another-ir".into(),
+            name: "Duplicate blaster".into(),
+            provider: Provider::Ir,
+        });
+        assert!(c.validate().is_err());
     }
     #[test]
     fn coreelec_reuses_kodi_and_sonos_capabilities_are_bounded() {
@@ -316,31 +407,65 @@ mod tests {
         assert!(crate::commands::Function::Mute.supports(&Integration::AndroidTv));
         // Samsung offers fixed source keys and app IDs, but no next/previous.
         let tizen = Integration::Tizen;
-        assert!(crate::commands::Function::parse("input:hdmi2").unwrap().supports(&tizen));
-        assert!(!crate::commands::Function::parse("input:HDMI_2").unwrap().supports(&tizen));
-        assert!(crate::commands::Function::parse("app:111299001912").unwrap().supports(&tizen));
+        assert!(crate::commands::Function::parse("input:hdmi2")
+            .unwrap()
+            .supports(&tizen));
+        assert!(!crate::commands::Function::parse("input:HDMI_2")
+            .unwrap()
+            .supports(&tizen));
+        assert!(crate::commands::Function::parse("app:111299001912")
+            .unwrap()
+            .supports(&tizen));
         assert!(crate::commands::Function::PowerOn.supports(&tizen));
         assert!(!crate::commands::Function::Next.supports(&tizen));
         assert!(!crate::commands::Function::PlayPause.supports(&tizen));
-        assert!(serde_json::to_string(&config).unwrap().contains("\"tizen\""));
+        assert!(serde_json::to_string(&config)
+            .unwrap()
+            .contains("\"tizen\""));
     }
 }
 
 #[cfg(test)]
 mod protect_tests {
     use super::*;
-    use crate::{Device,DeviceKind,Room};
+    use crate::{Device, DeviceKind, Room};
     use alloc::vec;
     #[test]
-    fn protect_camera_resources_validate_and_resolve_without_credentials(){
-        let mut config=Config::default();
-        config.connections.push(Connection{id:"protect".into(),name:"Cameras".into(),provider:Provider::UnifiProtect});
-        config.rooms.push(Room{id:"entry".into(),name:"Entry".into(),icon:None,devices:vec![Device::new("front".into(),"Front door",DeviceKind::Camera).with_integration(Integration::Connection{connection_id:"protect".into(),resource_id:"camera-123".into()})]});
+    fn protect_camera_resources_validate_and_resolve_without_credentials() {
+        let mut config = Config::default();
+        config.connections.push(Connection {
+            id: "protect".into(),
+            name: "Cameras".into(),
+            provider: Provider::UnifiProtect,
+        });
+        config.rooms.push(Room {
+            id: "entry".into(),
+            name: "Entry".into(),
+            icon: None,
+            devices: vec![
+                Device::new("front".into(), "Front door", DeviceKind::Camera).with_integration(
+                    Integration::Connection {
+                        connection_id: "protect".into(),
+                        resource_id: "camera-123".into(),
+                    },
+                ),
+            ],
+        });
         assert!(config.validate().is_ok());
-        assert_eq!(config.resolve_integration(&config.rooms[0].devices[0].integration),Some(Integration::UnifiProtect{camera_id:"protect/camera-123".into()}));
-        config.rooms[0].devices[0].kind=DeviceKind::Light;assert!(config.validate().is_err());
-        config.rooms[0].devices[0].kind=DeviceKind::Camera;
-        config.rooms[0].devices[0].integration=Integration::Connection{connection_id:"protect".into(),resource_id:"../other".into()};assert!(config.validate().is_err());
+        assert_eq!(
+            config.resolve_integration(&config.rooms[0].devices[0].integration),
+            Some(Integration::UnifiProtect {
+                camera_id: "protect/camera-123".into()
+            })
+        );
+        config.rooms[0].devices[0].kind = DeviceKind::Light;
+        assert!(config.validate().is_err());
+        config.rooms[0].devices[0].kind = DeviceKind::Camera;
+        config.rooms[0].devices[0].integration = Integration::Connection {
+            connection_id: "protect".into(),
+            resource_id: "../other".into(),
+        };
+        assert!(config.validate().is_err());
     }
 }
 
@@ -352,21 +477,54 @@ mod matter_tests {
     #[test]
     fn matter_devices_resolve_to_node_and_endpoint_and_reject_bad_resources() {
         let mut config = Config::default();
-        config.connections.push(Connection { id: "matter".into(), name: "Matter".into(), provider: Provider::Matter });
-        config.rooms.push(Room { id: "den".into(), name: "Den".into(), icon: None, devices: vec![
-            Device::new("lamp".into(), "Lamp", DeviceKind::Light)
-                .with_integration(Integration::Connection { connection_id: "matter".into(), resource_id: "7/1".into() }),
-        ] });
+        config.connections.push(Connection {
+            id: "matter".into(),
+            name: "Matter".into(),
+            provider: Provider::Matter,
+        });
+        config.rooms.push(Room {
+            id: "den".into(),
+            name: "Den".into(),
+            icon: None,
+            devices: vec![
+                Device::new("lamp".into(), "Lamp", DeviceKind::Light).with_integration(
+                    Integration::Connection {
+                        connection_id: "matter".into(),
+                        resource_id: "7/1".into(),
+                    },
+                ),
+            ],
+        });
         assert!(config.validate().is_ok());
         let resolved = config.resolve_integration(&config.rooms[0].devices[0].integration);
-        assert_eq!(resolved, Some(Integration::Matter { device: "matter/7/1".into() }));
+        assert_eq!(
+            resolved,
+            Some(Integration::Matter {
+                device: "matter/7/1".into()
+            })
+        );
         assert_eq!(resolved.as_ref().map(Integration::via), Some("matter"));
         assert!(crate::commands::Function::Toggle.supports(resolved.as_ref().unwrap()));
         assert!(!crate::commands::Function::VolumeUp.supports(resolved.as_ref().unwrap()));
         assert_eq!(Provider::Matter.kind(), "matter");
-        assert_eq!(serde_json::to_value(&Provider::Matter).unwrap(), serde_json::json!({"kind":"matter"}));
-        for bad in ["", "7", "7/0", "0/1", "7/1/2", "a/1", "7/65536", "123456789012345678901/1"] {
-            config.rooms[0].devices[0].integration = Integration::Connection { connection_id: "matter".into(), resource_id: bad.into() };
+        assert_eq!(
+            serde_json::to_value(&Provider::Matter).unwrap(),
+            serde_json::json!({"kind":"matter"})
+        );
+        for bad in [
+            "",
+            "7",
+            "7/0",
+            "0/1",
+            "7/1/2",
+            "a/1",
+            "7/65536",
+            "123456789012345678901/1",
+        ] {
+            config.rooms[0].devices[0].integration = Integration::Connection {
+                connection_id: "matter".into(),
+                resource_id: bad.into(),
+            };
             assert!(config.validate().is_err(), "{bad:?} should be rejected");
         }
     }

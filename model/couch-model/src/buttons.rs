@@ -329,7 +329,9 @@ pub fn functions(integration: &Integration) -> &'static [(&'static str, &'static
         _ => &[],
     }
 }
-pub fn repeatable(command:&str)->bool {crate::commands::Function::parse(command).is_some_and(|f|f.repeatable())}
+pub fn repeatable(command: &str) -> bool {
+    crate::commands::Function::parse(command).is_some_and(|f| f.repeatable())
+}
 
 #[cfg(test)]
 mod tests {
@@ -338,7 +340,12 @@ mod tests {
     #[test]
     fn ha_entities_advertise_their_own_domain_and_nothing_else() {
         let ids = |entity_id: &str| -> Vec<&str> {
-            functions(&Integration::HomeAssistant { entity_id: entity_id.into() }).iter().map(|f| f.0).collect()
+            functions(&Integration::HomeAssistant {
+                entity_id: entity_id.into(),
+            })
+            .iter()
+            .map(|f| f.0)
+            .collect()
         };
         for entity_id in ["light.office", "ha-one/light.office"] {
             assert_eq!(ids(entity_id), ["on", "off", "toggle"], "{entity_id}");
@@ -348,8 +355,14 @@ mod tests {
         }
         for entity_id in ["climate.office", "ha-two/climate.office"] {
             let offered = ids(entity_id);
-            assert!(offered.contains(&"mode:heat") && offered.contains(&"temperature-up"), "{entity_id}");
-            assert!(!offered.contains(&"on") && !offered.contains(&"open"), "{entity_id}");
+            assert!(
+                offered.contains(&"mode:heat") && offered.contains(&"temperature-up"),
+                "{entity_id}"
+            );
+            assert!(
+                !offered.contains(&"on") && !offered.contains(&"open"),
+                "{entity_id}"
+            );
         }
         // An unknown domain never inherits another domain's keys.
         for entity_id in ["switch.office", "ha-one/sensor.office", "nonsense"] {

@@ -60,10 +60,16 @@ impl Function {
         if let Some(id) = value.strip_prefix("input:").filter(|s| valid_id(s)) {
             return Some(Self::Input(id.into()));
         }
-        if let Some(id) = value.strip_prefix("app:").filter(|s| valid_id(s) || crate::valid_app_url(s)) {
+        if let Some(id) = value
+            .strip_prefix("app:")
+            .filter(|s| valid_id(s) || crate::valid_app_url(s))
+        {
             return Some(Self::App(id.into()));
         }
-        if let Some(id) = value.strip_prefix("mode:").filter(|s| HVAC_MODES.contains(s)) {
+        if let Some(id) = value
+            .strip_prefix("mode:")
+            .filter(|s| HVAC_MODES.contains(s))
+        {
             return Some(Self::Mode(id.into()));
         }
         if let Some(p) = percent(value, "dim:") {
@@ -179,7 +185,16 @@ impl Function {
                 }
                 _ => false,
             },
-            Self::App(id) => if matches!(integration, Integration::AndroidTv) { crate::valid_app_url(id) } else { matches!(integration, Integration::WebOs | Integration::AppleTv | Integration::Tizen) && valid_id(id) },
+            Self::App(id) => {
+                if matches!(integration, Integration::AndroidTv) {
+                    crate::valid_app_url(id)
+                } else {
+                    matches!(
+                        integration,
+                        Integration::WebOs | Integration::AppleTv | Integration::Tizen
+                    ) && valid_id(id)
+                }
+            }
             // Not catalog rows: a picker has to collect the number, so the
             // table lives here. Listed only where a client sets the level
             // today, and only for the Home Assistant domain that has it.
@@ -187,11 +202,18 @@ impl Function {
                 // Matter carries the level on the endpoint's Level Control
                 // cluster; an endpoint without one refuses the command.
                 Integration::Hue { .. } | Integration::Matter { .. } => true,
-                Integration::HomeAssistant { entity_id } => crate::buttons::ha_domain(entity_id) == "light",
+                Integration::HomeAssistant { entity_id } => {
+                    crate::buttons::ha_domain(entity_id) == "light"
+                }
                 _ => false,
             },
-            Self::Volume(_) => matches!(integration, Integration::Sonos { .. } | Integration::Kodi { .. } | Integration::WebOs),
-            Self::Position(_) => matches!(integration, Integration::HomeAssistant { entity_id } if crate::buttons::ha_domain(entity_id) == "cover"),
+            Self::Volume(_) => matches!(
+                integration,
+                Integration::Sonos { .. } | Integration::Kodi { .. } | Integration::WebOs
+            ),
+            Self::Position(_) => {
+                matches!(integration, Integration::HomeAssistant { entity_id } if crate::buttons::ha_domain(entity_id) == "cover")
+            }
             _ => crate::buttons::functions(integration)
                 .iter()
                 .any(|f| f.0 == self.id()),
@@ -237,7 +259,15 @@ impl Function {
 pub const TIZEN_INPUTS: &[&str] = &["tv", "hdmi", "hdmi1", "hdmi2", "hdmi3", "hdmi4"];
 /// Mirrors `couch_ha::entities::valid_mode`, for the same reason. A thermostat
 /// advertises its own subset; `climate_command` refuses one it does not have.
-pub const HVAC_MODES: &[&str] = &["off", "heat", "cool", "heat_cool", "auto", "dry", "fan_only"];
+pub const HVAC_MODES: &[&str] = &[
+    "off",
+    "heat",
+    "cool",
+    "heat_cool",
+    "auto",
+    "dry",
+    "fan_only",
+];
 /// `dim:030` and `dim:+5` are refused so a rendered id parses back to the same
 /// value; `dim:` and `dim:101` are not levels at all.
 fn percent(value: &str, prefix: &str) -> Option<u8> {
@@ -308,18 +338,28 @@ mod tests {
     }
     #[test]
     fn thermostat_modes_take_home_assistants_own_tokens_and_nothing_else() {
-        let climate = Integration::HomeAssistant { entity_id: "ha-one/climate.office".into() };
+        let climate = Integration::HomeAssistant {
+            entity_id: "ha-one/climate.office".into(),
+        };
         for mode in HVAC_MODES {
             let id = alloc::format!("mode:{mode}");
             let parsed = Function::parse(&id).unwrap();
             assert_eq!(parsed.id(), id);
             assert!(parsed.supports(&climate), "{id}");
         }
-        for id in ["mode:", "mode:heat-cool", "mode:HEAT", "mode:eco", "mode:off/on"] {
+        for id in [
+            "mode:",
+            "mode:heat-cool",
+            "mode:HEAT",
+            "mode:eco",
+            "mode:off/on",
+        ] {
             assert!(Function::parse(id).is_none(), "{id}");
         }
         // A cover's keys are a cover's; a thermostat gets no open or on.
-        let cover = Integration::HomeAssistant { entity_id: "ha-one/cover.office".into() };
+        let cover = Integration::HomeAssistant {
+            entity_id: "ha-one/cover.office".into(),
+        };
         for (function, on_cover, on_climate) in [
             (Function::Open, true, false),
             (Function::Close, true, false),
@@ -330,8 +370,18 @@ mod tests {
             (Function::Mode("heat".into()), false, true),
             (Function::On, false, false),
         ] {
-            assert_eq!(function.supports(&cover), on_cover, "{} on a cover", function.id());
-            assert_eq!(function.supports(&climate), on_climate, "{} on a climate", function.id());
+            assert_eq!(
+                function.supports(&cover),
+                on_cover,
+                "{} on a cover",
+                function.id()
+            );
+            assert_eq!(
+                function.supports(&climate),
+                on_climate,
+                "{} on a climate",
+                function.id()
+            );
         }
     }
     #[test]
@@ -348,37 +398,108 @@ mod tests {
             assert!(!parsed.repeatable());
         }
         for id in [
-            "dim:", "dim:101", "volume:101", "position:255", "dim:256", "dim:1000", "dim:-5",
-            "dim:+5", "dim:030", "dim: 30", "dim:3 0", "dim:30%", "dim:thirty", "dim", "level:30",
+            "dim:",
+            "dim:101",
+            "volume:101",
+            "position:255",
+            "dim:256",
+            "dim:1000",
+            "dim:-5",
+            "dim:+5",
+            "dim:030",
+            "dim: 30",
+            "dim:3 0",
+            "dim:30%",
+            "dim:thirty",
+            "dim",
+            "level:30",
         ] {
             assert!(Function::parse(id).is_none(), "{id}");
         }
     }
     #[test]
     fn levels_are_offered_only_where_a_client_sets_one() {
-        let ha = |entity: &str| Integration::HomeAssistant { entity_id: entity.into() };
+        let ha = |entity: &str| Integration::HomeAssistant {
+            entity_id: entity.into(),
+        };
         for (function, integration, supported) in [
-            (Function::Dim(30), Integration::Hue { light_id: "id".into() }, true),
+            (
+                Function::Dim(30),
+                Integration::Hue {
+                    light_id: "id".into(),
+                },
+                true,
+            ),
             (Function::Dim(30), ha("light.office"), true),
             (Function::Dim(30), ha("ha-one/light.office"), true),
-            (Function::Dim(30), Integration::Matter { device: "matter/7/1".into() }, true),
+            (
+                Function::Dim(30),
+                Integration::Matter {
+                    device: "matter/7/1".into(),
+                },
+                true,
+            ),
             (Function::Dim(30), ha("cover.office"), false),
             (Function::Dim(30), ha("climate.office"), false),
             (Function::Dim(30), Integration::WebOs, false),
             (Function::Position(30), ha("cover.office"), true),
             (Function::Position(30), ha("ha-one/cover.office"), true),
             (Function::Position(30), ha("light.office"), false),
-            (Function::Position(30), Integration::Sonos { host: "192.0.2.1".into() }, false),
-            (Function::Volume(30), Integration::Sonos { host: "192.0.2.1".into() }, true),
-            (Function::Volume(30), Integration::Kodi { host: "h".into(), port: 9090 }, true),
+            (
+                Function::Position(30),
+                Integration::Sonos {
+                    host: "192.0.2.1".into(),
+                },
+                false,
+            ),
+            (
+                Function::Volume(30),
+                Integration::Sonos {
+                    host: "192.0.2.1".into(),
+                },
+                true,
+            ),
+            (
+                Function::Volume(30),
+                Integration::Kodi {
+                    host: "h".into(),
+                    port: 9090,
+                },
+                true,
+            ),
             (Function::Volume(30), Integration::WebOs, true),
             // Denon sets volume in dB, not percent, so there is nothing to send.
-            (Function::Volume(30), Integration::Denon { host: "h".into(), port: 23 }, false),
+            (
+                Function::Volume(30),
+                Integration::Denon {
+                    host: "h".into(),
+                    port: 23,
+                },
+                false,
+            ),
             (Function::Volume(30), ha("light.office"), false),
-            (Function::Volume(30), Integration::Ir { codeset: "tv".into() }, false),
+            (
+                Function::Volume(30),
+                Integration::Ir {
+                    codeset: "tv".into(),
+                },
+                false,
+            ),
             // A Matter endpoint is a light: no volume and no cover position.
-            (Function::Volume(30), Integration::Matter { device: "matter/7/1".into() }, false),
-            (Function::Position(30), Integration::Matter { device: "matter/7/1".into() }, false),
+            (
+                Function::Volume(30),
+                Integration::Matter {
+                    device: "matter/7/1".into(),
+                },
+                false,
+            ),
+            (
+                Function::Position(30),
+                Integration::Matter {
+                    device: "matter/7/1".into(),
+                },
+                false,
+            ),
         ] {
             assert_eq!(
                 function.supports(&integration),

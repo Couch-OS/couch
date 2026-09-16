@@ -161,7 +161,11 @@ pub(crate) fn device_at<'a>(
 }
 /// The row a device sits on in its room's list.
 pub(crate) fn row_of_device(config: &couch_model::Config, room: &Id, device: &Id) -> Option<usize> {
-    let index = config.room(room)?.devices.iter().position(|d| &d.id == device)?;
+    let index = config
+        .room(room)?
+        .devices
+        .iter()
+        .position(|d| &d.id == device)?;
     Some(activity_rows(config, room) + index)
 }
 /// The caption the area page's activity strip shows: the source device and
@@ -170,9 +174,17 @@ fn activity_caption(config: &couch_model::Config, activity: &couch_model::Activi
     let source = activity
         .source
         .as_ref()
-        .and_then(|id| config.devices().find(|(_, d)| &d.id == id).map(|(_, d)| d.name.as_str()))
+        .and_then(|id| {
+            config
+                .devices()
+                .find(|(_, d)| &d.id == id)
+                .map(|(_, d)| d.name.as_str())
+        })
         .unwrap_or("Choose a source");
-    let place = config.room(&activity.room).map(|r| r.name.as_str()).unwrap_or("");
+    let place = config
+        .room(&activity.room)
+        .map(|r| r.name.as_str())
+        .unwrap_or("");
     format!("{source} · {place}")
 }
 fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, String> {
@@ -194,60 +206,55 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
             activity: Some((a.kind.glyph_index(), activity_caption(config, a))),
         })
         .collect();
-    entries.extend(room
-        .devices
-        .iter()
-        .filter_map(|d| {
-            let integration = config.resolve_integration(&d.integration);
-            match integration.as_ref() {
-                Some(Integration::HomeAssistant { entity_id })
-                    if matches!(ha_domain(entity_id), "light" | "cover" | "climate") =>
-                {
-                    Some(Entry {
-                        name: d.name.clone(),
-                        icon: d.effective_icon(),
-                        id: entity_id.clone(),
-                        state: None,
-                        hue: false,
-                        matter: false,
-                        media: false,
-                        activity: None,
-                    })
-                }
-                Some(Integration::Hue { light_id }) if !light_id.starts_with("scene:") => {
-                    Some(Entry {
-                        name: d.name.clone(),
-                        icon: d.effective_icon(),
-                        id: format!("hue:{light_id}"),
-                        state: None,
-                        hue: true,
-                        matter: false,
-                        media: false,
-                        activity: None,
-                    })
-                }
-                Some(Integration::Matter { device }) => Some(Entry {
+    entries.extend(room.devices.iter().filter_map(|d| {
+        let integration = config.resolve_integration(&d.integration);
+        match integration.as_ref() {
+            Some(Integration::HomeAssistant { entity_id })
+                if matches!(ha_domain(entity_id), "light" | "cover" | "climate") =>
+            {
+                Some(Entry {
                     name: d.name.clone(),
                     icon: d.effective_icon(),
-                    id: format!("matter:{device}"),
-                    state: None,
-                    hue: false,
-                    matter: true,
-                    media: false,
-                    activity: None,
-                }),
-                _ => Some(Entry {
-                    name: d.name.clone(),
-                    icon: d.effective_icon(),
-                    id: format!("device:{}", d.id),
+                    id: entity_id.clone(),
                     state: None,
                     hue: false,
                     matter: false,
-                    media: matches!(integration, Some(Integration::Sonos { .. })),
+                    media: false,
                     activity: None,
-                }),
+                })
             }
-        }));
+            Some(Integration::Hue { light_id }) if !light_id.starts_with("scene:") => Some(Entry {
+                name: d.name.clone(),
+                icon: d.effective_icon(),
+                id: format!("hue:{light_id}"),
+                state: None,
+                hue: true,
+                matter: false,
+                media: false,
+                activity: None,
+            }),
+            Some(Integration::Matter { device }) => Some(Entry {
+                name: d.name.clone(),
+                icon: d.effective_icon(),
+                id: format!("matter:{device}"),
+                state: None,
+                hue: false,
+                matter: true,
+                media: false,
+                activity: None,
+            }),
+            _ => Some(Entry {
+                name: d.name.clone(),
+                icon: d.effective_icon(),
+                id: format!("device:{}", d.id),
+                state: None,
+                hue: false,
+                matter: false,
+                media: matches!(integration, Some(Integration::Sonos { .. })),
+                activity: None,
+            }),
+        }
+    }));
     Ok(entries)
 }
 fn toggle_command(state: &Light) -> Result<Command, String> {
@@ -305,13 +312,26 @@ fn perform(
                 Vec::new()
             };
             let matter_states = if entries.iter().any(|e| e.matter) {
-                matter.lights().into_iter().map(DeviceState::Light).collect::<Vec<_>>()
+                matter
+                    .lights()
+                    .into_iter()
+                    .map(DeviceState::Light)
+                    .collect::<Vec<_>>()
             } else {
                 Vec::new()
             };
             for e in &mut entries {
-                let states = if e.hue { &hue_states } else if e.matter { &matter_states } else { &ha_states };
-                let id = e.id.strip_prefix("hue:").or_else(|| e.id.strip_prefix("matter:")).unwrap_or(&e.id);
+                let states = if e.hue {
+                    &hue_states
+                } else if e.matter {
+                    &matter_states
+                } else {
+                    &ha_states
+                };
+                let id =
+                    e.id.strip_prefix("hue:")
+                        .or_else(|| e.id.strip_prefix("matter:"))
+                        .unwrap_or(&e.id);
                 e.state = states.iter().find(|s| s.id() == id).cloned().map(|mut s| {
                     s.set_id(e.id.clone());
                     s
@@ -822,14 +842,27 @@ impl Controller {
                     }
                     if e.id.starts_with("device:") {
                         let cfg = crate::connections::config();
-                        let camera = cfg.as_ref().is_some_and(|c|c.devices().find(|(_,d)|d.id.as_str()==e.id.trim_start_matches("device:")).and_then(|(_,d)|c.resolve_integration(&d.integration)).is_some_and(|i|matches!(i,Integration::UnifiProtect{..})));
-                        if camera {app.invoke_open_camera(e.id.as_str().into(),e.name.as_str().into());continue;}
+                        let camera = cfg.as_ref().is_some_and(|c| {
+                            c.devices()
+                                .find(|(_, d)| d.id.as_str() == e.id.trim_start_matches("device:"))
+                                .and_then(|(_, d)| c.resolve_integration(&d.integration))
+                                .is_some_and(|i| matches!(i, Integration::UnifiProtect { .. }))
+                        });
+                        if camera {
+                            app.invoke_open_camera(e.id.as_str().into(), e.name.as_str().into());
+                            continue;
+                        }
                         let kodi = cfg.as_ref().is_some_and(|c| {
                             c.devices()
                                 .find(|(_, d)| d.id.as_str() == e.id.trim_start_matches("device:"))
                                 .map(|(_, d)| d)
                                 .and_then(|d| c.resolve_integration(&d.integration))
-                                .is_some_and(|i| matches!(i, Integration::Kodi { .. } | Integration::Sonos { .. }))
+                                .is_some_and(|i| {
+                                    matches!(
+                                        i,
+                                        Integration::Kodi { .. } | Integration::Sonos { .. }
+                                    )
+                                })
                         });
                         if kodi {
                             app.invoke_open_activity(e.id.as_str().into());
@@ -1016,7 +1049,7 @@ pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Op
         }
     }
     let provider = match integration? {
-        Integration::Sonos {..} => return Some(format!("sonos:{device_id}")),
+        Integration::Sonos { .. } => return Some(format!("sonos:{device_id}")),
         Integration::WebOs => couch_model::Provider::WebOs,
         Integration::AndroidTv => couch_model::Provider::AndroidTv,
         Integration::AppleTv => couch_model::Provider::AppleTv,
@@ -1044,8 +1077,17 @@ mod tests {
                 {"id":"tv","name":"TV","kind":"tv","integration":{"via":"connection","connection_id":"tv"}},
                 {"id":"lamp","name":"Lamp","kind":"light","integration":{"via":"hue","light_id":"1"}}]}]})).unwrap();
         let entries = configured_in(&config, &Id::new("r")).unwrap();
-        assert_eq!(entries.iter().map(|e| (e.id.as_str(), e.media)).collect::<Vec<_>>(),
-            [("device:speaker", true), ("device:tv", false), ("hue:1", false)]);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.id.as_str(), e.media))
+                .collect::<Vec<_>>(),
+            [
+                ("device:speaker", true),
+                ("device:tv", false),
+                ("hue:1", false)
+            ]
+        );
     }
     #[test]
     fn activities_are_pinned_above_the_devices_and_rows_still_find_their_device() {
@@ -1056,15 +1098,24 @@ mod tests {
             "activities":[{"id":"watch","name":"Watch","room":"r","kind":"video","source":"tv"},{"id":"elsewhere","name":"Elsewhere","room":"other"}]})).unwrap();
         let room = Id::new("r");
         let entries = configured_in(&config, &room).unwrap();
-        assert_eq!(entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["activity:watch", "hue:1", "device:tv"]);
+        assert_eq!(
+            entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["activity:watch", "hue:1", "device:tv"]
+        );
         // The pinned row carries what the area page's strip shows for the
         // activity: its glyph and "source · room"; devices carry nothing.
         assert_eq!(entries[0].activity, Some((1, "TV · Room".to_string())));
         assert!(entries[1].activity.is_none() && entries[2].activity.is_none());
         assert_eq!(activity_rows(&config, &room), 1);
         assert!(device_at(&config, &room, 0).is_none());
-        assert_eq!(device_at(&config, &room, 1).map(|d| d.id.as_str()), Some("lamp"));
-        assert_eq!(device_at(&config, &room, 2).map(|d| d.id.as_str()), Some("tv"));
+        assert_eq!(
+            device_at(&config, &room, 1).map(|d| d.id.as_str()),
+            Some("lamp")
+        );
+        assert_eq!(
+            device_at(&config, &room, 2).map(|d| d.id.as_str()),
+            Some("tv")
+        );
         assert!(device_at(&config, &room, 3).is_none());
         assert_eq!(row_of_device(&config, &room, &Id::new("tv")), Some(2));
         assert_eq!(row_of_device(&config, &room, &Id::new("ghost")), None);

@@ -9,14 +9,14 @@ fn fail(app: App, message: RwSignal<String>, error: api::ApiError) {
     message.set(error.message);
 }
 pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
-    let base=StoredValue::new(format!("/api/connections/{}/webos",connection.id));
+    let base = StoredValue::new(format!("/api/connections/{}/webos", connection.id));
     let address = RwSignal::new(String::new());
     let legacy = RwSignal::new(false);
     let paired = RwSignal::new(false);
     let busy = RwSignal::new(false);
     let message = RwSignal::new(String::new());
     spawn_local(async move {
-        match api::ha("GET", &format!("{}/connection",base.get_value()), None).await {
+        match api::ha("GET", &format!("{}/connection", base.get_value()), None).await {
             Ok(v) => {
                 paired.set(v["paired"] == true);
                 let url = v["url"].as_str().unwrap_or("");
@@ -47,7 +47,13 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
         );
         let body = json!({"address":address.get_untracked(),"legacy":legacy.get_untracked()});
         spawn_local(async move {
-            match api::ha("PUT", &format!("{}/connection",base.get_value()), Some(body)).await {
+            match api::ha(
+                "PUT",
+                &format!("{}/connection", base.get_value()),
+                Some(body),
+            )
+            .await
+            {
                 Ok(_) => {
                     paired.set(true);
 
@@ -73,7 +79,7 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
     }.into_any()
 }
 pub fn controls(app: App, path: String) -> AnyView {
-    let base=StoredValue::new(path);
+    let base = StoredValue::new(path);
     let busy = RwSignal::new(false);
     let message = RwSignal::new(String::new());
     let status = RwSignal::new(None::<Value>);
@@ -87,13 +93,19 @@ pub fn controls(app: App, path: String) -> AnyView {
         message.set("Contacting TV…".into());
         spawn_local(async move {
             if let Some(action) = action {
-                if let Err(e) = api::ha("POST", &format!("{}/command",base.get_value()), Some(action)).await {
+                if let Err(e) = api::ha(
+                    "POST",
+                    &format!("{}/command", base.get_value()),
+                    Some(action),
+                )
+                .await
+                {
                     fail(app, message, e);
                     busy.set(false);
                     return;
                 }
             }
-            match api::ha("GET", &format!("{}/status",base.get_value()), None).await {
+            match api::ha("GET", &format!("{}/status", base.get_value()), None).await {
                 Ok(v) => {
                     status.set(Some(v));
                     message.set("TV connected.".into());
@@ -112,7 +124,7 @@ pub fn controls(app: App, path: String) -> AnyView {
         }
         busy.set(true);
         spawn_local(async move {
-            match api::ha("GET", &format!("{}/{kind}",base.get_value()), None).await {
+            match api::ha("GET", &format!("{}/{kind}", base.get_value()), None).await {
                 Ok(v) => {
                     let items = v[if kind == "inputs" {
                         "devices"
@@ -150,21 +162,27 @@ pub fn controls(app: App, path: String) -> AnyView {
     }.into_any()
 }
 
-
 fn power_settings(app: App, base: String) -> AnyView {
-    let endpoint=StoredValue::new(format!("{base}/power"));
-    let method=RwSignal::new("ir".to_string());
-    let codeset=RwSignal::new(String::new());
-    let busy=RwSignal::new(true);
-    let loaded=RwSignal::new(false);
-    let available=RwSignal::new(false);
-    let message=RwSignal::new(String::new());
+    let endpoint = StoredValue::new(format!("{base}/power"));
+    let method = RwSignal::new("ir".to_string());
+    let codeset = RwSignal::new(String::new());
+    let busy = RwSignal::new(true);
+    let loaded = RwSignal::new(false);
+    let available = RwSignal::new(false);
+    let message = RwSignal::new(String::new());
     spawn_local(async move {
-        let response=api::ha("GET",&endpoint.get_value(),None).await;
-        if busy.try_get_untracked().is_none(){return;}
+        let response = api::ha("GET", &endpoint.get_value(), None).await;
+        if busy.try_get_untracked().is_none() {
+            return;
+        }
         match response {
-            Ok(v)=>{method.set(v["method"].as_str().unwrap_or("ir").into());codeset.set(v["codeset"].as_str().unwrap_or("").into());available.set(v["blaster_available"]==true);loaded.set(true);},
-            Err(e)=>fail(app,message,e),
+            Ok(v) => {
+                method.set(v["method"].as_str().unwrap_or("ir").into());
+                codeset.set(v["codeset"].as_str().unwrap_or("").into());
+                available.set(v["blaster_available"] == true);
+                loaded.set(true);
+            }
+            Err(e) => fail(app, message, e),
         }
         busy.set(false);
     });

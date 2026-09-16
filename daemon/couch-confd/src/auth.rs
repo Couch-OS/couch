@@ -88,7 +88,9 @@ pub struct Status {
 pub enum Verdict {
     /// Paired. The token goes back as a cookie.
     Paired(String),
-    Wrong { tries_left: u8 },
+    Wrong {
+        tries_left: u8,
+    },
     /// No challenge, or it aged out. The browser should ask for a new one,
     /// which lights the remote up again.
     Expired,
@@ -97,7 +99,10 @@ pub enum Verdict {
 impl Auth {
     pub fn new(pin_file: impl Into<PathBuf>, disabled: bool) -> Auth {
         let auth = Auth {
-            state: Mutex::new(State { challenge: None, sessions: HashMap::new() }),
+            state: Mutex::new(State {
+                challenge: None,
+                sessions: HashMap::new(),
+            }),
             pin_file: pin_file.into(),
             disabled,
         };
@@ -138,9 +143,13 @@ impl Auth {
         if self.disabled {
             return true;
         }
-        let Some(token) = cookie_value(cookies, COOKIE) else { return false };
+        let Some(token) = cookie_value(cookies, COOKIE) else {
+            return false;
+        };
         let mut state = self.state.lock().unwrap();
-        state.sessions.retain(|_, seen| seen.elapsed() < SESSION_TTL);
+        state
+            .sessions
+            .retain(|_, seen| seen.elapsed() < SESSION_TTL);
         match state.sessions.get_mut(&token) {
             Some(seen) => {
                 *seen = Instant::now();
@@ -159,7 +168,11 @@ impl Auth {
         if state.challenge.is_none() {
             let pin = random_pin();
             self.write_pin_file(&pin);
-            state.challenge = Some(Challenge { pin, started: Instant::now(), tries: 0 });
+            state.challenge = Some(Challenge {
+                pin,
+                started: Instant::now(),
+                tries: 0,
+            });
         }
         self.status_locked(&state, false)
     }
@@ -174,7 +187,9 @@ impl Auth {
     pub fn verify(&self, offered: &str) -> Verdict {
         let mut state = self.state.lock().unwrap();
         self.expire_locked(&mut state);
-        let Some(challenge) = state.challenge.as_mut() else { return Verdict::Expired };
+        let Some(challenge) = state.challenge.as_mut() else {
+            return Verdict::Expired;
+        };
 
         if constant_time_eq(challenge.pin.as_bytes(), offered.trim().as_bytes()) {
             state.challenge = None;
@@ -228,7 +243,10 @@ impl Auth {
     /// runs its own countdown over what it reads rather than trusting the file
     /// to vanish.
     fn expire_locked(&self, state: &mut State) {
-        let stale = state.challenge.as_ref().is_some_and(|c| c.started.elapsed() >= PIN_TTL);
+        let stale = state
+            .challenge
+            .as_ref()
+            .is_some_and(|c| c.started.elapsed() >= PIN_TTL);
         if stale {
             state.challenge = None;
             self.clear_pin_file();
@@ -329,7 +347,8 @@ fn random_u64() -> u64 {
 fn fill_random(out: &mut [u8]) {
     let mut file = std::fs::File::open("/dev/urandom")
         .expect("cannot open /dev/urandom - refusing to invent a PIN");
-    file.read_exact(out).expect("cannot read /dev/urandom - refusing to invent a PIN");
+    file.read_exact(out)
+        .expect("cannot read /dev/urandom - refusing to invent a PIN");
 }
 
 #[cfg(test)]
@@ -349,7 +368,10 @@ mod tests {
         let mut parts = raw.split_whitespace();
         let pin = parts.next().unwrap();
         let deadline: u64 = parts.next().expect("a deadline").parse().expect("seconds");
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         assert_eq!(pin.len(), 4);
         assert!(deadline > now, "deadline is in the future");
         assert!(deadline <= now + PIN_TTL.as_secs());
@@ -370,7 +392,9 @@ mod tests {
         assert_eq!(shown.len(), 4);
         assert!(shown.chars().all(|c| c.is_ascii_digit()));
 
-        let Verdict::Paired(token) = auth.verify(&shown) else { panic!("should have paired") };
+        let Verdict::Paired(token) = auth.verify(&shown) else {
+            panic!("should have paired")
+        };
         assert!(auth.authenticated(&format!("{COOKIE}={token}")));
         // The digits stop being a credential the moment they are spent.
         assert!(!path.exists());
@@ -421,10 +445,14 @@ mod tests {
     fn logging_out_ends_that_session_only() {
         let (auth, path) = auth();
         auth.challenge();
-        let Verdict::Paired(one) = auth.verify(&pin_from_file(&path)) else { panic!() };
+        let Verdict::Paired(one) = auth.verify(&pin_from_file(&path)) else {
+            panic!()
+        };
 
         auth.challenge();
-        let Verdict::Paired(two) = auth.verify(&pin_from_file(&path)) else { panic!() };
+        let Verdict::Paired(two) = auth.verify(&pin_from_file(&path)) else {
+            panic!()
+        };
 
         auth.log_out(&format!("{COOKIE}={one}"));
         assert!(!auth.authenticated(&format!("{COOKIE}={one}")));
@@ -440,7 +468,10 @@ mod tests {
 
     #[test]
     fn cookies_are_read_out_of_a_crowded_header() {
-        assert_eq!(cookie_value("a=1; couch_session=abc; b=2", COOKIE).unwrap(), "abc");
+        assert_eq!(
+            cookie_value("a=1; couch_session=abc; b=2", COOKIE).unwrap(),
+            "abc"
+        );
         assert_eq!(cookie_value("couch_session=abc", COOKIE).unwrap(), "abc");
         assert!(cookie_value("a=1; b=2", COOKIE).is_none());
         // A cookie whose name merely ends in ours is a different cookie.

@@ -55,7 +55,11 @@ pub fn render(text: &str, target_px: u32) -> Option<Image> {
     let mut buf = SharedPixelBuffer::<Rgb8Pixel>::new(side, side);
     let px = buf.make_mut_slice();
     for p in px.iter_mut() {
-        *p = Rgb8Pixel { r: 255, g: 255, b: 255 };
+        *p = Rgb8Pixel {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
     }
     for y in 0..modules {
         for x in 0..modules {

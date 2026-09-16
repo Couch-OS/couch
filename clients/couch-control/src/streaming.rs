@@ -12,9 +12,7 @@ pub enum StreamingConnection {
         credentials: couch_appletv::Credentials,
     },
     /// Token, pinned certificate and REST details live in one settings value.
-    Tizen {
-        settings: couch_tizen::Settings,
-    },
+    Tizen { settings: couch_tizen::Settings },
 }
 impl std::fmt::Debug for StreamingConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
