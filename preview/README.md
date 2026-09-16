@@ -14,6 +14,6 @@ Lato fonts come from the existing device GUI and are embedded by the same Slint 
 
 The example movie is *Tears of Steel*, © Blender Foundation, licensed CC BY 3.0: https://creativecommons.org/licenses/by/3.0/. The user-supplied [clearlogo](https://images.fanart.tv/fanart/tears-of-steel-53836a24417d1.png) and [fanart](https://images.fanart.tv/fanart/tears-of-steel-5381d834a3024.jpg) from fanart.tv live in `docs/mockups/kodi-activity/assets/` and are shared by the WASM preview and original design study. Displayed fanart is cropped and darkened by the screen presentation. Production Couch displays artwork from the user's Kodi library.
 
-Documentation fixtures also render Android TV, Apple TV and LG webOS screens and their Apps/Input trays. These use the production Television component with explicit local example data; no discovery, pairing or device commands run in the browser. `tools/tests/site-usage.cjs` generates the screenshots and verifies the guide pages.
+Documentation fixtures also render Android TV, Apple TV and LG webOS screens and their Apps/Input trays. These use the production Television component with explicit local example data; no discovery, pairing or device commands run in the browser. The separately published `couch-site` repository's `tools/tests/site-usage.cjs` generates the screenshots and verifies the guide pages.
 
 IR documentation fixtures `infrared` and `infrared-commands` render the production TV component in IR mode, with local assigned-command examples and no device-state inference or transmitter access.
