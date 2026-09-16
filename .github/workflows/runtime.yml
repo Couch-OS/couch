@@ -61,7 +61,7 @@ jobs:
           # tests already run headless on a developer's macOS machine.
           - id: gui
             workspace: ui
-            command: cargo test --locked --bin couch-gui
+            command: cargo test --locked -p couch-gui
           # cargo check, not trunk: this leg exists to catch a wasm compile
           # break in a pull request. pages.yml still does the real trunk build
           # of the site preview on push to main.

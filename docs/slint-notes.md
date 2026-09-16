@@ -61,10 +61,49 @@ The compiler seeds that set before it looks at any literal, with `a-z`, `A-Z`,
 accented letter, a currency symbol, an arrow - and, of printable ASCII, the
 backtick, which is the one character the seed leaves out.
 
-The cost of a size is the whole set at that size, in every embedded face, and
-it goes as the square of the size. Measured against this UI: 32KB at 20px, 40KB
-at 26px, 162KB at 48px, 327KB at 72px. Reusing a size the UI already asks for
-is free; picking one two pixels away is not.
+Runtime Russian, Ukrainian and Belarusian names are covered by the
+`runtime-cyrillic-glyphs` input property in `app.slint`. Keep it as an input:
+the compiler must retain the literal even though no UI element displays it.
+The renderer still embeds a bounded character set; this is not unrestricted
+Unicode support. `tests/runtime_fonts.rs` renders each supported Cyrillic
+character and the runtime temperature symbols through the production font
+resources in both weights, and fails if a glyph becomes blank.
+
+`build.rs` enables Slint's signed distance field (SDF) font embedding. Each
+Lato face stores one scalable glyph set instead of a bitmap at every size.
+Enable `sdf-fonts` on the **build dependency** `slint-build`; this does not add
+runtime font libraries or system-font discovery. The existing font selection
+and software renderer remain in use.
+
+With ordinary bitmap embedding, the cost of a size was the whole character
+set at that size, in every face, growing as the square of the size. Historical
+measurements against this UI were 32KB at 20px, 40KB at 26px, 162KB at 48px and
+327KB at 72px. Those per-size costs no longer describe the SDF build. Slint
+chooses the SDF source resolution from the detected size range, so increasing
+the largest font can still increase the payload.
+
+The ARMv7 release comparison for Cyrillic coverage used the same compiler,
+optimization and target settings: the previous executable was 11,536,300
+bytes, adding Cyrillic with bitmaps produced 12,695,308 bytes, and Cyrillic
+with SDF produced 10,591,852 bytes. A controlled gzip repack of the .165
+runtime bundle, replacing only the GUI, saved approximately 327 KiB with SDF
+compared to the previous executable. These are comparisons, not release hashes.
+
+[Slint documents](https://docs.slint.dev/latest/docs/rust/slint_build/struct.CompilerConfiguration#method.with_sdf_fonts)
+a rendering-speed and visual-quality tradeoff for SDF. Validate small text,
+large pairing digits and Cyrillic on the HA100 when changing font inputs or
+Slint versions. SDF also honors dynamic pixel sizes directly; bitmap fonts
+previously selected an available smaller size. In particular, the thermostat
+now uses its requested 46px range and 76px single-target sizes. The HA100
+comparison measured about 0.20ms (5.2%) more rendering work with SDF; see
+[the device results](slint-performance.md#cyrillic-font-comparison-2026-09-16)
+and [benchmark procedure](slint-performance.md#repeatable-device-comparison).
+
+Headless samples of the production UI, using runtime Cyrillic text:
+
+| Home | Thermostat range | Pairing PIN |
+| --- | --- | --- |
+| ![Cyrillic room names](images/cyrillic-sdf-home.png) | ![Cyrillic thermostat with range](images/cyrillic-sdf-range.png) | ![Pairing digits](images/cyrillic-sdf-pair.png) |
 
 `SLINT_FONT_PATH` and `SLINT_DEFAULT_FONT`, set in `build.rs`, choose the face.
 Ship every weight the UI asks for: `font-weight: 600` against a single Regular

@@ -11,11 +11,9 @@ import { FocusRing } from "focus_ring.slint";
 //
 // Three things shaped the layout more than taste did:
 //
-// - Glyphs are rasterised into the binary per font size, for the whole charset
-//   rather than the characters actually used. This uses only sizes and weights
-//   couch-gui already pays for - 15px/400, 26px/400 and 26px/600 - because
-//   introducing a fourth is not free: dropping the key faces from 26px to 24px
-//   was measured at 40KB, for nothing anyone would see.
+// - The labels and key faces share sizes and weights with the rest of the UI.
+//   This originally avoided extra bitmap font tables; SDF now shares one
+//   scalable glyph set per face. Keep the typography consistent nonetheless.
 //
 // - Those glyphs come from string literals that appear in .slint, and a
 //   keyboard emits nothing but runtime strings. Slint seeds its own coverage
