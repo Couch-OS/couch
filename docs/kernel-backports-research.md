@@ -509,3 +509,74 @@ the 3.18 core and fix the two things that actually hurt, in userspace:
 That fallback is a day of work, has no kernel risk, and leaves the backports
 route open. It is also the sensible thing to do *first* if the BLE remote needs
 to be solid before the next release, regardless of what the experiment shows.
+
+## Results (2026-09-14, branch `bluetooth-backports`)
+
+All three gates passed on the dev remote the same evening the plan was written.
+
+- **Gate 1.** `backports-4.4.2-1` builds against our tree with GCC 4.9 after one
+  shim patch: `backport-include/linux/cred.h` redefines `current_user_ns()` as
+  the pre-3.8 macro whenever the name is not a macro, and on 3.18 it is an
+  inline function; the shim is now guarded on `LINUX_VERSION_CODE < 3.8`. The
+  patch lives on Ollie at `~/backports/0001-cred-shim-3.18.patch`. `CPTCFG_BT`
+  only appears in the backports config once the base carries
+  `CONFIG_CRYPTO_CMAC=y`, so the module build is really a gate-2 step.
+- **Gate 2.** Kernel candidate `out-bt44` (`CONFIG_BT` and `BT_HCIVHCI` off,
+  `CRYPTO_CMAC=y`, zImage `d5ba1966`, config `f3d45767`) boots; the stripped
+  modules (compat 19 KB, bluetooth 600 KB, hci_vhci 11 KB, vermagic
+  `3.18.79-couch-normal-g06b21c74526c`) load from the boot ramdisk's `/extra`,
+  `/dev/vhci` needs `mknod c 10 137` (mdev only runs at boot), the bridge opens
+  the radio and `hci0` comes up. `couch_system::bluetooth` does the loading and
+  the node at toggle time; `prepare_boot_candidates.clean_ramdisk` ships the
+  three modules from `build/backports/` when present.
+- **Gate 3.** bluetoothd 5.79 exports `org.bluez.LEAdvertisingManager1` with
+  `SupportedInstances` 5. Five toggle cycles in a row came up clean with the
+  stack on in about 1.5 s and no transport errors; Wi-Fi unaffected.
+- **One gotcha.** About 300 ms after `BT_open` the MediaTek firmware raises an
+  HCI Hardware Error (code 0x02) during the 4.4 core's own setup pass, and the
+  4.4 core (unlike 3.18, which only logged it) resets the device. bluetoothd
+  powering the adapter on inside that reset made every init command time out
+  once. The service now waits 3 s after `hci0` appears when `hci_vhci` is a
+  module. Finding which init command provokes the event is open.
+- Shipped as `.152.dev` (runtime + boot payload) for the dev remote. Still to
+  do before this can be a candidate: `couch-bt-hid` registering an
+  `LEAdvertisement1` (in progress), the disconnect/re-advertise acceptance, a
+  full hardware round, and re-pinning as a normal candidate.
+- **Transport timing (the real fragility).** The MediaTek STP layer says
+  "ready" before the firmware acknowledges frames; a frame written in that
+  window times out at STP level and the driver escalates to a whole-chip reset
+  (Wi-Fi drops with it). The 3.18 core never hit this because nothing was sent
+  until bluetoothd powered the adapter seconds later; the 4.4 core sends its
+  setup pass the instant the controller exists. `couch-bt-bridge` now waits
+  after `BT_open` (2 s on the first open after boot, 600 ms after that), then
+  probes with HCI Reset until a Command Complete returns, and only then creates
+  the virtual controller. `couch-bt-hid` retries `RegisterApplication` on
+  `org.bluez.Error.Busy` (bluetoothd resetting the adapter). With those, eight
+  consecutive toggle cycles came up clean with `LEAdvertisingManager1`-managed
+  advertising (`ActiveInstances` 1) and no chip reset.
+
+## Outcome (2026-09-15): the in-kernel driver, on both cores
+
+The transport trouble above was the userspace pump, not the radio. The vendor
+tree has a Kconfig entry for "MTK BT driver for BlueZ" and the STP core's
+BlueZ mode, but no driver, so Couch wrote one: `hci_stp` (couch-kernel branch
+`couch-hci-stp`, about 290 lines, also copied to `kernel/backports/hci_stp.c`
+for the backports build). It registers an `hci_dev`, powers the BT function
+on and off in the adapter's own open and close, transmits through
+`mtk_wcn_stp_send_data` with the STP tx-event callback for flow control, and
+receives through the STP core's BlueZ-mode hook with its own H4 reassembly.
+Built as a module, it is loaded when Bluetooth is toggled on and unloaded when
+it is turned off; there is no bridge and no `/dev/vhci`.
+
+- On the in-tree 3.18 core (`bluetooth-hci-stp`, `.153.dev`): first toggle
+  after boot in 2 s, 15 of 15 cycles, zero STP timeouts, zero chip resets.
+- On the backported 4.4 core (`bluetooth-backports`, `.154.dev`, the four
+  modules in the ramdisk): first toggle in 6 s (3 s of it a settle that may
+  be unnecessary now), 6 of 6 cycles, zero STP timeouts, zero chip resets, and
+  not one hardware-error event; bluetoothd exports `LEAdvertisingManager1`
+  (SupportedInstances 4) and `couch-bt-hid` runs a managed advertisement.
+
+`kernel/backports/build.sh` reproduces the module build. Still to do before
+a candidate: the disconnect/re-advertise acceptance with a real TV, a full
+hardware round on the CMAC kernel, pushing `couch-hci-stp` to the kernel
+repo, and folding the modules into `tools/build.sh` images.

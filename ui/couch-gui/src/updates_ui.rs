@@ -35,7 +35,9 @@ enum Input {
     Channel(i32),
 }
 enum Outcome {
-    Status(Status),
+    // Boxed: the status grew the fields that explain a two-step update, and
+    // it is much the largest thing the worker sends back.
+    Status(Box<Status>),
     Done,
     Failed(String),
 }
@@ -52,6 +54,8 @@ pub struct Controller {
     /// A line the controller wants shown instead of the service's message,
     /// with when it expires.
     notice: Option<(String, Instant)>,
+    /// The half-finished update has already been looked up once this visit.
+    asked_for_rest: bool,
 }
 impl Controller {
     pub fn install(app: &App) -> Self {
@@ -69,7 +73,7 @@ impl Controller {
         std::thread::spawn(move || {
             while let Ok(request) = requests.recv() {
                 let outcome = match client::call(request) {
-                    Ok(Reply::Update(status)) => Outcome::Status(status),
+                    Ok(Reply::Update(status)) => Outcome::Status(Box::new(status)),
                     Ok(Reply::Done(Ok(()))) => Outcome::Done,
                     Ok(Reply::Done(Err(error))) => Outcome::Failed(error),
                     Ok(_) => Outcome::Failed("Unexpected system service reply".into()),
@@ -90,6 +94,7 @@ impl Controller {
             last_poll: None,
             open: false,
             notice: None,
+            asked_for_rest: false,
         }
     }
     fn send(&mut self, request: Request) {
@@ -105,6 +110,7 @@ impl Controller {
         let Some(s) = &self.status else {
             app.set_update_installed("…".into());
             app.set_update_boot("".into());
+            app.set_update_action("".into());
             app.set_update_channel("".into());
             app.set_update_summary("Connecting…".into());
             app.set_update_can_install(false);
@@ -112,17 +118,18 @@ impl Controller {
             app.set_update_ready(false);
             return;
         };
+        let busy =
+            self.busy || matches!(s.phase.as_str(), "checking" | "downloading" | "verifying");
         app.set_update_installed(s.installed.as_str().into());
         app.set_update_boot(boot_line(s).into());
         app.set_update_channel(channel_label(s.channel).into());
         app.set_update_summary(summary(s, self.busy).into());
+        app.set_update_action(action(s, busy).into());
         app.set_update_can_install(s.can_install && !self.busy);
-        app.set_update_busy(
-            self.busy || matches!(s.phase.as_str(), "checking" | "downloading" | "verifying"),
-        );
+        app.set_update_busy(busy);
         app.set_update_ready(s.phase == "ready");
         if self.notice.is_none() {
-            app.set_update_message(s.message.as_str().into());
+            app.set_update_message(explanation(s).into());
         }
     }
     pub fn poll(&mut self, app: &App) {
@@ -134,6 +141,7 @@ impl Controller {
             if open {
                 self.last_poll = None;
                 self.notice = None;
+                self.asked_for_rest = false;
                 self.present(app);
             } else {
                 self.input.borrow_mut().clear();
@@ -143,7 +151,7 @@ impl Controller {
             self.busy = false;
             match outcome {
                 Outcome::Status(status) => {
-                    self.status = Some(status);
+                    self.status = Some(*status);
                 }
                 Outcome::Done => {
                     // An action was accepted; read where it left things.
@@ -253,6 +261,26 @@ impl Controller {
             self.notice = None;
             self.present(app);
         }
+        // A remote that stopped between the two steps should not need a Check
+        // press to be offered the rest of its update: opening the section is
+        // enough. The service still rate-limits automatic checks to one every
+        // six hours and skips them entirely when the user has turned them off,
+        // so this cannot become a poll of GitHub.
+        if !self.busy
+            && !self.asked_for_rest
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|s| s.boot_pending && s.available.is_none() && s.phase == "idle")
+        {
+            self.asked_for_rest = true;
+            self.say(
+                app,
+                "Looking for the rest of this update…",
+                Duration::from_secs(20),
+            );
+            self.send(Request::UpdateCheck { automatic: true });
+        }
         if !self.busy && self.last_poll.is_none_or(|at| at.elapsed() >= POLL) {
             self.last_poll = Some(Instant::now());
             self.send(Request::UpdateStatus);
@@ -266,7 +294,8 @@ fn channel_label(channel: Channel) -> &'static str {
         Channel::Dev => "Dev",
     }
 }
-/// The value shown on the "Check for updates" row: one glance at where things are.
+/// The value shown on the "Check for updates" row: one glance at where things
+/// are, including which half of a two-step update is on the table.
 fn summary(s: &Status, busy: bool) -> String {
     match s.phase.as_str() {
         "checking" => "Checking…".into(),
@@ -275,32 +304,66 @@ fn summary(s: &Status, busy: bool) -> String {
         "ready" => "Ready to install".into(),
         "error" => "Failed".into(),
         _ => match &s.available {
-            Some(version) if s.kind == "boot" => format!("Boot image {} available", short(version)),
+            // A boot payload is only ever offered for the release the remote
+            // already runs, so naming that version again would say nothing;
+            // which step it is, is the useful part.
+            Some(_) if s.kind == "boot" => "Finish: step 2 of 2".into(),
+            Some(version) if s.steps == 2 => format!("{} · step 1 of 2", short(version)),
             Some(version) => format!("{} available", short(version)),
             None if busy => "Working…".into(),
+            None if s.boot_pending => "Update unfinished".into(),
             None => "Up to date".into(),
         },
     }
 }
-/// The boot image row: empty until a boot payload has been installed, because
-/// until then the partition carries whatever the OS image shipped and this
-/// updater has nothing to say about it.
+/// The step row's title: what pressing OK on it does now. The kernel step is
+/// labelled as the end of the journey rather than as another download, which
+/// is the thing a user who stopped after step 1 needs to recognise.
+fn action(s: &Status, busy: bool) -> String {
+    if s.phase == "ready" {
+        return "Install & restart".into();
+    }
+    if busy {
+        return "Working…".into();
+    }
+    if s.kind == "boot" {
+        return "Finish update: kernel".into();
+    }
+    "Download & verify".into()
+}
+/// The Kernel row: which release the kernel and boot ramdisk on the partition
+/// came from, and whether it has kept up with the software above it. Empty
+/// only when neither a boot payload nor the OS image names a build.
 fn boot_line(s: &Status) -> String {
-    if s.boot_version.is_empty() {
+    if s.boot_release.is_empty() {
         return String::new();
     }
-    match s.boot_kernel.get(..s.boot_kernel.len().min(8)) {
-        Some(kernel) if !kernel.is_empty() => format!("{} · {kernel}", short(&s.boot_version)),
-        _ => short(&s.boot_version),
+    let release = short(&s.boot_release);
+    if s.boot_pending {
+        // The state a half-finished two-step update leaves behind, said in the
+        // words the panel's message repeats underneath.
+        format!("{release} · older than software")
+    } else if s.boot_release == s.installed {
+        format!("{release} · up to date")
+    } else {
+        // Behind, but no boot payload is published for the installed release:
+        // the usual state between kernel changes, and nothing to act on.
+        release
     }
+}
+/// What the paragraph under the rows says: the service's own line while
+/// something is running, staged or failed, and otherwise the sentence naming
+/// the two-step journey, which is what a confused user is missing.
+fn explanation(s: &Status) -> String {
+    if s.phase == "idle" && !s.guidance.is_empty() {
+        return s.guidance.clone();
+    }
+    s.message.clone()
 }
 /// A prerelease tag on one row: `.122` says enough next to the installed build,
 /// whose full name is on the row above; a stable version keeps its full name.
 fn short(version: &str) -> String {
-    match version.rsplit_once('.') {
-        Some((head, build)) if head.contains("alpha") && !build.is_empty() => format!(".{build}"),
-        _ => version.to_owned(),
-    }
+    couch_updates::short_version(version)
 }
 #[cfg(test)]
 mod tests {
@@ -343,6 +406,7 @@ mod tests {
         app.set_update_installed("v0.1.0-alpha.20260913.121".into());
         app.set_update_channel("Alpha".into());
         app.set_update_summary(".122 available".into());
+        app.set_update_action("Download & verify".into());
         app.set_update_can_install(true);
         app.set_update_ready(false);
         app.set_update_message(
@@ -382,6 +446,7 @@ mod tests {
         app.set_update_can_install(false);
         app.set_update_busy(true);
         app.set_update_summary("Downloading…".into());
+        app.set_update_action("Working…".into());
         slint::platform::update_timers_and_animations();
         events.borrow_mut().clear();
         let text = char::from(Key::Return).to_string().into();
@@ -389,6 +454,7 @@ mod tests {
         assert!(events.borrow().is_empty());
         app.set_update_busy(false);
         app.set_update_ready(true);
+        app.set_update_action("Install & restart".into());
         slint::platform::update_timers_and_animations();
         let text = char::from(Key::Return).to_string().into();
         window.dispatch_event(WindowEvent::KeyPressed { text });
@@ -421,16 +487,50 @@ mod tests {
             boot_version: String::new(),
             boot_kernel: String::new(),
             boot_previous: false,
+            boot_release: String::new(),
+            boot_behind: false,
+            boot_pending: false,
+            steps: if available.is_some() { 1 } else { 0 },
+            guidance: String::new(),
         }
     }
     #[test]
-    fn the_boot_row_appears_only_once_a_boot_image_has_been_installed() {
+    fn the_kernel_row_says_whether_the_partition_kept_up_with_the_software() {
+        // Nothing names a build: nothing to show, and no row.
         let mut s = status("idle", None);
         assert_eq!(boot_line(&s), "");
-        s.boot_version = "v0.1.0-alpha.20260914.142".into();
-        assert_eq!(boot_line(&s), ".142");
-        s.boot_kernel = "ea122a39f434".into();
-        assert_eq!(boot_line(&s), ".142 · ea122a39");
+        // The kernel is the one the installed software shipped with.
+        s.boot_release = s.installed.clone();
+        assert_eq!(boot_line(&s), ".121 · up to date");
+        // Behind, with no second step outstanding: the version, unadorned.
+        s.boot_release = "v0.1.0-alpha.20260914.100".into();
+        assert_eq!(boot_line(&s), ".100");
+        // Behind because step 2 of a two-step update was never done.
+        s.boot_pending = true;
+        assert_eq!(boot_line(&s), ".100 · older than software");
+    }
+
+    #[test]
+    fn the_step_row_names_the_kernel_half_as_finishing_the_update() {
+        let mut s = status("idle", Some("v0.1.0-alpha.20260913.122"));
+        assert_eq!(action(&s, false), "Download & verify");
+        assert_eq!(action(&s, true), "Working…");
+        s.kind = "boot".into();
+        assert_eq!(action(&s, false), "Finish update: kernel");
+        s.phase = "ready".into();
+        assert_eq!(action(&s, false), "Install & restart");
+    }
+
+    #[test]
+    fn the_journey_sentence_replaces_the_service_line_only_while_idle() {
+        let mut s = status("idle", None);
+        s.message = "No newer signed build is available on this channel.".into();
+        assert_eq!(explanation(&s), s.message);
+        s.guidance = "This update is not finished.".into();
+        assert_eq!(explanation(&s), "This update is not finished.");
+        // A download or a failure has something more immediate to report.
+        s.phase = "downloading".into();
+        assert_eq!(explanation(&s), s.message);
     }
     #[test]
     fn the_check_row_says_where_things_stand() {
@@ -439,9 +539,18 @@ mod tests {
             summary(&status("idle", Some("v0.1.0-alpha.20260913.122")), false),
             ".122 available"
         );
+        let mut two = status("idle", Some("v0.1.0-alpha.20260913.122"));
+        two.steps = 2;
+        assert_eq!(summary(&two, false), ".122 · step 1 of 2");
         let mut boot = status("idle", Some("v0.1.0-alpha.20260913.121"));
         boot.kind = "boot".into();
-        assert_eq!(summary(&boot, false), "Boot image .121 available");
+        boot.steps = 2;
+        boot.boot_pending = true;
+        assert_eq!(summary(&boot, false), "Finish: step 2 of 2");
+        // Half-finished and not yet checked: the row says so on its own.
+        let mut unfinished = status("idle", None);
+        unfinished.boot_pending = true;
+        assert_eq!(summary(&unfinished, false), "Update unfinished");
         assert_eq!(
             summary(&status("idle", Some("v0.2.0")), false),
             "v0.2.0 available"

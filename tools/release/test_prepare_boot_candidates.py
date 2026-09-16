@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import prepare_boot_candidates as candidate
 import test_kernel_provenance as fixtures
-from test_runtime_inventory import elf
+from test_runtime_inventory import alpine_elf, elf
 
 
 class BootCandidateTests(unittest.TestCase):
@@ -20,6 +20,7 @@ class BootCandidateTests(unittest.TestCase):
                 'build/fbcon': elf(),
                 'clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-bridge': elf(),
                 'clients/target/armv7-unknown-linux-musleabihf/release/couch-bt-hid': elf(),
+                'build/bluez/couch-bluetoothd': alpine_elf(),
                 'tools/mkcpio.py': (candidate.REPO / 'tools/mkcpio.py').read_bytes()}.items():
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -40,9 +41,11 @@ class BootCandidateTests(unittest.TestCase):
                     self.assertIn('init', names)
                     self.assertNotIn('extra/props.tar.gz', names)
                 self.assertIn('extra/boot-health.sh', result['images']['boot']['ramdisk_payload_files'])
-                self.assertIn('extra/couch-bt-bridge', result['images']['boot']['ramdisk_payload_files'])
-                self.assertIn('extra/couch-bt-hid', result['images']['boot']['ramdisk_payload_files'])
-                self.assertNotIn('extra/couch-bt-bridge', result['images']['recovery']['ramdisk_payload_files'])
+                # The whole Bluetooth stack rides here, because none of it can
+                # be published in a runtime bundle (update_floor.py).
+                for name in candidate.BOOT_EXTRA:
+                    self.assertIn('extra/' + name, result['images']['boot']['ramdisk_payload_files'])
+                    self.assertNotIn('extra/' + name, result['images']['recovery']['ramdisk_payload_files'])
                 self.assertNotIn('extra/boot-health.sh', result['images']['recovery']['ramdisk_payload_files'])
                 with self.assertRaises(ValueError):
                     candidate.prepare(normal, normal, manifest, root / 'bad', root)

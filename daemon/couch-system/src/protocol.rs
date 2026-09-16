@@ -40,6 +40,18 @@ pub enum Request {
     },
     /// At boot: start the bridge if the saved setting says so.
     BluetoothAuto,
+    /// The HID daemon's control words: open a pairing window (for a device,
+    /// so the TV that bonds is stored on it), cancel it, forget one bond or
+    /// all, press Enter for a TV that asks for a key, or make one bond the
+    /// active link. `address` is the TV's, uppercase colon-hex; `device` a
+    /// device id from the configuration. See `docs/bluetooth.md`.
+    BluetoothPair {
+        action: crate::bluetooth::PairAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        address: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+    },
     EnrollKey {
         key: String,
     },
@@ -119,6 +131,58 @@ mod tests {
         let mut data = Vec::new();
         write(
             &serde_json::json!({"Power":{"action":"halt","force":true}}),
+            &mut data,
+        )
+        .unwrap();
+        assert!(read::<Request>(&mut &data[..]).is_err());
+        // Pairing actions are a closed set: no word reaches the daemon's
+        // socket that this enum did not name.
+        let mut data = Vec::new();
+        write(
+            &serde_json::json!({"BluetoothPair":{"action":"pair"}}),
+            &mut data,
+        )
+        .unwrap();
+        assert!(matches!(
+            read::<Request>(&mut &data[..]).unwrap(),
+            Request::BluetoothPair {
+                action: crate::bluetooth::PairAction::Pair,
+                address: None,
+                device: None,
+            }
+        ));
+        // The per-device and per-address forms, as the CLI takes them.
+        let mut data = Vec::new();
+        write(
+            &serde_json::json!({"BluetoothPair":{"action":"activate","address":"44:27:45:4E:33:25"}}),
+            &mut data,
+        )
+        .unwrap();
+        assert!(matches!(
+            read::<Request>(&mut &data[..]).unwrap(),
+            Request::BluetoothPair {
+                action: crate::bluetooth::PairAction::Activate,
+                address: Some(a),
+                device: None,
+            } if a == "44:27:45:4E:33:25"
+        ));
+        let mut data = Vec::new();
+        write(
+            &serde_json::json!({"BluetoothPair":{"action":"pair","device":"living-tv"}}),
+            &mut data,
+        )
+        .unwrap();
+        assert!(matches!(
+            read::<Request>(&mut &data[..]).unwrap(),
+            Request::BluetoothPair {
+                action: crate::bluetooth::PairAction::Pair,
+                address: None,
+                device: Some(d),
+            } if d == "living-tv"
+        ));
+        let mut data = Vec::new();
+        write(
+            &serde_json::json!({"BluetoothPair":{"action":"kbd:28"}}),
             &mut data,
         )
         .unwrap();

@@ -164,7 +164,7 @@ pub mod bridge {
     use std::os::unix::io::AsRawFd;
     use std::time::Duration;
 
-    use crate::h4::{Framer, MAX_FRAME};
+    use crate::h4::{Framer, EVENT, MAX_FRAME};
 
     /// errno values `/dev/stpbt` returns around a whole-chip reset.
     pub const STP_RESET_START: i32 = 88;
@@ -176,6 +176,8 @@ pub mod bridge {
         pub to_controller: u64,
         pub to_host: u64,
         pub resyncs: u64,
+        /// Hardware Error events swallowed rather than forwarded.
+        pub hardware_errors: u32,
     }
 
     /// One direction's file, opened non-blocking. The pump polls before every
@@ -308,6 +310,23 @@ pub mod bridge {
                     Ok(n) => match framer.push(&ctl_buf[..n]) {
                         Ok(frames) => {
                             for frame in frames {
+                                // The MediaTek firmware raises HCI Hardware
+                                // Error (code 2) during its own bring-up and
+                                // after some setup commands. The in-tree
+                                // 3.18 core only logged the event; a 4.x core
+                                // resets the device on it, and a burst of
+                                // those resets starves the STP transport into
+                                // a whole-chip reset. Keep the 3.18 behaviour.
+                                if frame.len() >= 4 && frame[0] == EVENT && frame[1] == 0x10 {
+                                    counters.hardware_errors += 1;
+                                    if counters.hardware_errors <= 3 {
+                                        log(&format!(
+                                            "dropped HCI hardware error 0x{:02x} from the radio",
+                                            frame[3]
+                                        ));
+                                    }
+                                    continue;
+                                }
                                 write_frame(host, &frame, &mut *log)?;
                                 counters.to_host += 1;
                             }
@@ -425,7 +444,8 @@ mod tests {
             Counters {
                 to_controller: 1,
                 to_host: 1,
-                resyncs: 0
+                resyncs: 0,
+                hardware_errors: 0
             }
         );
         let mut got = vec![0u8; reset.len()];

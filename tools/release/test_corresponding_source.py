@@ -140,6 +140,35 @@ class Sources(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'source, configuration'):
                 source.external_sources(Path(directory), receipt, Path(directory) / 'output')
 
+    def test_bluez_component_carries_every_recipe_input_and_refuses_drift(self):
+        import json
+        import collect_external_sources as collect
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory) / 'build'
+            contents = {'bluez-5.79.tar.xz': b'tarball', 'build.sh': b'#!/bin/sh', 'README.md': b'why',
+                        '0001-fix.patch': b'patch', 'aports/APKBUILD': b'recipe', 'aports/local.patch': b'alpine patch'}
+            for name, data in contents.items():
+                path = build / 'source' / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
+            (build / 'couch-bluetoothd').write_bytes(b'\x7fELF binary')
+            receipt = {'schema': 1, 'kind': 'couch-bluez-build', 'binary': 'couch-bluetoothd',
+                       'binary_sha256': hashlib.sha256(b'\x7fELF binary').hexdigest(), 'bluez_version': '5.79',
+                       'bluez_url': 'https://example.invalid/bluez-5.79.tar.xz', 'bluez_sha256': hashlib.sha256(b'tarball').hexdigest(),
+                       'aports_commit': 'a' * 40, 'aports_recipe': 'main/bluez', 'aports_patches': ['local.patch'],
+                       'couch_patches': ['0001-fix.patch'], 'container': 'alpine@sha256:' + 'b' * 64, 'platform': 'linux/arm/v7',
+                       'pinned_packages': [], 'packages': [], 'needed': [], 'cflags': '-Os', 'ldflags': '',
+                       'source_files': {name: hashlib.sha256(data).hexdigest() for name, data in contents.items()}}
+            (build / 'build.json').write_text(json.dumps(receipt))
+            component = Path(directory) / 'component'
+            result = collect.bluez(build, component)
+            self.assertEqual(result['source_archive'], 'bluez-5.79.tar.xz')
+            imported = source.external_sources(component, component / 'receipt.json', Path(directory) / 'release')
+            self.assertEqual(imported['binary_sha256'], receipt['binary_sha256'])
+            self.assertTrue((Path(directory) / 'release/external/bluez/aports/local.patch').is_file())
+            self.assertFalse((Path(directory) / 'release/external/bluez/couch-bluetoothd').exists())
+            (build / 'source/0001-fix.patch').write_bytes(b'changed after the build')
+            with self.assertRaisesRegex(ValueError, 'differs from its build receipt'):
+                collect.bluez(build, Path(directory) / 'again')
+
     def test_cached_upstream_hash_is_checked_even_offline(self):
         with tempfile.TemporaryDirectory() as directory:
             p = Path(directory) / 'source.tar.gz'; p.write_bytes(b'fixture')
@@ -153,7 +182,7 @@ class Sources(unittest.TestCase):
         import json
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'collection'; root.mkdir()
-            components = [('project', 'couch'), ('cargo', 'cargo-vendor'), ('cargo-notices', 'cargo-notices'), ('alpine', 'alpine'), ('kernel', 'external/kernel'), ('busybox', 'external/busybox'), ('rust-stdlib', 'external/rust-stdlib')]
+            components = [('project', 'couch'), ('cargo', 'cargo-vendor'), ('cargo-notices', 'cargo-notices'), ('alpine', 'alpine'), ('kernel', 'external/kernel'), ('busybox', 'external/busybox'), ('rust-stdlib', 'external/rust-stdlib'), ('bluez', 'external/bluez')]
             config = root / 'cargo-config/vendor.toml'; config.parent.mkdir(); config.write_text('fixture')
             for name, subdir in components:
                 path = root / subdir / 'source.txt'; path.parent.mkdir(parents=True); path.write_text(name)

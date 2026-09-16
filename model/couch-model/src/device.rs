@@ -29,6 +29,18 @@ pub struct Device {
     /// Exact per-function IR overrides; unassigned functions use the integration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ir: Option<DeviceIr>,
+    /// The TV bonded to the remote over Bluetooth LE for this device, if one
+    /// is. A device may carry this next to a network integration and an IR
+    /// codeset: each is a transport, and [`Device::transport_order`] says
+    /// which is tried first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bluetooth: Option<DeviceBluetooth>,
+    /// Which of the device's transports a key press tries first. `None` is
+    /// the default order (infrared, then network, then Bluetooth); a
+    /// preference for a transport the device does not have is ignored rather
+    /// than refused, so removing a codeset never invalidates the device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_transport: Option<Transport>,
 }
 
 impl Device {
@@ -40,6 +52,8 @@ impl Device {
             icon: None,
             integration: Integration::None,
             ir: None,
+            bluetooth: None,
+            preferred_transport: None,
         }
     }
 
@@ -61,6 +75,158 @@ impl Device {
 
     pub fn effective_icon(&self) -> Icon {
         self.icon.unwrap_or_else(|| self.kind.default_icon())
+    }
+
+    /// The integration reached over the network, if the device has one:
+    /// anything resolvable that is not "nothing", infrared or the Bluetooth
+    /// marker.
+    pub fn network_integration(&self, config: &crate::Config) -> Option<Integration> {
+        config
+            .resolve_integration(&self.integration)
+            .filter(|i| !matches!(i, Integration::None | Integration::Ir { .. } | Integration::BluetoothTv))
+    }
+
+    /// Whether the device can be reached this way at all (configuration, not
+    /// liveness: a bonded TV that is off still counts as having Bluetooth).
+    pub fn has_transport(&self, config: &crate::Config, transport: Transport) -> bool {
+        match transport {
+            Transport::Ir => self.effective_ir_codeset(config).is_some(),
+            Transport::Ip => self.network_integration(config).is_some(),
+            Transport::Bluetooth => self.bluetooth.is_some(),
+        }
+    }
+
+    /// The transports the device has, in the default order.
+    pub fn transports(&self, config: &crate::Config) -> Vec<Transport> {
+        ALL_TRANSPORTS
+            .iter()
+            .copied()
+            .filter(|t| self.has_transport(config, *t))
+            .collect()
+    }
+
+    /// The preference that applies: the stored one if the device has that
+    /// transport, otherwise the first it has.
+    pub fn preferred(&self, config: &crate::Config) -> Option<Transport> {
+        let have = self.transports(config);
+        self.preferred_transport
+            .filter(|t| have.contains(t))
+            .or_else(|| have.first().copied())
+    }
+
+    /// The order a key press tries the device's transports: the preferred one
+    /// first, then the rest in the default order. An executor moves down the
+    /// list when a transport is unavailable right now (no IR code for that
+    /// key, the TV not on the Bluetooth link, a network client that cannot
+    /// connect) and stops at the first that takes the key.
+    pub fn transport_order(&self, config: &crate::Config) -> Vec<Transport> {
+        let mut order = self.transports(config);
+        if let Some(first) = self.preferred(config) {
+            order.retain(|t| *t != first);
+            order.insert(0, first);
+        }
+        order
+    }
+}
+
+/// A TV bonded to the remote's Bluetooth HID peripheral, stored on the device
+/// it belongs to so two TVs can each have their own bond and an activity can
+/// say which one the remote should be connected to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceBluetooth {
+    /// The TV's Bluetooth address, uppercase colon-hex (`44:27:45:4E:33:25`),
+    /// as the HID daemon reports it. Empty for a bond migrated from the old
+    /// "Bluetooth TV" connection, which kept one TV without recording its
+    /// address: such a device is driven over whatever TV is on the link and
+    /// gets an address the next time it is paired.
+    #[serde(default)]
+    pub address: String,
+    /// The name the TV gave when it paired, for the editor and the room row.
+    #[serde(default)]
+    pub name: String,
+}
+
+impl DeviceBluetooth {
+    /// Six uppercase hex pairs separated by colons, as the daemon writes them.
+    pub fn valid_address(text: &str) -> bool {
+        let bytes = text.as_bytes();
+        bytes.len() == 17
+            && bytes.iter().enumerate().all(|(i, b)| {
+                if i % 3 == 2 {
+                    *b == b':'
+                } else {
+                    b.is_ascii_digit() || (b'A'..=b'F').contains(b)
+                }
+            })
+    }
+
+    /// The address is known: the bond can be activated and forgotten by it.
+    pub fn addressed(&self) -> bool {
+        Self::valid_address(&self.address)
+    }
+
+    /// What to call the TV: its name, or the address when it gave none.
+    pub fn label(&self) -> &str {
+        if self.name.is_empty() {
+            &self.address
+        } else {
+            &self.name
+        }
+    }
+}
+
+/// How a key press reaches a device. A device has one or more; see
+/// [`Device::transport_order`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Transport {
+    /// The infrared blaster, with the device's codeset.
+    Ir,
+    /// The device's network integration (webOS, Kodi, Sonos, ...).
+    Ip,
+    /// The remote as a Bluetooth HID peripheral, bonded to the device's TV.
+    Bluetooth,
+}
+
+/// The default order: an exact IR assignment has always won over the network
+/// integration for the keys it covers, and Bluetooth comes last so adding a
+/// bond to a network TV changes nothing until the user prefers it.
+pub const ALL_TRANSPORTS: &[Transport] = &[Transport::Ir, Transport::Ip, Transport::Bluetooth];
+
+impl Transport {
+    pub fn name(self) -> &'static str {
+        match self {
+            Transport::Ir => "ir",
+            Transport::Ip => "ip",
+            Transport::Bluetooth => "bluetooth",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Transport::Ir => "Infrared",
+            Transport::Ip => "Network",
+            Transport::Bluetooth => "Bluetooth",
+        }
+    }
+    pub fn from_name(name: &str) -> Option<Transport> {
+        ALL_TRANSPORTS.iter().copied().find(|t| t.name() == name)
+    }
+    /// The integration an executor dispatches through for this transport;
+    /// `None` for the network, whose integration is the device's own.
+    pub fn marker(self, device: &Device, config: &crate::Config) -> Option<Integration> {
+        match self {
+            Transport::Ir => device
+                .effective_ir_codeset(config)
+                .map(|codeset| Integration::Ir { codeset: codeset.into() }),
+            Transport::Ip => device.network_integration(config),
+            Transport::Bluetooth => device.bluetooth.as_ref().map(|_| Integration::BluetoothTv),
+        }
+    }
+}
+
+impl core::fmt::Display for Transport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.name())
     }
 }
 
@@ -187,9 +353,12 @@ pub enum Integration {
     AndroidTv,
     AppleTv,
     Tizen,
-    /// A TV paired to the remote itself over Bluetooth LE: the remote is a
-    /// HID keyboard/consumer-control peripheral, so keys go straight to the
-    /// TV with no address or credentials; pairing happens on the TV.
+    /// The Bluetooth transport marker: the remote is a HID keyboard and
+    /// consumer-control peripheral and keys go straight to the TV bonded to
+    /// the device. No longer stored on a device (the bond lives in
+    /// [`Device::bluetooth`]; `Config::migrate` moves an old device over), but
+    /// kept as the resolved form an executor and the button catalog match on,
+    /// and so an old file still reads.
     BluetoothTv,
     UnifiProtect { camera_id: String },
     // Resolved form only: `<connection_id>/<node_id>/<endpoint>`. Saved devices

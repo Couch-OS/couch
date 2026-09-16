@@ -784,18 +784,19 @@ fn resolve_target(
         .map(|(_, d)| d)
         .ok_or("Device was removed")?;
     let integration = config.resolve_integration(&device.integration);
-    if matches!(
-        integration,
-        Some(couch_model::Integration::None | couch_model::Integration::Ir { .. }) | None
-    ) && device.effective_ir_codeset(config).is_some()
-    {
-        return Ok((format!("ir:{id}"), Some(id.into())));
+    // No network: the one-way screen, keyed by infrared when the device has
+    // a codeset (a bond next to it is used by the executor's transport
+    // order) and by Bluetooth when the bond is all it has.
+    if device.network_integration(config).is_none() {
+        if device.effective_ir_codeset(config).is_some() {
+            return Ok((format!("ir:{id}"), Some(id.into())));
+        }
+        if device.bluetooth.is_some() {
+            return Ok((format!("bt:{id}"), Some(id.into())));
+        }
     }
     if matches!(integration,Some(couch_model::Integration::Sonos{..})) {
         return Ok((format!("sonos:{id}"),Some(id.into())));
-    }
-    if matches!(integration, Some(couch_model::Integration::BluetoothTv)) {
-        return Ok((format!("bt:{id}"), Some(id.into())));
     }
     let provider = match integration {
         Some(couch_model::Integration::AndroidTv) => couch_model::Provider::AndroidTv,
@@ -814,6 +815,59 @@ fn resolve_target(
             .unwrap_or_default(),
     };
     Ok((connection, Some(id.into())))
+}
+/// The rows a TV screen's command or app list starts with: pair this device
+/// over Bluetooth, and unpair it once it is. Only while Bluetooth is on; a
+/// device the configuration no longer has gets none.
+fn bluetooth_rows(device: Option<&str>) -> Vec<TvChoice> {
+    let Some(id) = device else { return Vec::new() };
+    if !crate::system::bluetooth_running() {
+        return Vec::new();
+    }
+    let bond = crate::connections::config().and_then(|c| {
+        c.devices()
+            .find(|(_, d)| d.id.as_str() == id)
+            .and_then(|(_, d)| d.bluetooth.clone())
+    });
+    let mut rows = vec![TvChoice {
+        action: "bt:pair".into(),
+        title: if bond.is_some() { "Pair over Bluetooth again" } else { "Pair over Bluetooth" }.into(),
+        detail: match &bond {
+            Some(b) => format!("Paired with {}", b.label()),
+            None => "The remote becomes discoverable for two minutes".into(),
+        }
+        .into(),
+    }];
+    if let Some(b) = bond {
+        rows.push(TvChoice {
+            action: "bt:unpair".into(),
+            title: "Unpair Bluetooth".into(),
+            detail: format!("Forget {}", b.label()).into(),
+        });
+    }
+    rows
+}
+/// `bt:pair` opens the daemon's window for the device (Ok(true): show the
+/// card); `bt:unpair` drops its bond (Ok(false)). couch-confd stores the
+/// outcome on the device.
+fn bluetooth_action(action: &str, device: Option<&str>) -> Result<bool, String> {
+    let id = device.ok_or("This screen has no device")?;
+    if !crate::system::bluetooth_running() {
+        return Err("Turn Bluetooth on in Settings first".into());
+    }
+    if action == "bt:pair" {
+        crate::system::bluetooth_pair_device(id)?;
+        return Ok(true);
+    }
+    let address = crate::connections::config()
+        .and_then(|c| {
+            c.devices()
+                .find(|(_, d)| d.id.as_str() == id)
+                .and_then(|(_, d)| d.bluetooth.as_ref().map(|b| b.address.clone()))
+        })
+        .ok_or("This device has no Bluetooth pairing")?;
+    crate::system::bluetooth_unpair_device(id, &address)?;
+    Ok(false)
 }
 pub struct Controller {
     media: media::Controller,
@@ -928,6 +982,18 @@ impl Controller {
                 let connection = connection.as_str();
                 self.save_view(app);
                 self.device = device;
+                // The device on screen holds the Bluetooth link, if it has
+                // a bond: the daemon drops any other TV for it.
+                if let Some(address) = self.device.as_deref().and_then(|id| {
+                    config
+                        .as_ref()?
+                        .devices()
+                        .find(|(_, d)| d.id.as_str() == id)
+                        .and_then(|(_, d)| d.bluetooth.as_ref())
+                        .map(|b| b.address.clone())
+                }) {
+                    crate::system::bluetooth_activate(&address);
+                }
                 let key = ViewKey {
                     connection: connection.into(),
                     device: self.device.clone().unwrap_or_default(),
@@ -1054,6 +1120,13 @@ impl Controller {
                         detail: detail.as_str().into(),
                     })
                     .collect();
+                if panel == 2 {
+                    // The device's own Bluetooth pairing, on the remote:
+                    // every TV screen offers it in its command or app list.
+                    let mut head = bluetooth_rows(self.device.as_deref());
+                    head.append(&mut rows);
+                    rows = head;
+                }
                 if panel == 3 {
                     if let Some(id) = &self.settings_app {
                         rows.push(TvChoice {
@@ -1094,6 +1167,23 @@ impl Controller {
                 continue;
             }
             if !app.get_tv_shown() {
+                continue;
+            }
+            if action == "bt:pair" || action == "bt:unpair" {
+                app.set_tv_panel(0);
+                match bluetooth_action(action, self.device.as_deref()) {
+                    Ok(pairing) => {
+                        if pairing {
+                            app.set_bt_pair_phase("pairing".into());
+                            app.set_bt_pair_detail("".into());
+                            app.set_bt_pair_shown(true);
+                            println!("couch-gui: bluetooth pairing mode opened for {}", self.device.as_deref().unwrap_or(""));
+                        } else {
+                            app.set_tv_status("Bluetooth pairing removed".into());
+                        }
+                    }
+                    Err(error) => app.set_tv_error(error.into()),
+                }
                 continue;
             }
             if let Some(action) = command(action) {
@@ -1200,6 +1290,33 @@ mod tests {
             ("ir:ir-only".into(), Some("ir-only".into()))
         );
         assert!(resolve_target(Some(&config), "device:removed").is_err());
+        // A bond alone is the one-way screen keyed by Bluetooth; next to a
+        // codeset the screen is keyed by infrared (the executor's transport
+        // order still offers both); next to a network TV it changes nothing.
+        let bond = couch_model::DeviceBluetooth { address: "44:27:45:4E:33:25".into(), name: "TV".into() };
+        let mut bonded = config.clone();
+        for device in &mut bonded.rooms[0].devices {
+            device.bluetooth = Some(bond.clone());
+        }
+        bonded.rooms[0].devices.push(couch_model::Device {
+            bluetooth: Some(bond.clone()),
+            ..couch_model::Device::new("bt-only".into(), "Bedroom", couch_model::DeviceKind::Tv)
+        });
+        assert_eq!(
+            resolve_target(Some(&bonded), "device:bt-only").unwrap(),
+            ("bt:bt-only".to_string(), Some("bt-only".to_string()))
+        );
+        assert_eq!(
+            resolve_target(Some(&bonded), "device:ir-only").unwrap(),
+            ("ir:ir-only".to_string(), Some("ir-only".to_string()))
+        );
+        assert_eq!(
+            resolve_target(Some(&bonded), "device:a").unwrap(),
+            resolve_target(Some(&config), "device:a").unwrap()
+        );
+        assert!(one_way("bt:bt-only") && one_way("ir:ir-only") && !one_way("lg"));
+        assert_eq!(bluetooth_rows(None), Vec::new());
+        assert!(bluetooth_action("bt:pair", None).is_err());
     }
     #[test]
     fn presentation_cache_is_bounded_scoped_and_does_not_renew_age() {

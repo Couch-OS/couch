@@ -280,6 +280,7 @@ JSON. `{id}` is a slug like `living-room`.
 | `PUT`    | `/api/remote/device`                   | the same five fields; written to the remote's settings file, which the remote applies within a second; `ssh` also starts or stops sshd through the system service |
 | `GET`    | `/api/remote/network`                  | `address`, `gateway`, `dns`, `mac`, `web` and `host` (`couch.local`), as the remote's Settings → Network shows them |
 | `POST`   | `/api/remote/power`                    | `{"action": "off" \| "restart" \| "recovery", "confirm": true}`; 202 once the system service has accepted it |
+| `POST`   | `/api/remote/bluetooth`                | `{"action": "pair" \| "stop" \| "forget" \| "enter"}`: open a two-minute pairing window (forgetting every bond first), close it, forget the bonds, or press Enter on the paired TV; 202 once the system service has passed it to the HID daemon. Progress is `bluetooth.pairing` `{phase, detail}` and `bluetooth.peer` in `GET /api/remote/device` |
 | `POST`   | `/api/rooms/{id}/devices`              | `{name, kind?, icon?, integration?}` |
 | `PUT`    | `/api/rooms/{id}/devices/{device}`     | the whole device; the path names it, so a body with a different id cannot move it |
 | `DELETE` | `/api/rooms/{id}/devices/{device}`     | and every scene step and activity step pointing at it |
@@ -658,6 +659,27 @@ another page. Room, area and scene choices save immediately. Device icons are
 part of the Edit device draft and use Save device / Discard changes. Automatic
 restores the device or room default. All SVG previews are served locally.
 
+A device card also carries the device's transports. Below its controls and
+its **IR commands** section is a **Bluetooth** section: **Pair over
+Bluetooth** opens the remote's two-minute pairing window for this device
+(`POST /api/remote/bluetooth {"action":"pair","device":"<id>"}`), the
+section follows the window (**Send key** for a TV that asks for a key press,
+**Cancel**), and once the TV has bonded the daemon stores its address and
+name on the device (`bluetooth: {address, name}`) and the page reloads the
+configuration; **Unpair** clears it (a `PUT` of the device without
+`bluetooth`, which also tells the remote to forget that TV). The card's
+summary line lists what the device has: its connection, IR commands and
+Bluetooth, the preferred one first. Edit device offers **Preferred control**
+once the device has more than one transport (`preferred_transport`: `ir`,
+`ip` or `bluetooth`; Automatic is infrared, then the connection, then
+Bluetooth); a key falls through to the next when the preferred one is not
+available for that press. The section is labelled **experimental**: a
+connected Bluetooth device can slow the remote's Wi-Fi badly, and it says so
+— see [Bluetooth](bluetooth-tv.md). The activity editor warns above the
+device list when two Bluetooth-paired TVs are in one
+activity and the one that is not the main screen has no other transport,
+because the remote keeps one Bluetooth link at a time.
+
 The remote renders the same selected room/device icons from a compiled 24px
 alpha atlas; no runtime SVG decoder or React dependency is needed. Attribution,
 version and regeneration instructions are in assets/lucide/README.md.
@@ -674,6 +696,42 @@ unimplemented integration; these controls configure ownership/source/steps.
 
 Regression: node web/tests/icons.mjs tests icon previews, search, persistence,
 mobile layout and room activity ownership with an isolated local daemon.
+
+## Software updates
+
+The **Updates** page is the web half of the same story the remote's
+**Settings > Updates** section tells, reading the same `GET /api/updates`
+status, so the two never disagree. Couch ships as two separately signed parts
+and the page says so in as many words: the software is the apps, services and
+this web UI; the kernel and boot image is a second payload written to the boot
+partition, published only when the kernel itself changes.
+
+The first card is **What is installed**: `Software <version>`, and
+`Kernel and boot image <version>` with, in plain words, whether it is up to
+date, from an earlier build with no newer kernel published for it, or older
+than the software with its update still to install. The second card's heading
+is the step: `Step 1 of 2: Couch software <version>`, `Step 2 of 2: kernel and
+boot image`, `Available: <version>` for a one-step release, or `This update is
+not finished`. Under it, in a notice box, is the daemon's `guidance` sentence,
+the same one the remote shows.
+
+The install buttons follow the step. Step 1 is **Download & verify update**
+and then a confirmation checkbox plus **Install & restart**, whose paragraph
+says the kernel and boot image will be offered here as step 2 once the remote
+is back. Step 2 is **Finish update: download the kernel and boot image**, then
+**Finish update & restart**. A remote that is half-updated with nothing yet on
+offer gets **Find the rest of this update**, which is the ordinary check.
+
+The banner at the top of the app also carries the unfinished state: it appears
+for an available build, for an outstanding step 2 ("Finish updating Couch
+<version>: step 2 of 2 is the kernel and boot image"), and for a remote whose
+last update never finished even before a check has found the payload.
+
+While a saved previous boot image exists, the first card offers to write it
+back, with the note that it verifies the saved image first, does not restart,
+and that a kernel which boots but never brings the GUI up puts the remote into
+recovery on its own. Channels, publishing and the state behind all of this:
+[runtime-updates.md](runtime-updates.md).
 
 ## Connection and remote settings updates
 

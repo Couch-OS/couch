@@ -74,6 +74,14 @@ impl Store {
                     }
                 }
                 store.migrate_connection_credentials()?;
+                // Older shapes the model can bring forward itself (a
+                // Bluetooth TV connection into a per-device bond): rewritten
+                // once, so every reader sees the current shape.
+                if store.config.migrate() {
+                    store.config.revision = store.config.revision.wrapping_add(1);
+                    store.config.validate().map_err(Error::Invalid)?;
+                    store.write()?;
+                }
                 Ok(store)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -154,6 +162,9 @@ impl Store {
         }
         let mut next = self.config.clone();
         let out = f(&mut next);
+        // An edit may carry the old shape (a whole-config PUT of an export,
+        // a device set to the old integration); it lands in the current one.
+        next.migrate();
         next.revision = self.config.revision.wrapping_add(1);
         next.validate().map_err(Error::Invalid)?;
 
@@ -291,6 +302,37 @@ mod tests {
         assert_eq!(store.revision(), r0 + 1);
         let err = store.mutate(Some(r0), |_| {}).unwrap_err();
         assert!(matches!(err, Error::Stale { .. }));
+    }
+
+    #[test]
+    fn an_old_bluetooth_tv_connection_becomes_a_device_bond_on_open_and_on_edit() {
+        let path = scratch("bt-migrate");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, br#"{"schema_version":1,"revision":7,
+            "connections":[{"id":"bt","name":"Bluetooth TV","provider":{"kind":"bluetooth-tv"}}],
+            "rooms":[{"id":"r","name":"R","devices":[{"id":"tv","name":"Bedroom TV","kind":"tv","integration":{"via":"connection","connection_id":"bt"}}]}]}"#).unwrap();
+        let store = Store::open(&path).unwrap();
+        assert!(store.config().connections.is_empty());
+        let tv = &store.config().rooms[0].devices[0];
+        assert_eq!(tv.integration, couch_model::Integration::None);
+        assert_eq!(tv.bluetooth.as_ref().map(|b| b.name.as_str()), Some("Bedroom TV"));
+        assert_eq!(store.revision(), 8, "rewritten once, with a new revision");
+        // The file on disk is in the new shape: a second open changes nothing.
+        let again = Store::open(&path).unwrap();
+        assert_eq!(again.revision(), 8);
+        assert!(!fs::read_to_string(&path).unwrap().contains("bluetooth-tv"));
+        // An edit that brings the old shape back (a whole-config PUT of an
+        // export) lands in the new one too.
+        let mut store = again;
+        store
+            .mutate(None, |cfg| {
+                cfg.rooms[0].devices[0].integration = couch_model::Integration::BluetoothTv;
+            })
+            .unwrap();
+        assert_eq!(
+            store.config().rooms[0].devices[0].integration,
+            couch_model::Integration::None
+        );
     }
 
     #[test]

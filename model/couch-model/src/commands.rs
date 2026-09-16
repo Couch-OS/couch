@@ -200,8 +200,23 @@ impl Function {
     /// Configuration capability only; the executor must resolve the exact IR
     /// assignment before transmitting, and otherwise use network support.
     pub fn supports_device(&self, device: &crate::Device, config: &crate::Config) -> bool {
-        config.resolve_integration(&device.integration).is_some_and(|i|self.supports(&i))
-            || device.effective_ir_codeset(config).is_some_and(|codeset|self.supports(&Integration::Ir{codeset:codeset.into()}))
+        crate::ALL_TRANSPORTS
+            .iter()
+            .any(|t| self.supports_transport(device, config, *t))
+    }
+    /// Whether one of the device's transports can carry this function: the
+    /// network integration's own catalog, the IR catalog for a device with a
+    /// codeset (the exact code is checked at send time), or the Bluetooth
+    /// consumer-control catalog for a bonded device.
+    pub fn supports_transport(
+        &self,
+        device: &crate::Device,
+        config: &crate::Config,
+        transport: crate::Transport,
+    ) -> bool {
+        transport
+            .marker(device, config)
+            .is_some_and(|integration| self.supports(&integration))
     }
     pub fn repeatable(&self) -> bool {
         matches!(

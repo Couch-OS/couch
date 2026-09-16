@@ -25,4 +25,11 @@ jobs:
       - run: cargo test --manifest-path daemon/Cargo.toml -p couch-updates --locked
       - run: cargo clippy --manifest-path daemon/Cargo.toml -p couch-updates --all-targets --locked -- -D warnings
       - run: python3 -m unittest discover -s tools/release -p 'test_*.py'
+      # The compatibility floor. A runtime bundle is refused before download by
+      # any updater whose allowlist does not know every name in it, and a check
+      # offers only the newest release, so one unknown name strands every remote
+      # on the oldest deployed updater until a full OS reinstall. This prints
+      # the exact bundle a promotion from this tree would publish and fails if
+      # that updater would refuse it (docs/runtime-updates.md).
+      - run: python3 tools/release/update_floor.py --inventory
       - run: python3 tools/tests/test_runtime_update_boot.py

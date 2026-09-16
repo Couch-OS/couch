@@ -13,10 +13,10 @@
 //! the pump with errno 99; the bridge then reopens `/dev/stpbt` and starts
 //! over, unless `--once` was given. Runs as root, like everything on the
 //! remote; no network, no files beyond the two devices.
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use couch_bt::bridge::{open_device, pump, Counters, STP_RESET_END, STP_RESET_START};
 use couch_bt::h4;
@@ -81,6 +81,89 @@ fn log(line: &str) {
     let _ = std::io::stdout().flush();
 }
 
+
+/// Wait until the radio answers HCI. On the first open after boot the
+/// firmware takes a moment past WMT's "BT on" before it acknowledges STP
+/// frames, and anything sent before then is lost at the transport, which then
+/// times out and retries. The in-tree 3.18 core never sent a command until
+/// bluetoothd powered the adapter seconds later; the backported 4.4 core runs
+/// its setup pass the instant the controller exists. So probe with HCI Reset
+/// and only create the controller once a Command Complete comes back.
+fn radio_ready(stpbt: &mut std::fs::File, log: &mut dyn FnMut(&str)) -> bool {
+    // Nothing may be written for a moment after BT_open: the STP layer
+    // reports "ready" before the firmware acknowledges frames, and a frame
+    // sent in that window times out at STP level, which the driver escalates
+    // into a whole-chip reset (taking Wi-Fi down with it). Half a second is
+    // well past the longest gap seen on the HA100.
+    // The first function-on after boot is slower still (the firmware patch
+    // goes down with it) and a probe at 600 ms still provoked one reset; the
+    // marker lives in /tmp, which is emptied by every boot.
+    let first_open = "/tmp/couch-bt-opened-once";
+    let settle = if std::path::Path::new(first_open).exists() { 600 } else { 2000 };
+    let _ = std::fs::write(first_open, b"");
+    std::thread::sleep(Duration::from_millis(settle));
+    // WMT keeps talking to the firmware for a while after the first open
+    // (vendor command completes, hardware-error events); anything we send
+    // into that collides with it. Discard what arrives until the transport
+    // has been quiet for a second, bounded so a chatty radio cannot stall us.
+    let quiet_for = Duration::from_millis(1000);
+    let drain_until = Instant::now() + Duration::from_millis(8000);
+    let mut last = Instant::now();
+    let mut drained = 0usize;
+    let mut buf = [0u8; h4::MAX_FRAME];
+    while Instant::now() < drain_until && last.elapsed() < quiet_for {
+        match stpbt.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                drained += n;
+                last = Instant::now();
+            }
+            _ => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    if drained > 0 {
+        log(&format!("discarded {drained} bytes of bring-up chatter from the radio"));
+    }
+    // Read Local Version, not HCI Reset: the firmware takes a while to come
+    // back from a Reset and does not acknowledge STP frames meanwhile, so a
+    // Reset here followed at once by the core's own Reset (the first thing a
+    // 4.x core sends a new controller) is exactly the back-to-back pair that
+    // timed out at the transport. A read leaves the core's Reset as the only one.
+    let probe = h4::command(0x1001, &[]);
+    let mut framer = h4::Framer::default();
+    for attempt in 1..=5u32 {
+        if let Err(e) = stpbt.write_all(&probe) {
+            log(&format!("readiness probe not sent: {e}"));
+        }
+        let deadline = Instant::now() + Duration::from_millis(1000);
+        while Instant::now() < deadline {
+            match stpbt.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    if let Ok(frames) = framer.push(&buf[..n]) {
+                        if frames.iter().any(|f| {
+                            f.len() >= 7 && f[0] == h4::EVENT && f[1] == 0x0e && f[4] == 0x01 && f[5] == 0x10
+                        }) {
+                            if attempt > 1 {
+                                log(&format!("radio answered the readiness probe on try {attempt}"));
+                            }
+                            return true;
+                        }
+                    }
+                }
+                Ok(_) => std::thread::sleep(Duration::from_millis(20)),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(e) => {
+                    log(&format!("readiness probe read failed: {e}"));
+                    return false;
+                }
+            }
+        }
+    }
+    log("radio never answered the readiness probe; creating the controller anyway");
+    false
+}
+
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let args = match parse(&raw) {
@@ -108,16 +191,6 @@ fn main() -> ExitCode {
     // stop reopening so the bridge cannot hold the shared radio down.
     let mut resets: u32 = 0;
     loop {
-        let mut vhci = match open_device(&args.vhci) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!(
-                    "couch-bt-bridge: cannot open {}: {e} (is CONFIG_BT_HCIVHCI in this kernel?)",
-                    args.vhci
-                );
-                return ExitCode::from(1);
-            }
-        };
         // Opening /dev/stpbt powers the Bluetooth function on through WMT;
         // a failure here is the radio, not us.
         let mut stpbt = match open_device(&args.stpbt) {
@@ -126,6 +199,21 @@ fn main() -> ExitCode {
                 eprintln!(
                     "couch-bt-bridge: cannot open {}: {e} (WMT refused to power Bluetooth on?)",
                     args.stpbt
+                );
+                return ExitCode::from(1);
+            }
+        };
+        radio_ready(&mut stpbt, &mut log);
+        // Open /dev/vhci only now: the driver creates a controller by itself
+        // one second after the open if no vendor packet has named one, and a
+        // create packet after that fails with EBADFD. The probe above can take
+        // longer than that second, so the open and the create stay together.
+        let mut vhci = match open_device(&args.vhci) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!(
+                    "couch-bt-bridge: cannot open {}: {e} (is CONFIG_BT_HCIVHCI in this kernel?)",
+                    args.vhci
                 );
                 return ExitCode::from(1);
             }

@@ -151,6 +151,20 @@ pub fn sshd_running() -> bool {
 pub fn bridge_running() -> bool {
     process_running("couch-bt-bridge")
 }
+/// A boot image carrying the in-kernel STP HCI driver (hci_stp.ko in the
+/// ramdisk's /extra): the toggle loads it instead of running the bridge.
+pub fn stp_driver_available() -> bool {
+    Path::new("/extra/hci_stp.ko").exists()
+}
+/// Whether the transport between BlueZ and the radio is up: the loaded
+/// in-kernel driver, or the userspace bridge on images without it.
+pub fn transport_running() -> bool {
+    if stp_driver_available() {
+        Path::new("/sys/module/hci_stp").exists()
+    } else {
+        bridge_running()
+    }
+}
 /// Whether the HID GATT daemon is running (Bluetooth is fully up).
 pub fn hid_running() -> bool {
     process_running("couch-bt-hid")
@@ -180,7 +194,7 @@ impl BluetoothState {
 /// "starting" older than the bring-up could take is a crashed attempt, so it
 /// reads as off rather than spinning forever.
 pub fn bluetooth_state() -> BluetoothState {
-    if hid_running() && bridge_running() {
+    if hid_running() && transport_running() {
         return BluetoothState::On;
     }
     let path = Path::new(crate::bluetooth::STATE_FILE);
@@ -201,10 +215,36 @@ pub fn bluetooth_state() -> BluetoothState {
         BluetoothState::Off
     }
 }
+/// Where pairing mode is, from the HID daemon's state file, with the lib's
+/// staleness rule (a window whose daemon died reads as idle) and its bond
+/// lines: `link` (the TV connected now), `active` (the bond that may
+/// connect) and `bonded` (the TV the last window bonded). Idle and empty
+/// whenever Bluetooth is not up: a file left by a daemon that is gone says
+/// nothing about now.
+pub fn bluetooth_pairing() -> couch_bt_hid::PairStatus {
+    if !hid_running() {
+        return couch_bt_hid::PairStatus::idle();
+    }
+    couch_bt_hid::PairStatus::read(&couch_bt_hid::PAIR_STATE_PATHS)
+}
+/// The name of the TV connected over Bluetooth right now, if one is.
+pub fn bluetooth_peer() -> Option<String> {
+    bluetooth_pairing().peer
+}
+/// A TV as the daemon names it: address and the name it gave. The lib's,
+/// re-exported so readers of [`bluetooth_pairing`] need not link it twice.
+pub use couch_bt_hid::Peer;
+
 /// Whether this kernel can do Bluetooth at all: the virtual HCI driver and
 /// the MediaTek transport both present. Older boot images have neither.
 pub fn bluetooth_available() -> bool {
-    Path::new("/dev/vhci").exists() && Path::new("/dev/stpbt").exists()
+    // A boot image built for the backported Bluetooth core has no /dev/vhci
+    // until the toggle loads the modules it carries in /extra; one with the
+    // in-kernel STP driver never needs it.
+    Path::new("/dev/stpbt").exists()
+        && (Path::new("/dev/vhci").exists()
+            || Path::new("/extra/hci_vhci.ko").exists()
+            || stp_driver_available())
 }
 /// Whether a process with exactly this `comm` is running.
 ///

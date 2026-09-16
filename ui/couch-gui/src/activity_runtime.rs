@@ -91,6 +91,24 @@ fn execute_steps(
     }
     Ok(())
 }
+/// Whether a device can be an activity's main screen: a media or TV
+/// integration, or a Bluetooth-only TV (the one-way screen).
+pub(crate) fn has_screen(config: &Config, device: &couch_model::Device) -> bool {
+    config
+        .resolve_integration(&device.integration)
+        .is_some_and(|i| {
+            matches!(
+                i,
+                couch_model::Integration::Sonos { .. }
+                    | couch_model::Integration::Kodi { .. }
+                    | couch_model::Integration::WebOs
+                    | couch_model::Integration::AndroidTv
+                    | couch_model::Integration::AppleTv
+                    | couch_model::Integration::Tizen
+            )
+        })
+        || (device.network_integration(config).is_none() && device.bluetooth.is_some())
+}
 impl Controller {
     pub fn new(app: &App) -> Self {
         let intents = Rc::new(RefCell::new(Vec::new()));
@@ -165,18 +183,7 @@ impl Controller {
                     config
                         .devices()
                         .find(|(_, d)| &d.id == id)
-                        .and_then(|(_, d)| config.resolve_integration(&d.integration))
-                        .is_some_and(|i| {
-                            matches!(
-                                i,
-                                couch_model::Integration::Sonos { .. } | couch_model::Integration::Kodi { .. }
-                                    | couch_model::Integration::WebOs
-                                    | couch_model::Integration::AndroidTv
-                                    | couch_model::Integration::AppleTv
-                                    | couch_model::Integration::Tizen
-                                    | couch_model::Integration::BluetoothTv
-                            )
-                        })
+                        .is_some_and(|(_, d)| has_screen(&config, d))
                 })
             {
                 error = Some(
@@ -184,6 +191,35 @@ impl Controller {
                         .into(),
                 );
                 continue;
+            }
+            if start {
+                // The on-screen device's bond becomes the Bluetooth link
+                // before the on sequence runs, so a key in it that goes over
+                // Bluetooth finds the right TV; a second bonded TV in the
+                // activity is driven over its other transport, and one with
+                // none is said so once here rather than on every key.
+                if let Some(link) = config.bluetooth_link_device(activity) {
+                    if let Some(bond) = &link.bluetooth {
+                        crate::system::bluetooth_activate(&bond.address);
+                    }
+                }
+                let stranded: Vec<&str> = config
+                    .bluetooth_conflicts(activity)
+                    .iter()
+                    .map(|d| d.name.as_str())
+                    .collect();
+                if !stranded.is_empty() {
+                    let note = format!(
+                        "{} cannot be reached while {} holds the Bluetooth link; add infrared or a connection to it.",
+                        stranded.join(", "),
+                        config
+                            .bluetooth_link_device(activity)
+                            .map(|d| d.name.as_str())
+                            .unwrap_or("another device")
+                    );
+                    println!("couch-gui: {note}");
+                    app.set_toast(note.into());
+                }
             }
             let steps = if start {
                 activity.setup.on.clone()

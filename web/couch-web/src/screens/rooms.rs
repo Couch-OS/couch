@@ -9,7 +9,7 @@
 //! device list is a keyed `<For>`, so saving one device leaves the other rows -
 //! their open editors, their half-typed names, the scroll position - alone.
 
-use couch_model::{Device, DeviceKind, Id, Integration, ALL_DEVICE_KINDS};
+use couch_model::{Device, DeviceKind, Id, Integration, Transport, ALL_DEVICE_KINDS};
 use leptos::prelude::*;
 use serde_json::json;
 
@@ -141,6 +141,7 @@ fn device_card(app: App, room: Id, order: Memo<Vec<Id>>, id: Id) -> AnyView {
     let start = device.get_untracked();
     let name = RwSignal::new(start.as_ref().map(|d| d.name.clone()).unwrap_or_default());
     let kind = RwSignal::new(start.as_ref().map(|d| d.kind).unwrap_or_default());
+    let preferred = RwSignal::new(start.as_ref().and_then(|d| d.preferred_transport));
     let icon = RwSignal::new(start.and_then(|d| d.icon));
 
     // The connection's own name is part of the line; the document itself is
@@ -158,17 +159,35 @@ fn device_card(app: App, room: Id, order: Memo<Vec<Id>>, id: Id) -> AnyView {
             _ => None,
         }
         .unwrap_or_else(|| super::overview::connection_summary(&device.integration));
-        if device.effective_ir_codeset(&house).is_none() {
+        // One line, one transport each: the connection, then IR, then the
+        // Bluetooth bond, with the preferred one first when it is not.
+        let network = device.network_integration(&house).is_some();
+        let mut parts: Vec<String> = Vec::new();
+        if network {
+            parts.push(line.clone());
+        }
+        if device.effective_ir_codeset(&house).is_some() {
+            parts.push(if network { "IR commands".into() } else { "Infrared · Built-in transmitter".into() });
+        }
+        if let Some(bluetooth) = super::bluetooth::summary(&device) {
+            parts.push(bluetooth);
+        }
+        if parts.is_empty() {
             return line;
         }
-        if matches!(
-            house.resolve_integration(&device.integration),
-            Some(Integration::None | Integration::Ir { .. })
-        ) {
-            "Infrared · Built-in transmitter".into()
-        } else {
-            format!("{line} · IR commands")
+        if let Some(t) = device.preferred_transport.filter(|_| parts.len() > 1) {
+            let first = match t { Transport::Ip => 0, Transport::Ir => usize::from(network), Transport::Bluetooth => parts.len() - 1 };
+            if first < parts.len() && device.has_transport(&house, t) {
+                let lead = parts.remove(first);
+                parts.insert(0, format!("{lead} (preferred)"));
+            }
         }
+        parts.join(" · ")
+    };
+    // The control methods the device has, for the preference below: only
+    // offered when there is a choice to make.
+    let transports = move || {
+        device.get().map(|d| d.transports(&app.house())).unwrap_or_default()
     };
 
     view!{<li class="card device"><div class="device-head">{reorder}<div><h3>{move ||device.get().map(|d|d.name)}</h3><p class="dim">{summary}</p></div></div>
@@ -176,12 +195,18 @@ fn device_card(app: App, room: Id, order: Memo<Vec<Id>>, id: Id) -> AnyView {
         // this device changes rather than when anything in the house does.
         {move ||device.get().map(|d|super::device_picker::controls(app,&app.house(),&d))}
         {move ||device.get().map(|d|super::infrared::device_commands(app,&app.house(),&room.get_value(),&d))}
-        <details><summary>"Edit device"</summary><form on:submit=move |e|{e.prevent_default();let Some(base)=device.get_untracked() else{return};let title=name.get_untracked().trim().to_string();if title.is_empty(){return}app.run(api::put(path(),Device{name:title,kind:kind.get_untracked(),icon:icon.get_untracked(),..base}));}>
+        {move ||device.get().map(|d|super::bluetooth::device_bluetooth(app,&app.house(),&room.get_value(),&d))}
+        <details><summary>"Edit device"</summary><form on:submit=move |e|{e.prevent_default();let Some(base)=device.get_untracked() else{return};let title=name.get_untracked().trim().to_string();if title.is_empty(){return}app.run(api::put(path(),Device{name:title,kind:kind.get_untracked(),icon:icon.get_untracked(),preferred_transport:preferred.get_untracked(),..base}));}>
         {super::connections::field("Device name",name,"Device name")}
         <label class="field">"Device type"<select aria-label="Device type" prop:value=move ||kind.get().name() on:change=move |e|kind.set(DeviceKind::from_name(&event_target_value(&e)).unwrap_or_default())>{ALL_DEVICE_KINDS.iter().map(|k|view!{<option value=k.name()>{k.name()}</option>}).collect_view()}</select></label>
         {ui::icon_select_signal(icon, move |_| {})}
+        {move ||{let have=transports();(have.len()>1).then(||view!{<label class="field">"Preferred control"<select aria-label="Preferred control" prop:value=move ||preferred.get().map(|t|t.name()).unwrap_or("") on:change=move |e|preferred.set(Transport::from_name(&event_target_value(&e)))>
+            <option value="">"Automatic"</option>
+            {have.iter().map(|t|view!{<option value=t.name()>{t.label()}</option>}).collect_view()}
+        </select></label>
+        <p class="dim">"Buttons try this first and fall back to the device's other methods when it is unavailable: a TV that is asleep on the network, or not on the Bluetooth link. Automatic tries infrared, then the connection, then Bluetooth."</p>})}}
         <p class="dim">"Manage server and bridge settings in Connections. To use another source device, remove this device and add the replacement from its connection."</p>
-        <button class="primary" type="submit">"Save device"</button><button class="ghost" type="button" on:click=move |_|{if let Some(d)=device.get_untracked(){name.set(d.name);kind.set(d.kind);icon.set(d.icon);}}>"Discard changes"</button></form></details>
+        <button class="primary" type="submit">"Save device"</button><button class="ghost" type="button" on:click=move |_|{if let Some(d)=device.get_untracked(){name.set(d.name);kind.set(d.kind);icon.set(d.icon);preferred.set(d.preferred_transport);}}>"Discard changes"</button></form></details>
         {ui::danger_button("Delete device",move ||app.run(api::delete(path())))}
     </li>}.into_any()
 }
