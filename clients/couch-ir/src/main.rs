@@ -132,9 +132,7 @@ fn parse() -> Result<Args, Fail> {
             "--repeats" => a.repeats = num(&value("--repeats")?, "--repeats")?,
             "--toggle" => a.toggle = true,
             "--carrier" => {
-                a.carrier = Some(
-                    codeset::parse_u32(&value("--carrier")?).map_err(Fail::Usage)?,
-                )
+                a.carrier = Some(codeset::parse_u32(&value("--carrier")?).map_err(Fail::Usage)?)
             }
             "--device" => a.device = value("--device")?,
             "--solution" => {
@@ -152,9 +150,7 @@ fn parse() -> Result<Args, Fail> {
                 say!("{USAGE}");
                 std::process::exit(0);
             }
-            _ if arg.starts_with("--") => {
-                return Err(Fail::Usage(format!("unknown option {arg}")))
-            }
+            _ if arg.starts_with("--") => return Err(Fail::Usage(format!("unknown option {arg}"))),
             _ => a.words.push(arg),
         }
     }
@@ -248,14 +244,24 @@ fn codeset_cmd(args: &Args) -> Result<(), Fail> {
     deliver(
         args,
         &message,
-        &format!("{button} ({} {:#x}/{:#x})", entry.protocol.name(), entry.address, entry.command),
+        &format!(
+            "{button} ({} {:#x}/{:#x})",
+            entry.protocol.name(),
+            entry.address,
+            entry.command
+        ),
     )
 }
 
 fn list() -> Result<(), Fail> {
     say!("protocol   carrier   codes");
     for p in Protocol::all() {
-        say!("{:<10} {:>5} Hz  {}", p.name(), p.carrier_hz(), p.describe());
+        say!(
+            "{:<10} {:>5} Hz  {}",
+            p.name(),
+            p.carrier_hz(),
+            p.describe()
+        );
     }
     say!("");
     say!("carriers are nominal; the dry-run and the encoder use these exact values.");
@@ -278,7 +284,10 @@ fn deliver(args: &Args, message: &Message, label: &str) -> Result<(), Fail> {
     match &message.repeat {
         Repeat::Resend { period_ms } => {
             if args.repeats > 0 {
-                say!("repeat: resend whole frame every {period_ms} ms x{}", args.repeats);
+                say!(
+                    "repeat: resend whole frame every {period_ms} ms x{}",
+                    args.repeats
+                );
             }
         }
         Repeat::Ditto { frame, period_ms } => {

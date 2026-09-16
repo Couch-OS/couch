@@ -92,6 +92,8 @@ class Sources(unittest.TestCase):
             with self.assertRaises(ValueError): source.source_allowed(name)
         self.assertFalse(source.source_allowed('tools/build/private-key.txt'))
         self.assertFalse(source.source_allowed('scratchpad/session.md'))
+        self.assertFalse(source.source_allowed('local.env'))
+        self.assertTrue(source.source_allowed('local.env.example'))
         self.assertFalse(source.source_allowed('spike/slint-fb/target/program'))
         self.assertTrue(source.source_allowed('clients/example/src/lib.rs'))
 

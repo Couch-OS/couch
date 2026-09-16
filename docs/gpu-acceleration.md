@@ -22,8 +22,8 @@ about that one workload.
 | DRM/KMS | **absent** - no `/dev/dri`, so Mesa/Lima is not an option |
 
 [Lima](https://docs.mesa3d.org/drivers/lima.html) supports Mali-400, with its
-kernel driver upstream since Linux 5.2. Kernel builds now work on Ollie, but
-our 3.18 vendor tree lacks that DRM interface. Backporting Lima plus its
+kernel driver upstream since Linux 5.2. Kernel builds now work on a dedicated
+Linux build host, but our 3.18 vendor tree lacks that DRM interface. Backporting Lima plus its
 infrastructure is substantially larger than enabling a configuration option.
 The working experiment uses the existing proprietary driver in a separate
 bionic process; the musl Slint process still needs an integration bridge.

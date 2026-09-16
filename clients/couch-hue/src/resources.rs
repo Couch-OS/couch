@@ -131,7 +131,8 @@ mod tests {
                 json!({"id":"room","type":"room","metadata":{"name":"Server Room"},
                     "services":[{"rtype":"grouped_light","rid":id}]}),
                 json!({"id":id,"type":"grouped_light","on":{"on":on},"dimming":dimming}),
-            ]).unwrap();
+            ])
+            .unwrap();
             assert_eq!(resources[0].state.entity_id, format!("room:{id}"));
             assert_eq!(resources[0].state.brightness_percent, expected);
             assert_eq!(resources[0].state.dimmable, supported);

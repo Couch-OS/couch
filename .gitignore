@@ -17,13 +17,12 @@ gui/icons/png/
 build/fb.raw
 __pycache__/
 
-# Generated browser Slint application; Pages builds it from preview/.
-site/wasm/
-# Generated from the current production Slint WASM by the Pages workflow.
-site/usage/screenshots/
-
 # Private session notes and disposable review plans.
 /scratchpad/
+
+# Per-operator build and connection settings. Copy local.env.example and keep
+# host names, paths, and credentials out of the repository.
+/local.env
 
 # Local Codex instructions, configuration, skills and session artifacts.
 [Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]

@@ -12,7 +12,7 @@ import zlib
 
 from couch_install import CHUNK, IDENTITY_PARTITIONS, InstallError, REPO, digest, layout, require, save_json, sync_directory
 
-# Existing Ollie checkout, source reviewed 2026-09-09. Not a hardware certification.
+# Pinned upstream checkout, source reviewed 2026-09-09. Not a hardware certification.
 REVIEWED_REVISION = "60e07f3b343a4469389f15967626d63e049968d4"
 SECTOR = 512
 

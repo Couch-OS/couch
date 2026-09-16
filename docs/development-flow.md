@@ -51,10 +51,10 @@ candidate is, so the release list stays readable.
    `python3 tools/release/bump_release.py v0.1.0-alpha.<date>.<n>` with the tag
    the promotion will carry, and commit the result. The tag lives once, in
    `tools/release/current-release.txt`; the script writes it there and rewrites
-   every install command that names it, in `README.md`, `docs/installer.md` and
-   `site/index.html`, including the copy buttons' invisible `data-copy`
-   duplicates. Do not edit those literals by hand: CI runs
-   `bump_release.py --check` and fails if any of them disagrees.
+   every install command that names it in `README.md` and `docs/installer.md`.
+   The separate `couch-site` build reads this source file from its pinned Couch
+   checkout to render website commands. Do not edit these literals by hand: CI
+   runs `bump_release.py --check` and fails if either disagrees.
 2. Open a pull request from `dev` to `main` titled for the batch, listing the
    feature pull requests it carries. Merge it with a merge commit.
 3. Tag the merge commit `v0.1.0-alpha.<date>.<n>` (the `<n>` after the last

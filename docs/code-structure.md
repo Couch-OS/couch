@@ -39,6 +39,6 @@ connections. Keep recovery access independent of the application processes.
 
 Generated icon/font tables are large by design; moving their generated rows
 into more files would not improve architecture. Browser configuration (`web/`),
-public documentation (`site/`), interactive previews (`preview/`) and the small
+the separately published documentation site, interactive previews (`preview/`) and the small
 recovery portal have different runtime requirements and should not be merged
 solely because they contain HTML or UI code.

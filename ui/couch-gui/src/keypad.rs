@@ -198,21 +198,44 @@ impl Keypad {
                     self.held = 0;
                 }
                 if code == KEY_MIC {
-                    return Some(Press { code, released: true, key: None, mic: Some(false), menu: None,
-                                        latency_us, repeat: false });
+                    return Some(Press {
+                        code,
+                        released: true,
+                        key: None,
+                        mic: Some(false),
+                        menu: None,
+                        latency_us,
+                        repeat: false,
+                    });
                 }
                 if code == KEY_MENU {
-                    return Some(Press { code, released: true, key: None, mic: None, menu: Some(false),
-                                        latency_us, repeat: false });
+                    return Some(Press {
+                        code,
+                        released: true,
+                        key: None,
+                        mic: None,
+                        menu: Some(false),
+                        latency_us,
+                        repeat: false,
+                    });
                 }
-                Some(Press {code, released:true,key:None,mic:None,menu:None,latency_us,repeat:false})
+                Some(Press {
+                    code,
+                    released: true,
+                    key: None,
+                    mic: None,
+                    menu: None,
+                    latency_us,
+                    repeat: false,
+                })
             }
             1 => {
                 if code == KEY_MIC {
                     // Not held for repeat: a key you hold down to talk must not
                     // also be a key that repeats.
                     return Some(Press {
-                        code, released: false,
+                        code,
+                        released: false,
                         key: None,
                         mic: Some(true),
                         menu: None,
@@ -225,7 +248,8 @@ impl Keypad {
                     // it from this down edge and the up edge above. Not held
                     // for repeat, for the same reason as the mic key.
                     return Some(Press {
-                        code, released: false,
+                        code,
+                        released: false,
                         key: None,
                         mic: None,
                         menu: Some(true),
@@ -244,7 +268,8 @@ impl Keypad {
                 let Some(key) = map_key(code) else {
                     println!("couch-gui: unmapped key code {code}");
                     return Some(Press {
-                        code, released: false,
+                        code,
+                        released: false,
                         key: None,
                         mic: None,
                         menu: None,
@@ -256,7 +281,8 @@ impl Keypad {
                 self.held_since = mono;
                 self.last_repeat = 0;
                 Some(Press {
-                    code, released: false,
+                    code,
+                    released: false,
                     key: Some(key),
                     mic: None,
                     menu: None,
@@ -286,7 +312,8 @@ impl Keypad {
         }
         self.last_repeat = now;
         Some(Press {
-            code: self.held, released: false,
+            code: self.held,
+            released: false,
             key: map_key(self.held),
             mic: None,
             menu: None,
@@ -299,35 +326,41 @@ impl Keypad {
 // Measured HA100 legends: Power=F2, Home=F1, R/G/B/Y=F8/F9/F10/F11.
 // Reserve F13–F18 for TV actions; never repeat power, mute, home or colors.
 fn one_shot(code: u16) -> bool {
-    !matches!(code,103|108|105|106|104|109|402|403|115|114)
+    !matches!(
+        code,
+        103 | 108 | 105 | 106 | 104 | 109 | 402 | 403 | 115 | 114
+    )
 }
 fn map_key(code: u16) -> Option<Key> {
     match code {
-        103 => Some(Key::UpArrow),      // KEY_UP
-        108 => Some(Key::DownArrow),    // KEY_DOWN
-        105 => Some(Key::LeftArrow),    // KEY_LEFT
-        106 => Some(Key::RightArrow),   // KEY_RIGHT
+        103 => Some(Key::UpArrow),    // KEY_UP
+        108 => Some(Key::DownArrow),  // KEY_DOWN
+        105 => Some(Key::LeftArrow),  // KEY_LEFT
+        106 => Some(Key::RightArrow), // KEY_RIGHT
         // 353 is KEY_SELECT, which is what this remote's OK button actually
         // sends - measured, after it silently did nothing for a while. 352 is
         // KEY_OK, its neighbour in the same block, mapped on the same grounds
         // that 28 and 96 both are.
         28 | 96 | 352 | 353 => Some(Key::Return),
-        1 | 158 => Some(Key::Escape),   // KEY_ESC / KEY_BACK
+        1 | 158 => Some(Key::Escape), // KEY_ESC / KEY_BACK
         // Slint has no volume key variants; reserve F23/F24 as internal
         // volume-up/down tokens. They follow normal hold-to-repeat handling.
         // The remote advertises page keys; also accept standard channel codes.
-        104 | 402 => Some(Key::F21),   // PAGEUP / CHANNELUP
-        109 | 403 => Some(Key::F22),   // PAGEDOWN / CHANNELDOWN
-        115 => Some(Key::F23),         // KEY_VOLUMEUP
-        114 => Some(Key::F24),         // KEY_VOLUMEDOWN
-        60 => Some(Key::F13),     // measured Power / standard KEY_POWER
-        113 => Some(Key::F14),          // mute
-        66 | 398 => Some(Key::F15),      // red
-        67 | 399 => Some(Key::F16),      // green
-        68 | 401 => Some(Key::F17),      // blue
-        87 | 400 => Some(Key::F18),      // yellow
-        62 => Some(Key::F3), 63 => Some(Key::F4), 64 => Some(Key::F5), 65 => Some(Key::F6),
-        59 | 172 => Some(Key::Home),         // KEY_HOMEPAGE
+        104 | 402 => Some(Key::F21), // PAGEUP / CHANNELUP
+        109 | 403 => Some(Key::F22), // PAGEDOWN / CHANNELDOWN
+        115 => Some(Key::F23),       // KEY_VOLUMEUP
+        114 => Some(Key::F24),       // KEY_VOLUMEDOWN
+        60 => Some(Key::F13),        // measured Power / standard KEY_POWER
+        113 => Some(Key::F14),       // mute
+        66 | 398 => Some(Key::F15),  // red
+        67 | 399 => Some(Key::F16),  // green
+        68 | 401 => Some(Key::F17),  // blue
+        87 | 400 => Some(Key::F18),  // yellow
+        62 => Some(Key::F3),
+        63 => Some(Key::F4),
+        64 => Some(Key::F5),
+        65 => Some(Key::F6),
+        59 | 172 => Some(Key::Home), // KEY_HOMEPAGE
         _ => None,
     }
 }
@@ -341,7 +374,10 @@ pub fn now_realtime_us() -> u64 {
 }
 
 fn clock_us(which: libc::clockid_t) -> u64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     unsafe { libc::clock_gettime(which, &mut ts) };
     ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000
 }
@@ -369,11 +405,19 @@ mod tests {
         assert_eq!(press.code, KEY_SIDE_POWER);
         assert!(press.key.is_none());
         assert!(pad.repeat(1_000_000).is_none());
-        assert!(pad.decode(&raw(EV_KEY, KEY_SIDE_POWER, 2, 0), 2, 2).is_none());
+        assert!(pad
+            .decode(&raw(EV_KEY, KEY_SIDE_POWER, 2, 0), 2, 2)
+            .is_none());
         assert!(pad.decode(&up(KEY_SIDE_POWER), 3, 3).unwrap().released);
         assert_eq!(map_key(60), Some(Key::F13));
-        assert_eq!(couch_model::buttons::Button::from_evdev(KEY_SIDE_POWER), None);
-        assert_eq!(couch_model::buttons::Button::from_evdev(60), Some(couch_model::buttons::Button::Power));
+        assert_eq!(
+            couch_model::buttons::Button::from_evdev(KEY_SIDE_POWER),
+            None
+        );
+        assert_eq!(
+            couch_model::buttons::Button::from_evdev(60),
+            Some(couch_model::buttons::Button::Power)
+        );
     }
 
     fn down(code: u16) -> [u8; EVENT_SIZE] {
@@ -423,19 +467,37 @@ mod tests {
     /// of the batch, and everything decoded beside it went in the bin.
     #[test]
     fn channel_keys_accept_page_and_channel_codes() {
-        for code in [104, 402] { assert_eq!(map_key(code).map(char::from), Some(char::from(Key::F21))); }
-        for code in [109, 403] { assert_eq!(map_key(code).map(char::from), Some(char::from(Key::F22))); }
+        for code in [104, 402] {
+            assert_eq!(map_key(code).map(char::from), Some(char::from(Key::F21)));
+        }
+        for code in [109, 403] {
+            assert_eq!(map_key(code).map(char::from), Some(char::from(Key::F22)));
+        }
     }
 
     #[test]
     fn measured_tv_buttons_fire_once_even_when_held() {
-        for (code,mapped) in [(60,Key::F13),(59,Key::Home),(113,Key::F14),(66,Key::F15),(67,Key::F16),(68,Key::F17),(87,Key::F18)] {
-            let mut k=blank();
-            assert_eq!(batch(&mut k,&[down(code),syn()],1),vec![key(mapped)]);
+        for (code, mapped) in [
+            (60, Key::F13),
+            (59, Key::Home),
+            (113, Key::F14),
+            (66, Key::F15),
+            (67, Key::F16),
+            (68, Key::F17),
+            (87, Key::F18),
+        ] {
+            let mut k = blank();
+            assert_eq!(batch(&mut k, &[down(code), syn()], 1), vec![key(mapped)]);
             assert!(k.repeat(2_000_000).is_none());
-            assert!(batch(&mut k,&[raw(EV_KEY,code,2,0),up(code),syn()],2_100_000).is_empty());
+            assert!(batch(
+                &mut k,
+                &[raw(EV_KEY, code, 2, 0), up(code), syn()],
+                2_100_000
+            )
+            .is_empty());
         }
-        let mut k=blank();batch(&mut k,&[down(115),syn()],1);
+        let mut k = blank();
+        batch(&mut k, &[down(115), syn()], 1);
         assert!(k.repeat(2_000_000).is_some());
     }
     #[test]
@@ -447,26 +509,18 @@ mod tests {
     #[test]
     fn a_key_and_a_mic_edge_in_one_batch_both_arrive_in_order() {
         let mut k = blank();
-        let out = batch(
-            &mut k,
-            &[down(103), syn(), down(KEY_MIC), syn()],
-            1_000,
-        );
+        let out = batch(&mut k, &[down(103), syn(), down(KEY_MIC), syn()], 1_000);
         assert_eq!(out, vec![key(Key::UpArrow), (None, Some(true), false)]);
     }
 
     #[test]
     fn both_mic_edges_survive_one_batch() {
         let mut k = blank();
-        let out = batch(
-            &mut k,
-            &[down(KEY_MIC), syn(), up(KEY_MIC), syn()],
-            1_000,
+        let out = batch(&mut k, &[down(KEY_MIC), syn(), up(KEY_MIC), syn()], 1_000);
+        assert_eq!(
+            out,
+            vec![(None, Some(true), false), (None, Some(false), false),]
         );
-        assert_eq!(out, vec![
-            (None, Some(true), false),
-            (None, Some(false), false),
-        ]);
         assert_eq!(k.held, 0, "the microphone key is never held for repeat");
     }
 
@@ -482,7 +536,10 @@ mod tests {
         );
         assert_eq!(out, vec![key(Key::UpArrow), (None, Some(true), false)]);
         assert_eq!(k.held, 0);
-        assert!(k.repeat(u64::MAX).is_none(), "nothing is held, so nothing repeats");
+        assert!(
+            k.repeat(u64::MAX).is_none(),
+            "nothing is held, so nothing repeats"
+        );
     }
 
     /// One per call, and the rest kept: two keys inside one frame are two
@@ -492,9 +549,19 @@ mod tests {
         let mut k = blank();
         // Held since now, so the repeat delay cannot have elapsed by the time
         // the queue runs out and `poll` looks at the clock.
-        k.feed(&[down(103), syn(), down(108), syn()].concat(), now_monotonic_us(), 0);
-        assert_eq!(k.poll().and_then(|p| p.key).map(char::from), Some(char::from(Key::UpArrow)));
-        assert_eq!(k.poll().and_then(|p| p.key).map(char::from), Some(char::from(Key::DownArrow)));
+        k.feed(
+            &[down(103), syn(), down(108), syn()].concat(),
+            now_monotonic_us(),
+            0,
+        );
+        assert_eq!(
+            k.poll().and_then(|p| p.key).map(char::from),
+            Some(char::from(Key::UpArrow))
+        );
+        assert_eq!(
+            k.poll().and_then(|p| p.key).map(char::from),
+            Some(char::from(Key::DownArrow))
+        );
         assert!(k.poll().is_none());
     }
 
@@ -502,14 +569,20 @@ mod tests {
     fn a_release_only_clears_the_key_it_belongs_to() {
         let mut k = blank();
         batch(&mut k, &[down(103), down(108), up(103)], 1_000);
-        assert_eq!(k.held, 108, "releasing the older key must not unhold the newer");
+        assert_eq!(
+            k.held, 108,
+            "releasing the older key must not unhold the newer"
+        );
     }
 
     #[test]
     fn a_held_key_waits_the_delay_then_repeats_at_the_rate() {
         let mut k = blank();
         let t0 = 10_000_000;
-        assert_eq!(batch(&mut k, &[down(103), syn()], t0), vec![key(Key::UpArrow)]);
+        assert_eq!(
+            batch(&mut k, &[down(103), syn()], t0),
+            vec![key(Key::UpArrow)]
+        );
 
         let delay = REPEAT_DELAY_MS * 1000;
         let rate = REPEAT_RATE_MS * 1000;
@@ -529,9 +602,16 @@ mod tests {
     fn an_unmapped_code_wakes_but_is_not_held_and_carries_no_key() {
         let mut k = blank();
         let out = batch(&mut k, &[down(999), syn(), up(999), syn()], 1_000);
-        assert_eq!(out, vec![(None, None, false)], "one bare press, no key, no mic");
+        assert_eq!(
+            out,
+            vec![(None, None, false)],
+            "one bare press, no key, no mic"
+        );
         assert_eq!(k.held, 0);
-        assert!(k.repeat(u64::MAX).is_none(), "nothing held, so nothing repeats");
+        assert!(
+            k.repeat(u64::MAX).is_none(),
+            "nothing held, so nothing repeats"
+        );
     }
 
     /// A key chattering while the frame loop is stuck must not leave a backlog

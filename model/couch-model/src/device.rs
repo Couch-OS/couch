@@ -64,11 +64,20 @@ impl Device {
 
     /// Supplemental IR takes precedence; legacy IR devices remain readable.
     pub fn effective_ir_codeset<'a>(&'a self, config: &'a crate::Config) -> Option<&'a str> {
-        if let Some(ir) = &self.ir { return Some(&ir.codeset); }
+        if let Some(ir) = &self.ir {
+            return Some(&ir.codeset);
+        }
         match &self.integration {
             Integration::Ir { codeset } => Some(codeset),
-            Integration::Connection { connection_id, resource_id }
-                if config.connection(connection_id).is_some_and(|c| c.provider == crate::Provider::Ir) => Some(resource_id),
+            Integration::Connection {
+                connection_id,
+                resource_id,
+            } if config
+                .connection(connection_id)
+                .is_some_and(|c| c.provider == crate::Provider::Ir) =>
+            {
+                Some(resource_id)
+            }
             _ => None,
         }
     }
@@ -81,9 +90,12 @@ impl Device {
     /// anything resolvable that is not "nothing", infrared or the Bluetooth
     /// marker.
     pub fn network_integration(&self, config: &crate::Config) -> Option<Integration> {
-        config
-            .resolve_integration(&self.integration)
-            .filter(|i| !matches!(i, Integration::None | Integration::Ir { .. } | Integration::BluetoothTv))
+        config.resolve_integration(&self.integration).filter(|i| {
+            !matches!(
+                i,
+                Integration::None | Integration::Ir { .. } | Integration::BluetoothTv
+            )
+        })
     }
 
     /// Whether the device can be reached this way at all (configuration, not
@@ -217,7 +229,9 @@ impl Transport {
         match self {
             Transport::Ir => device
                 .effective_ir_codeset(config)
-                .map(|codeset| Integration::Ir { codeset: codeset.into() }),
+                .map(|codeset| Integration::Ir {
+                    codeset: codeset.into(),
+                }),
             Transport::Ip => device.network_integration(config),
             Transport::Bluetooth => device.bluetooth.as_ref().map(|_| Integration::BluetoothTv),
         }
@@ -236,7 +250,11 @@ pub struct DeviceIr {
 }
 impl DeviceIr {
     pub fn valid_codeset(id: &str) -> bool {
-        !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        !id.is_empty()
+            && id.len() <= 64
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
     }
 }
 
@@ -334,13 +352,22 @@ impl core::fmt::Display for DeviceKind {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(tag = "via", rename_all = "kebab-case")]
 pub enum Integration {
-    Sonos { host: String },
-    Denon { host: String, port: u16 },
+    Sonos {
+        host: String,
+    },
+    Denon {
+        host: String,
+        port: u16,
+    },
     /// Configured but not wired to anything: the device exists so it can be
     /// counted and named, which is what the hub's room rows show.
     #[default]
     None,
-    Connection { connection_id: Id, #[serde(default)] resource_id: String },
+    Connection {
+        connection_id: Id,
+        #[serde(default)]
+        resource_id: String,
+    },
     Kodi {
         host: String,
         #[serde(default = "default_kodi_port")]
@@ -348,7 +375,9 @@ pub enum Integration {
     },
     // UUID for a light or room:GROUPED_LIGHT_UUID. Scenes use Scene.hue.
     // Keep the legacy field name for backwards-compatible saved configurations.
-    Hue { light_id: String },
+    Hue {
+        light_id: String,
+    },
     WebOs,
     AndroidTv,
     AppleTv,
@@ -360,10 +389,14 @@ pub enum Integration {
     /// kept as the resolved form an executor and the button catalog match on,
     /// and so an old file still reads.
     BluetoothTv,
-    UnifiProtect { camera_id: String },
+    UnifiProtect {
+        camera_id: String,
+    },
     // Resolved form only: `<connection_id>/<node_id>/<endpoint>`. Saved devices
     // refer to the Matter connection with `<node_id>/<endpoint>` as resource ID.
-    Matter { device: String },
+    Matter {
+        device: String,
+    },
     HomeAssistant {
         entity_id: String,
     },
@@ -459,30 +492,48 @@ mod ir_tests {
     }
     #[test]
     fn old_json_and_legacy_ir_work_without_a_supplemental_field() {
-        let old:Device=serde_json::from_str(r#"{"id":"tv","name":"TV","integration":{"via":"ir","codeset":"lg-tv"}}"#).unwrap();
-        let config=crate::Config::default();
-        assert!(old.ir.is_none());assert_eq!(old.effective_ir_codeset(&config),Some("lg-tv"));
+        let old: Device = serde_json::from_str(
+            r#"{"id":"tv","name":"TV","integration":{"via":"ir","codeset":"lg-tv"}}"#,
+        )
+        .unwrap();
+        let config = crate::Config::default();
+        assert!(old.ir.is_none());
+        assert_eq!(old.effective_ir_codeset(&config), Some("lg-tv"));
         assert!(serde_json::to_value(&old).unwrap().get("ir").is_none());
-        let mut override_device=old;override_device.ir=Some(DeviceIr{codeset:"device-tv".into()});
-        assert_eq!(override_device.effective_ir_codeset(&config),Some("device-tv"));
+        let mut override_device = old;
+        override_device.ir = Some(DeviceIr {
+            codeset: "device-tv".into(),
+        });
+        assert_eq!(
+            override_device.effective_ir_codeset(&config),
+            Some("device-tv")
+        );
     }
     #[test]
     fn per_device_ir_exposes_mapping_capabilities_without_inventing_network_apps() {
-        let config=crate::Config::default();
-        let mut device=Device::new("receiver".into(),"Receiver",DeviceKind::Speaker);
-        assert!(!crate::commands::Function::VolumeUp.supports_device(&device,&config));
-        device.ir=Some(DeviceIr{codeset:"receiver".into()});
-        assert!(crate::commands::Function::VolumeUp.supports_device(&device,&config));
-        assert!(crate::commands::Function::PowerOn.supports_device(&device,&config));
-        assert!(!crate::commands::Function::App("netflix".into()).supports_device(&device,&config));
+        let config = crate::Config::default();
+        let mut device = Device::new("receiver".into(), "Receiver", DeviceKind::Speaker);
+        assert!(!crate::commands::Function::VolumeUp.supports_device(&device, &config));
+        device.ir = Some(DeviceIr {
+            codeset: "receiver".into(),
+        });
+        assert!(crate::commands::Function::VolumeUp.supports_device(&device, &config));
+        assert!(crate::commands::Function::PowerOn.supports_device(&device, &config));
+        assert!(!crate::commands::Function::App("netflix".into()).supports_device(&device, &config));
     }
     #[test]
     fn supplemental_ir_keeps_network_and_rejects_unsafe_ids() {
-        let mut config=crate::Config::seed();
-        let device=&mut config.rooms[0].devices[0];let integration=device.integration.clone();
-        device.ir=Some(DeviceIr{codeset:"device-tv".into()});assert_eq!(device.integration,integration);assert!(config.validate().is_ok());
-        for id in ["","../secret","with space","UPPER"] {
-            config.rooms[0].devices[0].ir=Some(DeviceIr{codeset:id.into()});assert!(config.validate().is_err());
+        let mut config = crate::Config::seed();
+        let device = &mut config.rooms[0].devices[0];
+        let integration = device.integration.clone();
+        device.ir = Some(DeviceIr {
+            codeset: "device-tv".into(),
+        });
+        assert_eq!(device.integration, integration);
+        assert!(config.validate().is_ok());
+        for id in ["", "../secret", "with space", "UPPER"] {
+            config.rooms[0].devices[0].ir = Some(DeviceIr { codeset: id.into() });
+            assert!(config.validate().is_err());
         }
     }
 }

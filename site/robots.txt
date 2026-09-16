@@ -1,9 +1,0 @@
-# Couch is published at https://dangerouslaser.github.io/couch/, so this file
-# only applies once the site owns the domain root; the preview also carries a
-# noindex meta tag, which applies wherever it is served from.
-User-agent: *
-Allow: /
-Disallow: /couch/preview.html
-Disallow: /preview.html
-
-Sitemap: https://dangerouslaser.github.io/couch/sitemap.xml

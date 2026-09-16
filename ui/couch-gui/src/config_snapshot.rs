@@ -92,7 +92,9 @@ pub fn start(path: PathBuf) {
 /// Updates rejected so far. Monotonic, so a caller keeps the last value it saw
 /// rather than a flag somebody has to clear.
 pub fn rejected() -> u64 {
-    CACHE.get().map_or(0, |c| c.rejected.load(Ordering::Relaxed))
+    CACHE
+        .get()
+        .map_or(0, |c| c.rejected.load(Ordering::Relaxed))
 }
 pub fn current() -> Option<Arc<Snapshot>> {
     if CACHE.get().is_none() {

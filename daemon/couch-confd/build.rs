@@ -25,9 +25,7 @@ use std::path::{Path, PathBuf};
 fn main() {
     let dist = env::var("COUCH_WEB_DIST")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/couch-web/dist")
-        });
+        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/couch-web/dist"));
 
     println!("cargo:rerun-if-env-changed=COUCH_WEB_DIST");
     println!("cargo:rerun-if-changed={}", dist.display());

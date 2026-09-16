@@ -1,72 +1,34 @@
-name: Publish Couch site
+name: Redirect former Couch site URLs
+
 on:
   push:
     branches: [main]
-    paths: ['site/**', 'preview/**', 'ui/couch-gui/**', 'model/couch-model/src/buttons.rs', 'assets/lucide/**', 'docs/mockups/kodi-activity/assets/**', 'tools/build-preview.sh', 'tools/tests/site-demo.cjs', 'tools/tests/site-usage.cjs', 'tools/tests/ha-preview.cjs', '.github/workflows/pages.yml']
+    paths: ['site/redirect.html', 'tools/build-pages-redirects.py', '.github/workflows/pages.yml']
   workflow_dispatch:
+
 permissions:
   contents: read
+  pages: write
+  id-token: write
+
 concurrency:
   group: github-pages
   cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
-      - name: Install Rust browser target
-        run: |
-          rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
-          rustup default 1.98.1
-      - name: Install font build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin/wasm-bindgen
-            preview/target
-          key: ${{ runner.os }}-couch-preview-rust-1.98.1-${{ hashFiles('preview/Cargo.lock') }}
-      - name: Install matching WASM binding generator
-        run: |
-          if ! command -v wasm-bindgen >/dev/null || [ "$(wasm-bindgen --version)" != 'wasm-bindgen 0.2.127' ]; then
-            cargo install wasm-bindgen-cli --version 0.2.127 --locked --force
-          fi
-      - name: Build actual Slint remote preview
-        run: tools/build-preview.sh
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install browser checks
-        run: |
-          npm install --prefix "$RUNNER_TEMP/preview-browser" --no-package-lock --no-save playwright@1.57.0
-          "$RUNNER_TEMP/preview-browser/node_modules/.bin/playwright" install --with-deps chromium
-      - name: Verify Slint interaction and automatic walkthrough
-        run: |
-          python3 -m http.server 8098 --directory site > "$RUNNER_TEMP/preview-server.log" 2>&1 &
-          preview_server_pid=$!
-          trap 'kill "$preview_server_pid"' EXIT
-          NODE_PATH="$RUNNER_TEMP/preview-browser/node_modules" node tools/tests/site-demo.cjs
-          NODE_PATH="$RUNNER_TEMP/preview-browser/node_modules" node tools/tests/ha-preview.cjs
-      - name: Render usage screenshots and verify guides
-        run: |
-          python3 -m http.server 8098 --directory site > "$RUNNER_TEMP/usage-server.log" 2>&1 &
-          usage_server_pid=$!
-          trap 'kill "$usage_server_pid"' EXIT
-          NODE_PATH="$RUNNER_TEMP/preview-browser/node_modules" node tools/tests/site-usage.cjs
+      - name: Build path-preserving redirects
+        run: python3 tools/build-pages-redirects.py --template site/redirect.html --output build/pages-redirects
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: site
+          path: build/pages-redirects
       - name: Publish
         id: deployment
         uses: actions/deploy-pages@v4

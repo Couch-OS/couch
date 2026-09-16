@@ -27,23 +27,50 @@ pub fn path(file: &str) -> PathBuf {
     PathBuf::from(root).join(file)
 }
 pub fn read(previous: &str) -> Option<(String, Vec<Area>, [u8; 3])> {
-    let snapshot=crate::config_snapshot::current()?;
-    let raw=snapshot.serial.to_string();
-    if raw==previous{return None}
-    let config=&snapshot.config;
+    let snapshot = crate::config_snapshot::current()?;
+    let raw = snapshot.serial.to_string();
+    if raw == previous {
+        return None;
+    }
+    let config = &snapshot.config;
     Some((raw, project(config), config.appearance.rgb()?))
 }
 pub(crate) fn project(config: &Config) -> Vec<Area> {
-    let make = |id: Option<Id>, name: String, ids: Vec<Id>, scene_ids: Vec<Id>, activity_ids: Vec<Id>, shortcuts: Vec<couch_model::Shortcut>| {
+    let make = |id: Option<Id>,
+                name: String,
+                ids: Vec<Id>,
+                scene_ids: Vec<Id>,
+                activity_ids: Vec<Id>,
+                shortcuts: Vec<couch_model::Shortcut>| {
         let rooms: Vec<_> = ids.iter().filter_map(|id| config.room(id)).collect();
         Area {
             id,
             name,
             shortcuts,
-            activities: activity_ids.iter().filter_map(|id| config.activities.iter().find(|a| &a.id==id)).map(|a|LiveActivity {
-                kind:a.kind.glyph_index(),title:a.name.as_str().into(),source:a.source.as_ref().and_then(|id|config.devices().find(|(_,d)|&d.id==id).map(|(_,d)|d.name.as_str())).unwrap_or("Choose a source").into(),
-                place:config.room(&a.room).map(|r|r.name.as_str()).unwrap_or("").into(),
-            }).collect(),
+            activities: activity_ids
+                .iter()
+                .filter_map(|id| config.activities.iter().find(|a| &a.id == id))
+                .map(|a| LiveActivity {
+                    kind: a.kind.glyph_index(),
+                    title: a.name.as_str().into(),
+                    source: a
+                        .source
+                        .as_ref()
+                        .and_then(|id| {
+                            config
+                                .devices()
+                                .find(|(_, d)| &d.id == id)
+                                .map(|(_, d)| d.name.as_str())
+                        })
+                        .unwrap_or("Choose a source")
+                        .into(),
+                    place: config
+                        .room(&a.room)
+                        .map(|r| r.name.as_str())
+                        .unwrap_or("")
+                        .into(),
+                })
+                .collect(),
             activity_ids,
             scenes: scene_ids
                 .iter()
@@ -88,7 +115,16 @@ pub(crate) fn project(config: &Config) -> Vec<Area> {
     let mut areas: Vec<_> = config
         .areas
         .iter()
-        .map(|a| make(Some(a.id.clone()), a.name.clone(), a.rooms.clone(), a.scenes.clone(), a.activities.clone(), a.shortcuts.clone()))
+        .map(|a| {
+            make(
+                Some(a.id.clone()),
+                a.name.clone(),
+                a.rooms.clone(),
+                a.scenes.clone(),
+                a.activities.clone(),
+                a.shortcuts.clone(),
+            )
+        })
         .collect();
     areas.push(make(
         None,
@@ -142,10 +178,18 @@ mod tests {
         assert!(!plan.has_hue && plan.ha_ids.is_empty());
     }
     fn on(bright: Option<u8>) -> Reading {
-        Reading { on: Some(true), bright, lost: false }
+        Reading {
+            on: Some(true),
+            bright,
+            lost: false,
+        }
     }
     fn off() -> Reading {
-        Reading { on: Some(false), bright: Some(0), lost: false }
+        Reading {
+            on: Some(false),
+            bright: Some(0),
+            lost: false,
+        }
     }
     /// What the hub's status column says, and the four ways it can say
     /// nothing rather than guess.
@@ -183,7 +227,11 @@ mod tests {
     /// speaks when nothing else in the room can.
     #[test]
     fn offline_is_reserved_for_a_connection_that_failed_its_last_fetch() {
-        let down = Reading { on: None, bright: None, lost: true };
+        let down = Reading {
+            on: None,
+            bright: None,
+            lost: true,
+        };
         let gone = room_state(&[down, Reading::default()]);
         assert!(gone.offline && gone.known);
         assert_eq!((gone.power, gone.on), (-1, 0));
@@ -334,7 +382,13 @@ struct RoomState {
 impl Default for RoomState {
     /// Nothing has answered yet: the row the projection starts from.
     fn default() -> Self {
-        Self { power: -1, on: 0, known: false, dimmed: false, offline: false }
+        Self {
+            power: -1,
+            on: 0,
+            known: false,
+            dimmed: false,
+            offline: false,
+        }
     }
 }
 /// The status column derived from one room's readings. A device nothing
@@ -364,7 +418,9 @@ fn room_state(readings: &[Reading]) -> RoomState {
 /// A device is lost rather than off when its connection failed its last
 /// fetch. State keys carry the connection ID that resolved them.
 fn lost(failed: &[String], key: &str) -> bool {
-    failed.iter().any(|id| id == crate::connections::split(key).0)
+    failed
+        .iter()
+        .any(|id| id == crate::connections::split(key).0)
 }
 pub struct RoomMonitor {
     rx: std::sync::mpsc::Receiver<std::collections::HashMap<Id, RoomState>>,
@@ -417,7 +473,11 @@ impl RoomMonitor {
                                 failed: &[String],
                                 id: &str| {
                         let (on, bright) = from.get(id).copied().unwrap_or_default();
-                        Reading { on, bright, lost: lost(failed, id) }
+                        Reading {
+                            on,
+                            bright,
+                            lost: lost(failed, id),
+                        }
                     };
                     for (room, sources) in &plan.rooms {
                         let readings: Vec<_> = sources
@@ -465,9 +525,23 @@ impl RoomMonitor {
                 // A room nothing answered for keeps the recessed style it has
                 // today, so idle is simply "nothing on".
                 let next = (s.power, s.on, s.known, s.on == 0, s.offline, s.dimmed);
-                let shown = (row.power_state, row.active_count, row.status_known, row.idle, row.offline, row.dimmed);
+                let shown = (
+                    row.power_state,
+                    row.active_count,
+                    row.status_known,
+                    row.idle,
+                    row.offline,
+                    row.dimmed,
+                );
                 if shown != next {
-                    (row.power_state, row.active_count, row.status_known, row.idle, row.offline, row.dimmed) = next;
+                    (
+                        row.power_state,
+                        row.active_count,
+                        row.status_known,
+                        row.idle,
+                        row.offline,
+                        row.dimmed,
+                    ) = next;
                     if area_index == current {
                         if let Some(rows) = rows {
                             rows.set_row_data(row_index, row.clone());

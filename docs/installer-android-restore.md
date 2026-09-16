@@ -168,7 +168,7 @@ Host/unit tests cover: the firmware restore pin and its change detection
 (`tools/release/test_firmware_restore.py`), structural F2FS checks, receipt and
 originals verification, the Couch-as-Android refusal, and the restore plan rules
 (full-partition images, no network/vendor) in `couch-installer-host`. The stage's
-`restore` flag parse/enforcement is exercised in the Linux/Ollie probe build.
+`restore` flag parse/enforcement is exercised in the Linux probe build.
 
 Not validated here: any physical restore, first stock-Android boot, the QEMU
 `make_f2fs` image on real hardware, and re-enrollment. The stage probe cannot be

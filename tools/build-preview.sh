@@ -3,6 +3,20 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+SITE_DESTINATION=${SITE_DESTINATION:-build/site-preview}
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --site-destination)
+            SITE_DESTINATION=$2
+            shift 2
+            ;;
+        *)
+            echo "usage: $0 [--site-destination DIRECTORY]" >&2
+            exit 2
+            ;;
+    esac
+done
+
 BINDGEN_VERSION=0.2.127
 BINDGEN=${WASM_BINDGEN:-}
 if [ -z "$BINDGEN" ]; then
@@ -22,8 +36,8 @@ rustup target list --installed | grep -qx wasm32-unknown-unknown || {
     exit 1
 }
 cargo build --manifest-path preview/Cargo.toml --locked --release --target wasm32-unknown-unknown
-mkdir -p site/wasm
+mkdir -p "$SITE_DESTINATION"
 "$BINDGEN" preview/target/wasm32-unknown-unknown/release/couch_preview.wasm \
-    --target web --out-dir site/wasm --out-name couch_preview
-cp preview/licenses/LATO-OFL.txt preview/licenses/LUCIDE-LICENSE site/wasm/
-printf 'Slint browser preview built: site/wasm/couch_preview.js\n'
+    --target web --out-dir "$SITE_DESTINATION" --out-name couch_preview
+cp preview/licenses/LATO-OFL.txt preview/licenses/LUCIDE-LICENSE "$SITE_DESTINATION"/
+printf 'Slint browser preview built: %s/couch_preview.js\n' "$SITE_DESTINATION"

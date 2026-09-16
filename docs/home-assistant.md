@@ -13,7 +13,8 @@ Assistant connection, using this connection's URL and token, see `docs/voice.md`
 
 ## Configure and test
 
-Open the remote's configuration editor at `http://192.168.1.127:8090`, pair with
+Open the remote's configuration editor at `http://REMOTE_IP:8090`, substituting
+the remote's address, pair with
 the on-screen PIN, and open **Connections → Home Assistant**. Enter the server
 URL and a long-lived access token from your Home Assistant profile. **Test &
 save connection** reads the light inventory before saving. A failed test leaves

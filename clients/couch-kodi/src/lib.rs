@@ -14,10 +14,10 @@
 //! not block - a wedged read is a frozen screen with no way back.
 
 mod error;
-pub mod settings;
-pub mod playback;
 mod http;
 mod net;
+pub mod playback;
+pub mod settings;
 mod tcp;
 
 pub use error::{Error, Result};
@@ -603,14 +603,19 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             for rejected in [false, true] {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
                 let request: Value = serde_json::from_str(&line).unwrap();
                 assert_eq!(request["method"], "Input.ButtonEvent");
-                assert_eq!(request["params"], json!({"button":"select","keymap":"R1","holdtime":0}));
+                assert_eq!(
+                    request["params"],
+                    json!({"button":"select","keymap":"R1","holdtime":0})
+                );
                 let reply = if rejected {
                     json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Method not found"}})
                 } else {

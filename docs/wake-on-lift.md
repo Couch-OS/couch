@@ -15,7 +15,7 @@ returns 0x13. No full bus scan or guessed GPIO assignment is necessary.
 `CONFIG_COUCH_MOTION=y` builds the board adapter into the kernel. The patch is
 `kernel/patches/ha100-motion.patch`; `kernel/motion/` also supports a temporary
 external-module build against a matching kernel for reversible bring-up.
-**Build kernels and kernel modules on Ollie only.** The adapter reserves address
+**Build kernels and kernel modules on a dedicated Linux build host only.** The adapter reserves address
 0x27, validates the chip ID before writing, and configures ±2g and the vendor's
 50Hz output rate. It preserves factory calibration, trim and engineering
 registers. Unloading a diagnostic module restores the original range, output
@@ -57,7 +57,7 @@ thresholds need field measurement before claiming a low-power suspend solution.
 - A real-GUI mount-namespace fixture passed simulated lift from dim, display-off
   and dock-clock states, plus opt-out sensor suspension and physical button wake.
   Production configuration/Wi-Fi hashes were unchanged and its GUI restored.
-- The built-in kernel compiled on Ollie and booted on the HA100 as
+- The built-in kernel compiled on a dedicated Linux build host and booted on the HA100 as
   `3.18.79-couch-normal-ge581fb141386`. The boot write was read back and verified;
   the independent recovery partition hash was unchanged.
 - The user confirmed on September 9 that picking up the dimmed remote wakes it.

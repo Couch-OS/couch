@@ -6,7 +6,7 @@ from pathlib import Path
 
 from clean_stage import require
 from kernel_provenance import PIN, sha, verify_manifest
-from prepare_boot_candidates import REPO, clean_ramdisk
+from prepare_boot_candidates import REPO, clean_ramdisk, verified_busybox
 from runtime_inventory import arm_static, regular
 
 
@@ -16,8 +16,8 @@ def prepare(zimage, kernel_manifest, output, root=REPO):
     verify_manifest(json.loads(regular(kernel_manifest)), pin)
     kernel = regular(zimage)
     require(sha(kernel) == pin['zimage_sha256'], 'Public kernel differs from source-built pin')
-    for path in ('build/busybox-armv7l', 'build/fbcon'):
-        arm_static(regular(root / path))
+    arm_static(regular(verified_busybox(root)))
+    arm_static(regular(root / 'build/fbcon'))
     payloads = {'zImage': kernel}
     for role in ('boot', 'recovery'):
         payloads[role + '.cpio.gz'] = clean_ramdisk(root, role)[0]

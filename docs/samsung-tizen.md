@@ -82,9 +82,10 @@ information endpoint.
 
 ```sh
 (cd clients && cargo test -p couch-tizen -p couch-control)
-couch-tizen info 192.168.1.50
+TV_IP=tv.local
+couch-tizen info "$TV_IP"
 couch-tizen discover
-couch-tizen pair 192.168.1.50 /private/path/tv.json        # add --legacy for 2016 models
+couch-tizen pair "$TV_IP" /private/path/tv.json        # add --legacy for 2016 models
 couch-tizen /private/path/tv.json status
 couch-tizen /private/path/tv.json key KEY_VOLUP
 couch-tizen /private/path/tv.json apps

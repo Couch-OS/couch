@@ -28,16 +28,21 @@ struct Cache {
 }
 impl Cache {
     fn apply_snapshot(&mut self, lights: Vec<Light>, now: Instant) {
-        let mut lights: HashMap<_, _> = lights.into_iter()
-            .map(|light| (light.entity_id.clone(), light)).collect();
+        let mut lights: HashMap<_, _> = lights
+            .into_iter()
+            .map(|light| (light.entity_id.clone(), light))
+            .collect();
         self.pending.retain(|_, pending| now < pending.until);
         for (id, pending) in &self.pending {
             if let Some(observed) = lights.get_mut(id) {
                 // Unavailability and deletion remain authoritative. Only guard
                 // old power/level observations during the bounded settling time.
-                if observed.on.is_some() && (observed.on != pending.state.on
-                    || pending.brightness.is_some_and(|p| p > 0
-                        && observed.brightness_percent != Some(p))) {
+                if observed.on.is_some()
+                    && (observed.on != pending.state.on
+                        || pending
+                            .brightness
+                            .is_some_and(|p| p > 0 && observed.brightness_percent != Some(p)))
+                {
                     *observed = pending.state.clone();
                     self.dirty = true;
                 }
@@ -128,7 +133,8 @@ impl Session {
         }
         let started = Instant::now();
         let result = if let Some(p) = brightness {
-            self.client.command_for_state(&state, couch_ha::Command::Brightness(p))
+            self.client
+                .command_for_state(&state, couch_ha::Command::Brightness(p))
         } else {
             self.client.set_power(id, on)
         };
@@ -146,10 +152,14 @@ impl Session {
         if let Some(percent) = brightness.filter(|p| *p > 0) {
             state.brightness_percent = Some(percent);
         }
-        c.pending.insert(id.into(), Pending {
-            state: state.clone(), brightness,
-            until: Instant::now() + Duration::from_secs(2),
-        });
+        c.pending.insert(
+            id.into(),
+            Pending {
+                state: state.clone(),
+                brightness,
+                until: Instant::now() + Duration::from_secs(2),
+            },
+        );
         c.dirty = true;
         c.lights.insert(id.into(), state.clone());
         // Do not extend the age of other lights based on this command.
@@ -356,24 +366,42 @@ mod tests {
         let id = "00000000-0000-0000-0000-000000000001";
         let remote = thread::spawn(move || {
             for on in [true, false, true] {
-                let mut request = server.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+                let mut request = server
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(request.method(), &tiny_http::Method::Put);
                 let mut body = String::new();
                 request.as_reader().read_to_string(&mut body).unwrap();
-                assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(),
-                    serde_json::json!({"on":{"on":on}}));
-                request.respond(tiny_http::Response::from_string(
-                    serde_json::json!({"errors":[],"data":[{"rid":id,"rtype":"light"}]}).to_string())).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                    serde_json::json!({"on":{"on":on}})
+                );
+                request
+                    .respond(tiny_http::Response::from_string(
+                        serde_json::json!({"errors":[],"data":[{"rid":id,"rtype":"light"}]})
+                            .to_string(),
+                    ))
+                    .unwrap();
             }
         });
-        let off = Light { entity_id: id.into(), name: "Test".into(), on: Some(false),
-            brightness_percent: Some(56), dimmable: true };
+        let off = Light {
+            entity_id: id.into(),
+            name: "Test".into(),
+            on: Some(false),
+            brightness_percent: Some(56),
+            dimmable: true,
+        };
         let mut cache = Cache::default();
         cache.apply_snapshot(vec![off.clone()], Instant::now());
         let session = Session {
-            client: Arc::new(Hue { base: format!("http://{address}"), key: "fixture".into(),
-                agent: ureq::Agent::new_with_defaults() }),
-            cache: Mutex::new(cache), refresh_lock: Mutex::new(()),
+            client: Arc::new(Hue {
+                base: format!("http://{address}"),
+                key: "fixture".into(),
+                agent: ureq::Agent::new_with_defaults(),
+            }),
+            cache: Mutex::new(cache),
+            refresh_lock: Mutex::new(()),
         };
         let on = session.toggle(id).unwrap();
         assert_eq!((on.on, on.brightness_percent), (Some(true), Some(56)));
@@ -397,11 +425,22 @@ mod tests {
     }
     #[test]
     fn settling_guard_preserves_unavailability_deletion_and_unrelated_changes() {
-        let state = Light { entity_id: "room:test".into(), name: "Test".into(),
-            on: Some(true), brightness_percent: Some(56), dimmable: true };
+        let state = Light {
+            entity_id: "room:test".into(),
+            name: "Test".into(),
+            on: Some(true),
+            brightness_percent: Some(56),
+            dimmable: true,
+        };
         let mut cache = Cache::default();
-        cache.pending.insert(state.entity_id.clone(), Pending { state: state.clone(),
-            brightness: Some(56), until: Instant::now() + Duration::from_secs(2) });
+        cache.pending.insert(
+            state.entity_id.clone(),
+            Pending {
+                state: state.clone(),
+                brightness: Some(56),
+                until: Instant::now() + Duration::from_secs(2),
+            },
+        );
         let mut old = state.clone();
         old.brightness_percent = Some(20);
         let mut unrelated = old.clone();
@@ -425,37 +464,70 @@ mod tests {
                 serde_json::json!({"on":{"on":true},"dimming":{"brightness":55}}),
                 serde_json::json!({"on":{"on":false}}),
             ] {
-                let mut request = server.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+                let mut request = server
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(request.method(), &tiny_http::Method::Put);
                 assert_eq!(request.url(), format!("/clip/v2/resource/light/{id}"));
                 let mut body = String::new();
                 request.as_reader().read_to_string(&mut body).unwrap();
-                assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), expected);
-                request.respond(tiny_http::Response::from_string(
-                    serde_json::json!({"errors":[],"data":[{"rid":id,"rtype":"light"}]}).to_string()
-                )).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                    expected
+                );
+                request
+                    .respond(tiny_http::Response::from_string(
+                        serde_json::json!({"errors":[],"data":[{"rid":id,"rtype":"light"}]})
+                            .to_string(),
+                    ))
+                    .unwrap();
             }
         });
         let mut cache = Cache::default();
         cache.updated = Some(Instant::now());
-        cache.lights.insert(id.into(), Light {
-            entity_id: id.into(), name: "Test".into(), on: Some(true),
-            brightness_percent: Some(50), dimmable: true,
-        });
+        cache.lights.insert(
+            id.into(),
+            Light {
+                entity_id: id.into(),
+                name: "Test".into(),
+                on: Some(true),
+                brightness_percent: Some(50),
+                dimmable: true,
+            },
+        );
         let session = Session {
             client: Arc::new(Hue {
-                base: format!("http://{address}"), key: "fixture".into(),
+                base: format!("http://{address}"),
+                key: "fixture".into(),
                 agent: ureq::Agent::new_with_defaults(),
             }),
-            cache: Mutex::new(cache), refresh_lock: Mutex::new(()),
+            cache: Mutex::new(cache),
+            refresh_lock: Mutex::new(()),
         };
-        assert!(matches!(session.command(id, Some(101)), Err(Error::Brightness)));
+        assert!(matches!(
+            session.command(id, Some(101)),
+            Err(Error::Brightness)
+        ));
         let state = session.command(id, Some(55)).unwrap();
         assert_eq!(state.brightness_percent, Some(55));
-        assert_eq!(session.cache.lock().unwrap().lights[id].brightness_percent, Some(55));
+        assert_eq!(
+            session.cache.lock().unwrap().lights[id].brightness_percent,
+            Some(55)
+        );
         assert_eq!(session.command(id, Some(0)).unwrap().on, Some(false));
-        session.cache.lock().unwrap().lights.get_mut(id).unwrap().dimmable = false;
-        assert!(matches!(session.command(id, Some(5)), Err(Error::Brightness)));
+        session
+            .cache
+            .lock()
+            .unwrap()
+            .lights
+            .get_mut(id)
+            .unwrap()
+            .dimmable = false;
+        assert!(matches!(
+            session.command(id, Some(5)),
+            Err(Error::Brightness)
+        ));
         remote.join().unwrap();
     }
     #[test]
@@ -469,12 +541,21 @@ mod tests {
                 serde_json::json!({"on":{"on":true},"dimming":{"brightness":55}}),
                 serde_json::json!({"on":{"on":false}}),
             ] {
-                let mut request = server.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+                let mut request = server
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(request.method(), &tiny_http::Method::Put);
-                assert_eq!(request.url(), format!("/clip/v2/resource/grouped_light/{uuid}"));
+                assert_eq!(
+                    request.url(),
+                    format!("/clip/v2/resource/grouped_light/{uuid}")
+                );
                 let mut body = String::new();
                 request.as_reader().read_to_string(&mut body).unwrap();
-                assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), expected);
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                    expected
+                );
                 request.respond(tiny_http::Response::from_string(
                     serde_json::json!({"errors":[],"data":[{"rid":uuid,"rtype":"grouped_light"}]}).to_string()
                 )).unwrap();
@@ -482,24 +563,48 @@ mod tests {
         });
         let mut cache = Cache::default();
         cache.updated = Some(Instant::now());
-        cache.lights.insert(id.into(), Light {
-            entity_id: id.into(), name: "Test".into(), on: Some(true),
-            brightness_percent: Some(50), dimmable: true,
-        });
+        cache.lights.insert(
+            id.into(),
+            Light {
+                entity_id: id.into(),
+                name: "Test".into(),
+                on: Some(true),
+                brightness_percent: Some(50),
+                dimmable: true,
+            },
+        );
         let session = Session {
             client: Arc::new(Hue {
-                base: format!("http://{address}"), key: "fixture".into(),
+                base: format!("http://{address}"),
+                key: "fixture".into(),
                 agent: ureq::Agent::new_with_defaults(),
             }),
-            cache: Mutex::new(cache), refresh_lock: Mutex::new(()),
+            cache: Mutex::new(cache),
+            refresh_lock: Mutex::new(()),
         };
-        assert!(matches!(session.command(id, Some(101)), Err(Error::Brightness)));
+        assert!(matches!(
+            session.command(id, Some(101)),
+            Err(Error::Brightness)
+        ));
         let state = session.command(id, Some(55)).unwrap();
         assert_eq!(state.brightness_percent, Some(55));
-        assert_eq!(session.cache.lock().unwrap().lights[id].brightness_percent, Some(55));
+        assert_eq!(
+            session.cache.lock().unwrap().lights[id].brightness_percent,
+            Some(55)
+        );
         assert_eq!(session.command(id, Some(0)).unwrap().on, Some(false));
-        session.cache.lock().unwrap().lights.get_mut(id).unwrap().dimmable = false;
-        assert!(matches!(session.command(id, Some(5)), Err(Error::Brightness)));
+        session
+            .cache
+            .lock()
+            .unwrap()
+            .lights
+            .get_mut(id)
+            .unwrap()
+            .dimmable = false;
+        assert!(matches!(
+            session.command(id, Some(5)),
+            Err(Error::Brightness)
+        ));
         remote.join().unwrap();
     }
     #[test]

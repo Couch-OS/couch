@@ -9,7 +9,7 @@ fn fail(app: App, message: RwSignal<String>, error: api::ApiError) {
     message.set(error.message);
 }
 pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
-    let base=StoredValue::new(format!("/api/connections/{}/hue",connection.id));
+    let base = StoredValue::new(format!("/api/connections/{}/hue", connection.id));
     let url = RwSignal::new(String::new());
 
     let token_set = RwSignal::new(false);
@@ -17,7 +17,7 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
     let message = RwSignal::new(String::new());
 
     spawn_local(async move {
-        match api::ha("GET", &format!("{}/connection",base.get_value()), None).await {
+        match api::ha("GET", &format!("{}/connection", base.get_value()), None).await {
             Ok(s) => {
                 url.set(s["url"].as_str().unwrap_or("").into());
                 token_set.set(s["token_set"].as_bool().unwrap_or(false));
@@ -33,7 +33,13 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
         message.set("Pairing with the bridge…".into());
         let data = json!({"url":url.get_untracked().trim()});
         spawn_local(async move {
-            match api::ha("PUT", &format!("{}/connection",base.get_value()), Some(data)).await {
+            match api::ha(
+                "PUT",
+                &format!("{}/connection", base.get_value()),
+                Some(data),
+            )
+            .await
+            {
                 Ok(_result) => {
                     token_set.set(true);
                     message.set("Connected and saved. Add devices from Rooms & devices.".into());
@@ -57,7 +63,7 @@ pub fn setup(app: App, connection: &couch_model::Connection) -> AnyView {
     }.into_any()
 }
 pub(super) fn controls(app: App, initial: Value, path: String) -> AnyView {
-    let base=StoredValue::new(path);
+    let base = StoredValue::new(path);
     let light = RwSignal::new(initial);
     let busy = RwSignal::new(false);
     let message = RwSignal::new(String::new());
@@ -75,7 +81,7 @@ pub(super) fn controls(app: App, initial: Value, path: String) -> AnyView {
             if let Some(action) = action {
                 if let Err(e) = api::ha(
                     "POST",
-                    &format!("{}/lights/{id}/command",base.get_value()),
+                    &format!("{}/lights/{id}/command", base.get_value()),
                     Some(action),
                 )
                 .await
@@ -88,7 +94,7 @@ pub(super) fn controls(app: App, initial: Value, path: String) -> AnyView {
             } else {
                 message.set(String::new());
             }
-            match api::ha("GET", &format!("{}/lights/{id}",base.get_value()), None).await {
+            match api::ha("GET", &format!("{}/lights/{id}", base.get_value()), None).await {
                 Ok(value) => light.set(value),
                 Err(e) => fail(app, message, e),
             }

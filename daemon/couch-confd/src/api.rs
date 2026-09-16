@@ -20,22 +20,22 @@
 //! load in order to ask for the PIN, and the page on its own says nothing about
 //! anybody's house.
 
-mod ha;
-mod protect;
-mod kodi;
-mod remote;
-mod hue;
-mod webos;
-mod tizen;
-mod streaming_tv;
-mod updates;
-mod coreelec;
-mod sonos;
-mod matter;
 mod connections;
+mod coreelec;
 mod denon;
-mod ir;
 mod device_ir;
+mod ha;
+mod hue;
+mod ir;
+mod kodi;
+mod matter;
+mod protect;
+mod remote;
+mod sonos;
+mod streaming_tv;
+mod tizen;
+mod updates;
+mod webos;
 
 use std::io::Read;
 use std::sync::{Arc, Mutex};
@@ -139,7 +139,6 @@ struct AttachActivity {
     source: Option<Id>,
 }
 
-
 /// An area or a room as the editor sends it back: the id comes from the path,
 /// and the lists hanging off it are edited through their own endpoints, so
 /// neither is required here.
@@ -152,7 +151,6 @@ struct NamePatch {
     #[serde(default)]
     icon: Option<Icon>,
 }
-
 
 #[derive(Debug, Serialize)]
 struct ApiError {
@@ -173,7 +171,6 @@ struct Reply {
     length: Option<usize>,
     set_cookie: Option<String>,
 }
-
 
 impl Reply {
     fn json(status: u16, value: &impl Serialize) -> Reply {
@@ -201,9 +198,14 @@ impl Reply {
         }
     }
 
-
     fn error(status: u16, message: impl Into<String>) -> Reply {
-        Reply::json(status, &ApiError { error: message.into(), problems: Vec::new() })
+        Reply::json(
+            status,
+            &ApiError {
+                error: message.into(),
+                problems: Vec::new(),
+            },
+        )
     }
 
     fn at(mut self, revision: u64) -> Reply {
@@ -219,15 +221,18 @@ impl Reply {
 
 impl Api {
     pub fn new(store: Store, assets: Assets, auth: Arc<Auth>) -> Api {
-        Api { store: Mutex::new(store), assets, auth }
+        Api {
+            store: Mutex::new(store),
+            assets,
+            auth,
+        }
     }
 
     pub fn handle(&self, mut request: Request) {
         let reply = self.route(&mut request);
 
-        let mut headers = vec![
-            Header::from_bytes(&b"Content-Type"[..], reply.content_type.as_bytes()).unwrap(),
-        ];
+        let mut headers =
+            vec![Header::from_bytes(&b"Content-Type"[..], reply.content_type.as_bytes()).unwrap()];
         if let Some(rev) = reply.revision {
             headers.push(
                 Header::from_bytes(&b"X-Couch-Revision"[..], rev.to_string().as_bytes()).unwrap(),
@@ -299,26 +304,59 @@ impl Api {
         // before this, and health answers with less when nobody is paired.
         let open = matches!(rest.as_slice(), ["auth", ..] | ["health"]);
         if !open && !self.auth.authenticated(&cookies) {
-            return Reply::error(401, "not paired - open the page and enter the PIN on your remote");
+            return Reply::error(
+                401,
+                "not paired - open the page and enter the PIN on your remote",
+            );
         }
 
-        if let Some(kind @ ("hue"|"ha"|"webos"))=rest.first().copied() {
-            let provider=match kind {"ha"=>"home-assistant","webos"=>"web-os",_=>"hue"};
-            let ids=self.with(|s|s.config().connections.iter().filter(|c|c.provider.kind()==provider).map(|c|c.id.to_string()).collect::<Vec<_>>());
-            if ids.len()>1{return Reply::error(409,"Choose a specific connection");}
-            if let Some(id)=ids.first(){let mut scoped=vec![id.as_str(),kind];scoped.extend_from_slice(&rest[1..]);return self.connection_route(&method,&scoped,&body,if_match);}
+        if let Some(kind @ ("hue" | "ha" | "webos")) = rest.first().copied() {
+            let provider = match kind {
+                "ha" => "home-assistant",
+                "webos" => "web-os",
+                _ => "hue",
+            };
+            let ids = self.with(|s| {
+                s.config()
+                    .connections
+                    .iter()
+                    .filter(|c| c.provider.kind() == provider)
+                    .map(|c| c.id.to_string())
+                    .collect::<Vec<_>>()
+            });
+            if ids.len() > 1 {
+                return Reply::error(409, "Choose a specific connection");
+            }
+            if let Some(id) = ids.first() {
+                let mut scoped = vec![id.as_str(), kind];
+                scoped.extend_from_slice(&rest[1..]);
+                return self.connection_route(&method, &scoped, &body, if_match);
+            }
         }
         if rest.first() == Some(&"updates") {
             return updates::route(&method, &rest[1..], &body);
         }
         if rest.first() == Some(&"ir") {
-            let directory = self.with(|s| s.path().parent().unwrap_or_else(|| std::path::Path::new(".")).join("ir"));
+            let directory = self.with(|s| {
+                s.path()
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("ir")
+            });
             return ir::route(&method, &rest[1..], &body, &directory);
         }
-        if rest.first() == Some(&"connections") { return self.connection_route(&method, &rest[1..], &body, if_match); }
-        if rest.first() == Some(&"webos") { return webos::route(&method, &rest[1..], &body); }
-        if rest.first() == Some(&"hue") { return hue::route(&method, &rest[1..], &body); }
-        if rest.first() == Some(&"ha") { return ha::route(&method, &rest[1..], &body); }
+        if rest.first() == Some(&"connections") {
+            return self.connection_route(&method, &rest[1..], &body, if_match);
+        }
+        if rest.first() == Some(&"webos") {
+            return webos::route(&method, &rest[1..], &body);
+        }
+        if rest.first() == Some(&"hue") {
+            return hue::route(&method, &rest[1..], &body);
+        }
+        if rest.first() == Some(&"ha") {
+            return ha::route(&method, &rest[1..], &body);
+        }
 
         match (method.as_str(), rest.as_slice()) {
             ("GET", ["health"]) => self.health(self.auth.authenticated(&cookies)),
@@ -338,20 +376,30 @@ impl Api {
                 self.with(|s| s.config().devices().any(|(_, d)| d.id.as_str() == id))
             }),
             ("PUT", ["remote"]) => {
-                let settings: couch_model::RemoteSettings = match parse(&body) {Ok(value)=>value,Err(reply)=>return reply};
-                if !settings.timezone.is_empty() && !remote::timezones().contains(&settings.timezone) { return Reply::error(400,"Choose an installed IANA timezone"); }
-                self.edit(if_match, move |cfg| cfg.remote=settings)
+                let settings: couch_model::RemoteSettings = match parse(&body) {
+                    Ok(value) => value,
+                    Err(reply) => return reply,
+                };
+                if !settings.timezone.is_empty()
+                    && !remote::timezones().contains(&settings.timezone)
+                {
+                    return Reply::error(400, "Choose an installed IANA timezone");
+                }
+                self.edit(if_match, move |cfg| cfg.remote = settings)
             }
             ("PUT", ["appearance"]) => {
-                let appearance: couch_model::Appearance = match parse(&body) {Ok(value)=>value,Err(reply)=>return reply};
-                self.edit(if_match, move |cfg| cfg.appearance=appearance)
+                let appearance: couch_model::Appearance = match parse(&body) {
+                    Ok(value) => value,
+                    Err(reply) => return reply,
+                };
+                self.edit(if_match, move |cfg| cfg.appearance = appearance)
             }
             ("PUT", ["config"]) => self.replace_config(&body, if_match),
-            ("POST", ["config", "reset"]) => {
-                self.edit(if_match, |cfg| *cfg = Config::seed())
-            }
+            ("POST", ["config", "reset"]) => self.edit(if_match, |cfg| *cfg = Config::seed()),
 
-            ("GET", ["areas"]) => self.with(|s| Reply::json(200, &s.config().areas).at(s.revision())),
+            ("GET", ["areas"]) => {
+                self.with(|s| Reply::json(200, &s.config().areas).at(s.revision()))
+            }
             ("POST", ["areas"]) => self.create_area(&body, if_match),
             ("GET", ["areas", id]) => self.get_one(id, |c, id| c.area(id)),
             ("PUT", ["areas", id]) => self.rename(&body, if_match, Kind::Area, id),
@@ -399,8 +447,9 @@ impl Api {
                 })
             }
 
-
-            ("GET", ["rooms"]) => self.with(|s| Reply::json(200, &s.config().rooms).at(s.revision())),
+            ("GET", ["rooms"]) => {
+                self.with(|s| Reply::json(200, &s.config().rooms).at(s.revision()))
+            }
             ("POST", ["rooms"]) => self.create_room(&body, if_match),
             ("GET", ["rooms", id]) => self.get_one(id, |c, id| c.room(id)),
             ("PUT", ["rooms", id]) => self.rename(&body, if_match, Kind::Room, id),
@@ -415,13 +464,13 @@ impl Api {
                     None => Reply::error(404, "no such room"),
                 })
             }
-            (method @ ("GET" | "PUT" | "DELETE"), ["rooms", room, "devices", device, "ir"]) => self.device_ir(method,room,device,&body,if_match),
-            ("PUT", ["rooms", id, "devices"]) => self.reorder_devices(&body, if_match, id),
-            ("POST", ["rooms", id, "devices", "ir"]) => self.create_ir_device(id,&body,if_match),
-            ("POST", ["rooms", id, "devices"]) => self.create_device(&body, if_match, id),
-            ("PUT", ["rooms", id, "devices", dev]) => {
-                self.replace_device(&body, if_match, id, dev)
+            (method @ ("GET" | "PUT" | "DELETE"), ["rooms", room, "devices", device, "ir"]) => {
+                self.device_ir(method, room, device, &body, if_match)
             }
+            ("PUT", ["rooms", id, "devices"]) => self.reorder_devices(&body, if_match, id),
+            ("POST", ["rooms", id, "devices", "ir"]) => self.create_ir_device(id, &body, if_match),
+            ("POST", ["rooms", id, "devices"]) => self.create_device(&body, if_match, id),
+            ("PUT", ["rooms", id, "devices", dev]) => self.replace_device(&body, if_match, id, dev),
             ("DELETE", ["rooms", id, "devices", dev]) => {
                 let (id, dev) = (Id::new(*id), Id::new(*dev));
                 let mut dropped = None;
@@ -493,10 +542,12 @@ impl Api {
             // The realistic cause is not a typed URL but a second phone that
             // deleted the thing already, so the message says so rather than
             // leaving a bare "not found" on a screen still showing it.
-            Ok(None) => Reply::error(404, "not here any more - something else may have changed it"),
+            Ok(None) => Reply::error(
+                404,
+                "not here any more - something else may have changed it",
+            ),
             Err(e) => store_error(&e),
         }
-
     }
 
     fn get_one<T: Serialize>(
@@ -595,8 +646,10 @@ impl Api {
     fn auth_logout(&self, cookies: &str) -> Reply {
         self.auth.log_out(cookies);
         let mut reply = Reply::json(200, &json!({ "authenticated": false }));
-        reply.set_cookie =
-            Some(format!("{}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0", auth::COOKIE));
+        reply.set_cookie = Some(format!(
+            "{}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+            auth::COOKIE
+        ));
         reply
     }
 
@@ -653,7 +706,6 @@ impl Api {
                 activities: Vec::new(),
                 shortcuts: Vec::new(),
             });
-
         });
         with_created(reply, &created)
     }
@@ -667,20 +719,43 @@ impl Api {
         let reply = self.edit(if_match, |cfg| {
             let id = cfg.fresh_room_id(&new.name);
             created = id.clone();
-            cfg.rooms.push(Room { id, name: new.name, icon: new.icon, devices: Vec::new() });
+            cfg.rooms.push(Room {
+                id,
+                name: new.name,
+                icon: new.icon,
+                devices: Vec::new(),
+            });
         });
         with_created(reply, &created)
     }
 
     fn create_scene(&self, body: &[u8], if_match: Option<u64>) -> Reply {
         #[derive(Deserialize)]
-        struct NewScene { name: String, #[serde(default)] icon: Option<Icon>, #[serde(default)] hue: Option<couch_model::HueScene>, #[serde(default)] rooms: Vec<Id> }
-        let new: NewScene = match parse(body) { Ok(v) => v, Err(r) => return r };
+        struct NewScene {
+            name: String,
+            #[serde(default)]
+            icon: Option<Icon>,
+            #[serde(default)]
+            hue: Option<couch_model::HueScene>,
+            #[serde(default)]
+            rooms: Vec<Id>,
+        }
+        let new: NewScene = match parse(body) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
         let mut created = Id::new("");
         let reply = self.edit(if_match, |cfg| {
             let id = cfg.fresh_scene_id(&new.name);
             created = id.clone();
-            cfg.scenes.push(Scene { id, name: new.name, icon: new.icon, steps: Vec::new(), hue: new.hue, rooms: new.rooms });
+            cfg.scenes.push(Scene {
+                id,
+                name: new.name,
+                icon: new.icon,
+                steps: Vec::new(),
+                hue: new.hue,
+                rooms: new.rooms,
+            });
         });
         with_created(reply, &created)
     }
@@ -766,7 +841,10 @@ impl Api {
             // The path names the device; a body carrying a different id would
             // otherwise silently move it and break every scene step pointing
             // at it.
-            *slot = Device { id: device.clone(), ..incoming };
+            *slot = Device {
+                id: device.clone(),
+                ..incoming
+            };
             Some(())
         });
         if reply.status == 200 {
@@ -777,7 +855,6 @@ impl Api {
 
     fn rename(&self, body: &[u8], if_match: Option<u64>, kind: Kind, id: &str) -> Reply {
         let patch: NamePatch = match parse(body) {
-
             Ok(v) => v,
             Err(r) => return r,
         };
@@ -796,7 +873,6 @@ impl Api {
                 Some(())
             }
         })
-
     }
 
     fn replace_scene(&self, body: &[u8], if_match: Option<u64>, id: &str) -> Reply {
@@ -851,13 +927,17 @@ impl Api {
         let id = Id::new(id);
         self.edit_found(if_match, move |cfg| {
             let act = cfg.activity_mut(&id)?;
-            if let Some(setup) = incoming.setup { act.setup = setup; }
+            if let Some(setup) = incoming.setup {
+                act.setup = setup;
+            }
             act.name = incoming.name;
             act.kind = incoming.kind;
             act.room = incoming.room;
             act.source = incoming.source;
             act.steps = incoming.steps;
-            if let Some(buttons) = incoming.buttons {act.buttons = buttons;}
+            if let Some(buttons) = incoming.buttons {
+                act.buttons = buttons;
+            }
             Some(())
         })
     }
@@ -880,7 +960,6 @@ impl Api {
             Some(())
         })
     }
-
 
     /// `PUT /api/rooms/{id}/devices` takes the room's device ids in the order
     /// the remote should list them. Devices the list leaves out keep their
@@ -1021,7 +1100,7 @@ impl Api {
                         kind: req.kind,
                         room: room.clone(),
                         source: req.source.clone(),
-                buttons: Vec::new(),
+                        buttons: Vec::new(),
                         steps: Vec::new(),
                     });
                     id
@@ -1038,7 +1117,6 @@ impl Api {
     }
 
     fn serve_asset(&self, method: &str, path: &str) -> Reply {
-
         if method != "GET" && method != "HEAD" {
             return Reply::error(405, "the web root is read-only");
         }
@@ -1049,7 +1127,11 @@ impl Api {
                 // A HEAD still has to answer with the length the GET would
                 // send, which is the only thing anybody asks HEAD for.
                 length: Some(asset.body.len()),
-                body: if method == "HEAD" { Vec::new() } else { asset.body },
+                body: if method == "HEAD" {
+                    Vec::new()
+                } else {
+                    asset.body
+                },
 
                 content_type: asset.content_type,
                 revision: None,
@@ -1078,7 +1160,6 @@ enum Kind {
     Room,
 }
 
-
 /// Which of an area's three member lists a request is about.
 #[derive(Clone, Copy)]
 enum Member {
@@ -1086,7 +1167,6 @@ enum Member {
     Scene,
     Activity,
 }
-
 
 impl Api {
     /// Once a second from main: a pairing window opened for a device that
@@ -1104,10 +1184,7 @@ impl Api {
                 device,
                 address,
                 name,
-            } => (
-                device,
-                Some(couch_model::DeviceBluetooth { address, name }),
-            ),
+            } => (device, Some(couch_model::DeviceBluetooth { address, name })),
             couch_system::bluetooth::BondRequest::Unpair { device } => (device, None),
         };
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
@@ -1172,7 +1249,10 @@ fn store_error(e: &store::Error) -> Reply {
     match e {
         store::Error::Invalid(v) => Reply::json(
             422,
-            &ApiError { error: "the edit would leave the config invalid".into(), problems: v.problems.clone() },
+            &ApiError {
+                error: "the edit would leave the config invalid".into(),
+                problems: v.problems.clone(),
+            },
         ),
         store::Error::Stale { .. } => Reply::error(409, e.to_string()),
         store::Error::Parse(_) => Reply::error(400, e.to_string()),
@@ -1211,25 +1291,67 @@ mod activity_mapping_tests {
         use couch_model::{ActivitySetup, SequenceStep};
         let dir = std::env::temp_dir().join(format!("couch-api-setup-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.json"), serde_json::to_vec(&Config::seed()).unwrap()).unwrap();
-        let api = Api::new(Store::open(dir.join("config.json")).unwrap(), Assets::embedded(), Arc::new(Auth::new(dir.join("pin"), true)));
+        std::fs::write(
+            dir.join("config.json"),
+            serde_json::to_vec(&Config::seed()).unwrap(),
+        )
+        .unwrap();
+        let api = Api::new(
+            Store::open(dir.join("config.json")).unwrap(),
+            Assets::embedded(),
+            Arc::new(Auth::new(dir.join("pin"), true)),
+        );
         let mut activity = api.with(|s| s.config().activities[0].clone());
         activity.setup = ActivitySetup {
             devices: vec!["living-kodi".into()],
             keep_awake: true,
-            on: vec![SequenceStep::Command { action: Action::new("living-kodi", "home") }, SequenceStep::Delay { ms: 250 }],
-            off: vec![SequenceStep::Command { action: Action::new("living-kodi", "stop") }],
+            on: vec![
+                SequenceStep::Command {
+                    action: Action::new("living-kodi", "home"),
+                },
+                SequenceStep::Delay { ms: 250 },
+            ],
+            off: vec![SequenceStep::Command {
+                action: Action::new("living-kodi", "stop"),
+            }],
             ..Default::default()
         };
-        assert_eq!(api.replace_activity(&serde_json::to_vec(&activity).unwrap(), None, activity.id.as_str()).status, 200);
+        assert_eq!(
+            api.replace_activity(
+                &serde_json::to_vec(&activity).unwrap(),
+                None,
+                activity.id.as_str()
+            )
+            .status,
+            200
+        );
         let mut legacy = serde_json::to_value(&activity).unwrap();
         legacy.as_object_mut().unwrap().remove("setup");
         legacy["name"] = "Renamed by older client".into();
-        assert_eq!(api.replace_activity(&serde_json::to_vec(&legacy).unwrap(), None, activity.id.as_str()).status, 200);
-        assert_eq!(api.with(|s| s.config().activities[0].setup.clone()), activity.setup);
+        assert_eq!(
+            api.replace_activity(
+                &serde_json::to_vec(&legacy).unwrap(),
+                None,
+                activity.id.as_str()
+            )
+            .status,
+            200
+        );
+        assert_eq!(
+            api.with(|s| s.config().activities[0].setup.clone()),
+            activity.setup
+        );
         let before = std::fs::read(dir.join("config.json")).unwrap();
         activity.setup.devices.clear();
-        assert_eq!(api.replace_activity(&serde_json::to_vec(&activity).unwrap(), None, activity.id.as_str()).status, 422);
+        assert_eq!(
+            api.replace_activity(
+                &serde_json::to_vec(&activity).unwrap(),
+                None,
+                activity.id.as_str()
+            )
+            .status,
+            422
+        );
         assert_eq!(std::fs::read(dir.join("config.json")).unwrap(), before);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -1237,15 +1359,49 @@ mod activity_mapping_tests {
     fn device_order_follows_the_list_and_keeps_unnamed_devices() {
         let dir = std::env::temp_dir().join(format!("couch-api-order-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.json"), serde_json::to_vec(&Config::seed()).unwrap()).unwrap();
-        let api = Api::new(Store::open(dir.join("config.json")).unwrap(), Assets::embedded(), Arc::new(Auth::new(dir.join("pin"), true)));
-        let ids = |api: &Api| api.with(|s| s.config().room(&Id::new("living-room")).unwrap().devices.iter().map(|d| d.id.to_string()).collect::<Vec<_>>());
+        std::fs::write(
+            dir.join("config.json"),
+            serde_json::to_vec(&Config::seed()).unwrap(),
+        )
+        .unwrap();
+        let api = Api::new(
+            Store::open(dir.join("config.json")).unwrap(),
+            Assets::embedded(),
+            Arc::new(Auth::new(dir.join("pin"), true)),
+        );
+        let ids = |api: &Api| {
+            api.with(|s| {
+                s.config()
+                    .room(&Id::new("living-room"))
+                    .unwrap()
+                    .devices
+                    .iter()
+                    .map(|d| d.id.to_string())
+                    .collect::<Vec<_>>()
+            })
+        };
         assert_eq!(ids(&api)[..2], ["living-kodi", "living-hue"]);
-        let reply = api.reorder_devices(br#"["living-lamp","living-hue","ghost"]"#, None, "living-room");
+        let reply = api.reorder_devices(
+            br#"["living-lamp","living-hue","ghost"]"#,
+            None,
+            "living-room",
+        );
         assert_eq!(reply.status, 200);
-        assert_eq!(ids(&api), ["living-lamp", "living-hue", "living-kodi", "living-tv", "living-soundbar"]);
+        assert_eq!(
+            ids(&api),
+            [
+                "living-lamp",
+                "living-hue",
+                "living-kodi",
+                "living-tv",
+                "living-soundbar"
+            ]
+        );
         assert_eq!(api.reorder_devices(b"[]", None, "nowhere").status, 404);
-        assert_eq!(api.reorder_devices(b"not json", None, "living-room").status, 400);
+        assert_eq!(
+            api.reorder_devices(b"not json", None, "living-room").status,
+            400
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
@@ -1253,23 +1409,69 @@ mod activity_mapping_tests {
         use couch_model::{buttons::Button, Shortcut, ShortcutAction};
         let dir = std::env::temp_dir().join(format!("couch-api-shortcuts-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.json"), serde_json::to_vec(&Config::seed()).unwrap()).unwrap();
-        let api = Api::new(Store::open(dir.join("config.json")).unwrap(), Assets::embedded(), Arc::new(Auth::new(dir.join("pin"), true)));
-        let (area, upstairs) = api.with(|s| (s.config().areas[0].id.clone(), s.config().areas[1].id.clone()));
+        std::fs::write(
+            dir.join("config.json"),
+            serde_json::to_vec(&Config::seed()).unwrap(),
+        )
+        .unwrap();
+        let api = Api::new(
+            Store::open(dir.join("config.json")).unwrap(),
+            Assets::embedded(),
+            Arc::new(Auth::new(dir.join("pin"), true)),
+        );
+        let (area, upstairs) = api.with(|s| {
+            (
+                s.config().areas[0].id.clone(),
+                s.config().areas[1].id.clone(),
+            )
+        });
         let shortcuts = vec![
-            Shortcut { button: Button::Tv, action: ShortcutAction::Device { device: "living-tv".into() } },
-            Shortcut { button: Button::Lights, action: ShortcutAction::Toggle { device: "living-hue".into() } },
-            Shortcut { button: Button::Music, action: ShortcutAction::Activity { activity: "watch-tv".into() } },
-            Shortcut { button: Button::Red, action: ShortcutAction::Area { area: upstairs.clone() } },
+            Shortcut {
+                button: Button::Tv,
+                action: ShortcutAction::Device {
+                    device: "living-tv".into(),
+                },
+            },
+            Shortcut {
+                button: Button::Lights,
+                action: ShortcutAction::Toggle {
+                    device: "living-hue".into(),
+                },
+            },
+            Shortcut {
+                button: Button::Music,
+                action: ShortcutAction::Activity {
+                    activity: "watch-tv".into(),
+                },
+            },
+            Shortcut {
+                button: Button::Red,
+                action: ShortcutAction::Area {
+                    area: upstairs.clone(),
+                },
+            },
         ];
-        let reply = api.set_shortcuts(&serde_json::to_vec(&shortcuts).unwrap(), None, area.as_str());
+        let reply = api.set_shortcuts(
+            &serde_json::to_vec(&shortcuts).unwrap(),
+            None,
+            area.as_str(),
+        );
         assert_eq!(reply.status, 200);
-        assert_eq!(api.with(|s| s.config().areas[0].shortcuts.clone()), shortcuts);
+        assert_eq!(
+            api.with(|s| s.config().areas[0].shortcuts.clone()),
+            shortcuts
+        );
         // The saved file carries the tagged action shape the GUI reads.
-        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
         assert_eq!(saved["areas"][0]["shortcuts"][3]["action"]["kind"], "area");
         let original = std::fs::read(dir.join("config.json")).unwrap();
-        let bad = vec![Shortcut { button: Button::Ok, action: ShortcutAction::Activity { activity: "watch-tv".into() } }];
+        let bad = vec![Shortcut {
+            button: Button::Ok,
+            action: ShortcutAction::Activity {
+                activity: "watch-tv".into(),
+            },
+        }];
         let reply = api.set_shortcuts(&serde_json::to_vec(&bad).unwrap(), None, area.as_str());
         assert_eq!(reply.status, 422);
         assert_eq!(std::fs::read(dir.join("config.json")).unwrap(), original);
@@ -1278,30 +1480,76 @@ mod activity_mapping_tests {
         // Deleting the target area through the API drops the key that reached it.
         let reply = api.edit_found(None, |c| c.remove_area(&upstairs).map(|_| ()));
         assert_eq!(reply.status, 200);
-        let left: Vec<Button> = api.with(|s| s.config().areas[0].shortcuts.iter().map(|s| s.button).collect());
+        let left: Vec<Button> = api.with(|s| {
+            s.config().areas[0]
+                .shortcuts
+                .iter()
+                .map(|s| s.button)
+                .collect()
+        });
         assert_eq!(left, vec![Button::Tv, Button::Lights, Button::Music]);
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn activity_update_persists_and_validates_physical_bindings() {
-        let dir=std::env::temp_dir().join(format!("couch-api-buttons-{}",std::process::id()));
+        let dir = std::env::temp_dir().join(format!("couch-api-buttons-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.json"), serde_json::to_vec(&Config::seed()).unwrap()).unwrap();
-        let api=Api::new(Store::open(dir.join("config.json")).unwrap(),Assets::embedded(),Arc::new(Auth::new(dir.join("pin"),true)));
-        let mut activity=api.with(|s|s.config().activities[0].clone());
-        activity.buttons=vec![couch_model::buttons::Binding{button:couch_model::buttons::Button::Ok,gesture:couch_model::buttons::Gesture::Long,action:Some(Action::new("living-kodi","home"))}];
-        let reply=api.replace_activity(&serde_json::to_vec(&activity).unwrap(),None,activity.id.as_str());assert_eq!(reply.status,200);
-        assert_eq!(api.with(|s|s.config().activities[0].buttons.clone()),activity.buttons);
+        std::fs::write(
+            dir.join("config.json"),
+            serde_json::to_vec(&Config::seed()).unwrap(),
+        )
+        .unwrap();
+        let api = Api::new(
+            Store::open(dir.join("config.json")).unwrap(),
+            Assets::embedded(),
+            Arc::new(Auth::new(dir.join("pin"), true)),
+        );
+        let mut activity = api.with(|s| s.config().activities[0].clone());
+        activity.buttons = vec![couch_model::buttons::Binding {
+            button: couch_model::buttons::Button::Ok,
+            gesture: couch_model::buttons::Gesture::Long,
+            action: Some(Action::new("living-kodi", "home")),
+        }];
+        let reply = api.replace_activity(
+            &serde_json::to_vec(&activity).unwrap(),
+            None,
+            activity.id.as_str(),
+        );
+        assert_eq!(reply.status, 200);
+        assert_eq!(
+            api.with(|s| s.config().activities[0].buttons.clone()),
+            activity.buttons
+        );
         // Older clients do not know the buttons field: a rename must preserve it.
-        let mut legacy=serde_json::to_value(&activity).unwrap();legacy.as_object_mut().unwrap().remove("buttons");
-        let reply=api.replace_activity(&serde_json::to_vec(&legacy).unwrap(),None,activity.id.as_str());assert_eq!(reply.status,200);
-        assert_eq!(api.with(|s|s.config().activities[0].buttons.clone()),activity.buttons);
-        let original=std::fs::read(dir.join("config.json")).unwrap();
-        activity.buttons[0].action.as_mut().unwrap().command="bad-command".into();
-        let reply=api.replace_activity(&serde_json::to_vec(&activity).unwrap(),None,activity.id.as_str());assert_eq!(reply.status,422);
-        assert_eq!(std::fs::read(dir.join("config.json")).unwrap(),original);
-        activity.buttons.clear();let reply=api.replace_activity(&serde_json::to_vec(&activity).unwrap(),None,activity.id.as_str());assert_eq!(reply.status,200);
-        assert!(api.with(|s|s.config().activities[0].buttons.is_empty()));
+        let mut legacy = serde_json::to_value(&activity).unwrap();
+        legacy.as_object_mut().unwrap().remove("buttons");
+        let reply = api.replace_activity(
+            &serde_json::to_vec(&legacy).unwrap(),
+            None,
+            activity.id.as_str(),
+        );
+        assert_eq!(reply.status, 200);
+        assert_eq!(
+            api.with(|s| s.config().activities[0].buttons.clone()),
+            activity.buttons
+        );
+        let original = std::fs::read(dir.join("config.json")).unwrap();
+        activity.buttons[0].action.as_mut().unwrap().command = "bad-command".into();
+        let reply = api.replace_activity(
+            &serde_json::to_vec(&activity).unwrap(),
+            None,
+            activity.id.as_str(),
+        );
+        assert_eq!(reply.status, 422);
+        assert_eq!(std::fs::read(dir.join("config.json")).unwrap(), original);
+        activity.buttons.clear();
+        let reply = api.replace_activity(
+            &serde_json::to_vec(&activity).unwrap(),
+            None,
+            activity.id.as_str(),
+        );
+        assert_eq!(reply.status, 200);
+        assert!(api.with(|s| s.config().activities[0].buttons.is_empty()));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

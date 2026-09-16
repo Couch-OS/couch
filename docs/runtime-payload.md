@@ -67,11 +67,11 @@ Source inputs are the original `vendor.img` and `system.img` backups. Before acc
 
 The development extractor now processes `SYSTEM_DIRS`, retains nested `vendor/etc/selinux`, and creates `system/etc` before dumping its linker configuration. A fixture exercises the actual shell with fake Docker/debugfs and confirms all three paths. This does **not** make the old extractor a release tool: it still has a live-device fallback, a mutable builder tag, and incomplete-input warnings. The inventory does not invoke it.
 
-Boot/recovery candidate images are inspected in memory for Android v0/zImage structure, complete newc bounds, private or appended ramdisk payloads, and current init/BusyBox/fbcon/boot-health members. Their hashes and source-file hashes are recorded. No image is repacked or flashed. Still required: the selected kernel's matching source/config/compiler manifest, DTB/header provenance, reproducible BusyBox/fbcon sources, correctly sized boot and recovery images, and corresponding-source/notice review. Existing normal/diagnostic kernel output manifests are candidates, not proof of the latest deployed kernel; select and verify the exact intended artifacts on Ollie.
+Boot/recovery candidate images are inspected in memory for Android v0/zImage structure, complete newc bounds, private or appended ramdisk payloads, and current init/BusyBox/fbcon/boot-health members. Their hashes and source-file hashes are recorded. No image is repacked or flashed. Still required: the selected kernel's matching source/config/compiler manifest, DTB/header provenance, reproducible BusyBox/fbcon sources, correctly sized boot and recovery images, and corresponding-source/notice review. Existing normal/diagnostic kernel output manifests are candidates, not proof of the latest deployed kernel; select and verify the exact intended artifacts on the dedicated Linux build host.
 
 ## Validation and release status
 
-The audit found 21 clean runtime artifacts, verified all 2,087 current web assets in the daemon, and inventoried 470 GUI/179 daemon dependency records. On Ollie this payload assembled into a 1,301-entry rootfs and a full-size userdata ext4 file that passed `e2fsck`. The resulting archive contains the actual Couch GUI/daemon/scripts, replacing the earlier Alpine+CGI-only fixture; vendor inputs are still absent.
+The audit found 21 clean runtime artifacts, verified all 2,087 current web assets in the daemon, and inventoried 470 GUI/179 daemon dependency records. On the dedicated Linux build host this payload assembled into a 1,301-entry rootfs and a full-size userdata ext4 file that passed `e2fsck`. The resulting archive contains the actual Couch GUI/daemon/scripts, replacing the earlier Alpine+CGI-only fixture; vendor inputs are still absent.
 
 The inventory reports `clean_runtime_ready` separately from `payload_complete` and `installable`; the latter remain false. Clean source-to-binary attestations, vendor completeness/provenance/rights, project/dependency license review, a signed complete release inventory, and physical boot/recovery validation remain gates. The user's existing source changes were preserved, and no physical device interaction occurred.
 
@@ -106,7 +106,7 @@ All resulting manifests retain `private_only: true`, `installable: false`, and
 `redistribution_authorized: false`. These outputs must remain outside Git and
 public release artifacts.
 
-Offline validation on Ollie recovered the missing three files and verified all
+Offline validation on the dedicated Linux build host recovered the missing three files and verified all
 30 retained files against the original system/vendor backups. The latest
 runtime package contains 23 explicit Couch artifacts, including the IR catalog's
 MIT and CC0 notices. Its private vendor overlay contains 1,348 entries; a raw

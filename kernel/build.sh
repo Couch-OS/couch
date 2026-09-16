@@ -1,16 +1,33 @@
 #!/bin/sh
-# Build on Ollie; the Mac only sends the recipe and keeps a source backup.
+# Build locally or forward an explicitly configured remote builder.
 set -eu
 cd "$(dirname "$0")/.."
-PROFILE=${1:-normal}
-case "$PROFILE" in normal|diagnostic) ;; *) echo "usage: $0 [normal|diagnostic]" >&2; exit 2;; esac
-if [ "$(hostname -s)" != ollie ]; then
-    exec python3 kernel/remote-build.py "$PROFILE"
+LOCAL_CONFIG=${COUCH_LOCAL_CONFIG:-local.env}
+if [ -f "$LOCAL_CONFIG" ]; then
+    # Deliberately local-only operator configuration; see local.env.example.
+    # Export assignments so the explicitly selected remote helper receives them.
+    set -a
+    . "$LOCAL_CONFIG"
+    set +a
 fi
-KTREE=${KTREE:-$HOME/couch-kernel/base}
+MODE=${KERNEL_BUILD_MODE:-local}
+case "${1:-}" in
+    --local) MODE=local; shift ;;
+    --remote) MODE=remote; shift ;;
+esac
+PROFILE=${1:-normal}
+case "$PROFILE" in normal|diagnostic) ;; *) echo "usage: $0 [--local|--remote] [normal|diagnostic]" >&2; exit 2;; esac
+case "$MODE" in
+    local) ;;
+    remote) exec python3 kernel/remote-build.py "$PROFILE" ;;
+    *) echo "KERNEL_BUILD_MODE must be local or remote" >&2; exit 2 ;;
+esac
+: "${KTREE:?set KTREE to a clean couch-kernel checkout (or configure local.env)}"
 KOUT=${KOUT:-$(dirname "$KTREE")/out-$PROFILE}
 KIMAGE=${KIMAGE:-couch-kbuild}
-JOBS=${JOBS:-24}
+JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)}
+KBUILD_BUILD_HOST=${KBUILD_BUILD_HOST:-couch-builder}
+export KBUILD_BUILD_HOST
 [ -f "$KTREE/Makefile" ] || { echo "no kernel tree at $KTREE" >&2; exit 1; }
 mkdir -p "$KOUT"
 KTREE=$(cd "$KTREE" && pwd)
@@ -26,7 +43,7 @@ KIMAGE=$(docker image inspect "$KIMAGE" --format '{{.Id}}')
 KBUILD_BUILD_TIMESTAMP=$(git -C "$KTREE" show -s --format=%cD HEAD)
 export KBUILD_BUILD_TIMESTAMP
 docker run --rm --user "$(id -u):$(id -g)" \
-    -e KBUILD_BUILD_TIMESTAMP -e KBUILD_BUILD_USER=couch -e KBUILD_BUILD_HOST=ollie \
+    -e KBUILD_BUILD_TIMESTAMP -e KBUILD_BUILD_USER=couch -e KBUILD_BUILD_HOST \
     -e KBUILD_BUILD_VERSION=1 -e PROFILE="$PROFILE" -e JOBS="$JOBS" \
     -e LOCALVERSION="-g$(git -C "$KTREE" rev-parse --short=12 HEAD)" \
     -v "$PWD/kernel":/recipe:ro -v "$KTREE":/src -v "$KOUT":/out -w /src "$KIMAGE" sh -ec '

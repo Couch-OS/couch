@@ -167,7 +167,11 @@ fn device_card(app: App, room: Id, order: Memo<Vec<Id>>, id: Id) -> AnyView {
             parts.push(line.clone());
         }
         if device.effective_ir_codeset(&house).is_some() {
-            parts.push(if network { "IR commands".into() } else { "Infrared · Built-in transmitter".into() });
+            parts.push(if network {
+                "IR commands".into()
+            } else {
+                "Infrared · Built-in transmitter".into()
+            });
         }
         if let Some(bluetooth) = super::bluetooth::summary(&device) {
             parts.push(bluetooth);
@@ -176,7 +180,11 @@ fn device_card(app: App, room: Id, order: Memo<Vec<Id>>, id: Id) -> AnyView {
             return line;
         }
         if let Some(t) = device.preferred_transport.filter(|_| parts.len() > 1) {
-            let first = match t { Transport::Ip => 0, Transport::Ir => usize::from(network), Transport::Bluetooth => parts.len() - 1 };
+            let first = match t {
+                Transport::Ip => 0,
+                Transport::Ir => usize::from(network),
+                Transport::Bluetooth => parts.len() - 1,
+            };
             if first < parts.len() && device.has_transport(&house, t) {
                 let lead = parts.remove(first);
                 parts.insert(0, format!("{lead} (preferred)"));
@@ -187,7 +195,10 @@ fn device_card(app: App, room: Id, order: Memo<Vec<Id>>, id: Id) -> AnyView {
     // The control methods the device has, for the preference below: only
     // offered when there is a choice to make.
     let transports = move || {
-        device.get().map(|d| d.transports(&app.house())).unwrap_or_default()
+        device
+            .get()
+            .map(|d| d.transports(&app.house()))
+            .unwrap_or_default()
     };
 
     view!{<li class="card device"><div class="device-head">{reorder}<div><h3>{move ||device.get().map(|d|d.name)}</h3><p class="dim">{summary}</p></div></div>

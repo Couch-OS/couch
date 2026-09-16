@@ -24,8 +24,11 @@ The archive contains:
   build recipes and compiler/container receipt. A current kernel output directory
   is not accepted unless it matches the selected release pin. Dirty kernel builds
   require separate patch review; this collector refuses them.
-- Rebuilt BusyBox source, full configuration, build recipe and toolchain records.
-  An opaque downloaded binary is insufficient.
+- For each BusyBox variant actually shipped by the selected release, its source,
+  configuration, build recipe and toolchain records. The .168 installer uses
+  the rebuilt 1.37 variant; its unchanged OTA boot payload retains the verified
+  official 1.31 historical component and uses its published variant provenance.
+  A current 1.37 receipt cannot substitute for that 1.31 payload record.
 - The selected Rust standard-library source component and its copyright/license
   texts, identified alongside the ARM library hash and Rust compiler version.
 - For `couch-bluetoothd`, the patched BlueZ daemon in the boot ramdisk: the unmodified

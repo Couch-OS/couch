@@ -27,7 +27,7 @@ impl State {
 }
 
 pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
-    let ir_commands=super::device_commands::Commands::new(config);
+    let ir_commands = super::device_commands::Commands::new(config);
     let editing = expect_context::<State>();
     let base = StoredValue::new(activity.clone());
     // Reference counted: the step list and the command library both read the
@@ -179,17 +179,20 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
             return view! {<p class="dim">"Include a device to see its commands."</p>}.into_any();
         };
         let c = cfg.get_value();
-        let functions=ir_commands.choices(&c,&device,dynamic.get());
+        let functions = ir_commands.choices(&c, &device, dynamic.get());
         let filter = editing.search.get().to_lowercase();
         // A level needs the number below, so it is a control here rather than a catalog row.
-        let levels:Vec<_>=super::device_commands::levels(&c,&device).into_iter().filter(|(_,label)|label.to_lowercase().contains(&filter)).collect();
+        let levels: Vec<_> = super::device_commands::levels(&c, &device)
+            .into_iter()
+            .filter(|(_, label)| label.to_lowercase().contains(&filter))
+            .collect();
         let rows=functions.into_iter().filter(|(_,label)|label.to_lowercase().contains(&filter)).map(|(command,label)|{
             let id=device.id.clone();view!{<button class="activity-command" disabled=move ||app.busy.get() on:click=move |_|add(SequenceStep::Command{action:Action::new(id.clone(),command.clone())})><span>{label}</span><span aria-hidden="true">"＋"</span></button>}
         }).collect_view();
         let level_rows=levels.into_iter().map(|(kind,label)|{
             let id=device.id.clone();view!{<button class="activity-command" disabled=move ||app.busy.get() on:click=move |_|add(SequenceStep::Command{action:Action::new(id.clone(),format!("{kind}:{}",level.get_untracked()))})><span>{move ||format!("{label} · set to {}%",level.get())}</span><span aria-hidden="true">"＋"</span></button>}
         }).collect_view();
-        view!{{rows}{level_rows}}.into_any()
+        view! {{rows}{level_rows}}.into_any()
     };
     view!{
         <section class="card activity-sequences"><h2>"On & off sequences"</h2><p class="dim">"On runs once when you start. Off runs when you end the activity. Returning to Couch leaves the activity running."</p>

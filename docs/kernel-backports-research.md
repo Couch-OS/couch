@@ -371,7 +371,7 @@ mainlining, is at the same depth ten years later and hands the display over as
 | block | our driver | mainline equivalent | realistic? |
 |---|---|---|---|
 | touchscreen | `drivers/input/touchscreen/mediatek/couch_tlsc6x.c` | **none** - `tlsc6x` (Telink) has never been submitted | No backport. But the report format is byte-identical to FocalTech/EDT (event+X[11:8], X[7:0], ID+Y[11:8], Y[7:0], pressure, area; power reg `0xa5`, sleep `0x03`), so mainline `edt-ft5x06` may already speak it. A 355-line unsubmitted community `tlsc6x.c` exists (Spotify Car Thing). Neither is worth doing while ours works |
-| matrix keypad | `drivers/input/keyboard/matrix_keypad.c` (in-tree 3.18) | same file, heavily rewritten: gpiod + device properties + `guard()`, platform_data removed (6.12) | Do not copy the file - it will not compile. Hand-apply the three real fixes if we see the symptoms: force rows to input during scan (`01c84b03d80a`, 6.2), settle time after enabling columns and detect-change-during-scan (`90a0a63451e4`, `353bdd7d1456`, 6.15/6.16). The `linux,wakeup` → `wakeup-source` rename is 4.3; on 3.18 keep `linux,wakeup`, as [ha100-kernel-review.md](ha100-kernel-review.md) §3 says. `mt6779-keypad.c` (5.18) is mt6779/mt6873 only |
+| matrix keypad | `drivers/input/keyboard/matrix_keypad.c` (in-tree 3.18) | same file, heavily rewritten: gpiod + device properties + `guard()`, platform_data removed (6.12) | Do not copy the file - it will not compile. Hand-apply the three real fixes if we see the symptoms: force rows to input during scan (`01c84b03d80a`, 6.2), settle time after enabling columns and detect-change-during-scan (`90a0a63451e4`, `353bdd7d1456`, 6.15/6.16). The `linux,wakeup` → `wakeup-source` rename is 4.3; on 3.18 keep `linux,wakeup`, as [the HA100 validation backlog](ha100-validation-backlog.md) says. `mt6779-keypad.c` (5.18) is mt6779/mt6873 only |
 | IR TX | `drivers/misc/mediatek/irtx/mt6580/couch_irtx.c` (MTK PWM + DMA) | **none** - mainline MediaTek IR is receive-only (`mtk-cir.c`, mt7622/mt7623). Generic options: `pwm-ir-tx.c` (4.14), `gpio-ir-tx.c` (4.14), `ir-spi.c` (4.11) | `pwm-ir-tx` is blocked twice over: `pwm-mediatek.c` has no mt6580/mt6577 entry and would need a clock driver that does not exist. `gpio-ir-tx` needs only a GPIO but bit-bangs the carrier with interrupts disabled - a bad trade on a PREEMPT UI device with a working DMA-driven driver. Keep ours |
 | display | `drivers/misc/mediatek/video/mt6580/*` + `lcm/st7701s_wvga_dsi_vdo_boe_tn_tianxian.c` | `drm/mediatek` covers MT2701/2712/7623/8167/8173/8183/8186/8188/8192/8195/8365; DSI covers six of those. MT6580 is pre-MMSYS and absent. No mainline `mtkfb` exists at all | Not a "add a compatible" job - a new display-controller port. Out of scope |
 | LEDs | `drivers/misc/mediatek/leds/leds_drv.c`, `leds/mt6580/leds.c` | generic `leds-*` classes exist but nothing for MTK's dispatch model | Our fix (named pinctrl init, validated dispatch) is board knowledge mainline does not have |
@@ -391,9 +391,9 @@ The two upstream commits worth keeping in a back pocket if symptoms appear:
 
 Three gates, each cheap, each abandonable. Nothing ships until gate 3 passes.
 
-**Gate 1 - does it even compile? (Ollie only, no device, ~1-2 h)**
+**Gate 1 - does it even compile? (dedicated Linux host only, no device, ~1-2 h)**
 
-1. On Ollie, outside both repositories:
+1. On a dedicated Linux build host, outside both repositories:
    `mkdir -p ~/backports && cd ~/backports && curl -O https://cdn.kernel.org/pub/linux/kernel/projects/backports/stable/v4.4.2/backports-4.4.2-1.tar.xz && tar xf backports-4.4.2-1.tar.xz`
 2. Add a two-line `defconfigs/bluetooth`:
    `CPTCFG_BT=m` and `CPTCFG_BT_HCIVHCI=m`.
@@ -518,7 +518,7 @@ All three gates passed on the dev remote the same evening the plan was written.
   shim patch: `backport-include/linux/cred.h` redefines `current_user_ns()` as
   the pre-3.8 macro whenever the name is not a macro, and on 3.18 it is an
   inline function; the shim is now guarded on `LINUX_VERSION_CODE < 3.8`. The
-  patch lives on Ollie at `~/backports/0001-cred-shim-3.18.patch`. `CPTCFG_BT`
+patch is retained in the private backports workspace. `CPTCFG_BT`
   only appears in the backports config once the base carries
   `CONFIG_CRYPTO_CMAC=y`, so the module build is really a gate-2 step.
 - **Gate 2.** Kernel candidate `out-bt44` (`CONFIG_BT` and `BT_HCIVHCI` off,

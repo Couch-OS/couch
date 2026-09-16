@@ -9,42 +9,42 @@
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod activity;
+mod activity_buttons;
+mod activity_runtime;
 mod battery;
+mod camera;
+mod config_snapshot;
+mod connections;
 mod core_floor;
 mod evdev;
+mod home;
+mod input;
 mod keypad;
+mod lights;
 mod mic;
 mod motion;
-mod panel;
-mod qr;
-mod system;
-mod touch;
-mod wifi;
+mod navigation;
 mod network;
 mod network_ui;
-mod home;
-mod lights;
-mod scenes;
-mod activity;
-mod activity_runtime;
-mod activity_buttons;
-mod tv;
-mod room_sonos;
-mod sonos_player;
+mod panel;
 mod power_ui;
-mod updates_ui;
-mod thermostat;
-mod camera;
-mod connections;
-mod config_snapshot;
-mod input;
-mod navigation;
+mod qr;
+mod room_sonos;
+mod scenes;
 mod shortcuts;
-use input::{Standby,TouchDisposition,touch_disposition,wake};
+mod sonos_player;
+mod system;
+mod thermostat;
+mod touch;
+mod tv;
+mod updates_ui;
+mod wifi;
+use input::{touch_disposition, wake, Standby, TouchDisposition};
 use navigation::Intent;
-mod remote_clock;
 mod activity_art;
 mod icons;
+mod remote_clock;
 use home::Area;
 
 use std::cell::{Cell, RefCell};
@@ -64,7 +64,10 @@ slint::include_modules!();
 const BACKGROUND: u32 = 0x09090b;
 
 fn env_secs(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// A screen sitting over the hub. One list, because it was written out by hand
@@ -97,25 +100,44 @@ enum Overlay {
 impl Overlay {
     /// A device screen: one with something to close, and a Back context.
     fn device(self) -> bool {
-        matches!(self, Overlay::Camera | Overlay::Thermostat | Overlay::Tv | Overlay::Player)
+        matches!(
+            self,
+            Overlay::Camera | Overlay::Thermostat | Overlay::Tv | Overlay::Player
+        )
     }
 }
 fn overlay(app: &App) -> Option<Overlay> {
-    Some(if app.get_activity_busy() { Overlay::Activity }
-        else if app.get_camera_shown() { Overlay::Camera }
-        else if app.get_thermostat_shown() { Overlay::Thermostat }
-        else if app.get_tv_shown() { Overlay::Tv }
-        else if app.get_player_shown() { Overlay::Player }
-        else if app.get_light_shown() { Overlay::Room }
-        else if app.get_wifi_setup_shown() { Overlay::WifiSetup }
-        else if app.get_bt_pair_shown() { Overlay::BtPair }
-        else if app.get_settings_shown() { Overlay::Settings }
-        else if app.get_keyboard_shown() { Overlay::Keyboard }
-        else if app.get_chooser_shown() { Overlay::Chooser }
-        else if app.get_pair_shown() { Overlay::Pair }
-        else if app.get_setup_mode() { Overlay::Setup }
-        else if app.get_recording() { Overlay::Recording }
-        else { return None })
+    Some(if app.get_activity_busy() {
+        Overlay::Activity
+    } else if app.get_camera_shown() {
+        Overlay::Camera
+    } else if app.get_thermostat_shown() {
+        Overlay::Thermostat
+    } else if app.get_tv_shown() {
+        Overlay::Tv
+    } else if app.get_player_shown() {
+        Overlay::Player
+    } else if app.get_light_shown() {
+        Overlay::Room
+    } else if app.get_wifi_setup_shown() {
+        Overlay::WifiSetup
+    } else if app.get_bt_pair_shown() {
+        Overlay::BtPair
+    } else if app.get_settings_shown() {
+        Overlay::Settings
+    } else if app.get_keyboard_shown() {
+        Overlay::Keyboard
+    } else if app.get_chooser_shown() {
+        Overlay::Chooser
+    } else if app.get_pair_shown() {
+        Overlay::Pair
+    } else if app.get_setup_mode() {
+        Overlay::Setup
+    } else if app.get_recording() {
+        Overlay::Recording
+    } else {
+        return None;
+    })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -163,10 +185,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     fn scene(name: &str) -> SceneCell {
-        SceneCell { name: name.into(), active: false }
+        SceneCell {
+            name: name.into(),
+            active: false,
+        }
     }
     fn scene_on(name: &str) -> SceneCell {
-        SceneCell { name: name.into(), active: true }
+        SceneCell {
+            name: name.into(),
+            active: true,
+        }
     }
     // kind 0 is audio (bars), 1 is video (play triangle).
     fn act(kind: i32, title: &str, source: &str, place: &str) -> LiveActivity {
@@ -270,12 +298,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // COUCH_ROOMS pads the first area, so the scrolling behaviour is testable
         // without waiting for a house with a dozen rooms in one area.
-        if let Ok(n) = std::env::var("COUCH_ROOMS").unwrap_or_default().parse::<usize>() {
-            let extra = ["Hallway", "Garage", "Garden", "Loft", "Utility", "Porch", "Cellar"];
+        if let Ok(n) = std::env::var("COUCH_ROOMS")
+            .unwrap_or_default()
+            .parse::<usize>()
+        {
+            let extra = [
+                "Hallway", "Garage", "Garden", "Loft", "Utility", "Porch", "Cellar",
+            ];
             let mut i = 0;
             while areas[0].rooms.len() < n {
-                areas[0].rooms.push(room(extra[i % extra.len()], "2 devices", "Hue",
-                                         (i % 2) as i32, (i % 4) as i32));
+                areas[0].rooms.push(room(
+                    extra[i % extra.len()],
+                    "2 devices",
+                    "Hue",
+                    (i % 2) as i32,
+                    (i % 4) as i32,
+                ));
                 i += 1;
             }
             areas[0].rooms.truncate(n);
@@ -288,9 +326,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // One empty area keeps every index valid while the panel says there is
     // nothing to show; the hub is empty behind it either way.
     let demo = std::env::var("COUCH_DEMO").is_ok_and(|v| v == "1");
-    let mut areas = if demo { demo_house() } else { home::project(&couch_model::Config::default()) };
+    let mut areas = if demo {
+        demo_house()
+    } else {
+        home::project(&couch_model::Config::default())
+    };
     let mut loaded_home = String::new();
-    if let Some((raw, saved, accent)) = home::read(&loaded_home) { home::apply_accent(&app,accent); loaded_home = raw; areas = saved; }
+    if let Some((raw, saved, accent)) = home::read(&loaded_home) {
+        home::apply_accent(&app, accent);
+        loaded_home = raw;
+        areas = saved;
+    }
     // No snapshot at all at boot is the case the demo house used to hide.
     app.set_no_config(!demo && config_snapshot::current().is_none());
     let mut rejections = config_snapshot::rejected();
@@ -356,7 +402,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // room, then the scenes row - so any focus position can be photographed
     // without driving the keypad. The one place the host names a row, and it
     // is a test hook: the hub interprets it.
-    if let Ok(n) = std::env::var("COUCH_FOCUS").unwrap_or_default().parse::<i32>() {
+    if let Ok(n) = std::env::var("COUCH_FOCUS")
+        .unwrap_or_default()
+        .parse::<i32>()
+    {
         app.set_focus_row(n);
         app.invoke_settle_focus();
     }
@@ -384,7 +433,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match a.activities.len() {
                 0 => return,
                 1 => {
-                    if let Some(id)=a.activity_ids.first(){app.invoke_open_activity(id.as_str().into());}
+                    if let Some(id) = a.activity_ids.first() {
+                        app.invoke_open_activity(id.as_str().into());
+                    }
                     return;
                 }
                 _ => {}
@@ -434,9 +485,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         detail: "Press OK to activate".into(),
                         active: false,
                         light: false,
-                    media: false,
-                    activity: false,
-                    kind: 0,
+                        media: false,
+                        activity: false,
+                        kind: 0,
                         power_known: false,
                         icon: slint::Image::default(),
                     })
@@ -473,9 +524,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         detail: "Press OK to activate".into(),
                         active: false,
                         light: false,
-                    media: false,
-                    activity: false,
-                    kind: 0,
+                        media: false,
+                        activity: false,
+                        kind: 0,
                         power_known: false,
                         icon: slint::Image::default(),
                     })
@@ -491,16 +542,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let current = current.clone();
         let open = light_controls.opener();
         app.on_open_room(move |index| {
-            if let Some(id) = areas.borrow()[current.get()].room_ids.get(index as usize) { open(id.clone()); }
+            if let Some(id) = areas.borrow()[current.get()].room_ids.get(index as usize) {
+                open(id.clone());
+            }
         });
     }
 
     {
         let weak = app.as_weak();
         let ask = ask.clone();
-        let choices=scene_choices.clone(); let recall=scene_controls.opener();
-        let areas=areas.clone();let current=current.clone();
-        let pick_source=sonos_room.chooser();
+        let choices = scene_choices.clone();
+        let recall = scene_controls.opener();
+        let areas = areas.clone();
+        let current = current.clone();
+        let pick_source = sonos_room.chooser();
         app.on_chosen(move |index| {
             let Some(app) = weak.upgrade() else { return };
             let title = app
@@ -508,13 +563,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .row_data(index as usize)
                 .map(|i| i.title.to_string())
                 .unwrap_or_default();
-            if app.get_chooser_title()=="SCENES" {
-                if let Some(id)=choices.borrow().get(index as usize) { recall(id.clone()); }
+            if app.get_chooser_title() == "SCENES" {
+                if let Some(id) = choices.borrow().get(index as usize) {
+                    recall(id.clone());
+                }
             }
-            if app.get_chooser_title()=="ACTIVITIES" {
-                if let Some(id)=areas.borrow()[current.get()].activity_ids.get(index as usize){app.invoke_open_activity(id.as_str().into());}
+            if app.get_chooser_title() == "ACTIVITIES" {
+                if let Some(id) = areas.borrow()[current.get()]
+                    .activity_ids
+                    .get(index as usize)
+                {
+                    app.invoke_open_activity(id.as_str().into());
+                }
             }
-            if app.get_chooser_title()==room_sonos::CHOOSER_TITLE && index>=0 { pick_source(index as usize); }
+            if app.get_chooser_title() == room_sonos::CHOOSER_TITLE && index >= 0 {
+                pick_source(index as usize);
+            }
             println!("couch-gui: chose '{title}'");
             ask(Intent::CloseChooser);
         });
@@ -543,7 +607,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // Reports what it cost as frames: B's rasterisation and then one per
     // transition frame, so the five-second line counts them with the rest.
-    let navigator = navigation::Navigator::new(areas.clone(),current.clone(),put_front.clone());
+    let navigator = navigation::Navigator::new(areas.clone(), current.clone(), put_front.clone());
 
     app.show().map_err(|e| format!("show: {e:?}"))?;
 
@@ -565,7 +629,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pointer = touch::Touch::open();
     println!(
         "couch-gui: touchscreen {}",
-        if pointer.present() { "present" } else { "absent" }
+        if pointer.present() {
+            "present"
+        } else {
+            "absent"
+        }
     );
 
     let remote_clock = remote_clock::Clock::new();
@@ -596,7 +664,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .then(|| now_monotonic_us() + 1_500_000);
     let mut settings_opened = false;
     let mut network_setup = network_ui::Controller::install(&app);
-    if std::env::var_os("COUCH_WIFI_SETUP").is_some() { app.invoke_setting_change_wifi(); }
+    if std::env::var_os("COUCH_WIFI_SETUP").is_some() {
+        app.invoke_setting_change_wifi();
+    }
     let toast_until: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
     // When the volume card raised by a mapped press goes away by itself.
     let volume_until: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
@@ -633,7 +703,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_level = Rc::new(Cell::new(system::brightness_level(cfg.brightness)));
     // Dim to a sixth of the set brightness, never below a faint floor and never
     // above the level itself: dim is "less than now", whatever now is.
-    let dim_level = Rc::new(Cell::new((active_level.get() / 6).clamp(8, active_level.get())));
+    let dim_level = Rc::new(Cell::new(
+        (active_level.get() / 6).clamp(8, active_level.get()),
+    ));
     let dim_after_us = Rc::new(Cell::new(
         env_secs("COUCH_DIM_S", system::DIM_SECS[cfg.dim_index as usize]) * 1_000_000,
     ));
@@ -644,10 +716,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Seed the menu with the choices and the saved values.
     app.set_dim_choices(ModelRc::new(VecModel::from(
-        system::DIM_LABELS.iter().map(|s| SharedString::from(*s)).collect::<Vec<_>>(),
+        system::DIM_LABELS
+            .iter()
+            .map(|s| SharedString::from(*s))
+            .collect::<Vec<_>>(),
     )));
     app.set_off_choices(ModelRc::new(VecModel::from(
-        system::OFF_LABELS.iter().map(|s| SharedString::from(*s)).collect::<Vec<_>>(),
+        system::OFF_LABELS
+            .iter()
+            .map(|s| SharedString::from(*s))
+            .collect::<Vec<_>>(),
     )));
     {
         let s = settings.borrow();
@@ -838,31 +916,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rendered_once = false;
     let mut last_health = 0;
     let _ = std::fs::remove_file("/tmp/couch-gui.health");
-    let feedback_page = |app: &App| (
-        (app.get_light_shown(), app.get_chooser_shown(), app.get_settings_shown(),
-         app.get_keyboard_shown(), app.get_wifi_setup_shown(), app.get_pair_shown(),
-         app.get_setup_mode(), app.get_recording()),
-        app.get_settings_panel(), app.get_area_index(), app.get_light_room_id(), app.get_player_shown(), app.get_tv_shown(), app.get_thermostat_shown(),
-    );
-    let mut last_feedback_page = feedback_page(&app);
-    let dismiss_feedback = |app: &App, scenes: &mut scenes::Controller, lights: &mut lights::Controller| {
-        scenes.dismiss_feedback(app);
-        lights.clear_brightness(app);
-        toast_until.set(None);
-        app.set_toast("".into());
-        volume_until.set(None);
-        app.set_volume_shown(false);
-        app.set_thermostat_feedback_shown(false);
-        app.set_sonos_feedback_shown(false);
-        // Hide even a card whose exit animation is still running.
-        app.set_feedback_enabled(false);
+    let feedback_page = |app: &App| {
+        (
+            (
+                app.get_light_shown(),
+                app.get_chooser_shown(),
+                app.get_settings_shown(),
+                app.get_keyboard_shown(),
+                app.get_wifi_setup_shown(),
+                app.get_pair_shown(),
+                app.get_setup_mode(),
+                app.get_recording(),
+            ),
+            app.get_settings_panel(),
+            app.get_area_index(),
+            app.get_light_room_id(),
+            app.get_player_shown(),
+            app.get_tv_shown(),
+            app.get_thermostat_shown(),
+        )
     };
+    let mut last_feedback_page = feedback_page(&app);
+    let dismiss_feedback =
+        |app: &App, scenes: &mut scenes::Controller, lights: &mut lights::Controller| {
+            scenes.dismiss_feedback(app);
+            lights.clear_brightness(app);
+            toast_until.set(None);
+            app.set_toast("".into());
+            volume_until.set(None);
+            app.set_volume_shown(false);
+            app.set_thermostat_feedback_shown(false);
+            app.set_sonos_feedback_shown(false);
+            // Hide even a card whose exit animation is still running.
+            app.set_feedback_enabled(false);
+        };
 
     let mut back_hold = input::BackHold::default();
     let exit_device = |app: &App| match overlay(app) {
         Some(Overlay::Activity) => app.invoke_cancel_activity(),
         Some(Overlay::Camera) => app.invoke_close_camera(),
-        Some(Overlay::Thermostat) => app.invoke_thermostat_action("close".into(),0),
+        Some(Overlay::Thermostat) => app.invoke_thermostat_action("close".into(), 0),
         Some(Overlay::Tv) => app.invoke_tv_action("close".into()),
         Some(Overlay::Player) => {
             app.set_player_panel(0);
@@ -871,9 +964,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     };
     loop {
-        if motion.poll(wake_on_lift && standby != Standby::Active && now_monotonic_us() >= lift_resume_at) {
+        if motion.poll(
+            wake_on_lift && standby != Standby::Active && now_monotonic_us() >= lift_resume_at,
+        ) {
             app.set_dock_clock_shown(false);
-            if standby == Standby::Off { light_controls.wake(); }
+            if standby == Standby::Off {
+                light_controls.wake();
+            }
             wake(&mut screen, active_level.get());
             standby = Standby::Active;
             last_input = now_monotonic_us();
@@ -887,11 +984,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => String::new(),
         };
         back_hold.context(back_context);
-        if back_hold.poll(now_monotonic_us()) { exit_device(&app); }
+        if back_hold.poll(now_monotonic_us()) {
+            exit_device(&app);
+        }
         let replay = button_controls.next_replay();
         let replayed = replay.is_some();
-        let press = replay.or_else(||pad.poll()).and_then(|press| {
-            if replayed { return Some(press); }
+        let press = replay.or_else(|| pad.poll()).and_then(|press| {
+            if replayed {
+                return Some(press);
+            }
             if press.code == 158 && !press.released {
                 last_input = now_monotonic_us();
                 if standby == Standby::Dim && !app.get_dock_clock_shown() {
@@ -900,10 +1001,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     verify_at = Some(last_input + 1_000_000);
                 }
             }
-            match back_hold.handle(press, now_monotonic_us(), standby != Standby::Off && !app.get_dock_clock_shown()) {
+            match back_hold.handle(
+                press,
+                now_monotonic_us(),
+                standby != Standby::Off && !app.get_dock_clock_shown(),
+            ) {
                 input::BackAction::Pass(press) => Some(press),
                 input::BackAction::Consume => None,
-                input::BackAction::Exit => { exit_device(&app); None },
+                input::BackAction::Exit => {
+                    exit_device(&app);
+                    None
+                }
             }
         });
         if let Some(press) = press {
@@ -934,7 +1042,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             if press.released && press.mic.is_none() && press.menu.is_none() {
-                if !replayed {button_controls.handle(&app,&press);}
+                if !replayed {
+                    button_controls.handle(&app, &press);
+                }
                 continue;
             }
             if !press.repeat {
@@ -942,17 +1052,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 in_sum += press.latency_us;
                 in_max = in_max.max(press.latency_us);
             }
-            if !press.repeat {swallow_dock_repeats = app.get_dock_clock_shown();}
-            if press.repeat && swallow_dock_repeats {continue;}
+            if !press.repeat {
+                swallow_dock_repeats = app.get_dock_clock_shown();
+            }
+            if press.repeat && swallow_dock_repeats {
+                continue;
+            }
             last_input = now_monotonic_us();
             manual_sleep = false;
             // A key on a dark panel wakes it and does nothing else - except
             // the microphone key, whose press is the whole intent.
-            let swallow = (standby == Standby::Off || app.get_dock_clock_shown()) && press.mic != Some(true);
+            let swallow =
+                (standby == Standby::Off || app.get_dock_clock_shown()) && press.mic != Some(true);
             app.set_dock_clock_shown(false);
             if standby != Standby::Active {
                 println!("couch-gui: standby: wake on key ({:?})", standby);
-                if standby == Standby::Off { light_controls.wake(); }
+                if standby == Standby::Off {
+                    light_controls.wake();
+                }
                 wake(&mut screen, active_level.get());
                 standby = Standby::Active;
                 verify_at = Some(now_monotonic_us() + 1_000_000);
@@ -964,7 +1081,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if swallow {
                 continue;
             }
-            if app.get_activity_busy() { continue; }
+            if app.get_activity_busy() {
+                continue;
+            }
             // Pairing mode owns the D-pad: OK presses Enter on the TV (the
             // "press any key" step some sets add after pairing), Back cancels
             // the daemon's window, or just closes the card once it is over.
@@ -972,7 +1091,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !press.repeat && !press.released {
                     match press.key {
                         Some(slint::platform::Key::Return) => {
-                            if let Err(error) = system::bluetooth_word("enter") { toast(error, 3); }
+                            if let Err(error) = system::bluetooth_word("enter") {
+                                toast(error, 3);
+                            }
                         }
                         Some(slint::platform::Key::Escape) => {
                             let phase = app.get_bt_pair_phase();
@@ -995,33 +1116,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let on_hub = overlay(&app).is_none();
                 let plan = couch_model::buttons::Button::from_evdev(press.code)
                     .filter(|b| on_hub && b.is_shortcut())
-                    .and_then(|b| connections::config().and_then(|c| shortcuts::plan(&c, &areas.borrow(), current.get(), b).map(|p| (c, p))));
+                    .and_then(|b| {
+                        connections::config().and_then(|c| {
+                            shortcuts::plan(&c, &areas.borrow(), current.get(), b).map(|p| (c, p))
+                        })
+                    });
                 if let Some((config, plan)) = plan {
                     println!("couch-gui: shortcut {:?}", plan);
                     match plan {
-                        shortcuts::Dispatch::ShowArea(index) => ask(Intent::Area(index as i32 - current.get() as i32)),
-                        shortcuts::Dispatch::OpenActivity(id) => app.invoke_open_activity(id.into()),
-                        shortcuts::Dispatch::OpenThermostat(id, name) => app.invoke_open_thermostat(id.into(), name.into()),
-                        shortcuts::Dispatch::OpenTv(id, name) => { app.set_active_activity("".into()); app.invoke_open_tv(id.into(), name.into()); }
-                        shortcuts::Dispatch::OpenCamera(id, name) => app.invoke_open_camera(id.into(), name.into()),
-                        shortcuts::Dispatch::OpenRoom(room, row) => { open_room_row(room); app.set_light_index(row as i32); }
-                        shortcuts::Dispatch::Toggle(device) => { if !shortcut_controls.toggle(config, device) { toast("Still switching the last one".into(), 2); } }
+                        shortcuts::Dispatch::ShowArea(index) => {
+                            ask(Intent::Area(index as i32 - current.get() as i32))
+                        }
+                        shortcuts::Dispatch::OpenActivity(id) => {
+                            app.invoke_open_activity(id.into())
+                        }
+                        shortcuts::Dispatch::OpenThermostat(id, name) => {
+                            app.invoke_open_thermostat(id.into(), name.into())
+                        }
+                        shortcuts::Dispatch::OpenTv(id, name) => {
+                            app.set_active_activity("".into());
+                            app.invoke_open_tv(id.into(), name.into());
+                        }
+                        shortcuts::Dispatch::OpenCamera(id, name) => {
+                            app.invoke_open_camera(id.into(), name.into())
+                        }
+                        shortcuts::Dispatch::OpenRoom(room, row) => {
+                            open_room_row(room);
+                            app.set_light_index(row as i32);
+                        }
+                        shortcuts::Dispatch::Toggle(device) => {
+                            if !shortcut_controls.toggle(config, device) {
+                                toast("Still switching the last one".into(), 2);
+                            }
+                        }
                         shortcuts::Dispatch::Unavailable(message) => toast(message, 3),
                     }
                     continue;
                 }
             }
-            if !replayed && button_controls.handle(&app,&press) {continue;}
+            if !replayed && button_controls.handle(&app, &press) {
+                continue;
+            }
             if press.code == 60 && app.get_activity_running() && !press.repeat {
                 app.invoke_end_activity();
                 continue;
             }
             if press.menu == Some(true) && !app.get_pair_shown() {
-                if app.get_tv_shown() {app.invoke_tv_action("menu".into());}
-                else if app.get_player_shown() {app.invoke_player_action("Input.ContextMenu".into(),0.);}
+                if app.get_tv_shown() {
+                    app.invoke_tv_action("menu".into());
+                } else if app.get_player_shown() {
+                    app.invoke_player_action("Input.ContextMenu".into(), 0.);
+                }
                 // In a room, Menu on a highlighted Sonos row opens its source
                 // picker; on any other row it is left to the settings hold.
-                else if app.get_light_shown() && !app.get_chooser_shown() && !app.get_settings_shown() && !app.get_keyboard_shown() {sonos_room.menu();}
+                else if app.get_light_shown()
+                    && !app.get_chooser_shown()
+                    && !app.get_settings_shown()
+                    && !app.get_keyboard_shown()
+                {
+                    sonos_room.menu();
+                }
             }
             // Hold to talk. The key is not routed into the UI: it opens the
             // microphone and nothing else, so there is no screen on which it
@@ -1030,21 +1184,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 input::MicAction::Start => {
                     // With the keyboard up the words are for its field; anywhere
                     // else they are a request to the house.
-                    let target = if app.get_keyboard_shown() { mic::Target::Dictation } else { mic::Target::Assistant };
+                    let target = if app.get_keyboard_shown() {
+                        mic::Target::Dictation
+                    } else {
+                        mic::Target::Assistant
+                    };
                     mic_result_until = None;
                     app.set_mic_result_shown(false);
-                    app.set_mic_target(if target == mic::Target::Dictation { "keyboard" } else { "assistant" }.into());
+                    app.set_mic_target(
+                        if target == mic::Target::Dictation {
+                            "keyboard"
+                        } else {
+                            "assistant"
+                        }
+                        .into(),
+                    );
                     app.set_mic_heard("".into());
                     app.set_mic_said("".into());
                     app.set_mic_detail("".into());
                     mic.start(target, connections::ha_assist());
                 }
                 input::MicAction::Stop => mic.stop(),
-                input::MicAction::None => {},
+                input::MicAction::None => {}
             }
             if let Some(key) = press.key.filter(|key| {
                 !app.get_pair_shown()
-                    && !(press.repeat && (app.get_light_shown() || app.get_chooser_title()=="SCENES" && app.get_chooser_shown())
+                    && !(press.repeat
+                        && (app.get_light_shown()
+                            || app.get_chooser_title() == "SCENES" && app.get_chooser_shown())
                         && *key == slint::platform::Key::Return)
             }) {
                 let text = SharedString::from(char::from(key));
@@ -1053,7 +1220,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         light_controls.physical_input(press.repeat, || {
                             thermostat_controls.physical_input(press.repeat, || {
                                 sonos_room.physical_input(press.repeat, || {
-                                    window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+                                    window.dispatch_event(WindowEvent::KeyPressed {
+                                        text: text.clone(),
+                                    });
                                     window.dispatch_event(WindowEvent::KeyReleased { text });
                                 });
                             });
@@ -1084,17 +1253,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             last_input = now_monotonic_us();
             let (position, ev) = match event {
-                touch::Event::Pressed { x, y } => (
-                    LogicalPosition::new(x, y),
-                    0,
-                ),
+                touch::Event::Pressed { x, y } => (LogicalPosition::new(x, y), 0),
                 touch::Event::Moved { x, y } => (LogicalPosition::new(x, y), 1),
                 touch::Event::Released { x, y } => (LogicalPosition::new(x, y), 2),
             };
             window.dispatch_event(match ev {
-                0 => WindowEvent::PointerPressed { position, button: PointerEventButton::Left },
+                0 => WindowEvent::PointerPressed {
+                    position,
+                    button: PointerEventButton::Left,
+                },
                 1 => WindowEvent::PointerMoved { position },
-                _ => WindowEvent::PointerReleased { position, button: PointerEventButton::Left },
+                _ => WindowEvent::PointerReleased {
+                    position,
+                    button: PointerEventButton::Left,
+                },
             });
         }
 
@@ -1114,9 +1286,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.set_mic_phase_label(phase.label().into());
                 }
             }
-            if app.get_mic_heard() != progress.heard.as_str() { app.set_mic_heard(progress.heard.as_str().into()); }
-            if app.get_mic_said() != progress.said.as_str() { app.set_mic_said(progress.said.as_str().into()); }
-            if app.get_mic_detail() != progress.detail.as_str() { app.set_mic_detail(progress.detail.as_str().into()); }
+            if app.get_mic_heard() != progress.heard.as_str() {
+                app.set_mic_heard(progress.heard.as_str().into());
+            }
+            if app.get_mic_said() != progress.said.as_str() {
+                app.set_mic_said(progress.said.as_str().into());
+            }
+            if app.get_mic_detail() != progress.detail.as_str() {
+                app.set_mic_detail(progress.detail.as_str().into());
+            }
         }
         if let Some(outcome) = mic.take_outcome() {
             let now = now_monotonic_us();
@@ -1230,7 +1408,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         light_controls.poll(&app);
         // Before the intent is performed below, so a source list opens its
         // chooser in this same iteration.
-        if sonos_room.poll(&app) { ask(Intent::OpenChooser); }
+        if sonos_room.poll(&app) {
+            ask(Intent::OpenChooser);
+        }
         if feedback_page(&app) != last_feedback_page {
             dismiss_feedback(&app, &mut scene_controls, &mut light_controls);
             last_feedback_page = feedback_page(&app);
@@ -1242,22 +1422,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frames += 1;
                 render_us += us;
                 frame_max = frame_max.max(us);
-                let from = if app.get_light_shown() { Arrive::FromRight } else { Arrive::FromLeft };
+                let from = if app.get_light_shown() {
+                    Arrive::FromRight
+                } else {
+                    Arrive::FromLeft
+                };
                 let status = (0, app.get_status_h().round() as u32);
                 let cost = screen.slide(from, &[status], SLIDE);
                 frames += cost.frames;
                 render_us += cost.work_us;
                 wait_us += cost.wait_us;
                 frame_max = frame_max.max(cost.max_us);
-                println!("couch-gui: room slide {} ({} frames)",
-                    if app.get_light_shown() { "in" } else { "out" }, cost.frames);
+                println!(
+                    "couch-gui: room slide {} ({} frames)",
+                    if app.get_light_shown() { "in" } else { "out" },
+                    cost.frames
+                );
             }
             slint::platform::update_timers_and_animations();
         }
 
         // Device state changes in seconds, not frames - except pairing mode,
         // whose card should follow the TV's steps as they happen.
-        let tick_us = if app.get_bt_pair_shown() { 250_000 } else { 1_000_000 };
+        let tick_us = if app.get_bt_pair_shown() {
+            250_000
+        } else {
+            1_000_000
+        };
         if now - last_tick > tick_us {
             last_tick = now;
             // What the SSH thread found: a probe, or the outcome of a toggle.
@@ -1269,7 +1460,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if on == want {
                         settings.borrow_mut().ssh = on;
                         system::save_settings(&settings.borrow());
-                        toast(if on { "SSH on".into() } else { "SSH off".into() }, 3);
+                        toast(
+                            if on {
+                                "SSH on".into()
+                            } else {
+                                "SSH off".into()
+                            },
+                            3,
+                        );
                     } else if want {
                         toast("SSH did not start".into(), 5);
                     } else {
@@ -1284,7 +1482,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         settings.borrow_mut().bluetooth = want;
                         system::save_settings(&settings.borrow());
                         toast(
-                            if want { "Bluetooth on".into() } else { "Bluetooth off".into() },
+                            if want {
+                                "Bluetooth on".into()
+                            } else {
+                                "Bluetooth off".into()
+                            },
                             3,
                         );
                     }
@@ -1297,7 +1499,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.set_bt_peer(pairing.peer.unwrap_or_default().into());
                 if app.get_bt_pair_shown() {
                     let phase = pairing.phase.word();
-                    if app.get_bt_pair_phase() != phase { println!("couch-gui: bluetooth pairing {phase} {}", pairing.detail); }
+                    if app.get_bt_pair_phase() != phase {
+                        println!("couch-gui: bluetooth pairing {phase} {}", pairing.detail);
+                    }
                     app.set_bt_pair_phase(phase.into());
                     app.set_bt_pair_detail(pairing.detail.into());
                 }
@@ -1316,7 +1520,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "couch-gui: key backlight was {} while {:?}{}; set {}",
                         if found { "on" } else { "off" },
                         standby,
-                        if app.get_dock_clock_shown() { " (dock clock)" } else { "" },
+                        if app.get_dock_clock_shown() {
+                            " (dock clock)"
+                        } else {
+                            ""
+                        },
                         if want { "on" } else { "off" }
                     );
                 }
@@ -1365,13 +1573,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 wake_on_lift = settings.wake_on_lift;
             }
             if let Some((raw, saved, accent)) = home::read(&loaded_home) {
-                home::apply_accent(&app,accent);
+                home::apply_accent(&app, accent);
                 // Appearance updates in overlays too; defer home navigation changes
                 // until returning home so an open device control remains in place.
                 if overlay(&app).is_none() {
-                    loaded_home = raw; *areas.borrow_mut() = saved;
-                    current.set(0); app.set_area_dots(ModelRc::new(VecModel::from(vec![true;areas.borrow().len()])));
-                    put_front(&app,0);
+                    loaded_home = raw;
+                    *areas.borrow_mut() = saved;
+                    current.set(0);
+                    app.set_area_dots(ModelRc::new(VecModel::from(vec![
+                        true;
+                        areas.borrow().len()
+                    ])));
+                    put_front(&app, 0);
                     app.set_no_config(false);
                 }
             }
@@ -1404,7 +1617,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-
             // The deadline is the daemon's, carried in the file, so restarting
             // this process cannot extend a PIN that is already on its way out.
             match system::pairing_pin() {
@@ -1424,7 +1636,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.set_battery_caption(battery.caption().into());
             app.set_wifi_level(system::wifi_level());
             app.set_wifi_ssid(system::wifi_ssid().into());
-            app.set_wifi_signal(system::wifi_dbm().map(|dbm| format!("{dbm} dBm")).unwrap_or_else(|| "—".into()).into());
+            app.set_wifi_signal(
+                system::wifi_dbm()
+                    .map(|dbm| format!("{dbm} dBm"))
+                    .unwrap_or_else(|| "—".into())
+                    .into(),
+            );
 
             let setup = system::in_setup_mode();
             if last_setup != Some(setup) {
@@ -1448,7 +1665,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Standby. Anything a person is looking at or waiting on holds
             // the panel awake and restarts the clock; otherwise it dims, then
             // powers down, on the two idle timers.
-            let hold = app.get_activity_busy() || app.get_activity_keep_awake() || app.get_pair_shown() || app.get_bt_pair_shown() || mic.recording() || app.get_mic_result_shown() || app.get_setup_mode() || app.get_wifi_setup_shown() || app.get_keyboard_shown();
+            let hold = app.get_activity_busy()
+                || app.get_activity_keep_awake()
+                || app.get_pair_shown()
+                || app.get_bt_pair_shown()
+                || mic.recording()
+                || app.get_mic_result_shown()
+                || app.get_setup_mode()
+                || app.get_wifi_setup_shown()
+                || app.get_keyboard_shown();
             let mut idle = now.saturating_sub(last_input);
             // The panel is meant to be showing something in every state but
             // Off. If the driver says it is asleep anyway - it has happened,
@@ -1456,8 +1681,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // than at the next wake, and re-assert the level the LED node
             // thinks it already has.
             if standby != Standby::Off && screen.unblank_if_asleep() {
-                println!("couch-gui: standby: panel found asleep while {:?}, unblanked", standby);
-                Panel::force_backlight(if standby == Standby::Dim { dim_level.get() } else { active_level.get() });
+                println!(
+                    "couch-gui: standby: panel found asleep while {:?}, unblanked",
+                    standby
+                );
+                Panel::force_backlight(if standby == Standby::Dim {
+                    dim_level.get()
+                } else {
+                    active_level.get()
+                });
                 slint::platform::update_timers_and_animations();
             }
             // Off-after of 0 means never power the panel down, only dim.
@@ -1473,8 +1705,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if manual_sleep {
                 // Explicit sleep takes precedence over activity and dock holds.
             } else if dock && idle >= dim_after_us.get() {
-                if standby == Standby::Off {wake(&mut screen, dim_level.get());}
-                if !app.get_dock_clock_shown() {Panel::set_backlight(dim_level.get());}
+                if standby == Standby::Off {
+                    wake(&mut screen, dim_level.get());
+                }
+                if !app.get_dock_clock_shown() {
+                    Panel::set_backlight(dim_level.get());
+                }
                 standby = Standby::Dim;
                 app.set_dock_clock_shown(true);
                 app.set_dock_clock_shift(((now / 60_000_000) % 5) as i32);
@@ -1532,15 +1768,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        if let Some(error) = activity_runtime.poll(&app) { toast(error, 5); }
-        let was_activity = (app.get_player_shown(), app.get_tv_shown(), app.get_thermostat_shown());
-        let activity_navigation = activity_controls.navigation_pending(&app) || tv_controls.navigation_pending() || thermostat_controls.navigation_pending();
-        if activity_navigation {screen.snapshot();}
+        if let Some(error) = activity_runtime.poll(&app) {
+            toast(error, 5);
+        }
+        let was_activity = (
+            app.get_player_shown(),
+            app.get_tv_shown(),
+            app.get_thermostat_shown(),
+        );
+        let activity_navigation = activity_controls.navigation_pending(&app)
+            || tv_controls.navigation_pending()
+            || thermostat_controls.navigation_pending();
+        if activity_navigation {
+            screen.snapshot();
+        }
         activity_controls.poll(&app);
         tv_controls.poll(&app);
         cameras.poll(&app, standby != Standby::Off);
-        if let Some(message)=thermostat_controls.poll(&app){toast(message,2);}
-        if let Some(message)=shortcut_controls.poll(){toast(message,2);}
+        if let Some(message) = thermostat_controls.poll(&app) {
+            toast(message, 2);
+        }
+        if let Some(message) = shortcut_controls.poll() {
+            toast(message, 2);
+        }
         match button_controls.poll(&app) {
             Some(activity_buttons::Feedback::Error(error)) => toast(error, 3),
             Some(activity_buttons::Feedback::Volume(reading)) => {
@@ -1555,17 +1805,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             None => {}
         }
-        if !app.get_player_shown() && !app.get_tv_shown() {app.set_active_activity("".into());}
-        if activity_navigation && was_activity != (app.get_player_shown(), app.get_tv_shown(), app.get_thermostat_shown()) {
+        if !app.get_player_shown() && !app.get_tv_shown() {
+            app.set_active_activity("".into());
+        }
+        if activity_navigation
+            && was_activity
+                != (
+                    app.get_player_shown(),
+                    app.get_tv_shown(),
+                    app.get_thermostat_shown(),
+                )
+        {
             dismiss_feedback(&app, &mut scene_controls, &mut light_controls);
             slint::platform::update_timers_and_animations();
             if let Some(us) = screen.render_offscreen(&window) {
-                frames += 1; render_us += us; frame_max = frame_max.max(us);
-                let entering = app.get_player_shown() || app.get_tv_shown() || app.get_thermostat_shown();
-                let cost = screen.slide(if entering {Arrive::FromRight} else {Arrive::FromLeft}, &[], SLIDE);
-                frames += cost.frames; render_us += cost.work_us; wait_us += cost.wait_us;
+                frames += 1;
+                render_us += us;
+                frame_max = frame_max.max(us);
+                let entering =
+                    app.get_player_shown() || app.get_tv_shown() || app.get_thermostat_shown();
+                let cost = screen.slide(
+                    if entering {
+                        Arrive::FromRight
+                    } else {
+                        Arrive::FromLeft
+                    },
+                    &[],
+                    SLIDE,
+                );
+                frames += cost.frames;
+                render_us += cost.work_us;
+                wait_us += cost.wait_us;
                 frame_max = frame_max.max(cost.max_us);
-                println!("couch-gui: activity slide {} ({} frames)", if entering {"in"} else {"out"},cost.frames);
+                println!(
+                    "couch-gui: activity slide {} ({} frames)",
+                    if entering { "in" } else { "out" },
+                    cost.frames
+                );
             }
             slint::platform::update_timers_and_animations();
         }
@@ -1608,7 +1884,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             None => {
                 // Idle, so the ~220ms this costs hitches nothing on screen.
-                if verify_at.is_some_and(|t| now_monotonic_us() >= t) && standby == Standby::Active {
+                if verify_at.is_some_and(|t| now_monotonic_us() >= t) && standby == Standby::Active
+                {
                     verify_at = None;
                     if screen.unblank_if_asleep() {
                         println!("couch-gui: standby: panel asleep after wake, unblanked");
@@ -1668,31 +1945,67 @@ mod overlay_tests {
         }
         struct Platform;
         impl slint::platform::Platform for Platform {
-            fn duration_since_start(&self) -> Duration { Duration::ZERO }
-            fn create_window_adapter(&self) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
-                Ok(slint::platform::software_renderer::MinimalSoftwareWindow::new(
-                    slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
-                ))
+            fn duration_since_start(&self) -> Duration {
+                Duration::ZERO
+            }
+            fn create_window_adapter(
+                &self,
+            ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+                Ok(
+                    slint::platform::software_renderer::MinimalSoftwareWindow::new(
+                        slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
+                    ),
+                )
             }
         }
         slint::platform::set_platform(Box::new(Platform)).unwrap();
         let app = App::new().unwrap();
         assert_eq!(overlay(&app), None);
         let cases: Vec<(Box<dyn Fn(&App, bool)>, Overlay)> = vec![
-            (Box::new(|a: &App, v| a.set_activity_busy(v)), Overlay::Activity),
-            (Box::new(|a: &App, v| a.set_camera_shown(v)), Overlay::Camera),
-            (Box::new(|a: &App, v| a.set_thermostat_shown(v)), Overlay::Thermostat),
+            (
+                Box::new(|a: &App, v| a.set_activity_busy(v)),
+                Overlay::Activity,
+            ),
+            (
+                Box::new(|a: &App, v| a.set_camera_shown(v)),
+                Overlay::Camera,
+            ),
+            (
+                Box::new(|a: &App, v| a.set_thermostat_shown(v)),
+                Overlay::Thermostat,
+            ),
             (Box::new(|a: &App, v| a.set_tv_shown(v)), Overlay::Tv),
-            (Box::new(|a: &App, v| a.set_player_shown(v)), Overlay::Player),
+            (
+                Box::new(|a: &App, v| a.set_player_shown(v)),
+                Overlay::Player,
+            ),
             (Box::new(|a: &App, v| a.set_light_shown(v)), Overlay::Room),
-            (Box::new(|a: &App, v| a.set_wifi_setup_shown(v)), Overlay::WifiSetup),
-            (Box::new(|a: &App, v| a.set_bt_pair_shown(v)), Overlay::BtPair),
-            (Box::new(|a: &App, v| a.set_settings_shown(v)), Overlay::Settings),
-            (Box::new(|a: &App, v| a.set_keyboard_shown(v)), Overlay::Keyboard),
-            (Box::new(|a: &App, v| a.set_chooser_shown(v)), Overlay::Chooser),
+            (
+                Box::new(|a: &App, v| a.set_wifi_setup_shown(v)),
+                Overlay::WifiSetup,
+            ),
+            (
+                Box::new(|a: &App, v| a.set_bt_pair_shown(v)),
+                Overlay::BtPair,
+            ),
+            (
+                Box::new(|a: &App, v| a.set_settings_shown(v)),
+                Overlay::Settings,
+            ),
+            (
+                Box::new(|a: &App, v| a.set_keyboard_shown(v)),
+                Overlay::Keyboard,
+            ),
+            (
+                Box::new(|a: &App, v| a.set_chooser_shown(v)),
+                Overlay::Chooser,
+            ),
             (Box::new(|a: &App, v| a.set_pair_shown(v)), Overlay::Pair),
             (Box::new(|a: &App, v| a.set_setup_mode(v)), Overlay::Setup),
-            (Box::new(|a: &App, v| a.set_recording(v)), Overlay::Recording),
+            (
+                Box::new(|a: &App, v| a.set_recording(v)),
+                Overlay::Recording,
+            ),
         ];
         // Each one alone closes the menu-key gate and the reload gate, which
         // is exactly what the thermostat and the camera used not to do.
@@ -1746,11 +2059,17 @@ mod room_nav_tests {
         // tick this chose, not at wall time.
         struct Platform(Rc<Cell<Duration>>);
         impl slint::platform::Platform for Platform {
-            fn duration_since_start(&self) -> Duration { self.0.get() }
-            fn create_window_adapter(&self) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
-                Ok(slint::platform::software_renderer::MinimalSoftwareWindow::new(
-                    slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
-                ))
+            fn duration_since_start(&self) -> Duration {
+                self.0.get()
+            }
+            fn create_window_adapter(
+                &self,
+            ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+                Ok(
+                    slint::platform::software_renderer::MinimalSoftwareWindow::new(
+                        slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
+                    ),
+                )
             }
         }
         let clock = Rc::new(Cell::new(Duration::ZERO));
@@ -1765,14 +2084,19 @@ mod room_nav_tests {
         };
         let press_up = || {
             let key: SharedString = slint::platform::Key::UpArrow.into();
-            app.window().dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
-            app.window().dispatch_event(WindowEvent::KeyReleased { text: key });
+            app.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+            app.window()
+                .dispatch_event(WindowEvent::KeyReleased { text: key });
         };
 
         // Twelve rows into a five-row window, so the list has somewhere to go.
         app.set_light_items(ModelRc::new(VecModel::from(
             (0..12)
-                .map(|i| ChoiceItem { title: format!("Device {i}").into(), ..Default::default() })
+                .map(|i| ChoiceItem {
+                    title: format!("Device {i}").into(),
+                    ..Default::default()
+                })
                 .collect::<Vec<_>>(),
         )));
         app.set_light_shown(true);
@@ -1791,7 +2115,10 @@ mod room_nav_tests {
         assert_eq!(app.invoke_room_scroll_destination(), 0.0);
         tick(300);
         let scenes_card = app.invoke_room_ring_position();
-        assert!(scenes_card > top_row + 400.0, "{scenes_card} is not the footer");
+        assert!(
+            scenes_card > top_row + 400.0,
+            "{scenes_card} is not the footer"
+        );
 
         // Up again takes the last row. Now the window does scroll, and the
         // outline has to arrive with it rather than ahead of it.
@@ -1806,14 +2133,19 @@ mod room_nav_tests {
             trail.push(app.invoke_room_ring_position());
         }
         let landed = *trail.last().unwrap();
-        assert!(landed > top_row + 100.0 && landed < scenes_card, "{landed} is not the last row");
+        assert!(
+            landed > top_row + 100.0 && landed < scenes_card,
+            "{landed} is not the last row"
+        );
         for pair in trail.windows(2) {
             assert!(pair[1] <= pair[0] + 0.5, "the ring turned back: {trail:?}");
         }
         // The whole journey stays between the two cards: no frame of it is
         // spent at the top of the list.
         assert!(
-            trail.iter().all(|y| *y >= landed - 0.5 && *y <= scenes_card + 0.5),
+            trail
+                .iter()
+                .all(|y| *y >= landed - 0.5 && *y <= scenes_card + 0.5),
             "the ring left the gap between the last row and the scenes card: {trail:?}"
         );
     }
@@ -1829,11 +2161,26 @@ mod standby_tests {
         let moved = touch::Event::Moved { x: 25.0, y: 35.0 };
         let release = touch::Event::Released { x: 25.0, y: 35.0 };
         let mut swallow = false;
-        assert_eq!(touch_disposition(Standby::Dim, &press, &mut swallow), TouchDisposition::Wake);
-        assert_eq!(touch_disposition(Standby::Active, &moved, &mut swallow), TouchDisposition::Ignore);
-        assert_eq!(touch_disposition(Standby::Active, &release, &mut swallow), TouchDisposition::Ignore);
-        assert_eq!(touch_disposition(Standby::Active, &press, &mut swallow), TouchDisposition::Dispatch);
-        assert_eq!(touch_disposition(Standby::Off, &press, &mut swallow), TouchDisposition::Ignore);
+        assert_eq!(
+            touch_disposition(Standby::Dim, &press, &mut swallow),
+            TouchDisposition::Wake
+        );
+        assert_eq!(
+            touch_disposition(Standby::Active, &moved, &mut swallow),
+            TouchDisposition::Ignore
+        );
+        assert_eq!(
+            touch_disposition(Standby::Active, &release, &mut swallow),
+            TouchDisposition::Ignore
+        );
+        assert_eq!(
+            touch_disposition(Standby::Active, &press, &mut swallow),
+            TouchDisposition::Dispatch
+        );
+        assert_eq!(
+            touch_disposition(Standby::Off, &press, &mut swallow),
+            TouchDisposition::Ignore
+        );
         assert!(!swallow);
     }
 }

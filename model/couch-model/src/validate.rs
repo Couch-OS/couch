@@ -47,7 +47,12 @@ impl Config {
         let mut problems = Vec::new();
         self.validate_app_shortcuts(&mut problems);
         self.validate_shortcuts(&mut problems);
-        if self.appearance.rgb().is_none() { problems.push(Problem{at:"appearance.accent".into(),message:"Use a color in #RRGGBB format".into()}); }
+        if self.appearance.rgb().is_none() {
+            problems.push(Problem {
+                at: "appearance.accent".into(),
+                message: "Use a color in #RRGGBB format".into(),
+            });
+        }
 
         if self.schema_version > SCHEMA_VERSION {
             problems.push(Problem {
@@ -86,14 +91,23 @@ impl Config {
         for (ri, room) in self.rooms.iter().enumerate() {
             for (di, d) in room.devices.iter().enumerate() {
                 let at = alloc::format!("rooms[{ri}].devices[{di}]");
-                if d.ir.as_ref().is_some_and(|ir| !crate::DeviceIr::valid_codeset(&ir.codeset)) {
+                if d.ir
+                    .as_ref()
+                    .is_some_and(|ir| !crate::DeviceIr::valid_codeset(&ir.codeset))
+                {
                     problems.push(Problem { at: alloc::format!("{at}.ir"), message: "Choose a lowercase IR codeset ID with letters, numbers, hyphens or underscores (maximum 64 characters)".into() });
                 }
                 if d.id.is_empty() {
-                    problems.push(Problem { at: at.clone(), message: "blank id".to_string() });
+                    problems.push(Problem {
+                        at: at.clone(),
+                        message: "blank id".to_string(),
+                    });
                 }
                 if d.name.trim().is_empty() {
-                    problems.push(Problem { at: at.clone(), message: "blank name".to_string() });
+                    problems.push(Problem {
+                        at: at.clone(),
+                        message: "blank name".to_string(),
+                    });
                 }
                 if device_ids.contains(&&d.id) {
                     problems.push(Problem {
@@ -107,25 +121,64 @@ impl Config {
         }
 
         let mut connection_ids = Vec::new();
-        for (i,c) in self.connections.iter().enumerate() {
-            check_entity(&mut problems, &mut connection_ids, "connections", i, &c.id, &c.name);
-            if let crate::Provider::Kodi{host,port}|crate::Provider::CoreElec{host,port}|crate::Provider::Denon{host,port}=&c.provider {
-                if host.trim().is_empty() || *port==0 { problems.push(Problem{at:alloc::format!("connections[{i}]"),message:"Connection needs an address and a TCP port from 1 to 65535".into()}); }
+        for (i, c) in self.connections.iter().enumerate() {
+            check_entity(
+                &mut problems,
+                &mut connection_ids,
+                "connections",
+                i,
+                &c.id,
+                &c.name,
+            );
+            if let crate::Provider::Kodi { host, port }
+            | crate::Provider::CoreElec { host, port }
+            | crate::Provider::Denon { host, port } = &c.provider
+            {
+                if host.trim().is_empty() || *port == 0 {
+                    problems.push(Problem {
+                        at: alloc::format!("connections[{i}]"),
+                        message: "Connection needs an address and a TCP port from 1 to 65535"
+                            .into(),
+                    });
+                }
             }
             if let crate::Provider::Sonos { host } = &c.provider {
                 if host.parse::<core::net::Ipv4Addr>().is_err() {
-                    problems.push(Problem { at: alloc::format!("connections[{i}]"), message: "Sonos needs an IPv4 address".into() });
+                    problems.push(Problem {
+                        at: alloc::format!("connections[{i}]"),
+                        message: "Sonos needs an IPv4 address".into(),
+                    });
                 }
             }
-            if c.provider==crate::Provider::Ir && self.connections[..i].iter().any(|old|old.provider==crate::Provider::Ir) { problems.push(Problem{at:alloc::format!("connections[{i}]"),message:"Use the built-in IR connection and configure a separate codeset on each device".into()}); }
-            if c.id.as_str().len()>128 || !c.id.as_str().bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-' || b==b'_') { problems.push(Problem{at:alloc::format!("connections[{i}]"),message:"Connection IDs must be safe alphanumeric identifiers".into()}); }
+            if c.provider == crate::Provider::Ir
+                && self.connections[..i]
+                    .iter()
+                    .any(|old| old.provider == crate::Provider::Ir)
+            {
+                problems.push(Problem{at:alloc::format!("connections[{i}]"),message:"Use the built-in IR connection and configure a separate codeset on each device".into()});
+            }
+            if c.id.as_str().len() > 128
+                || !c
+                    .id
+                    .as_str()
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
+                problems.push(Problem {
+                    at: alloc::format!("connections[{i}]"),
+                    message: "Connection IDs must be safe alphanumeric identifiers".into(),
+                });
+            }
         }
-        for (room,device) in self.devices() {
+        for (room, device) in self.devices() {
             if let Some(bond) = &device.bluetooth {
-                if !bond.address.is_empty() && !crate::DeviceBluetooth::valid_address(&bond.address) {
+                if !bond.address.is_empty() && !crate::DeviceBluetooth::valid_address(&bond.address)
+                {
                     problems.push(Problem {
                         at: alloc::format!("rooms.{}.devices.{}.bluetooth", room.id, device.id),
-                        message: "A Bluetooth address is six uppercase hex pairs separated by colons".into(),
+                        message:
+                            "A Bluetooth address is six uppercase hex pairs separated by colons"
+                                .into(),
                     });
                 }
                 if bond.name.len() > 128 {
@@ -143,8 +196,12 @@ impl Config {
                     });
                 }
             }
-            if let crate::Integration::Connection{connection_id,resource_id}=&device.integration {
-                let at=alloc::format!("rooms.{}.devices.{}",room.id,device.id);
+            if let crate::Integration::Connection {
+                connection_id,
+                resource_id,
+            } = &device.integration
+            {
+                let at = alloc::format!("rooms.{}.devices.{}", room.id, device.id);
                 match self.connection(connection_id) {
                     None=>problems.push(Problem{at,message:"This device refers to a missing connection; remove its devices before deleting the connection".into()}),
                     Some(c)=>{
@@ -163,12 +220,31 @@ impl Config {
         }
 
         for (i, scene) in self.scenes.iter().enumerate() {
-            for room in &scene.rooms { if self.room(room).is_none() { problems.push(Problem{at:alloc::format!("scenes[{i}].rooms"),message:"Choose an existing room".into()}); } }
+            for room in &scene.rooms {
+                if self.room(room).is_none() {
+                    problems.push(Problem {
+                        at: alloc::format!("scenes[{i}].rooms"),
+                        message: "Choose an existing room".into(),
+                    });
+                }
+            }
             if let Some(hue) = &scene.hue {
-                let id=&hue.scene_id;
-                let valid=self.connection(&hue.connection_id).is_some_and(|c|c.provider==crate::Provider::Hue)
-                    && id.len()==36 && id.bytes().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){b==b'-'}else{b.is_ascii_hexdigit()}) && scene.steps.is_empty();
-                if !valid { problems.push(Problem{at:alloc::format!("scenes[{i}].hue"),message:"Choose a Hue connection and scene; bridge scenes cannot include device steps".into()}); }
+                let id = &hue.scene_id;
+                let valid = self
+                    .connection(&hue.connection_id)
+                    .is_some_and(|c| c.provider == crate::Provider::Hue)
+                    && id.len() == 36
+                    && id.bytes().enumerate().all(|(i, b)| {
+                        if [8, 13, 18, 23].contains(&i) {
+                            b == b'-'
+                        } else {
+                            b.is_ascii_hexdigit()
+                        }
+                    })
+                    && scene.steps.is_empty();
+                if !valid {
+                    problems.push(Problem{at:alloc::format!("scenes[{i}].hue"),message:"Choose a Hue connection and scene; bridge scenes cannot include device steps".into()});
+                }
             }
         }
         // References.
@@ -217,7 +293,6 @@ impl Config {
             }
         }
 
-
         // A step is run by the same executor as a button binding, which parses
         // the command and gives up on anything it does not know, so a step that
         // does not parse saves and then fails on the first press. Only the parse
@@ -242,7 +317,10 @@ impl Config {
 
         for (i, act) in self.activities.iter().enumerate() {
             if let Err(message) = act.setup.validate(self) {
-                problems.push(Problem { at: alloc::format!("activities[{i}].setup"), message: message.into() });
+                problems.push(Problem {
+                    at: alloc::format!("activities[{i}].setup"),
+                    message: message.into(),
+                });
             }
             if self.room(&act.room).is_none() {
                 problems.push(Problem {
@@ -259,11 +337,26 @@ impl Config {
                 }
             }
             for (j, binding) in act.buttons.iter().enumerate() {
-                let valid = !act.buttons[..j].iter().any(|b| b.button == binding.button && b.gesture == binding.gesture)
-                    && (binding.gesture == crate::buttons::Gesture::Short || binding.button.supports_long())
-                    && binding.action.as_ref().map_or(true, |action| self.devices().find(|(_, d)| d.id == action.device)
-                        .is_some_and(|(_, d)| crate::commands::Function::parse(&action.command).is_some_and(|f|f.supports_device(d,self))));
-                if !valid { problems.push(Problem {at:alloc::format!("activities[{i}].buttons[{j}]"),message:"Choose one mapping per button and a supported device function".into()}); }
+                let valid = !act.buttons[..j]
+                    .iter()
+                    .any(|b| b.button == binding.button && b.gesture == binding.gesture)
+                    && (binding.gesture == crate::buttons::Gesture::Short
+                        || binding.button.supports_long())
+                    && binding.action.as_ref().map_or(true, |action| {
+                        self.devices()
+                            .find(|(_, d)| d.id == action.device)
+                            .is_some_and(|(_, d)| {
+                                crate::commands::Function::parse(&action.command)
+                                    .is_some_and(|f| f.supports_device(d, self))
+                            })
+                    });
+                if !valid {
+                    problems.push(Problem {
+                        at: alloc::format!("activities[{i}].buttons[{j}]"),
+                        message: "Choose one mapping per button and a supported device function"
+                            .into(),
+                    });
+                }
             }
             for (j, step) in act.steps.iter().enumerate() {
                 if !device_ids.contains(&&step.device) {
@@ -298,10 +391,16 @@ fn check_entity<'a>(
 ) {
     let at = alloc::format!("{collection}[{index}]");
     if id.is_empty() {
-        problems.push(Problem { at: at.clone(), message: "blank id".to_string() });
+        problems.push(Problem {
+            at: at.clone(),
+            message: "blank id".to_string(),
+        });
     }
     if name.trim().is_empty() {
-        problems.push(Problem { at: at.clone(), message: "blank name".to_string() });
+        problems.push(Problem {
+            at: at.clone(),
+            message: "blank name".to_string(),
+        });
     }
     if seen.contains(&id) {
         problems.push(Problem {
@@ -316,7 +415,9 @@ fn check_entity<'a>(
 /// `<node_id>/<endpoint>`: both decimal, node IDs are operational (non-zero)
 /// and endpoint 0 is the root node rather than a controllable device.
 pub fn valid_matter_resource(id: &str) -> bool {
-    let Some((node, endpoint)) = id.split_once('/') else { return false; };
+    let Some((node, endpoint)) = id.split_once('/') else {
+        return false;
+    };
     node.len() <= 20
         && node.bytes().all(|b| b.is_ascii_digit())
         && node.parse::<u64>().is_ok_and(|n| n != 0)
@@ -324,13 +425,19 @@ pub fn valid_matter_resource(id: &str) -> bool {
 }
 
 fn valid_ha_resource(id: &str, kind: crate::DeviceKind) -> bool {
-    let Some((domain, name)) = id.split_once('.') else { return false; };
+    let Some((domain, name)) = id.split_once('.') else {
+        return false;
+    };
     !name.is_empty()
-        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-        && matches!((domain, kind),
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        && matches!(
+            (domain, kind),
             ("light", crate::DeviceKind::Light)
-            | ("cover", crate::DeviceKind::Blind)
-            | ("climate", crate::DeviceKind::Thermostat))
+                | ("cover", crate::DeviceKind::Blind)
+                | ("climate", crate::DeviceKind::Thermostat)
+        )
 }
 
 #[cfg(test)]
@@ -340,22 +447,40 @@ mod tests {
     use alloc::vec;
 
     fn room(id: &str, name: &str) -> Room {
-        Room { id: Id::new(id), name: name.to_string(), icon: None, devices: vec![] }
+        Room {
+            id: Id::new(id),
+            name: name.to_string(),
+            icon: None,
+            devices: vec![],
+        }
     }
 
     #[test]
     fn direct_sonos_integrations_require_literal_ipv4_addresses() {
-        for (host, valid) in [("192.0.2.1", true), ("speaker.local", false), ("::1", false), ("", false), ("256.1.1.1", false)] {
+        for (host, valid) in [
+            ("192.0.2.1", true),
+            ("speaker.local", false),
+            ("::1", false),
+            ("", false),
+            ("256.1.1.1", false),
+        ] {
             let mut room = room("living", "Living room");
             let mut device = Device::new(Id::new("speaker"), "Sonos", DeviceKind::Speaker);
             device.integration = crate::Integration::Sonos { host: host.into() };
             room.devices.push(device);
-            let cfg = Config { rooms: vec![room], ..Config::default() };
+            let cfg = Config {
+                rooms: vec![room],
+                ..Config::default()
+            };
             if valid {
                 assert!(cfg.validate().is_ok(), "{host}");
             } else {
                 let error = cfg.validate().unwrap_err();
-                assert!(error.problems.iter().any(|p| p.at == "rooms.living.devices.speaker" && p.message == "Sonos needs an IPv4 address"));
+                assert!(error
+                    .problems
+                    .iter()
+                    .any(|p| p.at == "rooms.living.devices.speaker"
+                        && p.message == "Sonos needs an IPv4 address"));
             }
         }
     }
@@ -396,14 +521,18 @@ mod tests {
         assert_eq!(err.problems[0].at, "areas[0].activities[0]");
     }
 
-
     #[test]
     fn duplicate_device_ids_across_rooms_are_rejected() {
         let mut a = room("a", "A");
         let mut b = room("b", "B");
-        a.devices.push(Device::new(Id::new("dup"), "One", DeviceKind::Light));
-        b.devices.push(Device::new(Id::new("dup"), "Two", DeviceKind::Light));
-        let cfg = Config { rooms: vec![a, b], ..Config::default() };
+        a.devices
+            .push(Device::new(Id::new("dup"), "One", DeviceKind::Light));
+        b.devices
+            .push(Device::new(Id::new("dup"), "Two", DeviceKind::Light));
+        let cfg = Config {
+            rooms: vec![a, b],
+            ..Config::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
@@ -426,12 +555,28 @@ mod tests {
     #[test]
     fn a_step_command_the_executor_cannot_parse_is_rejected() {
         let mut living = room("living", "Living room");
-        living.devices.push(Device::new(Id::new("lamp"), "Lamp", DeviceKind::Light));
-        for (command, valid) in [("on", true), ("toggle", true), ("dim:30", true), ("dim:101", false), ("dim:", false), ("bright", false)] {
+        living
+            .devices
+            .push(Device::new(Id::new("lamp"), "Lamp", DeviceKind::Light));
+        for (command, valid) in [
+            ("on", true),
+            ("toggle", true),
+            ("dim:30", true),
+            ("dim:101", false),
+            ("dim:", false),
+            ("bright", false),
+        ] {
             let steps = vec![Action::new(Id::new("lamp"), command)];
             let cfg = Config {
                 rooms: vec![living.clone()],
-                scenes: vec![crate::Scene { hue: None, rooms: vec![], id: Id::new("s"), name: "S".to_string(), icon: None, steps: steps.clone() }],
+                scenes: vec![crate::Scene {
+                    hue: None,
+                    rooms: vec![],
+                    id: Id::new("s"),
+                    name: "S".to_string(),
+                    icon: None,
+                    steps: steps.clone(),
+                }],
                 activities: vec![crate::Activity {
                     setup: Default::default(),
                     id: Id::new("a"),
@@ -449,8 +594,15 @@ mod tests {
             } else {
                 let problems = cfg.validate().unwrap_err().problems;
                 let at: Vec<&str> = problems.iter().map(|p| p.at.as_str()).collect();
-                assert_eq!(at, ["scenes[0].steps[0]", "activities[0].steps[0]"], "{command}");
-                assert!(problems.iter().all(|p| p.message.contains(command)), "{command}");
+                assert_eq!(
+                    at,
+                    ["scenes[0].steps[0]", "activities[0].steps[0]"],
+                    "{command}"
+                );
+                assert!(
+                    problems.iter().all(|p| p.message.contains(command)),
+                    "{command}"
+                );
             }
         }
     }
@@ -460,14 +612,28 @@ mod tests {
         let mut living = room("living", "Living room");
         for (id, name, kind, entity) in [
             ("blind", "Blind", DeviceKind::Blind, "cover.office"),
-            ("stat", "Thermostat", DeviceKind::Thermostat, "climate.office"),
+            (
+                "stat",
+                "Thermostat",
+                DeviceKind::Thermostat,
+                "climate.office",
+            ),
         ] {
-            living.devices.push(Device::new(Id::new(id), name, kind).with_integration(
-                crate::Integration::Connection { connection_id: Id::new("ha"), resource_id: entity.to_string() },
-            ));
+            living
+                .devices
+                .push(Device::new(Id::new(id), name, kind).with_integration(
+                    crate::Integration::Connection {
+                        connection_id: Id::new("ha"),
+                        resource_id: entity.to_string(),
+                    },
+                ));
         }
         let base = Config {
-            connections: vec![crate::Connection { id: Id::new("ha"), name: "HA".to_string(), provider: crate::Provider::HomeAssistant }],
+            connections: vec![crate::Connection {
+                id: Id::new("ha"),
+                name: "HA".to_string(),
+                provider: crate::Provider::HomeAssistant,
+            }],
             rooms: vec![living],
             activities: vec![crate::Activity {
                 setup: Default::default(),
@@ -508,19 +674,31 @@ mod tests {
 
     #[test]
     fn a_newer_schema_is_refused() {
-        let cfg = Config { schema_version: SCHEMA_VERSION + 1, ..Config::default() };
+        let cfg = Config {
+            schema_version: SCHEMA_VERSION + 1,
+            ..Config::default()
+        };
         assert!(cfg.validate().is_err());
     }
     #[test]
     fn ha_resources_require_supported_domains_and_matching_kinds() {
-        for (entity, kind) in [("light.office", DeviceKind::Light), ("cover.office", DeviceKind::Blind), ("climate.office", DeviceKind::Thermostat)] {
+        for (entity, kind) in [
+            ("light.office", DeviceKind::Light),
+            ("cover.office", DeviceKind::Blind),
+            ("climate.office", DeviceKind::Thermostat),
+        ] {
             assert!(valid_ha_resource(entity, kind));
         }
-        for entity in ["cover.", "cover.a/b", "cover.a.b", "switch.office", "cover.Office"] {
+        for entity in [
+            "cover.",
+            "cover.a/b",
+            "cover.a.b",
+            "switch.office",
+            "cover.Office",
+        ] {
             assert!(!valid_ha_resource(entity, DeviceKind::Blind));
         }
         assert!(!valid_ha_resource("cover.office", DeviceKind::Light));
         assert!(!valid_ha_resource("climate.office", DeviceKind::Blind));
     }
-
 }

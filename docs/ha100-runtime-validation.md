@@ -3,7 +3,8 @@
 The live normal image is `couch-stable.img`, SHA-256
 `48278dc417dd188cc70afabac661039000717d477f07720a34f206f3639909a1`.
 Kernel source is `15b9bb349413240abb5538db678a2f9a8c4653ac`; the normal profile
-**disables experimental PWM IR**. Kernel compilation ran natively on Ollie.
+**disables experimental PWM IR**. Kernel compilation ran natively on a dedicated
+Linux build host.
 The same source revision was also tested with IR enabled, so identify artifacts
 by their manifest/config/image hashes, not uname alone.
 
@@ -101,7 +102,8 @@ captured during the original spontaneous failure, so its exact trigger is not
 proven.
 
 Kernel `0d6673cd8337` reconciles PWM_EN against hardware while clocks are on and
-invalidates the MT6580 enable cache across power transitions. It built on Ollie
+invalidates the MT6580 enable cache across power transitions. It built on a
+dedicated Linux build host
 from a clean commit. `build/couch-pwm-resume.img` SHA256:
 `2573bf876c2000499caadaa23ee722e74dd8668b35d2d4947658999da6ba45ad`.
 Boot-partition readback verified; boot health cleared the BCB at normal timeout.

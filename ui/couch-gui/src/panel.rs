@@ -145,7 +145,8 @@ impl Panel {
         // scrollback), and rendering to that means drawing three screens per
         // frame. fb_var_screeninfo starts xres, yres, xres_virtual, ...
         let mut vinfo = [0u32; 40];
-        let rc = unsafe { libc::ioctl(fb.as_raw_fd(), FBIOGET_VSCREENINFO as _, vinfo.as_mut_ptr()) };
+        let rc =
+            unsafe { libc::ioctl(fb.as_raw_fd(), FBIOGET_VSCREENINFO as _, vinfo.as_mut_ptr()) };
         let var = (rc == 0 && vinfo[0] > 0 && vinfo[1] > 0).then_some(vinfo);
         let (width, height) = var.map_or((480, 800), |v| (v[0], v[1]));
         let stride = std::fs::read_to_string("/sys/class/graphics/fb0/stride")
@@ -155,8 +156,14 @@ impl Panel {
 
         let len = (stride * height) as usize;
         let ptr = unsafe {
-            libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE,
-                       libc::MAP_SHARED, fb.as_raw_fd(), 0)
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fb.as_raw_fd(),
+                0,
+            )
         };
         if ptr == libc::MAP_FAILED {
             return Err(std::io::Error::last_os_error());
@@ -172,7 +179,11 @@ impl Panel {
             ram: vec![Abgr::default(); (width * height) as usize],
             spare: vec![Abgr::default(); (width * height) as usize],
             // Page 0 is what is displayed; the pan must say so.
-            var: var.map(|mut v| { v[4] = 0; v[5] = 0; v }),
+            var: var.map(|mut v| {
+                v[4] = 0;
+                v[5] = 0;
+                v
+            }),
             pacing: Pacing::Sleep,
             blanked: false,
             core_floor: crate::core_floor::CoreFloor::new("/proc/hps/num_base_perf_serv"),
@@ -219,26 +230,36 @@ impl Panel {
         let fd = self.fb.as_raw_fd();
         if try_wait {
             if let Some(period) = probe("FBIO_WAITFORVSYNC", &mut why, &mut || wait_for_vsync(fd)) {
-                println!("couch-gui: pacing: FBIO_WAITFORVSYNC, {:.1}ms per wait{}",
-                         period.as_secs_f64() * 1e3, reasons(&why));
+                println!(
+                    "couch-gui: pacing: FBIO_WAITFORVSYNC, {:.1}ms per wait{}",
+                    period.as_secs_f64() * 1e3,
+                    reasons(&why)
+                );
                 return Pacing::WaitForVsync;
             }
         }
         if try_pan {
             match self.var {
                 Some(mut var) => {
-                    if let Some(period) =
-                        probe("FBIOPAN_DISPLAY", &mut why, &mut || pan_display(fd, &mut var))
-                    {
-                        println!("couch-gui: pacing: FBIOPAN_DISPLAY, {:.1}ms per wait{}",
-                                 period.as_secs_f64() * 1e3, reasons(&why));
+                    if let Some(period) = probe("FBIOPAN_DISPLAY", &mut why, &mut || {
+                        pan_display(fd, &mut var)
+                    }) {
+                        println!(
+                            "couch-gui: pacing: FBIOPAN_DISPLAY, {:.1}ms per wait{}",
+                            period.as_secs_f64() * 1e3,
+                            reasons(&why)
+                        );
                         return Pacing::Pan;
                     }
                 }
                 None => why.push("FBIOPAN_DISPLAY: no screeninfo".into()),
             }
         }
-        println!("couch-gui: pacing: sleep to {:.2}ms{}", FRAME.as_secs_f64() * 1e3, reasons(&why));
+        println!(
+            "couch-gui: pacing: sleep to {:.2}ms{}",
+            FRAME.as_secs_f64() * 1e3,
+            reasons(&why)
+        );
         Pacing::Sleep
     }
 
@@ -362,10 +383,17 @@ impl Panel {
         if off == self.blanked {
             return;
         }
-        let arg = if off { FB_BLANK_POWERDOWN } else { FB_BLANK_UNBLANK };
+        let arg = if off {
+            FB_BLANK_POWERDOWN
+        } else {
+            FB_BLANK_UNBLANK
+        };
         let rc = unsafe { libc::ioctl(self.fb.as_raw_fd(), FBIOBLANK as _, arg as libc::c_ulong) };
         if rc != 0 {
-            println!("couch-gui: FBIOBLANK({arg}) failed: {}", std::io::Error::last_os_error());
+            println!(
+                "couch-gui: FBIOBLANK({arg}) failed: {}",
+                std::io::Error::last_os_error()
+            );
             return;
         }
         self.blanked = off;
@@ -393,7 +421,10 @@ impl Panel {
         let fd = self.fb.as_raw_fd();
         if let Some(var) = self.var.as_mut() {
             if let Err(e) = pan_display(fd, var) {
-                println!("couch-gui: present: FBIOPAN_DISPLAY failed with {}", errno_name(e));
+                println!(
+                    "couch-gui: present: FBIOPAN_DISPLAY failed with {}",
+                    errno_name(e)
+                );
             }
         }
     }
@@ -425,7 +456,11 @@ impl Panel {
 
     /// Copy every row of RAM to the panel.
     pub fn refresh_all(&mut self) {
-        let (w, h, stride) = (self.width as usize, self.height as usize, self.stride_px as usize);
+        let (w, h, stride) = (
+            self.width as usize,
+            self.height as usize,
+            self.stride_px as usize,
+        );
         let src = pixels(&self.ram);
         for y in 0..h {
             self.map[y * stride..y * stride + w].copy_from_slice(&src[y * w..(y + 1) * w]);
@@ -462,7 +497,8 @@ impl Panel {
     /// panel disagree - that is the only time they do.
     pub fn render_offscreen(&mut self, window: &MinimalSoftwareWindow) -> Option<u64> {
         let started = Instant::now();
-        self.draw(window, false).then(|| started.elapsed().as_micros() as u64)
+        self.draw(window, false)
+            .then(|| started.elapsed().as_micros() as u64)
     }
 
     /// Keep the frame the panel is showing: page A of a transition. Taken
@@ -495,11 +531,14 @@ impl Panel {
                     n += 1;
                     px += (sz.width * sz.height) as u64;
                     where_.push_str(&format!(
-                        " [{},{} {}x{}]", pos.x, pos.y, sz.width, sz.height
+                        " [{},{} {}x{}]",
+                        pos.x, pos.y, sz.width, sz.height
                     ));
                 }
-                println!("couch-gui: region {n} rect(s), {px} px = {}% of screen{where_}",
-                         px * 100 / (w as u64 * h as u64));
+                println!(
+                    "couch-gui: region {n} rect(s), {px} px = {}% of screen{where_}",
+                    px * 100 / (w as u64 * h as u64)
+                );
             }
             if !to_panel || blanked {
                 return;
@@ -564,8 +603,10 @@ impl Panel {
             cost.wait_us += wait_us;
             cost.max_us = cost.max_us.max(work_us);
             if report {
-                println!("couch-gui: slide frame {}: dx {dx}, {work_us} us, {wait_us} us paced",
-                         cost.frames);
+                println!(
+                    "couch-gui: slide frame {}: dx {dx}, {work_us} us, {wait_us} us paced",
+                    cost.frames
+                );
             }
             if t >= 1.0 {
                 return cost;
@@ -577,15 +618,19 @@ impl Panel {
     /// pixels out of the way and B filling what it uncovered, except the
     /// `keep` bands, which are B as they stand.
     fn compose(&mut self, from: Arrive, dx: usize, keep: &[(u32, u32)]) {
-        let (w, h, stride) = (self.width as usize, self.height as usize, self.stride_px as usize);
+        let (w, h, stride) = (
+            self.width as usize,
+            self.height as usize,
+            self.stride_px as usize,
+        );
         let dx = dx.min(w);
         let (a, b) = (pixels(&self.spare), pixels(&self.ram));
         for y in 0..h {
             let dst = &mut self.map[y * stride..y * stride + w];
             let (ra, rb) = (&a[y * w..(y + 1) * w], &b[y * w..(y + 1) * w]);
-            let held = keep.iter().any(|&(top, height)| {
-                y >= top as usize && y < (top + height) as usize
-            });
+            let held = keep
+                .iter()
+                .any(|&(top, height)| y >= top as usize && y < (top + height) as usize);
             if held {
                 dst.copy_from_slice(rb);
                 continue;
@@ -615,8 +660,11 @@ impl Panel {
             _ => None,
         };
         if let Some(errno) = failed.filter(|e| *e != libc::EINTR) {
-            println!("couch-gui: pacing: {:?} failed with {}, sleeping from now on",
-                     self.pacing, errno_name(errno));
+            println!(
+                "couch-gui: pacing: {:?} failed with {}, sleeping from now on",
+                self.pacing,
+                errno_name(errno)
+            );
             self.pacing = Pacing::Sleep;
         }
         // A wait that outlasts several frames is not pacing any more, it is
@@ -625,8 +673,11 @@ impl Panel {
         // and never that ioctl again for the life of the process.
         let waited = before.elapsed();
         if self.pacing != Pacing::Sleep && waited > STALL {
-            println!("couch-gui: pacing: {:?} took {}ms, sleeping from now on",
-                     self.pacing, waited.as_millis());
+            println!(
+                "couch-gui: pacing: {:?} took {}ms, sleeping from now on",
+                self.pacing,
+                waited.as_millis()
+            );
             self.pacing = Pacing::Sleep;
         }
         if self.pacing == Pacing::Sleep {
@@ -666,7 +717,11 @@ fn ease_out(t: f32) -> f32 {
 
 /// Some(period) if the ioctl works and blocks; otherwise the reason it does
 /// not is appended to `why`.
-fn probe(name: &str, why: &mut Vec<String>, call: &mut dyn FnMut() -> Result<(), i32>) -> Option<Duration> {
+fn probe(
+    name: &str,
+    why: &mut Vec<String>,
+    call: &mut dyn FnMut() -> Result<(), i32>,
+) -> Option<Duration> {
     let mut took = Duration::ZERO;
     for _ in 0..2 {
         let t = Instant::now();
@@ -677,7 +732,10 @@ fn probe(name: &str, why: &mut Vec<String>, call: &mut dyn FnMut() -> Result<(),
         took = t.elapsed();
     }
     if took < Duration::from_millis(2) {
-        why.push(format!("{name}: returned in {:.2}ms", took.as_secs_f64() * 1e3));
+        why.push(format!(
+            "{name}: returned in {:.2}ms",
+            took.as_secs_f64() * 1e3
+        ));
         return None;
     }
     Some(took)

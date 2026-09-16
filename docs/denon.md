@@ -24,13 +24,14 @@ From the clients workspace:
 
 ```sh
 cargo test -p couch-denon
-cargo run -p couch-denon -- 192.168.1.29 status
-cargo run -p couch-denon -- 192.168.1.29 sources
-cargo run -p couch-denon -- 192.168.1.29 watch
+AVR_IP=avr.local
+cargo run -p couch-denon -- "$AVR_IP" status
+cargo run -p couch-denon -- "$AVR_IP" sources
+cargo run -p couch-denon -- "$AVR_IP" watch
 ```
 
-The user's AVR-X2700H at `192.168.1.29` answered native status and input-name
-queries. Protocol fixtures cover fragmented frames, unsolicited updates and
+The physical AVR test answered native status and input-name queries. Protocol
+fixtures cover fragmented frames, unsolicited updates and
 half-step volume encoding. GUI fixtures exercise physical volume and mute
 commands without changing the production AVR's state.
 

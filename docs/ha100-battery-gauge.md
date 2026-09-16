@@ -9,8 +9,8 @@ consumption remains possible because display standby does not suspend the system
 ## Scope and source provenance
 
 This review covers the kernel pinned at `08fd6f4d2efa7ff9ab4812dad931d95bc4735c7b`
-and the Couch UI and startup policy. Battery/power source directories at Ollie's
-`d417106e` have no changes relative to that pin. Build dependency records confirm
+and the Couch UI and startup policy. Battery/power source directories at commit
+`d417106e` are unchanged relative to this pin. Build dependency records confirm
 the `mt6580/x15cm_s90_kr` custom battery headers are used.
 
 The relevant code is in the separate [kernel repository][kernel]:

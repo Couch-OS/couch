@@ -57,24 +57,24 @@ pub mod commands;
 mod shortcuts;
 pub use shortcuts::{Shortcut, ShortcutAction, SHORTCUT_BUTTONS};
 mod app_shortcuts;
-pub use app_shortcuts::{AppShortcut, valid_app_url};
+pub use app_shortcuts::{valid_app_url, AppShortcut};
 pub mod activity_setup;
 pub use activity_setup::{ActivityPage, ActivitySetup, ActivityWidget, SequenceStep};
-mod device;
-mod connection;
 mod appearance;
+mod connection;
+mod device;
 mod remote;
-pub use remote::RemoteSettings;
 pub use appearance::Appearance;
 pub use connection::{Connection, Provider};
+pub use remote::RemoteSettings;
 mod icon;
 mod id;
 mod seed;
 mod validate;
 
 pub use device::{
-    Action, Device, DeviceBluetooth, DeviceIr, DeviceKind, Integration, Transport, ALL_DEVICE_KINDS,
-    ALL_TRANSPORTS,
+    Action, Device, DeviceBluetooth, DeviceIr, DeviceKind, Integration, Transport,
+    ALL_DEVICE_KINDS, ALL_TRANSPORTS,
 };
 mod transport;
 pub use icon::{Icon, ALL_ICONS};
@@ -118,7 +118,10 @@ pub struct Config {
     pub remote: RemoteSettings,
     #[serde(default)]
     pub connections: Vec<Connection>,
-    #[serde(default, skip_serializing_if = "alloc::collections::BTreeMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "alloc::collections::BTreeMap::is_empty"
+    )]
     pub app_shortcuts: alloc::collections::BTreeMap<Id, Vec<AppShortcut>>,
     #[serde(default)]
     pub areas: Vec<Area>,
@@ -345,7 +348,9 @@ impl Config {
         &'a self,
         area: &'a Area,
     ) -> impl Iterator<Item = &'a Activity> + 'a {
-        area.activities.iter().filter_map(move |id| self.activity(id))
+        area.activities
+            .iter()
+            .filter_map(move |id| self.activity(id))
     }
 
     /// The activities that *happen* in an area, whether it lists them or not.
@@ -361,7 +366,6 @@ impl Config {
             .filter(move |act| area.rooms.contains(&act.room))
     }
 
-
     /// Every device in the home, with the room it lives in.
     pub fn devices(&self) -> impl Iterator<Item = (&Room, &Device)> + '_ {
         self.rooms
@@ -376,7 +380,9 @@ impl Config {
     pub fn remove_room(&mut self, id: &RoomId) -> Option<Room> {
         let at = self.rooms.iter().position(|r| &r.id == id)?;
         let room = self.rooms.remove(at);
-        for scene in &mut self.scenes { scene.rooms.retain(|r|r!=id); }
+        for scene in &mut self.scenes {
+            scene.rooms.retain(|r| r != id);
+        }
         for area in &mut self.areas {
             area.rooms.retain(|r| r != id);
         }
@@ -400,7 +406,6 @@ impl Config {
         }
         Some(room)
     }
-
 
     pub fn remove_area(&mut self, id: &AreaId) -> Option<Area> {
         let at = self.areas.iter().position(|a| &a.id == id)?;
@@ -428,7 +433,6 @@ impl Config {
         Some(activity)
     }
 
-
     /// Remove a device from a room, and every scene step and activity that
     /// pointed at it.
     pub fn remove_device(&mut self, room: &RoomId, device: &DeviceId) -> Option<Device> {
@@ -448,7 +452,9 @@ impl Config {
             act.setup.forget_device(device);
             act.steps.retain(|s| &s.device != device);
             for binding in &mut act.buttons {
-                if binding.action.as_ref().is_some_and(|a| &a.device == device) { binding.action = None; }
+                if binding.action.as_ref().is_some_and(|a| &a.device == device) {
+                    binding.action = None;
+                }
             }
             if act.source.as_ref() == Some(device) {
                 act.source = None;
@@ -565,12 +571,15 @@ mod tests {
         assert_eq!(scenes, [5, 3, 3, 4]);
     }
 
-
     #[test]
     fn areas_share_rooms() {
         let cfg = Config::seed();
         let bedroom = Id::new("bedroom");
-        let n = cfg.areas.iter().filter(|a| a.rooms.contains(&bedroom)).count();
+        let n = cfg
+            .areas
+            .iter()
+            .filter(|a| a.rooms.contains(&bedroom))
+            .count();
         assert!(n > 1, "the seed's bedroom belongs to more than one area");
     }
 
@@ -590,7 +599,8 @@ mod tests {
             devices: Vec::new(),
         };
         assert_eq!(room.device_summary(), "0 devices");
-        room.devices.push(Device::new(Id::new("d"), "D", DeviceKind::Light));
+        room.devices
+            .push(Device::new(Id::new("d"), "D", DeviceKind::Light));
         assert_eq!(room.device_summary(), "1 device");
     }
 }

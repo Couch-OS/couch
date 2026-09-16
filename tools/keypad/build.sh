@@ -1,6 +1,6 @@
 #!/bin/sh
 # Static ARM build of keytap with the repository's Zig wrapper toolchain
-# (tools/arm-cc-env.sh); run from the repository root on Ollie or any host
+# (tools/arm-cc-env.sh); run from the repository root on any host
 # with build/toolchains populated by tools/fetch-zig.sh. Output: build/keytap.
 set -eu
 cd "$(dirname "$0")/../.."

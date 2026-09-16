@@ -1,5 +1,5 @@
 //! Scene recall and room-scoped channel navigation; network work stays off the GUI thread.
-use crate::{App};
+use crate::App;
 use couch_model::{Config, Id, Provider};
 use slint::ComponentHandle;
 use std::{
@@ -25,7 +25,7 @@ pub struct Controller {
     until: Option<Instant>,
 }
 fn config() -> Result<std::sync::Arc<Config>, String> {
-    crate::connections::config().ok_or_else(||"Cannot read scenes".into())
+    crate::connections::config().ok_or_else(|| "Cannot read scenes".into())
 }
 
 fn next_scene(ids: &[Id], current: Option<&Id>, delta: i32) -> Option<Id> {
@@ -69,10 +69,13 @@ impl Controller {
                     {
                         return Err("Hue connection was removed".into());
                     }
-                    couch_hue::settings::Settings::load(&crate::connections::file(hue.connection_id.as_str(),"hue"))
-                        .and_then(|s| s.client())
-                        .and_then(|c| c.recall_scene(&hue.scene_id))
-                        .map_err(|e| e.to_string())
+                    couch_hue::settings::Settings::load(&crate::connections::file(
+                        hue.connection_id.as_str(),
+                        "hue",
+                    ))
+                    .and_then(|s| s.client())
+                    .and_then(|c| c.recall_scene(&hue.scene_id))
+                    .map_err(|e| e.to_string())
                 })();
                 let _ = events.send((sequence, result));
             }
@@ -182,11 +185,17 @@ mod tests {
     fn navigation_discards_late_feedback_but_allows_new_scene_feedback() {
         struct Platform;
         impl slint::platform::Platform for Platform {
-            fn duration_since_start(&self) -> Duration { Duration::ZERO }
-            fn create_window_adapter(&self) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
-                Ok(slint::platform::software_renderer::MinimalSoftwareWindow::new(
-                    slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
-                ))
+            fn duration_since_start(&self) -> Duration {
+                Duration::ZERO
+            }
+            fn create_window_adapter(
+                &self,
+            ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+                Ok(
+                    slint::platform::software_renderer::MinimalSoftwareWindow::new(
+                        slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
+                    ),
+                )
             }
         }
         slint::platform::set_platform(Box::new(Platform)).unwrap();

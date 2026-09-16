@@ -97,7 +97,7 @@ the owner's machine instead of redistributing Couch's copy of them.
 `tools/release/official_runtime.py` now implements the offline step:
 
 ```sh
-# Run on Ollie/Linux with Python brotli and debugfs available.
+# Run on Linux with Python brotli and debugfs available.
 python3 tools/release/official_runtime.py /path/to/official-fw.zip \
   /path/to/new-private-vendor-directory
 ```
@@ -114,10 +114,10 @@ to the new directory only after all file hashes and inventory checks pass.
 Output uses the existing private-vendor bundle format and works with
 `prepare_private_rootfs.py`; `private_only` stays true, `installable` stays
 false, and `redistribution_authorized` stays false. The real pinned ZIP produced
-all 33 matching files on Ollie. Unit tests cover range overlap/bounds, forbidden
+all 33 matching files on the dedicated Linux host. Unit tests cover range overlap/bounds, forbidden
 commands, stash rejection, ZIP member hashes/symlinks, truncation/expansion,
 wrong archive hashes and existing-output refusal. Real Brotli tests run on
-Ollie where that dependency is installed.
+the host where that dependency is installed.
 
 Download/bootstrap UX, independent model recognition, fresh-device identity
 reporting, approved loader delivery, complete corresponding-source notices,

@@ -3,8 +3,7 @@ use super::Reply;
 use couch_webos::{settings::Settings, Client};
 use serde::Deserialize;
 use serde_json::json;
-use std::{net::IpAddr,path::PathBuf};
-
+use std::{net::IpAddr, path::PathBuf};
 
 #[derive(Deserialize)]
 struct Setup {
@@ -32,11 +31,15 @@ pub(super) fn route(method: &str, path: &[&str], body: &[u8]) -> Reply {
         std::env::var("COUCH_WEBOS_CONNECTION")
             .unwrap_or_else(|_| "/opt/couch/webos-connection.json".into()),
     );
-    route_at(method,path,body,file)
+    route_at(method, path, body, file)
 }
-pub(super) fn route_at(method: &str,path:&[&str],body:&[u8],file:PathBuf)->Reply {
-    if let Some(parent)=file.parent(){if std::fs::create_dir_all(parent).is_err(){return Reply::error(500,"Cannot create private connection directory");}}
-    let connection_lock=super::connections::lock_for(&file);
+pub(super) fn route_at(method: &str, path: &[&str], body: &[u8], file: PathBuf) -> Reply {
+    if let Some(parent) = file.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return Reply::error(500, "Cannot create private connection directory");
+        }
+    }
+    let connection_lock = super::connections::lock_for(&file);
     let Ok(_guard) = connection_lock.try_lock() else {
         return Reply::error(
             409,
@@ -45,17 +48,26 @@ pub(super) fn route_at(method: &str,path:&[&str],body:&[u8],file:PathBuf)->Reply
     };
 
     if path == ["power"] {
-        let settings = match Settings::load(&file) { Ok(s) => s, Err(_) => return Reply::error(400,"Pair this LG TV first") };
+        let settings = match Settings::load(&file) {
+            Ok(s) => s,
+            Err(_) => return Reply::error(400, "Pair this LG TV first"),
+        };
         return match method {
-            "GET" => match couch_webos::power::PowerSettings::load(&file,&settings.url) {
-                Ok(power) => Reply::json(200,&json!({"method":power.method,"codeset":power.codeset,"blaster_available":std::path::Path::new("/dev/irtx").exists()})),
-                Err(e) => Reply::error(500,e),
+            "GET" => match couch_webos::power::PowerSettings::load(&file, &settings.url) {
+                Ok(power) => Reply::json(
+                    200,
+                    &json!({"method":power.method,"codeset":power.codeset,"blaster_available":std::path::Path::new("/dev/irtx").exists()}),
+                ),
+                Err(e) => Reply::error(500, e),
             },
             "PUT" => match serde_json::from_slice::<couch_webos::power::PowerSettings>(body) {
-                Ok(power) => match power.save(&file,&settings.url) { Ok(()) => Reply::json(200,&json!({"saved":true})), Err(e) => Reply::error(400,e) },
-                Err(_) => Reply::error(400,"Invalid TV power settings"),
+                Ok(power) => match power.save(&file, &settings.url) {
+                    Ok(()) => Reply::json(200, &json!({"saved":true})),
+                    Err(e) => Reply::error(400, e),
+                },
+                Err(_) => Reply::error(400, "Invalid TV power settings"),
             },
-            _ => Reply::error(405,"Use GET or PUT for power settings"),
+            _ => Reply::error(405, "Use GET or PUT for power settings"),
         };
     }
     if method == "GET" && path == ["connection"] {
@@ -185,17 +197,56 @@ mod tests {
     }
     #[test]
     fn power_preferences_save_without_contacting_tv_or_exposing_credentials() {
-        let root=std::env::temp_dir().join(format!("couch-webos-power-api-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::create_dir(&root).unwrap(); let file=root.join("webos-connection.json");
-        Settings {url:"ws://192.0.2.1:3000/".into(),client_key:"private-test-key".into(),certificate:vec![]}.save(&file).unwrap();
-        let get=route_at("GET",&["power"],b"",file.clone());
-        assert_eq!(get.status,200);
-        let body:serde_json::Value=serde_json::from_slice(&get.body).unwrap();
-        assert_eq!(body["method"],"ir");
-        assert!(!String::from_utf8(get.body).unwrap().contains("private-test-key"));
-        assert_eq!(route_at("PUT",&["power"],br#"{"method":"network","codeset":""}"#,file.clone()).status,200);
-        assert_eq!(route_at("PUT",&["power"],br#"{"method":"ir","codeset":"power unknown 4 8"}"#,file.clone()).status,400);
-        assert_eq!(couch_webos::power::PowerSettings::load(&file,"ws://192.0.2.1:3000/").unwrap().method,couch_webos::power::Method::Network);
+        let root = std::env::temp_dir().join(format!(
+            "couch-webos-power-api-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let file = root.join("webos-connection.json");
+        Settings {
+            url: "ws://192.0.2.1:3000/".into(),
+            client_key: "private-test-key".into(),
+            certificate: vec![],
+        }
+        .save(&file)
+        .unwrap();
+        let get = route_at("GET", &["power"], b"", file.clone());
+        assert_eq!(get.status, 200);
+        let body: serde_json::Value = serde_json::from_slice(&get.body).unwrap();
+        assert_eq!(body["method"], "ir");
+        assert!(!String::from_utf8(get.body)
+            .unwrap()
+            .contains("private-test-key"));
+        assert_eq!(
+            route_at(
+                "PUT",
+                &["power"],
+                br#"{"method":"network","codeset":""}"#,
+                file.clone()
+            )
+            .status,
+            200
+        );
+        assert_eq!(
+            route_at(
+                "PUT",
+                &["power"],
+                br#"{"method":"ir","codeset":"power unknown 4 8"}"#,
+                file.clone()
+            )
+            .status,
+            400
+        );
+        assert_eq!(
+            couch_webos::power::PowerSettings::load(&file, "ws://192.0.2.1:3000/")
+                .unwrap()
+                .method,
+            couch_webos::power::Method::Network
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

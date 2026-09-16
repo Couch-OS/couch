@@ -13,29 +13,16 @@ README = 'curl -fsSL https://github.com/dangerouslaser/couch/releases/download/%
 INSTALLER = ('Release `%s` is published as a prerelease, reported working by a tester on the\n'
              '.128.dev test build.\n'
              '  https://github.com/dangerouslaser/couch/releases/download/%s/install.ps1\n')
-SITE = ('  "softwareVersion": "%s",\n'
-        '<div class="command-box"><code>curl -fsSL https://github.com/dangerouslaser/couch/'
-        'releases/download/%s/install.sh | sh</code><button class="copy" type="button"'
-        ' data-copy="curl -fsSL https://github.com/dangerouslaser/couch/releases/download/%s'
-        '/install.sh | sh">Copy</button></div>\n')
-
-
-def site(tag):
-    return SITE % (tag[1:], tag, tag)
-
-
 class ReleaseLiterals(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         (self.root / 'docs').mkdir()
-        (self.root / 'site').mkdir()
         (self.root / 'tools/release').mkdir(parents=True)
         self.write(release.SOURCE, OLD + '\n')
         self.write('README.md', README % OLD)
         self.write('docs/installer.md', INSTALLER % (OLD, OLD))
-        self.write('site/index.html', site(OLD))
 
     def write(self, name, text):
         (self.root / name).write_text(text, encoding='utf-8')
@@ -47,15 +34,11 @@ class ReleaseLiterals(unittest.TestCase):
         # The regression this tool exists for: a hand-edited tag somewhere.
         self.assertEqual(release.check(), [])
 
-    def test_bump_rewrites_visible_and_data_copy_literals(self):
+    def test_bump_rewrites_release_commands(self):
         changed = release.bump(NEW, self.root)
-        self.assertEqual(changed, [release.SOURCE, 'README.md', 'docs/installer.md', 'site/index.html'])
+        self.assertEqual(changed, [release.SOURCE, 'README.md', 'docs/installer.md'])
         self.assertEqual(self.read(release.SOURCE), NEW + '\n')
         self.assertEqual(self.read('README.md'), README % NEW)
-        self.assertEqual(self.read('site/index.html'), site(NEW))
-        page = self.read('site/index.html')
-        self.assertEqual(page.count(NEW), 2)
-        self.assertEqual(page.count('"' + NEW[1:] + '"'), 1)
         # A historical build mentioned in prose is not an install command.
         self.assertIn('.128.dev test build', self.read('docs/installer.md'))
         self.assertEqual(release.check(self.root, scan=False), [])
@@ -63,15 +46,12 @@ class ReleaseLiterals(unittest.TestCase):
 
     def test_check_names_every_file_that_disagrees(self):
         release.bump(NEW, self.root)
-        self.write('site/index.html', site(NEW).replace('data-copy="curl -fsSL https://github.com/'
-                                                        'dangerouslaser/couch/releases/download/' + NEW,
-                                                        'data-copy="curl -fsSL https://github.com/'
-                                                        'dangerouslaser/couch/releases/download/' + OLD))
+        self.write('docs/installer.md', INSTALLER % (NEW, OLD))
         self.write('README.md', 'curl -fsSL https://example.invalid/install.sh | sh\n')
         problems = release.check(self.root, scan=False)
         self.assertEqual(len(problems), 2)
         self.assertIn('README.md: no release tag left', problems[0])
-        self.assertTrue(problems[1].startswith('site/index.html:2: ' + OLD + ' is not the published ' + NEW),
+        self.assertTrue(problems[1].startswith('docs/installer.md:3: ' + OLD + ' is not the published ' + NEW),
                         problems[1])
 
     def test_a_new_tracked_file_carrying_the_tag_is_reported(self):
@@ -81,7 +61,7 @@ class ReleaseLiterals(unittest.TestCase):
         except (OSError, subprocess.SubprocessError):
             self.skipTest('git is not available')
         self.write('docs/quickstart.md', README % OLD)
-        subprocess.run(['git', '-C', str(self.root), 'add', 'README.md', 'docs', 'site', 'tools'],
+        subprocess.run(['git', '-C', str(self.root), 'add', 'README.md', 'docs', 'tools'],
                        check=True, timeout=60)
         self.assertEqual(release.strays(self.root, OLD), ['docs/quickstart.md'])
         problems = release.check(self.root)

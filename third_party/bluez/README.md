@@ -71,7 +71,7 @@ offered to linux-bluetooth@vger.kernel.org once it has run for a while.
 third_party/bluez/build.sh OUTDIR
 ```
 
-On a Linux host with docker and linux/arm/v7 emulation (Ollie). The script
+On a Linux host with docker and linux/arm/v7 emulation. The script
 pins the upstream tarball (SHA-256), the aports commit (the recipe's patches
 checked against its SHA-512 sums), the `alpine:3.21` arm/v7 image digest and
 the versions of glib, dbus, eudev, musl, gcc and binutils; it applies the

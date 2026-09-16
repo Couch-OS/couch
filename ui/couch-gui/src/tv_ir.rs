@@ -126,7 +126,11 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         if !current() {
             return Ok(None);
         }
-        if bluetooth { "Key sent over Bluetooth · No device feedback" } else { "IR command sent · No device feedback" }
+        if bluetooth {
+            "Key sent over Bluetooth · No device feedback"
+        } else {
+            "IR command sent · No device feedback"
+        }
     } else if bluetooth {
         "Bluetooth · No device feedback"
     } else {
@@ -136,7 +140,12 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         generation: work.generation,
         status: Ok(status.into()),
         details: Some(Details {
-            source: if bluetooth { "Bluetooth controls" } else { "Infrared controls" }.into(),
+            source: if bluetooth {
+                "Bluetooth controls"
+            } else {
+                "Infrared controls"
+            }
+            .into(),
             choices,
             ..Details::default()
         }),

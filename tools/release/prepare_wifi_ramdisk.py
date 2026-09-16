@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a private RAM-only WiFi bootstrap on Ollie; never access hardware."""
+"""Build a private RAM-only WiFi bootstrap; never access hardware."""
 import argparse
 import gzip
 import hashlib

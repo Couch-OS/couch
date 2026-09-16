@@ -1,6 +1,6 @@
 # Raw userdata image preparation
 
-`tools/release/prepare_ext4.py` builds a **noninstallable raw ext4 file**, using packaged clean staging and a separate verified x86_64 filesystem-tool cache. Run it on Ollie. It does not open a device, mount a loop device, extract a rootfs onto the host, or change host tools/kernel settings.
+`tools/release/prepare_ext4.py` builds a **noninstallable raw ext4 file**, using packaged clean staging and a separate verified x86_64 filesystem-tool cache. Run it on a dedicated Linux build host. It does not open a device, mount a loop device, extract a rootfs onto the host, or change host tools/kernel settings.
 
 ```sh
 python3 tools/release/package_closure.py prepare build/image-tools \

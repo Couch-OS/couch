@@ -31,7 +31,8 @@ original files remain available for rollback. See [connection storage](connectio
 
 ```sh
 (cd clients && cargo test -p couch-webos)
-couch-webos pair wss://192.168.1.176:3001/ /private/path/tv.json
+TV_IP=tv.local
+couch-webos pair "wss://$TV_IP:3001/" /private/path/tv.json
 couch-webos /private/path/tv.json status
 couch-webos /private/path/tv.json watch
 ```
@@ -86,7 +87,7 @@ reported as successful merely because the packet was sent.
 The browser controls reconnect per operation. The library also supports
 interleaved push subscriptions.
 
-Validated against the physical TV at 192.168.1.176: encrypted pairing,
+Validated against a physical TV: encrypted pairing,
 status, inputs, apps, subscriptions, and unchanged-volume command; the ARM
 client also reads status from the remote. Browser checks cover adopting a
 saved pairing and adding the TV to a room. Unit tests cover request/event
@@ -137,7 +138,8 @@ who need the existing network behavior must explicitly select Network.
 Still required for hardware validation:
 1. Enable/validate the HA100 MediaTek PWM IR driver and board resources. The current runtime
    has `CONFIG_MTK_PWM=y` and a bound PWM controller, but both IRTX options are
-   disabled and `/dev/irtx` is absent. All kernel builds belong on **Ollie**.
+   disabled and `/dev/irtx` is absent. Kernel builds belong on a dedicated
+   Linux build host.
 2. Confirm carrier and actual LED transmission, then test with the TV in line of
    sight. Encoder and dispatch unit tests do not prove emitted light.
 3. Validate the TV's codes. LG documents NEC address `0x04`, toggle `0x08`, and

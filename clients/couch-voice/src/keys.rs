@@ -64,9 +64,7 @@ impl Keypad {
                 for chunk in buf[..n - n % EVENT_SIZE].chunks_exact(EVENT_SIZE) {
                     let kind = u16::from_le_bytes([chunk[8], chunk[9]]);
                     let code = u16::from_le_bytes([chunk[10], chunk[11]]);
-                    let value = i32::from_le_bytes([
-                        chunk[12], chunk[13], chunk[14], chunk[15],
-                    ]);
+                    let value = i32::from_le_bytes([chunk[12], chunk[13], chunk[14], chunk[15]]);
                     if kind == EV_KEY && value == 1 {
                         return Some(code);
                     }

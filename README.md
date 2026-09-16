@@ -6,7 +6,7 @@ Couch brings your TVs, media players, speakers and smart-home devices together
 on a dedicated remote. Use its physical buttons and touchscreen for everyday
 control, and configure your setup from a browser.
 
-[Project site](https://dangerouslaser.github.io/couch/) ·
+[Project site](https://couch-os.dev/) ·
 [Kernel source](https://github.com/dangerouslaser/couch-kernel) ·
 [Discord](https://discord.gg/KnZK6SZQhF)
 
@@ -26,7 +26,7 @@ carried by Wi-Fi. Start Android on the HA100, enable USB debugging, connect the
 remote, then run the pinned installer for the current prerelease in a terminal:
 
 ```sh
-curl -fsSL https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260916.168/install.sh | sh
+curl -fsSL https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260916.169/install.sh | sh
 ```
 
 Windows users run `install.ps1` from the same release in PowerShell. The script

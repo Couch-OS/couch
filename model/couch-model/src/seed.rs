@@ -14,7 +14,6 @@
 //! One place it deliberately does not match: the GUI gives Study an empty
 //! `detail` despite two devices, which was mock noise rather than a rule.
 
-
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -29,7 +28,12 @@ fn dev(id: &str, name: &str, kind: DeviceKind) -> Device {
 }
 
 fn room(id: &str, name: &str, icon: Icon, devices: Vec<Device>) -> Room {
-    Room { id: Id::new(id), name: name.to_string(), icon: Some(icon), devices }
+    Room {
+        id: Id::new(id),
+        name: name.to_string(),
+        icon: Some(icon),
+        devices,
+    }
 }
 
 fn area(id: &str, name: &str, rooms: &[&str], scenes: &[&str], activities: &[&str]) -> Area {
@@ -44,9 +48,15 @@ fn area(id: &str, name: &str, rooms: &[&str], scenes: &[&str], activities: &[&st
     }
 }
 
-
 fn scene(id: &str, name: &str, steps: Vec<Action>) -> Scene {
-    Scene { id: Id::new(id), name: name.to_string(), icon: None, steps, hue: None, rooms: Vec::new() }
+    Scene {
+        id: Id::new(id),
+        name: name.to_string(),
+        icon: None,
+        steps,
+        hue: None,
+        rooms: Vec::new(),
+    }
 }
 
 pub(crate) fn seed() -> Config {
@@ -57,13 +67,19 @@ pub(crate) fn seed() -> Config {
             Icon::Sofa,
             vec![
                 dev("living-kodi", "Kodi", DeviceKind::MediaPlayer).with_integration(
-                    Integration::Kodi { host: "kodi.local".to_string(), port: 9090 },
+                    Integration::Kodi {
+                        host: "kodi.local".to_string(),
+                        port: 9090,
+                    },
                 ),
                 dev("living-hue", "Hue", DeviceKind::Light).with_integration(
-                    Integration::HomeAssistant { entity_id: "light.living_room".to_string() },
+                    Integration::HomeAssistant {
+                        entity_id: "light.living_room".to_string(),
+                    },
                 ),
-                dev("living-tv", "LG C3", DeviceKind::Tv)
-                    .with_integration(Integration::Ir { codeset: "lg-tv".to_string() }),
+                dev("living-tv", "LG C3", DeviceKind::Tv).with_integration(Integration::Ir {
+                    codeset: "lg-tv".to_string(),
+                }),
                 dev("living-soundbar", "Soundbar", DeviceKind::Speaker),
                 dev("living-lamp", "Corner lamp", DeviceKind::Light),
             ],
@@ -74,7 +90,9 @@ pub(crate) fn seed() -> Config {
             Icon::CookingPot,
             vec![
                 dev("kitchen-sonos", "Sonos Move", DeviceKind::Speaker).with_integration(
-                    Integration::HomeAssistant { entity_id: "media_player.kitchen".to_string() },
+                    Integration::HomeAssistant {
+                        entity_id: "media_player.kitchen".to_string(),
+                    },
                 ),
                 dev("kitchen-hue", "Hue", DeviceKind::Light),
             ],
@@ -168,7 +186,11 @@ pub(crate) fn seed() -> Config {
                 Action::new(Id::new("bedroom-hue"), "off"),
             ],
         ),
-        scene("dinner", "Dinner", vec![Action::new(Id::new("kitchen-hue"), "on")]),
+        scene(
+            "dinner",
+            "Dinner",
+            vec![Action::new(Id::new("kitchen-hue"), "on")],
+        ),
         scene(
             "all-off",
             "All off",
@@ -180,23 +202,47 @@ pub(crate) fn seed() -> Config {
                 Action::new(Id::new("study-hue"), "off"),
             ],
         ),
-        scene("bedtime", "Bedtime", vec![Action::new(Id::new("bedroom-hue"), "off")]),
-        scene("wake-up", "Wake up", vec![Action::new(Id::new("bedroom-blind"), "on")]),
-        scene("upstairs-off", "Upstairs off", vec![Action::new(Id::new("bedroom-hue"), "off")]),
-        scene("cooking", "Cooking", vec![Action::new(Id::new("kitchen-hue"), "on")]),
+        scene(
+            "bedtime",
+            "Bedtime",
+            vec![Action::new(Id::new("bedroom-hue"), "off")],
+        ),
+        scene(
+            "wake-up",
+            "Wake up",
+            vec![Action::new(Id::new("bedroom-blind"), "on")],
+        ),
+        scene(
+            "upstairs-off",
+            "Upstairs off",
+            vec![Action::new(Id::new("bedroom-hue"), "off")],
+        ),
+        scene(
+            "cooking",
+            "Cooking",
+            vec![Action::new(Id::new("kitchen-hue"), "on")],
+        ),
         scene(
             "downstairs-off",
             "Downstairs off",
             vec![Action::new(Id::new("living-hue"), "off")],
         ),
-        scene("evening", "Evening", vec![Action::new(Id::new("garden-hue"), "on")]),
+        scene(
+            "evening",
+            "Evening",
+            vec![Action::new(Id::new("garden-hue"), "on")],
+        ),
         scene(
             "security-on",
             "Security on",
             vec![Action::new(Id::new("garden-cam-front"), "on")],
         ),
         scene("watering", "Watering", vec![]),
-        scene("outside-off", "Outside off", vec![Action::new(Id::new("garden-hue"), "off")]),
+        scene(
+            "outside-off",
+            "Outside off",
+            vec![Action::new(Id::new("garden-hue"), "off")],
+        ),
     ];
 
     let activities = vec![
@@ -207,7 +253,7 @@ pub(crate) fn seed() -> Config {
             kind: ActivityKind::Video,
             room: Id::new("living-room"),
             source: Some(Id::new("living-kodi")),
-                buttons: Vec::new(),
+            buttons: Vec::new(),
             steps: vec![
                 Action::new(Id::new("living-tv"), "on"),
                 Action::new(Id::new("living-tv"), "input:hdmi2"),
@@ -221,7 +267,7 @@ pub(crate) fn seed() -> Config {
             kind: ActivityKind::Audio,
             room: Id::new("kitchen"),
             source: Some(Id::new("kitchen-sonos")),
-                buttons: Vec::new(),
+            buttons: Vec::new(),
             steps: vec![Action::new(Id::new("kitchen-sonos"), "play")],
         },
         Activity {
@@ -231,7 +277,7 @@ pub(crate) fn seed() -> Config {
             kind: ActivityKind::Audio,
             room: Id::new("study"),
             source: Some(Id::new("study-sonos")),
-                buttons: Vec::new(),
+            buttons: Vec::new(),
             steps: vec![Action::new(Id::new("study-sonos"), "play")],
         },
         Activity {
@@ -241,7 +287,7 @@ pub(crate) fn seed() -> Config {
             kind: ActivityKind::Audio,
             room: Id::new("bedroom"),
             source: Some(Id::new("bedroom-sonos")),
-                buttons: Vec::new(),
+            buttons: Vec::new(),
             steps: vec![Action::new(Id::new("bedroom-sonos"), "play")],
         },
         Activity {
@@ -251,7 +297,7 @@ pub(crate) fn seed() -> Config {
             kind: ActivityKind::Video,
             room: Id::new("hallway"),
             source: Some(Id::new("hallway-cam")),
-                buttons: Vec::new(),
+            buttons: Vec::new(),
             steps: vec![],
         },
         // The mock's DOWNSTAIRS strip has three things running in the living
@@ -264,7 +310,7 @@ pub(crate) fn seed() -> Config {
             kind: ActivityKind::Audio,
             room: Id::new("living-room"),
             source: Some(Id::new("living-soundbar")),
-                buttons: Vec::new(),
+            buttons: Vec::new(),
             steps: vec![Action::new(Id::new("living-soundbar"), "on")],
         },
         Activity {
@@ -274,14 +320,13 @@ pub(crate) fn seed() -> Config {
             kind: ActivityKind::Video,
             room: Id::new("living-room"),
             source: Some(Id::new("living-tv")),
-                buttons: Vec::new(),
+            buttons: Vec::new(),
             steps: vec![
                 Action::new(Id::new("living-tv"), "on"),
                 Action::new(Id::new("living-tv"), "input:hdmi1"),
             ],
         },
     ];
-
 
     // The strips read as the mock-up's do: WHOLE HOME is a digest of the house
     // rather than everything in it, DOWNSTAIRS is the busy page, and OUTSIDE
@@ -323,6 +368,16 @@ pub(crate) fn seed() -> Config {
         ),
     ];
 
-
-    Config { schema_version: SCHEMA_VERSION, revision: 0, appearance: crate::Appearance::default(), remote: crate::RemoteSettings::default(), connections: Vec::new(), app_shortcuts: Default::default(), areas, rooms, scenes, activities }
+    Config {
+        schema_version: SCHEMA_VERSION,
+        revision: 0,
+        appearance: crate::Appearance::default(),
+        remote: crate::RemoteSettings::default(),
+        connections: Vec::new(),
+        app_shortcuts: Default::default(),
+        areas,
+        rooms,
+        scenes,
+        activities,
+    }
 }

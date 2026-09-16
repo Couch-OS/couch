@@ -31,5 +31,6 @@ cache. Media identity and navigation generations discard stale replies.
 
 Validation: Kodi protocol unit tests, GUI tests, ARM release build, and a
 physical-device fixture covering playback, artwork, pause, chapter selection,
-volume, Back, and launch from room and area activities. The user's CoreELEC player at 192.168.1.209 answers TCP and HTTP ping; physical
-input routing is also covered by the on-device authenticated Kodi fixture.
+volume, Back, and launch from room and area activities. A physical CoreELEC
+player answers TCP and HTTP ping; physical input routing is also covered by the
+on-device authenticated Kodi fixture.

@@ -2,7 +2,7 @@
 #
 # amd64 because the AOSP arm-eabi-4.9 prebuilt (the toolchain config-stock.txt
 # names via CROSS_COMPILE="arm-eabi-") is an x86_64 Linux binary.
-# Build and run this container on Ollie, the native Linux build server.
+# Build and run this container on any amd64 Linux builder with Docker access.
 #
 # ubuntu:20.04 because MediaTek's DrvGen.py - the DCT code generator the ALPS
 # Makefiles run to produce the cust GPIO/EINT headers - is Python 2, which

@@ -15,16 +15,16 @@
 //! Each screen declares its own and [`provide_editor_state`] creates it at the
 //! root, so it also survives leaving a screen and coming back to it.
 
-pub mod updates;
 pub mod activities;
 mod activity_buttons;
-mod area_shortcuts;
 mod activity_sequences;
+mod area_shortcuts;
 pub mod areas;
 mod home_assistant;
 pub mod overview;
 pub mod rooms;
 pub mod scenes;
+pub mod updates;
 
 use couch_model::{Config, Id};
 use leptos::prelude::*;
@@ -386,8 +386,8 @@ mod device_picker;
 
 mod appearance;
 
-mod webos;
 mod tizen;
+mod webos;
 
 mod kodi;
 
@@ -398,12 +398,12 @@ mod activity_pages;
 
 mod streaming_tv;
 
-mod infrared;
 mod bluetooth;
+mod infrared;
 
 mod device_commands;
 
-mod sonos;
 mod coreelec;
-mod protect;
 mod matter;
+mod protect;
+mod sonos;
