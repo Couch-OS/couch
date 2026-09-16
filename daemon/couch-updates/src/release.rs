@@ -149,17 +149,10 @@ pub(crate) fn verify(bytes: &[u8], key: &[u8], expected: &str) -> Result<Manifes
     }
     Ok(m)
 }
-/// What one check found: a newer runtime on the channel, and the boot payload
-/// published with the installed version, if there is one. The boot payload is
-/// only ever the installed release's own: the updater that understands it is
-/// the one that runtime shipped, so the runtime always goes first.
+/// A newer runtime and its matching boot payload, or the installed release's
+/// boot payload when completing an update made by an older updater.
 pub(crate) struct Offers {
     pub runtime: Option<Manifest>,
-    /// Whether the release the runtime offer comes from also publishes a boot
-    /// payload. Read from the asset listing that is already in hand, so the
-    /// remote can say "step 1 of 2" before the first step is even installed,
-    /// without a second request.
-    pub runtime_has_boot: bool,
     pub boot: Option<Manifest>,
 }
 /// A signed manifest asset on a release, as the listing describes it.
@@ -213,6 +206,33 @@ pub(crate) fn discover(channel: Channel, installed: &str, key_path: &Path) -> Re
     let bytes = fetch(API, 4 * 1024 * 1024)?;
     let releases: Vec<serde_json::Value> =
         serde_json::from_slice(&bytes).map_err(|_| "Invalid release listing")?;
+    let (runtime, boot) = select_listed(releases, channel, installed)?;
+    if runtime.is_none() && boot.is_none() {
+        return Ok(Offers {
+            runtime: None,
+            boot: None,
+        });
+    }
+    let key = std::fs::read_to_string(key_path)
+        .map_err(|_| "This build has no update signing key configured")?;
+    let key = decode_hex(key.trim())?;
+    let runtime = runtime
+        .map(|item| fetch_manifest(&item, &key))
+        .transpose()?;
+    let boot = boot.map(|item| fetch_manifest(&item, &key)).transpose()?;
+    if runtime.as_ref().is_some_and(|m| m.kind != "runtime")
+        || boot.as_ref().is_some_and(|m| m.kind != "boot")
+    {
+        return Err("Release manifest has the wrong payload type".into());
+    }
+    Ok(Offers { runtime, boot })
+}
+
+fn select_listed(
+    releases: Vec<serde_json::Value>,
+    channel: Channel,
+    installed: &str,
+) -> Result<(Option<Listed>, Option<Listed>)> {
     let current = version(installed);
     let mut candidates = Vec::new();
     let mut boot = None;
@@ -228,7 +248,7 @@ pub(crate) fn discover(channel: Channel, installed: &str, key_path: &Path) -> Re
             continue;
         }
         if tag == installed {
-            boot = listed(&release, tag, &format!("couch-{tag}-ha100-boot.json"))?;
+            boot = Some(release.clone());
             continue;
         }
         if current.as_ref().is_some_and(|c| v <= *c) {
@@ -238,46 +258,85 @@ pub(crate) fn discover(channel: Channel, installed: &str, key_path: &Path) -> Re
             continue;
         }
         if let Some(item) = listed(&release, tag, &format!("couch-{tag}-ha100-update.json"))? {
-            let name = format!("couch-{tag}-ha100-boot.json");
-            let pair = release["assets"]
-                .as_array()
-                .is_some_and(|assets| assets.iter().any(|asset| asset["name"] == name));
-            candidates.push((v, item, pair));
+            candidates.push((v, item, release.clone()));
         }
     }
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
-    let (runtime, runtime_has_boot) = match candidates.into_iter().next() {
-        Some((_, item, pair)) => (Some(item), pair),
-        None => (None, false),
+    let runtime = match candidates.into_iter().next() {
+        Some((_, item, selected)) => {
+            boot = Some(selected);
+            Some(item)
+        }
+        None => None,
     };
-    if runtime.is_none() && boot.is_none() {
-        return Ok(Offers {
-            runtime: None,
-            runtime_has_boot: false,
-            boot: None,
-        });
-    }
-    let key = std::fs::read_to_string(key_path)
-        .map_err(|_| "This build has no update signing key configured")?;
-    let key = decode_hex(key.trim())?;
-    let runtime = runtime
-        .map(|item| fetch_manifest(&item, &key))
-        .transpose()?;
     let boot = boot
-        .map(|item| fetch_manifest(&item, &key))
+        .map(|selected| -> Result<Option<Listed>> {
+            let tag = selected["tag_name"].as_str().ok_or("Invalid release tag")?;
+            let name = format!("couch-{tag}-ha100-boot.json");
+            let has_boot = selected["assets"]
+                .as_array()
+                .is_some_and(|assets| assets.iter().any(|asset| asset["name"] == name));
+            let paired = listed(&selected, tag, &name)?;
+            if has_boot && paired.is_none() {
+                return Err("The release's boot manifest has no usable asset digest".into());
+            }
+            Ok(paired)
+        })
         .transpose()?
-        .filter(|m| m.kind == "boot");
-    Ok(Offers {
-        runtime,
-        runtime_has_boot,
-        boot,
-    })
+        .flatten();
+    Ok((runtime, boot))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::Signer;
+    fn listing(tag: &str, boot: bool) -> serde_json::Value {
+        let mut assets = Vec::new();
+        for kind in if boot {
+            vec!["update", "boot"]
+        } else {
+            vec!["update"]
+        } {
+            let name = format!("couch-{tag}-ha100-{kind}.json");
+            assets.push(serde_json::json!({"name":name,
+                "browser_download_url":format!("{PREFIX}{tag}/{name}"),
+                "size":512,"digest":format!("sha256:{}", "a".repeat(64))}));
+        }
+        serde_json::json!({"tag_name":tag,"draft":false,"prerelease":false,"assets":assets})
+    }
+    #[test]
+    fn discovery_pairs_the_newest_runtime_with_its_own_boot_manifest() {
+        let releases = vec![listing("v1.2.3", true), listing("v1.2.4", true)];
+        let (runtime, boot) = select_listed(releases, Channel::Stable, "v1.2.3").unwrap();
+        assert_eq!(runtime.unwrap().tag, "v1.2.4");
+        assert_eq!(boot.unwrap().tag, "v1.2.4");
+        let (runtime, boot) =
+            select_listed(vec![listing("v1.2.3", true)], Channel::Stable, "v1.2.3").unwrap();
+        assert!(runtime.is_none());
+        assert_eq!(boot.unwrap().tag, "v1.2.3");
+    }
+    #[test]
+    fn discovery_does_not_attach_an_older_boot_payload_to_a_runtime_only_release() {
+        let releases = vec![listing("v1.2.3", true), listing("v1.2.4", false)];
+        let (runtime, boot) = select_listed(releases, Channel::Stable, "v1.2.3").unwrap();
+        assert_eq!(runtime.unwrap().tag, "v1.2.4");
+        assert!(boot.is_none());
+    }
+    #[test]
+    fn an_unverifiable_boot_companion_blocks_only_the_selected_release() {
+        let mut broken = listing("v1.2.4", true);
+        broken["assets"][1]["digest"] = serde_json::Value::Null;
+        assert!(select_listed(vec![broken.clone()], Channel::Stable, "v1.2.3").is_err());
+        let (runtime, boot) = select_listed(
+            vec![broken, listing("v1.2.5", true)],
+            Channel::Stable,
+            "v1.2.3",
+        )
+        .unwrap();
+        assert_eq!(runtime.unwrap().tag, "v1.2.5");
+        assert_eq!(boot.unwrap().tag, "v1.2.5");
+    }
     #[test]
     fn a_release_without_an_asset_digest_is_skipped_not_an_error() {
         let tag = "v0.1.0-alpha.20260914.9";

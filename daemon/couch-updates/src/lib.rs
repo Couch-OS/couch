@@ -4,6 +4,7 @@ mod baseline;
 pub mod boot;
 mod release;
 mod staging;
+mod transaction;
 pub use release::{Channel, Manifest, SignedManifest};
 use serde::{Deserialize, Serialize};
 pub use staging::collect;
@@ -19,8 +20,7 @@ pub struct Status {
     pub installed: String,
     pub channel: Channel,
     pub available: Option<String>,
-    /// What `available` (or the staged update) is: `runtime` for application
-    /// slots, `boot` for a kernel and boot ramdisk written to the boot partition.
+    /// `runtime`, `boot` (legacy completion), or `combined` for both payloads.
     #[serde(default)]
     pub kind: String,
     pub notes: String,
@@ -48,23 +48,17 @@ pub struct Status {
     /// That release is older than the installed software.
     #[serde(default)]
     pub boot_behind: bool,
-    /// The second step of a two-step update is still to do: its boot payload
-    /// is on offer, or the runtime was installed from a release that
-    /// publishes one and the partition does not carry it yet. Known without a
-    /// check, so a remote left half-updated says so even offline.
+    /// A legacy update still needs its boot payload checked or installed.
     #[serde(default)]
     pub boot_pending: bool,
-    /// How many steps the offer on the table belongs to: 2 for a release that
-    /// publishes both the software and a boot image, 1 for software alone, 0
-    /// when nothing is offered. With `kind` it says which step this is.
+    /// Number of install/restart actions: one for any offer, zero without one.
     #[serde(default)]
     pub steps: u8,
-    /// One sentence naming the update in progress and the step on offer, so
-    /// the remote's Updates panel and the web UI tell the same story.
+    /// Shared guidance for the remote and web UI.
     #[serde(default)]
     pub guidance: String,
 }
-/// Where step 1 leaves its note that step 2 is still to come.
+/// A legacy updater left this note for a boot payload still to be checked.
 const PENDING: &str = "updates/pending-boot.json";
 
 /// A prerelease tag rendered for one line of a small screen: `.165` says
@@ -131,11 +125,10 @@ fn expects_boot(root: &std::path::Path, installed: &str, boot_release: &str) -> 
 /// steps the offer on the table belongs to, where the boot partition stands
 /// against the installed software, and the sentence that names the journey.
 fn explain(status: &mut Status, pair: bool, expects_boot: bool) {
-    status.steps = match (&status.available, pair) {
-        (Some(_), true) => 2,
-        (Some(_), false) => 1,
-        (None, _) => 0,
-    };
+    status.steps = u8::from(status.available.is_some());
+    if pair && status.kind == "runtime" {
+        status.kind = "combined".into();
+    }
     status.boot_behind = behind(&status.boot_release, &status.installed);
     status.boot_pending = expects_boot || (status.kind == "boot" && status.available.is_some());
     status.guidance = guidance(status);
@@ -145,54 +138,25 @@ fn explain(status: &mut Status, pair: bool, expects_boot: bool) {
 /// boot ramdisk, and silent when there is nothing to explain: a release that
 /// ships software alone installs in one step and needs no story.
 fn guidance(status: &Status) -> String {
-    let software = short_version(&status.installed);
-    let kernel = short_version(&status.boot_release);
     let Some(available) = status.available.as_deref() else {
-        if !status.boot_pending {
-            return String::new();
-        }
-        return if kernel.is_empty() {
-            format!(
-                "This update is not finished. The Couch software is {software}, and the kernel \
-                 and boot image published with it are still to install. Check for updates to \
-                 get step 2 of 2."
-            )
+        return if status.boot_pending {
+            "A previous update still needs its boot image checked. Check for updates to finish it."
+                .into()
         } else {
-            format!(
-                "This update is not finished. The Couch software is {software} but the kernel \
-                 is still {kernel}. Check for updates to get step 2 of 2, the kernel and boot \
-                 image."
-            )
+            String::new()
         };
     };
     let target = short_version(available);
-    if status.steps < 2 {
-        return String::new();
+    match status.kind.as_str() {
+        "combined" => format!("Update to {target}: Couch software, kernel and boot image install together with one restart."),
+        "boot" => format!("Finish updating to {target}: install the kernel and boot image, then restart."),
+        _ => String::new(),
     }
-    if status.kind == "boot" {
-        return if kernel.is_empty() || kernel == software {
-            format!(
-                "Update to {target} — step 2 of 2: kernel and boot image. The Couch software is \
-                 already {software}. This step writes the kernel and restarts once more."
-            )
-        } else {
-            format!(
-                "Update to {target} — step 2 of 2: kernel and boot image. The Couch software is \
-                 already {software}; the kernel is still {kernel}. This step writes it and \
-                 restarts once more."
-            )
-        };
-    }
-    format!(
-        "Update to {target} — step 1 of 2: Couch software. The kernel ships as a second signed \
-         image and needs its own restart; the remote offers it as step 2 once this one is done."
-    )
 }
 struct State {
     status: Status,
-    offer: Option<Manifest>,
-    /// The offered release publishes a boot payload as well as a runtime, so
-    /// installing it is two steps rather than one.
+    offer: Option<transaction::Plan>,
+    /// The selection includes both runtime and boot.
     pair: bool,
     /// A note from step 1 says this build's boot payload is still to install.
     expects_boot: bool,
@@ -222,6 +186,7 @@ impl Updater {
         let (boot_version, boot_kernel, boot_previous) = boot::record(&root);
         let release = boot_release(&root, &boot_version);
         let expects_boot = expects_boot(&root, &installed, &release);
+        let saved = transaction::Plan::recover(&root);
         let this = Self {
             root: root.clone(),
             boot_device,
@@ -270,6 +235,28 @@ impl Updater {
         };
         {
             let mut state = this.state.lock().unwrap();
+            match saved {
+                Ok(Some(plan)) => {
+                    state.status.available = Some(plan.primary().version.clone());
+                    state.status.kind = plan.kind().into();
+                    state.status.notes = plan.primary().notes.clone();
+                    let ready = plan.can_resume(&root);
+                    state.status.phase = if ready { "ready" } else { "error" }.into();
+                    state.status.message = if ready {
+                        "Update verified and staged. Install and restart to apply it."
+                    } else {
+                        "Update was interrupted or rolled back; check and download again."
+                    }
+                    .into();
+                    state.pair = plan.kind() == "combined";
+                    state.offer = Some(plan);
+                }
+                Err(error) => {
+                    state.status.phase = "error".into();
+                    state.status.message = error;
+                }
+                Ok(None) => {}
+            }
             let (pair, expects) = (state.pair, state.expects_boot);
             explain(&mut state.status, pair, expects);
         }
@@ -337,16 +324,18 @@ impl Updater {
             state.status.can_install = false;
             state.status.kind.clear();
             match result {
-                Ok(Some((offer, pair))) => {
-                    state.pair = pair;
-                    state.status.available = Some(offer.version.clone());
-                    state.status.kind = offer.kind.clone();
-                    state.status.notes = offer.notes.clone();
-                    state.status.can_install =
-                        matches!(offer.kind.as_str(), "runtime" | "boot") && offer.installable;
+                Ok(Some(offer)) => {
+                    state.pair = offer.kind() == "combined";
+                    state.status.available = Some(offer.primary().version.clone());
+                    state.status.kind = offer.kind().into();
+                    state.status.notes = offer.primary().notes.clone();
+                    state.status.can_install = [&offer.runtime, &offer.boot]
+                        .into_iter()
+                        .flatten()
+                        .all(|m| m.installable);
                     state.status.message = if !state.status.can_install {
                         "This build cannot be installed by this updater.".into()
-                    } else if offer.kind == "boot" {
+                    } else if offer.kind() == "boot" {
                         "The kernel and boot ramdisk for the installed build are ready to download. They are written to the boot partition; the image they replace is kept.".into()
                     } else {
                         "An update is available.".into()
@@ -368,75 +357,68 @@ impl Updater {
                     state.status.available = None;
                 }
             }
+            let (version, kernel, previous) = boot::record(&this.root);
+            state.status.boot_release = boot_release(&this.root, &version);
+            state.status.boot_version = version;
+            state.status.boot_kernel = kernel;
+            state.status.boot_previous = previous;
+            state.expects_boot = expects_boot(
+                &this.root,
+                &state.status.installed,
+                &state.status.boot_release,
+            );
             let (pair, expects) = (state.pair, state.expects_boot);
             explain(&mut state.status, pair, expects);
         });
         Ok(())
     }
-    /// A newer runtime wins; otherwise the installed release's boot payload is
-    /// offered when the boot partition does not already carry it.
-    fn select(&self, offers: release::Offers) -> Result<Option<(Manifest, bool)>> {
-        if let Some(runtime) = offers.runtime {
-            return Ok(Some((runtime, offers.runtime_has_boot)));
+    /// Keep a release's signed pair together. For legacy half-updates, compare
+    /// actual partition bytes and reconcile the version even when no write is needed.
+    fn select(&self, offers: release::Offers) -> Result<Option<transaction::Plan>> {
+        if offers.runtime.is_some() {
+            return transaction::Plan::new(offers.runtime, offers.boot).map(Some);
         }
         let Some(offer) = offers.boot else {
             return Ok(None);
         };
         if boot::installed(&self.boot_device, &offer)? {
+            boot::record_installed(&self.root, &offer)?;
             return Ok(None);
         }
-        // A boot payload is only ever offered for the installed release, so
-        // reaching one means its runtime step is already done: this is the
-        // second half of a two-step update.
-        Ok(Some((offer, true)))
+        transaction::Plan::new(None, Some(offer)).map(Some)
     }
     pub fn install(&self, version: &str) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         if state.busy || state.status.phase == "ready" {
             return Err("An update operation is already running".into());
         }
-        let offer = state
+        let mut offer = state
             .offer
             .clone()
-            .filter(|o| o.version == version && state.status.can_install)
+            .filter(|o| o.primary().version == version && state.status.can_install)
             .ok_or("Check for and select a signed compatible update first")?;
         state.busy = true;
         state.status.phase = "downloading".into();
         state.status.message = "Downloading and verifying the selected build.".into();
         state.status.can_install = false;
-        let pair = state.pair;
         drop(state);
         let this = self.clone();
         std::thread::spawn(move || {
             let progress = |phase: &str| {
                 this.state.lock().unwrap().status.phase = phase.into();
             };
-            let result = if offer.kind == "boot" {
-                boot::stage(&this.root, &offer, progress)
-            } else {
-                staging::stage(&this.root, &offer, progress)
-            };
+            let result = offer.stage(&this.root, progress);
             let mut state = this.state.lock().unwrap();
             state.busy = false;
             match result {
                 Ok(()) => {
                     state.status.phase = "ready".into();
-                    // The note that survives the restart: once this runtime is
-                    // staged, the remote knows its release has a second step
-                    // even if it never reaches the network again.
-                    if pair && offer.kind != "boot" {
-                        let _ = staging::atomic(
-                            &this.root.join(PENDING),
-                            &serde_json::to_vec(&serde_json::json!({"version": offer.version}))
-                                .unwrap(),
-                        );
-                    }
-                    state.status.message = if offer.kind == "boot" {
-                        "Boot image verified and staged. Restart to write it to the boot partition."
-                            .into()
+                    state.status.message = if offer.kind() == "combined" {
+                        "Software and boot image verified. Install both with one restart."
                     } else {
-                        "Update verified and staged. Restart to apply it.".into()
-                    };
+                        "Update verified and staged. Restart to apply it."
+                    }
+                    .into();
                 }
                 Err(error) => {
                     state.status.phase = "error".into();
@@ -482,7 +464,11 @@ pub fn activate(root: &std::path::Path) -> Result<()> {
     activate_with(root, std::path::Path::new(boot::DEVICE))
 }
 pub fn activate_with(root: &std::path::Path, boot_device: &std::path::Path) -> Result<()> {
-    if root.join("boot/staged").exists() {
+    if let Some(plan) = transaction::Plan::load(root)? {
+        plan.activate(root, boot_device)
+    } else if root.join("boot/staged").exists() && root.join("runtime/staged").exists() {
+        Err("Ambiguous legacy staged updates; download the release again".into())
+    } else if root.join("boot/staged").exists() {
         boot::activate(root, boot_device)
     } else {
         staging::activate(root)
@@ -819,58 +805,66 @@ mod tests {
     }
 
     #[test]
-    fn a_two_payload_release_is_named_as_two_numbered_steps() {
-        let mut s = status("v0.1.0-alpha.20260913.124", "v0.1.0-alpha.20260913.124");
-        s.available = Some("v0.1.0-alpha.20260913.165".into());
-        s.kind = "runtime".into();
+    fn a_two_payload_release_installs_with_one_restart() {
+        let mut s = status("v1.2.2", "v1.2.2");
+        s.available = Some("v1.2.3".into());
+        s.kind = "combined".into();
         explain(&mut s, true, false);
-        assert_eq!(s.steps, 2);
-        assert!(!s.boot_behind && !s.boot_pending);
-        assert_eq!(
-            s.guidance,
-            "Update to .165 — step 1 of 2: Couch software. The kernel ships as a second signed \
-             image and needs its own restart; the remote offers it as step 2 once this one is \
-             done."
-        );
-        // The same release with no boot payload is one step and says nothing.
+        assert_eq!(s.steps, 1);
+        assert!(!s.boot_pending);
+        assert!(s.guidance.contains("one restart"));
+        s.kind = "runtime".into();
         explain(&mut s, false, false);
         assert_eq!(s.steps, 1);
-        assert_eq!(s.guidance, "");
+        assert!(s.guidance.is_empty());
     }
 
     #[test]
-    fn the_second_step_names_both_versions_once_the_software_is_ahead() {
-        let mut s = status("v0.1.0-alpha.20260913.165", "v0.1.0-alpha.20260913.124");
-        s.available = Some("v0.1.0-alpha.20260913.165".into());
+    fn a_legacy_boot_offer_can_finish_an_old_update() {
+        let mut s = status("v1.2.3", "v1.2.2");
+        s.available = Some("v1.2.3".into());
         s.kind = "boot".into();
-        explain(&mut s, true, false);
-        assert_eq!(s.steps, 2);
-        assert!(s.boot_behind);
-        // A boot offer is by itself proof that step 2 is outstanding.
+        explain(&mut s, false, true);
+        assert_eq!(s.steps, 1);
         assert!(s.boot_pending);
-        assert_eq!(
-            s.guidance,
-            "Update to .165 — step 2 of 2: kernel and boot image. The Couch software is already \
-             .165; the kernel is still .124. This step writes it and restarts once more."
-        );
+        assert!(s.guidance.contains("Finish updating"));
     }
 
     #[test]
-    fn a_remote_left_half_updated_says_so_before_any_check() {
-        let mut s = status("v0.1.0-alpha.20260913.165", "v0.1.0-alpha.20260913.124");
+    fn a_remote_left_half_updated_can_request_a_check() {
+        let mut s = status("v1.2.3", "v1.2.2");
         explain(&mut s, false, true);
         assert_eq!(s.steps, 0);
-        assert!(s.boot_behind && s.boot_pending);
-        assert_eq!(
-            s.guidance,
-            "This update is not finished. The Couch software is .165 but the kernel is still \
-             .124. Check for updates to get step 2 of 2, the kernel and boot image."
-        );
-        // Kernel caught up: nothing outstanding and nothing to say.
-        let mut s = status("v0.1.0-alpha.20260913.165", "v0.1.0-alpha.20260913.165");
-        explain(&mut s, false, false);
-        assert!(!s.boot_behind && !s.boot_pending);
-        assert_eq!(s.guidance, "");
+        assert!(s.boot_pending);
+        assert!(s.guidance.contains("Check for updates"));
+    }
+
+    #[test]
+    fn identical_boot_bytes_reconcile_a_new_release_without_flashing() {
+        let root = root();
+        let device = root.join("boot-device");
+        let z = boot::tests::zimage(1, 100);
+        let r = boot::tests::ramdisk(2, 100);
+        let m = boot::tests::manifest(&z, &r);
+        let image = boot::tests::image(&z, &r);
+        std::fs::write(&device, &image).unwrap();
+        std::fs::write(root.join("build.json"), br#"{"version":"v1.2.3"}"#).unwrap();
+        staging::atomic(&root.join(PENDING), br#"{"version":"v1.2.3"}"#).unwrap();
+        let updater = Updater::with_boot_device(root.clone(), device.clone());
+        assert!(updater
+            .select(release::Offers {
+                runtime: None,
+                boot: Some(m)
+            })
+            .unwrap()
+            .is_none());
+        let status = Updater::with_boot_device(root.clone(), device.clone()).status();
+        assert_eq!(status.boot_release, "v1.2.3");
+        assert!(!status.boot_pending);
+        assert!(!root.join(PENDING).exists());
+        assert!(!root.join("boot/previous.img").exists());
+        assert_eq!(std::fs::read(device).unwrap(), image);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -908,7 +902,7 @@ mod tests {
         assert_eq!(status.boot_release, "v0.1.0-alpha.20260913.124");
         assert!(status.boot_behind);
         assert!(status.boot_pending);
-        assert!(status.guidance.contains("step 2 of 2"));
+        assert!(status.guidance.contains("Check for updates"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

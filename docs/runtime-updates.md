@@ -25,7 +25,7 @@ section is open. Nothing is downloaded or installed without a press.
 This updater replaces Couch applications, Sonos CLI, services, and their
 runtime scripts, including the CoreELEC client, and it can write a signed
 [boot image](#boot-image-updates) (kernel and boot ramdisk) published with the
-installed build. It does not upgrade Alpine, the recovery image or the stable
+selected build. It does not upgrade Alpine, the recovery image or the stable
 update bootstrap; use the OS installer for those. It preserves `config.json`,
 saved Wi-Fi, SSH enrollment, and per-device data.
 
@@ -186,12 +186,25 @@ A release may also carry `couch-VERSION-ha100-boot.tar.gz` with its own signed
 `couch-VERSION-ha100-boot.json` (`kind: "boot"`). The archive holds exactly the
 owner-neutral boot payload `tools/release/prepare_public_boot.py` exports: the
 source-built `zImage` and the clean `boot.cpio.gz`, no Android header, no device
-tree, no stock bytes. A check offers it only when no newer runtime is available
-on the channel, only for the release whose runtime is installed (the updater
-that understands it is the one that runtime shipped), and only while the boot
-partition does not already carry that kernel and ramdisk byte for byte. So a
-release with both assets installs in two steps: the runtime first, then, after
-its reboot, the boot image the same Updates page now offers.
+tree, no stock bytes. A check selects the newest runtime and its matching signed boot manifest as
+one update. Both manifests must name the same release and OS baseline. A release
+with both payloads downloads and verifies both, then offers one **Install &
+restart** action. Releases with software alone use the same action. Older
+updaters still use their original two-stage flow to install the release that
+introduces this updater; subsequent updates use the combined flow.
+
+The selection is journaled in `/opt/couch/updates/transaction.json` before either
+payload is staged. Only a fully staged selection becomes ready, including after
+a system-service restart. An interrupted or failed download remains an error;
+check and download again. Activation rechecks both slots and their baseline
+before writing boot, then switches the runtime slot and restarts once. The boot
+stage marker survives until the runtime switch completes, allowing an interrupted
+activation to retry without replacing the original boot backup. The runtime
+bootstrap still accepts or rejects the candidate using its existing health gate.
+This coordinates two writes; it does not make a single boot partition atomic or
+add automatic boot-image rollback. Power loss during flashing still requires the
+existing recovery procedure, and runtime health rollback still restores only the
+runtime slot.
 
 Download and verification stage the two files under `/opt/couch/boot/slots/<sha256>`
 with the same digest checks as runtime slots and the same OS baseline gate.
@@ -226,63 +239,28 @@ It does not restart: use the Power menu. The saved image is consumed once it is
 back, because the image it replaced is no longer installed, so the next check
 offers that boot payload again.
 
-### What the two steps look like
+### Status and updates started by older versions
 
-A release carrying both payloads is one update in the user's head and two
-installs on the device, and both UIs say so rather than offering "an update"
-twice. `Status` carries what they read:
+Both UIs describe a combined update as software and kernel with one restart.
+`Status.kind` is `combined`, `runtime`, or `boot`; `steps` is 1 for an offered
+update and 0 otherwise. `guidance` supplies the shared explanation.
+`boot_release` identifies the verified boot payload (or the original OS build),
+and `boot_behind` compares that label with the installed runtime. An older label
+alone does not mean an update is incomplete.
 
-* `steps` is 2 when the offered release publishes a boot payload as well as a
-  runtime and 1 when it publishes software alone. It comes from the asset
-  listing the check already holds, no extra request, so step 1 can name step 2
-  before it runs. `kind` says which step is on the table: a boot payload is
-  only ever offered for the release whose runtime is installed, so
-  `kind: "boot"` is always the second step.
-* `boot_release` is the release whose kernel and boot ramdisk the partition
-  carries: the boot payload this updater wrote, or, when it has written none,
-  the build the full OS image shipped. That image's `build.json` sits at the
-  root of `/opt/couch` rather than inside a runtime slot, so runtime updates
-  never replace it and it still names the image the partition was written
-  from. This is what lets a remote installed from the .124 image say its
-  kernel is .124 without asking anyone.
-* `boot_behind` says that release is older than the installed software.
-* `boot_pending` says the second step is still outstanding: its boot payload is
-  on offer, or step 1 left the note below. An older kernel on its own is not an
-  unfinished update - most releases publish software alone, and the kernel then
-  stays where the last boot payload left it - so only `boot_pending` produces
-  the "not finished" wording, and a merely older kernel is shown without
-  comment.
-* `guidance` is the one sentence both UIs put above the buttons: "Update to
-  .165 - step 1 of 2: Couch software. The kernel ships as a second signed image
-  and needs its own restart...", "Update to .165 - step 2 of 2: kernel and boot
-  image. The Couch software is already .165; the kernel is still .124...", or
-  "This update is not finished...". Composing it in the daemon is what keeps
-  the remote's screen and the web page from telling different stories about the
-  same state.
+Older updaters leave `/opt/couch/updates/pending-boot.json` after installing a
+runtime with a boot companion. The new updater retains support for finishing
+those updates: if no newer runtime is offered, it checks the installed release's
+signed boot manifest against the actual partition. Different bytes produce a
+boot-only offer. Identical bytes update the installed boot record and clear the
+pending note without downloading, flashing, or restarting. This handles releases
+that republish unchanged kernel and ramdisk bytes under a new version; previously
+the check offered nothing but left the remote saying **Update unfinished**.
 
-Step 1 writes `/opt/couch/updates/pending-boot.json`, naming the version it
-staged, when that release publishes a boot payload too. After the restart the
-updater reads it back: if that build is the one now installed and the partition
-does not carry its kernel, the second step is outstanding, and the remote says
-so with no network at all. A note naming some other build, or one whose kernel
-has caught up, is deleted rather than believed.
-
-Finishing without a fresh check: opening **Settings > Updates** on a remote
-whose `boot_pending` is set sends one automatic check, the same rate-limited
-call the web UI makes when it opens - at most one per six hours per service
-session, and skipped entirely when automatic checks are off. It downloads and
-installs nothing; it only puts step 2 on the screen, so a user who does not
-know to press **Check for updates** is not left half-updated.
-
-If the new kernel does not work, the image it replaced is still on the remote
-as `/opt/couch/boot/previous.img` with `previous.json` naming what it was. A
-kernel that boots but never brings a healthy GUI up lands in recovery on its
-own, because init arms `boot-recovery` before anything can hang; from there,
-and from the Updates page while the remote is up, the saved image can be
-written back. A kernel that dies before init needs the physical route, holding
-**Back** while powering on. Nothing rolls back by itself, and the recovery
-partition is never written by an update; see
-[restoring the previous boot image](device-recovery.md#restoring-the-previous-boot-image).
+Opening **Settings > Updates** with `boot_pending` set requests one automatic
+check, subject to the normal automatic-check setting and six-hour limit. **Check
+for updates** remains available for a manual retry. Neither check downloads or
+installs a payload.
 
 ## Publishing
 
