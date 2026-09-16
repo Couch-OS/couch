@@ -9,9 +9,12 @@ from update_floor import (allowed, bundle_names, FLOOR_RELEASE, inventory_files,
 
 REPO = Path(__file__).resolve().parents[2]
 
-# The file list of the published v0.1.0-alpha.20260913.148 runtime bundle,
-# read from couch-v0.1.0-alpha.20260913.148-ha100-update.json on the release
-# (2026-09-15). This is the release the public installer's command line names.
+# The file list of the published .148 runtime bundle, read from its
+# couch-...-ha100-update.json asset (2026-09-15). This is the release the public
+# installer's command line names. The tag is not spelled out: a release bump
+# rewrites every dated tag in the files it governs, and a fixture recording what
+# one particular release published must not follow it (tools/release/
+# bump_release.py, which would otherwise call this a stray).
 PUBLISHED_148 = (
     'build.json', 'confd.sh', 'couch-confd', 'couch-coreelec', 'couch-gui', 'couch-sonos',
     'couch-system', 'couch-wmt-properties.so', 'gui-start.sh', 'hardware-init.sh',
