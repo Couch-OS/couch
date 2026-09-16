@@ -10,8 +10,10 @@ import { Theme } from "../theme.slint";
 export component StatusBar inherits Rectangle {
     in property <string> clock;
     in property <string> title;
-    in property <int> battery;      // 0-100
-    in property <bool> charging;
+    in property <int> battery;      // 0-100 where known
+    in property <bool> battery-known: false;
+    in property <bool> charging: false;
+    in property <bool> show-battery-percentage: false;
     in property <int> wifi-level;   // 0 disconnected, 1-4 signal bars
 
     height: 56px;
@@ -49,35 +51,28 @@ export component StatusBar inherits Rectangle {
     }
 
 
-    // Positioned rather than laid out: a HorizontalLayout given an explicit x/y
-    // inside a Rectangle does not size itself here, and the cluster is only two
-    // items anyway.
-    battery-shell := Rectangle {
-        width: 32px;
-        height: 15px;
+    // The source uses the kernel gauge's real state: a lightning bolt only
+    // means actively charging. The generic outline says the gauge is absent,
+    // rather than pretending that an unknown capacity is empty.
+    battery-icon := Image {
+        width: 24px;
+        height: 24px;
         x: parent.width - self.width - Theme.pad-side;
         y: (parent.height - self.height) / 2;
-        border-width: 1.5px;
-        border-color: Theme.text-secondary;
-        border-radius: 3px;
-
-        // Inset 2px with a 9px right gap at full charge, so the fill length
-        // reads as the level.
-        Rectangle {
-            x: 2px;
-            y: 2px;
-            height: parent.height - 4px;
-            width: (parent.width - 4px - 9px) * max(0, min(100, root.battery)) / 100;
-            background: Theme.text-secondary;
-            border-radius: 1px;
-        }
+        source: !root.battery-known ? @image-url("../../../../assets/lucide/battery.svg")
+              : root.charging ? @image-url("../../../../assets/lucide/battery-charging.svg")
+              : root.battery < 20 ? @image-url("../../../../assets/lucide/battery-low.svg")
+              : root.battery < 60 ? @image-url("../../../../assets/lucide/battery-medium.svg")
+              : @image-url("../../../../assets/lucide/battery-full.svg");
+        colorize: Theme.text-secondary;
     }
 
-    mode-text := Text {
-        text: root.charging ? "CHG" : "";
+    battery-percent := Text {
+        visible: root.battery-known && root.show-battery-percentage;
+        text: root.battery + "%";
         font-size: 15px;
         color: Theme.text-secondary;
-        x: battery-shell.x - self.width - 8px;
+        x: battery-icon.x - self.width - 8px;
         y: (parent.height - self.height) / 2;
     }
 
@@ -90,7 +85,7 @@ export component StatusBar inherits Rectangle {
     wifi := Rectangle {
         width: 18px;
         height: 14px;
-        x: (root.charging ? mode-text.x : battery-shell.x) - self.width - 10px;
+        x: (root.battery-known && root.show-battery-percentage ? battery-percent.x : battery-icon.x) - self.width - 10px;
         y: (parent.height - self.height) / 2;
         for bar[i] in [5px, 8px, 11px, 14px]: Rectangle {
             width: 3px;

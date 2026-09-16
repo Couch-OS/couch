@@ -41,10 +41,11 @@ then that the remote is advertising as Couch Remote, and "no kernel support"
 on a boot image without `/dev/vhci` and `/dev/stpbt`. Bluetooth is
 experimental — a connected device can slow the remote's Wi-Fi badly, and both
 panels carry a note saying so; see [Bluetooth](bluetooth-tv.md)), **SSH**,
-**Network** (read-only) and **Power**. The
-daemon reads and writes the same file the remote does
-(`/opt/couch/settings.conf`, owned by `couch-system`'s `ui_settings`), and the
-remote notices a change to it within a second and applies it, so the two
+**Network** (read-only) and **Power**, including the status-bar battery
+percentage toggle. The daemon reads and writes the same file the remote does
+(`/opt/couch/settings.conf` inside Alpine; the initramfs GUI reaches it at
+`/mnt/alpine/opt/couch/settings.conf`, owned by `couch-system`'s `ui_settings`).
+The remote notices a change to it within a second and applies it, so the two
 never disagree for long. Clock, wake and appearance stay web-only. The
 endpoints are in [the web UI guide](webui.md).
 
@@ -59,14 +60,17 @@ resolver file, sysfs) every two seconds while the panel is up; nothing is run.
 
 ## Power on the remote
 
-The **Power** section at the end of the menu has three rows: **Power off**,
-**Restart** and **Restart into recovery**. The first two act on one OK.
-Recovery takes two presses within six seconds, because it leaves the remote
-on a screen with no UI: recovery brings up Wi-Fi, SSH and a USB shell and
-stays there until the flag is cleared, see [device recovery](device-recovery.md).
-The rows ask the root system service (`Power { action }`), which answers,
-waits a second, and for recovery writes the same `boot-recovery` marker init
-uses into the bootloader control block before `reboot -f`.
+The **Power** section at the end of the menu starts with **Battery percentage**.
+Left, right or OK toggles the percentage beside the status-bar battery icon;
+it is off by default and persists across GUI restarts. The remaining rows are
+**Power off**, **Restart** and **Restart into recovery**. The first two act on
+one OK. Recovery takes two presses within six seconds, because it leaves the
+remote on a screen with no UI: recovery brings up Wi-Fi, SSH and a USB shell
+and stays there until the flag is cleared, see
+[device recovery](device-recovery.md). The action rows ask the root system
+service (`Power { action }`), which answers, waits a second, and for recovery
+writes the same `boot-recovery` marker init uses into the bootloader control
+block before `reboot -f`.
 
 ## Updates on the remote
 

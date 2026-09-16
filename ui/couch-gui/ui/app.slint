@@ -35,7 +35,9 @@ export component App inherits Window {
     // --- shell ----------------------------------------------------------------
     in-out property <string> clock: "--:--";
     in-out property <int> battery: 0;
-    in-out property <bool> charging: false;
+    in-out property <bool> battery-known: false;
+    in-out property <bool> battery-charging: false;
+    in-out property <bool> show-battery-percentage: false;
     in-out property <int> wifi-level: 0;
     in-out property <string> wifi-signal: "—";
 
@@ -342,6 +344,7 @@ export component App inherits Window {
     in-out property <bool> power-armed: false;
     in-out property <string> power-message;
     callback power-action(int);
+    callback setting-battery-percentage-changed(bool);
     // A brief message, e.g. Wi-Fi progress. Non-empty shows it; the host clears it.
     in-out property <string> toast: "";
     in-out property <bool> feedback-enabled: true;
@@ -458,7 +461,9 @@ export component App inherits Window {
              : root.keyboard-shown ? root.keyboard-title
              : root.chooser-shown ? root.chooser-title : root.area-name;
         battery: root.battery;
-        charging: root.charging;
+        battery-known: root.battery-known;
+        charging: root.battery-charging;
+        show-battery-percentage: root.show-battery-percentage;
         wifi-level: root.wifi-level;
     }
 
@@ -684,9 +689,11 @@ export component App inherits Window {
         net-dns: root.net-dns;
         net-mac: root.net-mac;
         net-web: root.net-web;
+        battery-percentage: root.show-battery-percentage;
         power-busy: root.power-busy;
         power-armed: root.power-armed;
         power-message: root.power-message;
+        battery-percentage-changed(v) => { root.show-battery-percentage = v; root.setting-battery-percentage-changed(v); }
         power-action(row) => { root.power-action(row); }
         update-check => { root.update-check(); }
         update-install => { root.update-install(); }
