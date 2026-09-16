@@ -33,9 +33,9 @@ deliberate two-minute **pairing mode**:
 1. Turn Bluetooth on (above). The row says **ON**, and names the TV once
    one is connected (**ON · webOS TV OLED48B4PUA**).
 2. **Settings → Bluetooth → Pair with TV** on the remote, or **Pair with
-   TV** in the Bluetooth section of the web UI's Remote page. This forgets
-   every TV the remote had paired (it holds one TV at a time; pair again to
-   move it) and opens the window. The card on the remote reads
+   TV** in the Bluetooth section of the web UI's Remote page. This opens
+   the window; TVs paired earlier stay paired, though they are kept off the
+   link while the window is open. The card on the remote reads
    **DISCOVERABLE**: "On your TV, open Bluetooth settings and choose Couch
    Remote."
 3. On the TV, open its Bluetooth or remote-control settings and choose
@@ -53,7 +53,8 @@ deliberate two-minute **pairing mode**:
    and subscribed to the remote's input reports; press **Back** to close it.
    The window closes by itself after two minutes with **NOT PAIRED** if no
    TV got that far, and **Back** during the window cancels it. Either way
-   the remote goes back to non-discoverable, and the paired TV reconnects
+   the remote goes back to non-discoverable. The TV that just paired is now
+   the one the remote talks to (the *active* one), and it reconnects
    whenever both are on.
 6. On the web, **Connections → Add a connection → Bluetooth TV**, name it and
    create it. There is nothing to configure on the connection; its page
@@ -61,9 +62,15 @@ deliberate two-minute **pairing mode**:
 7. **Rooms & devices** → add a device from that connection. The device is a
    TV; give it the TV's name.
 
-**Forget pairings** on the web page drops the bond without opening a window;
-the TV then needs pairing mode again. Turning Bluetooth off does not forget
-anything.
+**Forget pairings** on the web page drops the bonds without opening a
+window; a TV then needs pairing mode again. Turning Bluetooth off does not
+forget anything.
+
+The remote can hold a pairing with every TV in the house, but a Bluetooth
+remote talks to one TV at a time: only the active one can connect, and the
+remote answers nobody else on the air. Switching is instant on the remote's
+side and takes the TV a few seconds to notice and reconnect; which TV is
+active follows the device the app is controlling, and survives a reboot.
 
 The first pairing has only been tried on one TV, so record what each make
 needs in [bluetooth.md](bluetooth.md#open-questions).
@@ -148,7 +155,7 @@ its TV, and two remotes in one house are two devices.
   address policy above (the `00:00:46:65:80:xx` addresses), delete it on the
   TV and pair again once.
 
-A HID peripheral holds one link at a time, and pairing mode keeps one bond:
-the TV paired last. Per-activity bonds (disconnect and redirect on activity
-switch) are the next step in
-[bluetooth.md](bluetooth.md#multi-device-switching-design).
+A HID peripheral holds one link at a time. The remote keeps a bond per TV
+and lets one of them, the active one, connect: the controller's white list
+drops anyone else's connection request on the air. The mechanics are in
+[bluetooth.md](bluetooth.md#bonds-and-the-active-link).
