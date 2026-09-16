@@ -103,6 +103,41 @@ impl Runtime {
         plugin: &str,
         patch: Value,
     ) -> Result<Value, String> {
+        self.save_settings_checked(connection, plugin, patch, |_| Ok(()))
+    }
+
+    /// Read only the persisted target; migration preflight must neither start
+    /// the package nor contact the receiver to find another configured owner.
+    pub fn denon_target(&self, connection: &str) -> Result<Option<couch_denon::Settings>, String> {
+        saved_denon_target(&self.home, connection)
+    }
+
+    pub fn save_denon_settings(
+        &self,
+        connection: &str,
+        patch: Value,
+        protected: impl Iterator<Item = couch_model::DenonMigration>,
+    ) -> Result<Value, String> {
+        self.save_settings_checked(connection, "denon", patch, |settings| {
+            let target: couch_denon::Settings =
+                serde_json::from_value(settings.clone()).map_err(|_| "Invalid Denon target")?;
+            if protected
+                .into_iter()
+                .any(|original| original.host == target.host && original.port == target.port)
+            {
+                return Err("This receiver is already owned by a migrated Denon connection".into());
+            }
+            Ok(())
+        })
+    }
+
+    fn save_settings_checked(
+        &self,
+        connection: &str,
+        plugin: &str,
+        patch: Value,
+        check: impl FnOnce(&Value) -> Result<(), String>,
+    ) -> Result<Value, String> {
         // Admission validates every saved connection before activating a new
         // package. Keep its selection stable until these settings are durable,
         // so validation by an old child cannot race a package activation.
@@ -119,6 +154,7 @@ impl Runtime {
         let saved = load_settings(&path).map_err(|e| e.to_string())?;
         let settings =
             merge_settings(&manifest, saved.as_ref(), patch).map_err(|e| e.to_string())?;
+        check(&settings)?;
         // Configure validates the adapter's typed settings without requiring an
         // online TV. Do not save a schema-valid but unusable host/port.
         let mut host = couch_plugin::Host::spawn(&directory, &manifest, Duration::from_secs(3))
@@ -310,6 +346,21 @@ impl Runtime {
             });
         }
     }
+}
+
+/// A filesystem-only ownership check shared by config imports and migrations.
+pub(crate) fn saved_denon_target(
+    home: &Path,
+    connection: &str,
+) -> Result<Option<couch_denon::Settings>, String> {
+    let path = couch_sdk::connection_file(home, connection, "plugin")
+        .map_err(|_| "Invalid Denon connection ID")?;
+    load_settings(&path)
+        .map_err(|_| "Cannot read saved Denon target")?
+        .map(|saved| {
+            serde_json::from_value(saved).map_err(|_| "Cannot read saved Denon target".into())
+        })
+        .transpose()
 }
 
 fn load_settings(path: &Path) -> Result<Option<Value>, Error> {

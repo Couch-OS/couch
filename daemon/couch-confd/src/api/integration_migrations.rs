@@ -130,6 +130,107 @@ mod tests {
         }
     }
 
+    fn manual_denon() -> Connection {
+        Connection {
+            id: Id::new("manual"),
+            name: "Manual package".into(),
+            provider: Provider::Plugin {
+                id: "denon".into(),
+                label: "Denon".into(),
+                capabilities: vec![],
+                supports_inputs: true,
+                presentation: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn migration_rejects_a_configured_package_owner_before_preparing_settings() {
+        let fixture = Fixture::new("duplicate-package", false);
+        fixture
+            .api
+            .store
+            .lock()
+            .unwrap()
+            .mutate(None, |config| config.connections.push(manual_denon()))
+            .unwrap();
+        let path = couch_sdk::connection_file(&fixture.home, "manual", "plugin").unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        couch_sdk::save_private(
+            &path,
+            &json!({"host":"duplicate-package.invalid","port":23}),
+        )
+        .unwrap();
+        let before = fixture.api.with(|store| store.config().clone());
+        let response = fixture.action("migrate", 1);
+        assert_eq!(response.status, 409);
+        assert!(String::from_utf8_lossy(&response.body).contains("already owns"));
+        assert_eq!(fixture.api.with(|store| store.config().clone()), before);
+        assert!(
+            !couch_sdk::connection_file(&fixture.home, "receiver", "plugin")
+                .unwrap()
+                .exists()
+        );
+    }
+
+    #[test]
+    fn settings_merge_and_import_cannot_add_an_owner_for_a_migrated_target() {
+        let fixture = Fixture::new("protected-target", true);
+        fixture.install_package_fixture();
+        let path = couch_sdk::connection_file(&fixture.home, "manual", "plugin").unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        couch_sdk::save_private(&path, &json!({"host":"protected-target.invalid","port":23}))
+            .unwrap();
+        let before = fixture.api.with(|store| store.config().clone());
+        assert!(fixture
+            .api
+            .store
+            .lock()
+            .unwrap()
+            .mutate(None, |config| config.connections.push(manual_denon()))
+            .is_err());
+        assert_eq!(fixture.api.with(|store| store.config().clone()), before);
+
+        couch_sdk::save_private(&path, &json!({"host":"protected-target.invalid","port":24}))
+            .unwrap();
+        fixture
+            .api
+            .store
+            .lock()
+            .unwrap()
+            .mutate(None, |config| config.connections.push(manual_denon()))
+            .unwrap();
+        let previous_settings = fs::read(&path).unwrap();
+        // The patch omits host. Compare the effective merged endpoint, not
+        // only fields present in the request.
+        assert_eq!(
+            fixture
+                .api
+                .plugin_route("POST", "manual", &["settings"], br#"{"port":23}"#)
+                .status,
+            400
+        );
+        assert_eq!(fs::read(&path).unwrap(), previous_settings);
+        // Null removes the saved port and the manifest restores its default.
+        assert_eq!(
+            fixture
+                .api
+                .plugin_route("POST", "manual", &["settings"], br#"{"port":null}"#)
+                .status,
+            400
+        );
+        assert_eq!(fs::read(&path).unwrap(), previous_settings);
+        assert_eq!(
+            fixture
+                .api
+                .plugin_route("POST", "manual", &["settings"], br#"{"port":25}"#)
+                .status,
+            200
+        );
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["port"], 25);
+    }
+
     #[test]
     fn migration_requires_verified_package_and_changes_nothing_when_missing() {
         let fixture = Fixture::new("missing", false);
@@ -385,6 +486,27 @@ impl Api {
                     host: host.clone(),
                     port: *port,
                 };
+                // Denon settings saves hold the same config mutex. This read
+                // therefore stays authoritative through the ownership commit.
+                for other in &next.connections {
+                    if other.id == id
+                        || !matches!(&other.provider, Provider::Plugin { id, .. } if id == "denon")
+                    {
+                        continue;
+                    }
+                    match self.plugins.denon_target(other.id.as_str()) {
+                        Ok(Some(target))
+                            if target.host == settings.host && target.port == settings.port =>
+                        {
+                            return Reply::error(
+                                409,
+                                "Another Denon package connection already owns this receiver",
+                            );
+                        }
+                        Err(message) => return Reply::error(409, message),
+                        _ => {}
+                    }
+                }
                 self.plugins
                     .migrate_denon(id.as_str(), &settings, |manifest| {
                         next.migrate_denon(
