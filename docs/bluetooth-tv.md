@@ -8,9 +8,23 @@ address or credentials. It complements infrared for TVs that ship with a
 Bluetooth remote and expect one, and it works with the screen off and the TV
 out of line of sight.
 
-The remote's Wi-Fi and Bluetooth share one radio. Idle Bluetooth costs
-nothing measurable; only sustained radio use (a continuous scan, which a HID
-peripheral never does) slows Wi-Fi. See [Bluetooth and BLE](bluetooth.md) for
+## Status: experimental
+
+Pairing and the keys work: a TV or a computer pairs from the pairing card,
+the remote keeps a bond per device, one link is active at a time, and the
+keys keep working across reboots. Bluetooth is off by default and does not
+start at boot, and a TV paired on an older build has to pair again (see
+[troubleshooting](#troubleshooting)).
+
+**The known problem is Wi-Fi.** The remote's Wi-Fi and Bluetooth share one
+radio, and a *connected* Bluetooth device can slow Wi-Fi badly: measured on a
+MacBook link (15 ms connection interval, no slave latency), a 355 KB download
+took 40 seconds and stalled where it takes about 1 second with no link, and
+an update check failed. So while a Bluetooth device is linked, expect
+Home Assistant control, the web UI and update downloads to be slow or to
+fail; **turning Bluetooth off restores them**. A TV that chooses a gentler
+interval should cost far less (the LG negotiated 60 ms with slave latency 5),
+but that has not been measured yet. See [Bluetooth and BLE](bluetooth.md) for
 the design and the kernel side.
 
 ## Requirements

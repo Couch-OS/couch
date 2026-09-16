@@ -320,6 +320,8 @@ export component Settings inherits Rectangle {
             // Bluetooth: the toggle, naming the TV on the link once there is
             // one, and pairing mode below it while the stack is up. The stack
             // takes a few seconds to come up, and the row says so while it does.
+            // The note under them is not a row: the cursor's row-count() and
+            // activate() stay two rows, as they were.
             if root.panel == 7: VerticalLayout {
                 spacing: root.gap;
                 SettingsRow {
@@ -332,6 +334,14 @@ export component Settings inherits Rectangle {
                     stepper: false;
                 }
                 if root.bt-state == "on": SettingsRow { title: "Pair with TV"; arrow: true; stepper: false; }
+                Text {
+                    text: "Experimental. While a Bluetooth device is connected, Wi-Fi can slow badly; turn Bluetooth off to restore it.";
+                    font-size: 15px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                    height: 96px;
+                    vertical-alignment: top;
+                }
             }
 
             // Updates: what is installed, the channel, a check, and then the
