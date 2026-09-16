@@ -226,8 +226,11 @@ fn executable_must_be_contained_and_not_writable_by_other_users() {
 #[test]
 fn incompatible_handshake_and_wrong_identity_never_activate() {
     let p = Package::new();
-    p.script(&print_frame(
-        &json!({"id":1,"body":{"type":"error","code":"incompatible"}}),
+    // Keep the peer alive until the host rejects the reply. Exiting with the
+    // unread Hello request can reset a Unix socket before Linux delivers it.
+    p.script(&format!(
+        "{}exec /bin/sleep 10",
+        print_frame(&json!({"id":1,"body":{"type":"error","code":"incompatible"}}),)
     ));
     assert!(matches!(
         Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)),
@@ -235,8 +238,9 @@ fn incompatible_handshake_and_wrong_identity_never_activate() {
     ));
     let mut other = p.manifest.clone();
     other.version = "2.0.0".into();
-    p.script(&print_frame(
-        &json!({"id":1,"body":{"type":"hello","manifest":other}}),
+    p.script(&format!(
+        "{}exec /bin/sleep 10",
+        print_frame(&json!({"id":1,"body":{"type":"hello","manifest":other}}),)
     ));
     assert!(matches!(
         Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)),
