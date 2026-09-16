@@ -54,11 +54,10 @@ component SettingsRow inherits Rectangle {
 // than one whose every key has to be forwarded, and returning focus to the
 // shell on close is a single `.focus()`.
 //
-// The shell holds the values (brightness, the timeout choices, the Wi-Fi and
-// SSH state) and the host applies and persists them; this only shows them and
-// emits what changed. Left and right step a value where a row has one; OK
-// enters a section or fires an action; BACK climbs one tier, and closes from
-// the root.
+// The shell holds the values (brightness, timeouts and battery percentage)
+// and the host applies and persists them; this only shows them and emits
+// what changed. Left and right step a value where a row has one; OK enters
+// a section or fires an action; BACK climbs one tier, and closes from the root.
 export component Settings inherits Rectangle {
     in property <bool> shown: false;
 
@@ -97,7 +96,9 @@ export component Settings inherits Rectangle {
     in property <string> net-dns;
     in property <string> net-mac;
     in property <string> net-web;              // "http://couch.local  ·  192.168.1.127:8090"
-    // Power: three actions; recovery takes two presses.
+    // Power: the status-bar percentage preference and three actions; recovery
+    // takes two presses.
+    in-out property <bool> battery-percentage;
     in property <bool> power-busy;
     in property <bool> power-armed;
     in property <string> power-message;
@@ -115,6 +116,7 @@ export component Settings inherits Rectangle {
     callback update-install();
     callback update-restart();
     callback update-channel-step(int);
+    callback battery-percentage-changed(bool);
     callback power-action(int);                // 0 off, 1 restart, 2 recovery
     // Enter panel N, or leave the current tier - the host performs these as
     // slides (like the hub's page changes), so it owns the panel and this only
@@ -153,7 +155,7 @@ export component Settings inherits Rectangle {
             return 3 + (root.update-can-install || root.update-busy || root.update-ready ? 1 : 0);
         }
         if (root.panel == 5) { return 5; }   // address, gateway, dns, mac, web
-        if (root.panel == 6) { return 3; }   // off, restart, recovery
+        if (root.panel == 6) { return 4; }   // percentage, off, restart, recovery
         if (root.panel == 7) {               // toggle, then Pair with TV once on
             return root.bt-state == "on" ? 2 : 1;
         }
@@ -162,12 +164,22 @@ export component Settings inherits Rectangle {
 
     // True where left/right change a value rather than doing nothing.
     function row-has-stepper() -> bool {
-        return root.panel == 1 || (root.panel == 4 && root.sel == 1);
+        return root.panel == 1 || (root.panel == 4 && root.sel == 1)
+            || (root.panel == 6 && root.sel == 0);
+    }
+
+    function toggle-battery-percentage() {
+        root.battery-percentage = !root.battery-percentage;
+        root.battery-percentage-changed(root.battery-percentage);
     }
 
     function step(delta: int) {
         if (root.panel == 4) {
             if (root.sel == 1) { root.update-channel-step(delta); }
+            return;
+        }
+        if (root.panel == 6) {
+            if (root.sel == 0) { root.toggle-battery-percentage(); }
             return;
         }
         if (root.panel != 1) { return; }
@@ -190,7 +202,11 @@ export component Settings inherits Rectangle {
 
     function activate() {
         if (root.panel == 0) { root.enter(root.section-panels[root.sel]); return; }
-        if (root.panel == 6) { if (!root.power-busy) { root.power-action(root.sel); } return; }
+        if (root.panel == 6) {
+            if (root.sel == 0) { root.toggle-battery-percentage(); }
+            else if (!root.power-busy) { root.power-action(root.sel - 1); }
+            return;
+        }
         if (root.panel == 2) {
             if (root.sel == 0) { root.change-wifi(); } else { root.recovery-wifi(); }
             return;
@@ -387,9 +403,11 @@ export component Settings inherits Rectangle {
                 SettingsRow { title: "Web UI"; value: root.net-web; stepper: false; }
             }
 
-            // Power: three actions, and the service's answer underneath.
+            // Power: the status indicator preference, three actions, and the
+            // service's answer underneath.
             if root.panel == 6: VerticalLayout {
                 spacing: root.gap;
+                SettingsRow { title: "Battery percentage"; value: root.battery-percentage ? "On" : "Off"; }
                 SettingsRow { title: "Power off"; arrow: true; stepper: false; }
                 SettingsRow { title: "Restart"; arrow: true; stepper: false; }
                 SettingsRow { title: "Restart into recovery"; value: root.power-armed ? "OK again" : ""; arrow: !root.power-armed; stepper: false; }

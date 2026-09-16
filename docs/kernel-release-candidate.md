@@ -1,15 +1,14 @@
 # Kernel candidate and remaining hardware checks
 
-`kernel/release-pin.json` pins source commit `ea122a39` and the exact normal-profile
-zImage, effective configuration, compiler and container hashes used in the
-September 10 board-initialization test. It contains no device identity or private
-firmware. This promotes the tested kernel into release staging; it does not make
-an installer image production-ready.
+`kernel/release-pin.json` pins source commit `81d180fc19ec` and the exact
+normal-profile zImage, effective configuration, compiler and container hashes
+used in the September 16 `.167.dev` battery reporting test. It contains no
+device identity or private firmware. This selects the tested kernel for release
+staging; it does not make an installer image production-ready.
 
-The default Ollie `~/couch-kernel/base` checkout was fast-forwarded to that commit.
-Normal builds reject source histories missing this baseline. Later descendants
-may be developed, but release verification still requires the exact pinned
-candidate and hashes until separately reviewed and validated.
+Normal builds enforce the source ancestry in `kernel/source_policy.py`.
+Later descendants may be developed, but release verification still requires
+the exact pinned candidate and hashes until separately reviewed and validated.
 
 Verify an existing local candidate before staging:
 
@@ -29,16 +28,25 @@ or boot/recovery tests. A matching kernel does not attest a new ramdisk or DTB.
 
 ## Validation scope
 
+The `.167.dev` candidate booted through the existing OTA activation path with
+the new kernel, healthy GUI/system service and advancing cached battery gauge
+samples. Its four Bluetooth backport modules match the new kernel's vermagic.
+See [the battery audit](ha100-battery-gauge.md) for the reporting checks and
+remaining calibration questions.
+
 Confirmed: LG B4 volume up with one repeat while awake and USB docked; button
 backlight changes affect GPIO58 without changing touch-reset GPIO4 or board
 GPIO17/14/61; advancing GUI heartbeat, recovery BCB clearance and USB serial.
 
-Subsequent user checks confirmed normal-UI power off/on, Volume Up and held
-repeats, plus IR before and after side-button sleep/wake while undocked.
+Owner acceptance on `.167.dev` confirmed undocked display standby/wake with
+keys, IR before and after wake, Bluetooth with the existing bond after reboot,
+and dock/undock status. These checks establish the OTA kernel/boot update
+behavior; they do not claim quantitative standby savings or battery
+calibration.
 
-Still required: charging transitions and clean installer payload boot/recovery
-validation. Preserve the working boot image and separate recovery
-before any further kernel experiments.
+Clean installer payload boot/recovery validation remains a separate full
+installer gate. It does not limit this OTA alpha's eligibility. Preserve the
+working boot image and separate recovery before any further kernel experiments.
 
 Output telemetry remains compiled into this exact tested binary but defaults
 off. Leave `couch_irtx.output_telemetry` disabled for normal use. Removing compiled

@@ -31,5 +31,5 @@ site/usage/screenshots/
 .codex/
 .agents/
 
-# Cargo build output; was committed by mistake and costs ~870 MB per checkout.
-spike/slint-fb/target/
+# Cargo build output. This matches target directories at every depth.
+target/

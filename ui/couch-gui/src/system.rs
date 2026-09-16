@@ -17,24 +17,9 @@ pub fn report_gui_health() -> std::io::Result<()> {
     std::fs::rename(temporary, "/tmp/couch-gui.health")
 }
 
-const BATTERY: &str = "/sys/class/power_supply/battery/";
-
-pub struct Battery {
-    pub percent: i32,
-    pub charging: bool,
-}
-
-/// Reads the kernel's own gauge. "status" is the authoritative charging signal:
-/// usb/online only reports that a cable is present, which it always is while
-/// the remote sits on a bench being debugged, so it would read as charging for
-/// ever. Returns None rather than inventing a figure if the gauge is missing.
-pub fn battery() -> Option<Battery> {
-    let percent: i32 = read_trimmed(&format!("{BATTERY}capacity"))?.parse().ok()?;
-    let status = read_trimmed(&format!("{BATTERY}status")).unwrap_or_default();
-    Some(Battery {
-        percent: percent.clamp(0, 100),
-        charging: status == "Charging" || status == "Full",
-    })
+/// Read the kernel's estimate and supply state without inventing missing data.
+pub fn battery() -> crate::battery::Battery {
+    crate::battery::Battery::read(std::path::Path::new("/sys/class/power_supply"))
 }
 
 /// Wi-Fi signal, as bars: 0 is disconnected, 1 through 4 climb with the RSSI.
@@ -137,10 +122,10 @@ fn read_trimmed(path: &str) -> Option<String> {
 /// /sbin.
 // --- user settings ----------------------------------------------------------
 //
-// Brightness, key backlight and the two standby timeouts, chosen in the
-// settings menu or on the web UI's Remote settings page, kept across restarts
-// in one small file that couch-system's `ui_settings` module owns the format
-// of, so the web daemon reads and writes the same values.
+// Brightness, key backlight, standby timeouts and the status-bar battery
+// percentage, chosen in the settings menu or on the web UI's Remote settings
+// page, are kept across restarts in one small file that couch-system's
+// `ui_settings` module owns, so the web daemon reads and writes the same values.
 pub use couch_system::ui_settings::{DIM_LABELS, DIM_SECS, OFF_LABELS, OFF_SECS};
 pub type UiSettings = couch_system::ui_settings::Settings;
 

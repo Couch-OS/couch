@@ -2,10 +2,10 @@
   "schema": 1,
   "kind": "couch-ha100-kernel-candidate",
   "source_repository": "https://github.com/dangerouslaser/couch-kernel",
-  "source_commit": "08fd6f4d2efa7ff9ab4812dad931d95bc4735c7b",
+  "source_commit": "81d180fc19ec010783f203b4c201323a95dcc49a",
   "profile": "normal",
   "config_sha256": "f3d45767deaa2e2ccb1cd6dcda761887d1fd47f1e38ea862ff3b924d47be5916",
-  "zimage_sha256": "9ae91a2d2d4a5041f41311658ba57ff2087a1be9d0b8adf6f2448395e9fd4d34",
+  "zimage_sha256": "5a19cd5ffb363b057b4420347370c660c65d5c25f0b6eafff49074298a066e31",
   "compiler_sha256": "41ceccad5029346a47c485b1545b8c93e4c95ef670019a1c8b1b2b21779661a0",
   "container": "sha256:0555bb78c532853ec90a6c503095c070245f97d86ec2215072c5b45e8a345ef9",
   "installable": false,
@@ -17,11 +17,16 @@
     "Keys, key backlight and wake-from-standby on a key press with CONFIG_COUCH_HA100 unset, i.e. the vendor keypad path (HA100, 2026-09-14, .144-.149)",
     "Backported 4.4 Bluetooth core + hci_stp modules from the boot ramdisk (06b21c74 build, .154.dev): 6/6 toggle cycles, 0 STP timeouts, 0 chip resets, managed LE advertising (HA100, 2026-09-15)",
     "Keypad driver change (08fd6f4d, HA100 guard): 51 fast taps -> 51 presses/50 releases in 10 s with tools/keypad/keytap, kworker/0:1 at 1% during a 10 s hold (was ~20%), wake-from-standby on a key press, IR send (HA100 .160.dev, 2026-09-15)",
-    "Backported 4.4 core + hci_stp modules rebuilt for 08fd6f4d: Bluetooth up after the kernel change, LG bond kept across the runtime restart, kernel install and reboot; pairing mode + stable Wi-Fi-MAC-derived address validated with an LG OLED48B4 (.159/.160.dev, 2026-09-15)"
+    "Backported 4.4 core + hci_stp modules rebuilt for 08fd6f4d: Bluetooth up after the kernel change, LG bond kept across the runtime restart, kernel install and reboot; pairing mode + stable Wi-Fi-MAC-derived address validated with an LG OLED48B4 (.159/.160.dev, 2026-09-15)",
+    "81d180fc normal kernel built from clean couch-ha100 source with the pinned compiler/container and unchanged normal config (2026-09-16).",
+    "All four Bluetooth backport modules rebuilt for vermagic 3.18.79-couch-normal-g81d180fc19ec (2026-09-16).",
+    "81d180fc boot payload installed through the existing OTA activation path on HA100 .167.dev: new uname, healthy GUI/system service, ready cached gauge with advancing sequence, Discharging while unplugged, health Unknown, and no standard modeled-current/forced-temperature exports (2026-09-16).",
+    "OTA boot readback matches the pin; owner header and DTB preserved, previous boot backup verified, recovery partition unchanged, and boot-recovery flag cleared after healthy GUI startup (.167.dev, 2026-09-16).",
+    "Owner acceptance on .167.dev: undocked display standby/wake with keys, IR before and after wake, Bluetooth with the existing bond after reboot, and dock/undock status (2026-09-16)."
   ],
   "pending": [
-    "Source 08fd6f4d = couch-ha100 tip d417106e's keypad commit on top of hci_stp; modules from kernel/backports/build.sh are built for vermagic 3.18.79-couch-normal-g08fd6f4d2efa and ship in the .160.dev ramdisk.",
-    "EXPERIMENT (docs/kernel-backports-research.md): in-tree Bluetooth core off, CRYPTO_CMAC on, the backports-4.4.2-1 Bluetooth core loaded as modules from the boot ramdisk. Full hardware round redone on .160.dev (keys, hold, wake, IR, Wi-Fi with Bluetooth, LG pairing); remaining before promotion: the per-device bond work (PR #167 and the model/UI PR).",
-    "Clean installer image and recovery validation; release signing and corresponding-source/license review"
+    "Battery pack capacity, maximum charge voltage and thermistor calibration remain unverified; this candidate does not change charge limits, pack profile or temperature calibration.",
+    "Clean installer image and recovery validation remain separate full-installer gates and do not limit OTA alpha eligibility.",
+    "Corresponding-source/license review for the OTA kernel and boot dependencies remains required before production promotion."
   ]
 }
