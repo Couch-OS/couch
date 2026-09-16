@@ -16,7 +16,10 @@ GOVERNED = ('README.md', 'docs/installer.md', 'site/index.html')
 # Dated tags here are ordering examples and test fixtures, not install
 # instructions, so a bump has to leave them alone.
 EXEMPT = (SOURCE, 'tools/installer/couch_tui.py', 'tools/installer/release_discovery.py',
-          'tools/installer/test_release_discovery.py')
+          'tools/installer/test_release_discovery.py',
+          # Version-rendering and boot-release tests: sample tags, not install
+          # instructions, and one of them is whatever number a promotion takes.
+          'daemon/couch-updates/src/lib.rs')
 # v0.1.0-alpha.<date>.<n>. The leading v is optional because the site's JSON-LD
 # softwareVersion omits it, and the bounds keep .dev builds, the <date>.<n>
 # placeholders in the flow documents and older undated alphas out.
