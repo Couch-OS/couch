@@ -43,6 +43,10 @@ openssl rsa -in "$KEY_DIR/developer.rsa" -pubout \
   -out "$KEY_DIR/developer.rsa.pub"
 chmod 600 "$KEY_DIR/developer.rsa"
 
+# Inside the disposable Alpine packaging container:
+install -Dm644 "$KEY_DIR/developer.rsa.pub" \
+  /etc/apk/keys/developer.rsa.pub
+
 tools/integrations/build-apk.sh echo 0.1.0 \
   clients/target/armv7-unknown-linux-musleabihf/release/couch-plugin-echo \
   clients/couch-echo/plugin.json "$KEY_DIR/developer.rsa" build/integrations
@@ -53,15 +57,18 @@ tools/integrations/build-repository.sh "$KEY_DIR/developer.rsa" \
   build/integrations build/integration-repository
 ```
 
-The corresponding `.rsa.pub` must sit beside the private key. The build
-environment needs that public key in its APK key directory to check packages
-while `abuild` makes its local index. Publish the resulting repository directory
-over HTTPS; it contains `armv7/APKINDEX.tar.gz` and the signed APKs. Keep the
-private key on the packaging host. Provision only the public key in a dedicated
-Couch directory under `/opt/couch/integration-keys`. Integration-capable
-runtimes use `/opt/couch/integration-keys/official` by default; custom feeds use
-`/opt/couch/integration-keys/custom/NAME`. Do not add integration keys to
-Alpine's global `/etc/apk/keys`.
+The corresponding `.rsa.pub` must sit beside the private key. `abuild -r`
+creates and reads an intermediate APK index, so the disposable build container
+needs that public key in its own `/etc/apk/keys`. Publish the resulting
+repository directory over HTTPS; it contains `armv7/APKINDEX.tar.gz` and the
+signed APKs. Keep the private key on the packaging host or mount it only into
+the disposable container for packaging; never copy it to a device. Provision
+only the public key in a dedicated device directory under
+`/opt/couch/integration-keys`. Integration-capable runtimes use
+`/opt/couch/integration-keys/official` by default; custom feeds use
+`/opt/couch/integration-keys/custom/NAME`. The build container's global key
+directory does not authorize placing an integration key in the device's global
+Alpine `/etc/apk/keys`.
 
 On a Docker-capable Linux build host, `tools/integrations/smoke.sh OUTPUT_DIR`
 reads **every** entry in `integrations/catalog.json`, then performs the package
@@ -165,11 +172,40 @@ dedicated trust directory and base URL:
 ```
 
 There is no persistent repository configuration or repository-management UI
-yet. Repeat `--repository` for every repository install. A proposed official
-preview base is `https://dangerouslaser.github.io/couch-integrations/preview`,
-using the default `/opt/couch/integration-keys/official`; it is not a public
-feed until the signed index is deployed and the matching key is provisioned.
-The initial stable feed is intentionally empty.
+yet. Repeat `--repository` for every repository install.
+
+The public official feed bases are:
+
+```text
+https://dangerouslaser.github.io/couch-integrations/preview
+https://dangerouslaser.github.io/couch-integrations/stable
+```
+
+The installer appends `armv7`. Preview initially contains Denon. Stable serves
+a valid signed empty index and has no installable packages until a
+production-tier integration has validated hardware evidence.
+
+Download the official public key from
+`https://dangerouslaser.github.io/couch-integrations/preview/couch-integrations.rsa.pub`
+and provision it as
+`/opt/couch/integration-keys/official/couch-integrations.rsa.pub`. Verify its PEM
+file SHA-256 through a trusted source:
+
+```text
+80f3a73d86759cda103cb4f9a876cd4caee9d25c235c6d782b4be8a900b2696c
+```
+
+The official key directory is the runtime default, so the exact Denon preview
+install command is:
+
+```sh
+/opt/couch/runtime/current/couch-confd integrations \
+  install-repository couch-integration-denon \
+  --repository https://dangerouslaser.github.io/couch-integrations/preview
+```
+
+The released `.170` runtime predates the package host and cannot run this
+command. Install an integration-capable runtime first.
 
 ## Native-code boundary
 
