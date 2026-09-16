@@ -53,10 +53,18 @@ openssl genrsa -out "$KEY_DIR/developer.rsa" 4096
 openssl rsa -in "$KEY_DIR/developer.rsa" -pubout \
   -out "$KEY_DIR/developer.rsa.pub"
 chmod 600 "$KEY_DIR/developer.rsa"
+
+# Inside the disposable Alpine packaging container:
+install -Dm644 "$KEY_DIR/developer.rsa.pub" \
+  /etc/apk/keys/developer.rsa.pub
 ```
 
-Keep the private key on the packaging host. Only the `.rsa.pub` file belongs
-in a device trust directory.
+`abuild -r` creates and reads an intermediate APK index, so that disposable
+build container must trust the matching public key. Its `/etc/apk/keys` is
+build-only. Keep the private key on the packaging host or mount it only into
+that container for packaging. Never copy it to a device. Device trust remains
+separate under `/opt/couch/integration-keys`; do not put an integration key in
+the device's global Alpine `/etc/apk/keys`.
 
 ```sh
 tools/integrations/build-apk.sh \
@@ -197,7 +205,7 @@ whose signing key you trust.
 - Keep the signing key offline and distribute only its public half.
 - Test admission, install, upgrade, rollback, and removal on a disposable root.
 - State which Couch source or release the package was tested against.
-- Do not describe a repository as public until it is actually hosted.
+- Verify the signed index, public key, and package URLs after each deployment.
 
 ## Hosting a feed on GitHub
 
@@ -206,8 +214,8 @@ under an architecture directory. The public
 [`dangerouslaser/couch-integrations`](https://github.com/dangerouslaser/couch-integrations)
 repository holds publication policy, a pinned Couch source revision, and the
 Pages build and deployment workflow. Integration implementations and the
-admission catalog remain canonical in the Couch repository. GitHub Pages will
-serve this layout once feed publishing is enabled:
+admission catalog remain canonical in the Couch repository. GitHub Pages serves
+this layout:
 
 ```text
 preview/armv7/APKINDEX.tar.gz
@@ -215,12 +223,40 @@ preview/armv7/couch-integration-YOUR_ID-0.1.0-r0.apk
 stable/armv7/APKINDEX.tar.gz
 ```
 
-The proposed preview URL is
-`https://dangerouslaser.github.io/couch-integrations/preview`; the installer
-adds `armv7`. It is not a published feed until that URL serves a signed index
-and the matching official public key ships on Couch. The initial `stable` feed
-is deliberately empty; a preview Denon package does not become stable merely
-because it is hosted.
+The feed base URLs are:
+
+```text
+https://dangerouslaser.github.io/couch-integrations/preview
+https://dangerouslaser.github.io/couch-integrations/stable
+```
+
+The installer adds `armv7` when it fetches the index. `preview` initially
+contains the Denon integration. `stable` serves a valid signed empty index and
+contains no packages until an integration has production-tier hardware
+evidence; preview hosting does not make Denon stable.
+
+The official public key is
+[`couch-integrations.rsa.pub`](https://dangerouslaser.github.io/couch-integrations/preview/couch-integrations.rsa.pub).
+Its PEM file SHA-256 is:
+
+```text
+80f3a73d86759cda103cb4f9a876cd4caee9d25c235c6d782b4be8a900b2696c
+```
+
+Provision that file as
+`/opt/couch/integration-keys/official/couch-integrations.rsa.pub` and verify the
+fingerprint through a trusted source. On an integration-capable runtime, the
+official directory is the default, so the complete preview install command is:
+
+```sh
+/opt/couch/runtime/current/couch-confd integrations \
+  install-repository couch-integration-denon \
+  --repository https://dangerouslaser.github.io/couch-integrations/preview
+```
+
+The production `.170` runtime still predates the package host; publishing the
+feed does not make that command available until an integration-capable runtime
+is installed.
 GitHub Packages does not offer a native APK registry among its
 [supported formats](https://docs.github.com/en/packages/learn-github-packages/introduction-to-github-packages).
 Pages is suitable for an initial public feed within its
