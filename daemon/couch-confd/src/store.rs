@@ -306,6 +306,24 @@ impl Store {
         if_match: Option<u64>,
         f: impl FnOnce(&mut Config) -> T,
     ) -> Result<T, Error> {
+        self.mutate_inner(if_match, false, f)
+    }
+
+    /// Only the explicit migration route may transfer a receiver's owner.
+    pub(crate) fn mutate_migration<T>(
+        &mut self,
+        if_match: Option<u64>,
+        f: impl FnOnce(&mut Config) -> T,
+    ) -> Result<T, Error> {
+        self.mutate_inner(if_match, true, f)
+    }
+
+    fn mutate_inner<T>(
+        &mut self,
+        if_match: Option<u64>,
+        migration: bool,
+        f: impl FnOnce(&mut Config) -> T,
+    ) -> Result<T, Error> {
         if let Some(expected) = if_match {
             if expected != self.config.revision {
                 return Err(Error::Stale {
@@ -316,6 +334,11 @@ impl Store {
         }
         let mut next = self.config.clone();
         let out = f(&mut next);
+        if !migration && next.denon_migrations != self.config.denon_migrations {
+            return Err(Error::Compatibility(
+                "Use the explicit Denon migration or restore action before changing migration receipts".into(),
+            ));
+        }
         // An edit may carry the old shape (a whole-config PUT of an export,
         // a device set to the old integration); it lands in the current one.
         next.migrate();

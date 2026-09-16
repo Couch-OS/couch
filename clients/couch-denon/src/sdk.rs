@@ -227,6 +227,27 @@ mod tests {
     }
 
     #[test]
+    fn a_persisted_denon_input_binding_uses_the_receiver_token_unchanged() {
+        let host = avr(Script::new()
+            .on("SISAT/CBL", Reply::line("SISAT/CBL"))
+            .on("SI?", Reply::line("SISAT/CBL")));
+        let mut client = <Client as DeviceClient>::connect(&settings(&host)).unwrap();
+
+        let function = Function::parse("input:SAT/CBL").expect("a persisted input binding");
+        assert!(<Client as DeviceClient>::supports(&function));
+        assert_eq!(
+            DeviceClient::command(&mut client, "input:SAT/CBL"),
+            Ok(()),
+            "the SDK adapter must preserve a source token accepted by the native AVR client"
+        );
+        assert_eq!(
+            host.requests(),
+            ["SISAT/CBL", "SI?"],
+            "the input is sent once and confirmed with its own status prefix"
+        );
+    }
+
+    #[test]
     fn a_silent_receiver_times_out_rather_than_blocking_a_caller() {
         let host = avr(Script::new().otherwise(Reply::Silence));
         let mut client = <Client as DeviceClient>::connect(&settings(&host)).unwrap();

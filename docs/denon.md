@@ -38,3 +38,6 @@ commands without changing the production AVR's state.
 Protocol reference: [Denon Ethernet/RS-232 specification](https://downloads.denon.com/documentmaster/us/avr3313ci_avr3313_protocol_v04.pdf).
 Model-specific source IDs vary; discover them rather than assuming the renamed
 input's display label is its command token.
+
+The external-package pilot, its ownership handoff, and its dB/status limits are
+documented in [External integration migration](integration-migration.md).

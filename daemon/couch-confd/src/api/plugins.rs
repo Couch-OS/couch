@@ -105,6 +105,12 @@ impl Api {
             let result = match method {
                 "GET" => self.plugins.settings(connection, &id),
                 "POST" | "PUT" => {
+                    if self.with(|s| s.config().migrated_denon(&Id::new(connection)).is_some()) {
+                        return Reply::error(
+                            409,
+                            "Restore built-in Denon before changing a migrated receiver's settings",
+                        );
+                    }
                     let value = match parse(body) {
                         Ok(value) => value,
                         Err(reply) => return reply,

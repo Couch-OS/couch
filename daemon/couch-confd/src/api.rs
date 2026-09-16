@@ -26,6 +26,7 @@ mod denon;
 mod device_ir;
 mod ha;
 mod hue;
+mod integration_migrations;
 mod integration_packages;
 mod ir;
 mod kodi;
@@ -364,6 +365,9 @@ impl Api {
         }
         if rest.first() == Some(&"connections") {
             return self.connection_route(&method, &rest[1..], &body, if_match);
+        }
+        if rest.starts_with(&["integrations", "migrations", "denon"]) {
+            return self.denon_migration_route(&method, &rest[3..], &body);
         }
         if rest.first() == Some(&"integrations") {
             return self.integration_route(&method, &rest[1..], &body);

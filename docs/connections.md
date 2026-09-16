@@ -63,10 +63,12 @@ cannot ship executable UI code, arbitrary HTML, JavaScript or Slint.
 Removing or temporarily losing a package does not discard its connection,
 devices or mappings. The cached manifest fields keep the configuration valid
 and readable; settings and live controls remain disabled until a compatible
-package is installed again. Because the `Plugin` provider is a new enum variant
-that older cores cannot deserialize, the daemon refuses the first external
-connection until both the active and retained rollback core understand
-integration protocol 1. Package rollback is independent after that guard.
+package is installed again. The first integration-capable core writes a
+legacy-readable configuration projection for older rollback cores. New package
+connections are inactive there; explicitly migrated Denon connections retain
+their original native provider so older cores can still control them. See
+[Denon migration](integration-migration.md) and
+[configuration recovery](runtime-updates.md#integration-configuration-across-core-rollback).
 
 ## Kodi credentials
 

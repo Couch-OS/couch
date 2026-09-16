@@ -21,6 +21,7 @@ mod activity_sequences;
 mod area_shortcuts;
 pub mod areas;
 mod home_assistant;
+mod integration_migrations;
 pub mod integrations;
 pub mod overview;
 pub mod rooms;

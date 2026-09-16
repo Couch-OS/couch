@@ -34,6 +34,7 @@ pub struct Runtime {
     packages: couch_integrations::Store,
     endpoints: Mutex<HashMap<String, Running>>,
     catalog_generations: Mutex<HashMap<String, String>>,
+    retired: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Runtime {
@@ -46,6 +47,7 @@ impl Runtime {
             packages: couch_integrations::Store::new(directory),
             endpoints: Mutex::new(HashMap::new()),
             catalog_generations: Mutex::new(HashMap::new()),
+            retired: Mutex::new(Default::default()),
         }
     }
 
@@ -140,6 +142,85 @@ impl Runtime {
         Ok(redacted(&manifest, Some(&settings)))
     }
 
+    /// Keep package selection and connection settings stable through the atomic
+    /// config commit. Configure validates settings and does not contact an AVR.
+    pub fn migrate_denon<T>(
+        &self,
+        connection: &str,
+        settings: &couch_denon::Settings,
+        commit: impl FnOnce(&Manifest) -> Result<T, String>,
+    ) -> Result<T, String> {
+        settings.validate().map_err(|e| e.to_string())?;
+        let _lease = self.packages.read_lease().map_err(|e| e.to_string())?;
+        let (directory, manifest) = self
+            .packages
+            .resolve_wait("denon", STORE_READ_WAIT)
+            .map_err(|e| e.to_string())?;
+        let path = self.settings_path(connection).map_err(|e| e.to_string())?;
+        let lock = crate::api::connections::lock_for(&path);
+        let _guard = lock
+            .try_lock()
+            .map_err(|_| "Integration connection is busy")?;
+        let value = serde_json::to_value(settings).map_err(|e| e.to_string())?;
+        let value = manifest.with_defaults(value).map_err(|e| e.to_string())?;
+        let mut host = couch_plugin::Host::spawn(&directory, &manifest, Duration::from_secs(3))
+            .map_err(|e| e.to_string())?;
+        host.configure(value.clone()).map_err(|e| e.to_string())?;
+        drop(host);
+        let saved = load_settings(&path).map_err(|e| e.to_string())?;
+        // Never overwrite unrelated settings retained from an earlier package
+        // connection that happened to use this ID.
+        if saved.as_ref().is_some_and(|saved| saved != &value) {
+            return Err("Retained package settings differ from this built-in connection".into());
+        }
+        let parent = path.parent().ok_or("Invalid settings path")?;
+        fs::create_dir_all(parent).map_err(|_| "Cannot create connection settings directory")?;
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "Cannot protect connection settings directory")?;
+        couch_sdk::save_private(&path, &value).map_err(|_| "Cannot save integration settings")?;
+        // A failed config commit leaves an inert, reusable prepared settings
+        // file. Native config remains authoritative, including across reboot.
+        let result = commit(&manifest)?;
+        self.retired
+            .lock()
+            .map_err(|_| "Integration registry lock failed")?
+            .remove(connection);
+        Ok(result)
+    }
+
+    /// Drain the child before native ownership can resume. Also reject a request
+    /// whose provider lookup raced the config switch and reaches execute later.
+    pub fn restore_denon<T>(
+        &self,
+        connection: &str,
+        commit: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let path = self.settings_path(connection).map_err(|e| e.to_string())?;
+        let lock = crate::api::connections::lock_for(&path);
+        let _guard = lock
+            .try_lock()
+            .map_err(|_| "Integration connection is busy")?;
+        self.retired
+            .lock()
+            .map_err(|_| "Integration registry lock failed")?
+            .insert(connection.into());
+        let endpoint = self
+            .endpoints
+            .lock()
+            .map_err(|_| "Integration registry lock failed")?
+            .remove(connection);
+        drop(endpoint); // Endpoint joins its worker and reaps the child.
+        let result = commit();
+        if result.is_err() {
+            self.retired
+                .lock()
+                .map_err(|_| "Integration registry lock failed")?
+                .remove(connection);
+        }
+        result
+    }
+
     pub fn execute(
         &self,
         connection: &str,
@@ -157,6 +238,14 @@ impl Runtime {
         let path = self.settings_path(connection)?;
         let lock = crate::api::connections::lock_for(&path);
         let _guard = lock.try_lock().map_err(|_| Error::Busy)?;
+        if self
+            .retired
+            .lock()
+            .map_err(|_| Error::Transport)?
+            .contains(connection)
+        {
+            return Err(Error::Invalid);
+        }
         let generation = self
             .packages
             .generation(plugin)
