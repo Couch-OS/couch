@@ -11,6 +11,7 @@ on:
       - 'clients/**'
       - 'daemon/**'
       - 'model/**'
+      - 'web/**'
       - 'integrations/**'
       - 'tools/integrations/**'
       - 'tools/tests/integrations-e2e.py'
@@ -41,7 +42,7 @@ jobs:
         run: |
           changed=true
           if [ "$EVENT_NAME" = pull_request ] && git diff --quiet "$BASE_SHA"...HEAD -- \
-            clients daemon model integrations tools/integrations \
+            clients daemon model web integrations tools/integrations \
             tools/tests/integrations-e2e.py .github/workflows/integration-admission.yml; then
               changed=false
           fi
@@ -94,6 +95,45 @@ jobs:
       - name: Exercise daemon, package, HTTP, panel, and fake device together
         run: python3 tools/tests/integrations-e2e.py
 
+  management-browser:
+    needs: changes
+    if: needs.changes.outputs.integration == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web
+      - name: Install the browser bundle builder
+        run: cargo install --version 0.21.14 --locked trunk
+      - name: Build the package-management UI
+        run: trunk build --release
+        working-directory: web/couch-web
+      - name: Install browser test tooling
+        run: |
+          npm install --prefix build/webui-review playwright@1.57.0
+          build/webui-review/node_modules/.bin/playwright install --with-deps chromium
+      - name: Exercise package management in Chromium
+        run: |
+          python3 -m http.server 18093 --bind 127.0.0.1 --directory web/couch-web/dist > "$RUNNER_TEMP/couch-web.log" 2>&1 &
+          COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/integrations.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-management-browser
+          path: |
+            build/webui-review/integrations-mobile.png
+            build/webui-review/integrations-desktop.png
+            ${{ runner.temp }}/couch-web.log
+          if-no-files-found: warn
+
   native-package:
     needs: changes
     if: needs.changes.outputs.integration == 'true'
@@ -127,7 +167,7 @@ jobs:
 
   admission:
     if: always()
-    needs: [changes, catalog, product-flow, native-package]
+    needs: [changes, catalog, product-flow, management-browser, native-package]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every applicable admission job
@@ -136,14 +176,17 @@ jobs:
           INTEGRATION: ${{ needs.changes.outputs.integration }}
           CATALOG: ${{ needs.catalog.result }}
           PRODUCT: ${{ needs.product-flow.result }}
+          BROWSER: ${{ needs.management-browser.result }}
           PACKAGE: ${{ needs.native-package.result }}
         run: |
           test "$CHANGES" = success
           test "$CATALOG" = success
           if [ "$INTEGRATION" = true ]; then
             test "$PRODUCT" = success
+            test "$BROWSER" = success
             test "$PACKAGE" = success
           else
             test "$PRODUCT" = skipped
+            test "$BROWSER" = skipped
             test "$PACKAGE" = skipped
           fi

@@ -70,7 +70,9 @@ pub use remote::RemoteSettings;
 mod icon;
 mod id;
 mod seed;
+mod storage;
 mod validate;
+pub use storage::StoredConfig;
 
 pub use device::{
     Action, Device, DeviceBluetooth, DeviceIr, DeviceKind, Integration, Transport,
@@ -100,7 +102,8 @@ pub type ActivityId = Id;
 /// a file from the future rather than silently dropping what it cannot parse.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// The whole configuration, as it is stored on disk.
+/// The complete configuration exchanged by the API. [`StoredConfig`] wraps it
+/// on disk so older runtimes can read a compatible projection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub schema_version: u32,

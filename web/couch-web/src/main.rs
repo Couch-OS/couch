@@ -301,6 +301,7 @@ fn Shell() -> impl IntoView {
             {tabs(app, route, &[
                 (Route::Overview, "Overview"),
                 (Route::Connections, "Connections"),
+                (Route::Integrations, "Integrations"),
                 (Route::Rooms, "Rooms & devices"),
                 (Route::Activities, "Activities"),
                 (Route::Areas, "Areas"),

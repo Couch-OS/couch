@@ -21,6 +21,12 @@ An APK contains exactly:
 
 The ID in the directory, manifest, package name, and binary name must match.
 The manifest's executable path is relative to the integration directory.
+Every installed payload change, including a rebuilt executable or changed
+manifest, **must bump `manifest.version` and the matching APK `pkgver`**.
+Couch stores immutable `ID/VERSION` slots and rejects different bytes under an
+existing version. Publishing only an APK revision change such as `-r0` to `-r1`
+cannot replace that slot or serve as an integration update. The helper emits
+`-r0` for each new manifest version.
 
 Candidates are unpacked into a private staging root and audited before
 activation. Couch rejects links, devices, FIFOs, sockets, set-id or
@@ -63,8 +69,9 @@ install -Dm644 "$KEY_DIR/developer.rsa.pub" \
 build container must trust the matching public key. Its `/etc/apk/keys` is
 build-only. Keep the private key on the packaging host or mount it only into
 that container for packaging. Never copy it to a device. Device trust remains
-separate under `/opt/couch/integration-keys`; do not put an integration key in
-the device's global Alpine `/etc/apk/keys`.
+separate in Couch's repository-scoped directories or an explicitly selected CLI
+key directory; do not put an integration key in the device's global Alpine
+`/etc/apk/keys`.
 
 ```sh
 tools/integrations/build-apk.sh \
@@ -80,14 +87,28 @@ architecture to `armv7`, and adds no install scripts.
 
 ## Trust
 
-Both sideload and repository installation require a valid APK signature from a
-key already provisioned in the selected integration trust directory. Sideload
-does not mean unsigned. Keep each feed's public keys under a dedicated path
-such as `/opt/couch/integration-keys/custom/my-feed`; do not add integration
-keys to Alpine's global `/etc/apk/keys`. An integration-capable runtime defaults
-to `/opt/couch/integration-keys/official`. Pass `--keys-dir` explicitly for a
-custom or developer feed so it cannot inherit official or unrelated system
-trust. Never commit a private signing key or copy it to a device or package.
+Both sideload and repository installation require a valid native APK signature.
+Sideload does not mean unsigned. The integration-capable runtime embeds the
+official public key in `couch-confd`, which arrives through the signed core
+update. Official web or CLI installation needs no separate key-file transfer.
+The CLI's historical default `/opt/couch/integration-keys/official` is now a
+selector for the embedded key, materialized in the private package store at
+`/opt/couch/integrations/.official-keys` (`COUCH_INTEGRATIONS_DIR` overrides the
+store root). Files added to the historical directory do not add official trust.
+
+For a custom feed, use the paired web **Integrations** page to enter its HTTPS
+base URL and public PEM key, compare the displayed SHA-256 fingerprint with the
+owner's published value, then select **Trust repository**. The URL and key are
+persisted only after confirmation, with a trust directory scoped to that
+repository and fingerprint. Couch does not automatically fetch or trust a
+custom feed's key. Removing its repository record leaves installed packages and
+saved connection settings intact.
+
+For a manual custom or developer CLI install, provision only the public key in
+a dedicated path such as `/opt/couch/integration-keys/custom/my-feed` and pass
+`--keys-dir` explicitly. That option still reads the selected custom directory;
+it does not inherit official or unrelated system keys. Never commit a private
+signing key or copy it to a device or package.
 
 For a repository, collect signed APKs and create a signed Alpine index:
 
@@ -98,8 +119,31 @@ tools/integrations/build-repository.sh \
   build/repository
 ```
 
-Host that directory over HTTPS after provisioning the matching public key on
-the Couch device.
+Host that directory over HTTPS and register its public key through the paired
+web page, or select a manually provisioned custom key directory in the CLI.
+
+## Manage packages in the paired web UI
+
+After the first integration-capable core update, open **Integrations** in the
+paired configuration web UI. **Refresh packages** verifies signed indexes from
+the built-in Stable and Preview sources and any confirmed custom repositories.
+Choose **Install**, **Update to …**, **Restore previous version**, or
+**Remove package** as appropriate. Operations report progress and failure;
+removal retains saved connections and credentials. The page distinguishes a
+verified previous-version fallback from a missing or invalid package. Downloads
+and installation follow explicit user actions; package updates are not automatic.
+
+An older retained core does not force a second upgrade before integrations can
+be enabled. The configuration file contains an old-readable projection and a
+complete modern extension. Rollback keeps built-in devices usable; external
+controls require the capable core. If the old core saves edits, re-upgrade keeps
+those edits and offers an explicitly restorable recovery export rather than
+automatically reintroducing deleted bindings. The recovery import replaces the
+whole configuration, so export the current house first.
+
+The following SSH CLI remains supported for development, signed sideloads and
+manual repair. Web repository registration and CLI `--repository` selection are
+separate workflows.
 
 ## Install and operate on a remote
 
@@ -169,9 +213,9 @@ Installing with `apk add` directly is not equivalent: it bypasses Couch's
 payload audit, protocol handshake, immutable slot store, activation record,
 and rollback path.
 
-Custom repositories use the same CLI. Couch does not currently save repository
-URLs or expose repository management in the web UI, so every repository
-installation supplies the URL and its dedicated key directory explicitly:
+Custom repositories can be saved in the paired web UI as described above. A
+manual CLI installation still supplies its URL and dedicated key directory on
+each invocation:
 
 ```sh
 /opt/couch/runtime/current/couch-confd integrations \
@@ -200,7 +244,7 @@ whose signing key you trust.
 
 ## Distribution checklist
 
-- Use a unique ID and a version that matches the embedded manifest.
+- Use a unique ID and a version that matches the embedded manifest; bump it for every payload change.
 - Publish source and license information required by your dependencies.
 - Keep the signing key offline and distribute only its public half.
 - Test admission, install, upgrade, rollback, and removal on a disposable root.
@@ -212,10 +256,15 @@ whose signing key you trust.
 An APK feed is static files: a signed `APKINDEX.tar.gz` and its signed APKs
 under an architecture directory. The public
 [`dangerouslaser/couch-integrations`](https://github.com/dangerouslaser/couch-integrations)
-repository holds publication policy, a pinned Couch source revision, and the
-Pages build and deployment workflow. Integration implementations and the
-admission catalog remain canonical in the Couch repository. GitHub Pages serves
-this layout:
+repository holds publication policy, the immutable source graph, and the Pages
+build and deployment workflow. The staged schema-2 source-pin graph pins the
+shared Couch tooling and every selected integration repository independently at
+full commits. Each integration repository owns `integration.json`, `plugin.json`,
+its lock file, implementation, and reusable-harness tests. Couch remains the
+single owner of the SDK, framed protocol, admission harness, and APK tooling;
+integration repositories pin `couch-plugin` and `couch-sdk` to the same full
+Couch commit and reuse `couch-plugin::testing` instead of copying the protocol. GitHub
+Pages serves this layout:
 
 ```text
 preview/armv7/APKINDEX.tar.gz
@@ -243,10 +292,9 @@ Its PEM file SHA-256 is:
 80f3a73d86759cda103cb4f9a876cd4caee9d25c235c6d782b4be8a900b2696c
 ```
 
-Provision that file as
-`/opt/couch/integration-keys/official/couch-integrations.rsa.pub` and verify the
-fingerprint through a trusted source. On an integration-capable runtime, the
-official directory is the default, so the complete preview install command is:
+The integration-capable runtime already embeds that public key. Inspect the
+published fingerprint through a trusted source when auditing it; do not add it
+to Alpine's global key store. The complete manual preview install command is:
 
 ```sh
 /opt/couch/runtime/current/couch-confd integrations \
@@ -268,15 +316,18 @@ Publishing needs a trusted post-merge or approved release workflow, protected
 signing-key access, and Pages deployment permissions. Never expose the signing
 key to pull-request builds. Require admission before publication, publish only
 eligible catalog tiers, retain prior immutable package versions for rollback,
-and deploy the complete index and package set together. Archives and release
-receipts can also live in GitHub Releases.
+record the integration repository and commit, SDK repository and commit,
+tooling repository and commit, and binary and manifest hashes in schema-2
+provenance. Deploy the complete index and package set together. Archives and release receipts can also live in GitHub Releases.
 
-Provision an official public trust key on the remote once. The current CLI does
-not persist the repository URL, so each install still names the preview or
-stable URL. Future integration releases can then ship independently of the
-core runtime. Key rotation must overlap trusted old and new keys before
-removing the old key. Changing hosting does not remove the initial runtime
-update needed to install the plugin host and package manager.
+The core update supplies the official trust key and the paired web page retains
+confirmed custom repositories. The CLI does not persist its `--repository`
+argument, so manual installations still name the preview or stable URL.
+Integration releases can then ship independently of the core runtime. Official
+key rotation requires a reviewed core trust update and coordinated feed signing;
+it cannot be authorized by files added to the old default key directory.
+Changing hosting does not remove the first runtime update needed to install the
+plugin host and package manager.
 
 ## Source references
 

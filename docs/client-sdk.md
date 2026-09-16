@@ -17,8 +17,9 @@ behaves as you assumed; that boundary is spelled out at the end.
 Existing clients remain directly linked into the configuration daemon and
 device GUI. New network integrations can also implement `DeviceClient` and
 run through `clients/couch-plugin` as independent executables. Echo and Denon
-provide both forms. The SDK is still an in-tree crate, not a crates.io release;
-the installation boundary is a versioned JSON protocol, not a Rust ABI.
+provide both forms. The SDK is maintained in this repository rather than
+crates.io; an external integration pins the Couch Git repository at a full
+commit. The installation boundary is a versioned JSON protocol, not a Rust ABI.
 
 An external package supplies `plugin.json` with its identity, protocol version,
 capabilities, relative executable path, and declarative settings. The daemon
@@ -58,6 +59,26 @@ settings, capabilities, and device transport, and make its embedded manifest
 match. Register the new crate only in the clients workspace when developing
 in-tree. Build the ARM executable with `--target armv7-unknown-linux-musleabihf`
 for the remote. A host binary cannot run on the remote.
+
+For an independent repository, depend on both shared crates at the same exact
+Couch revision:
+
+```toml
+[dependencies]
+couch-plugin = { git = "https://github.com/dangerouslaser/couch.git", rev = "FULL_COMMIT" }
+couch-sdk = { git = "https://github.com/dangerouslaser/couch.git", rev = "FULL_COMMIT" }
+
+[dev-dependencies]
+couch-plugin = { git = "https://github.com/dangerouslaser/couch.git", rev = "FULL_COMMIT", features = ["testing"] }
+couch-sdk = { git = "https://github.com/dangerouslaser/couch.git", rev = "FULL_COMMIT", features = ["testing"] }
+```
+
+Commit `Cargo.lock`. Use `couch_plugin::serve` for the executable and the
+cases in `couch_plugin::testing` for admission. Do not copy `protocol.rs`,
+manifest validation, the framed transport, or the test harness into the
+integration repository: that creates a second contract which can drift while
+still appearing to implement protocol v1. Updating the SDK is an explicit pin
+and lock-file change followed by the complete integration suite.
 
 The manifest's `capabilities` must exactly match `DeviceClient::capabilities()`.
 Settings use `text`, `secret`, `integer`, or `boolean` fields; secret fields
@@ -455,8 +476,9 @@ Notes that will save you a day:
 
 - **No runtime loading, no ABI, no distribution.** Covered above, and worth
   repeating because every "SDK" implies otherwise.
-- **The SDK is 0.1.0 and in-tree.** It has no stability guarantee and no
-  release. Expect to change with it.
+- **The SDK is 0.1.0 and sourced from this repository.** It has no stability
+  guarantee or crates.io release. Independent repositories must pin one full
+  Couch commit and update deliberately.
 - **Two existing clients have been adapted.** `couch-denon` uses the shared
   settings helper and implements `DeviceClient`; `couch-sonos` implements both
   over its HTTPS Control API transport, and shows what a client does when the
