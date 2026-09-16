@@ -7,9 +7,10 @@ up bridge, dbus, bluetoothd and `couch-bt-hid`; a real TV paired to "Couch
 Remote" and took volume keys; and a Bluetooth device routes
 the remote's mapped buttons and the one-way TV screen over Bluetooth
 ([user guide](bluetooth-tv.md)). Idle Bluetooth has no measurable power or
-Wi-Fi cost. Pairing is a deliberate two-minute window from Settings or the
-web page ([pairing mode](#pairing-mode)); outside it the remote is not
-discoverable. The daemon holds any number of TV bonds and lets exactly one
+Wi-Fi cost, but a *connected* device does have a Wi-Fi cost (see
+[status](#status-experimental)). Pairing is a deliberate two-minute window
+from Settings or the web page ([pairing mode](#pairing-mode)); outside it the
+remote is not discoverable. The daemon holds any number of TV bonds and lets exactly one
 of them, the active bond, connect ([bonds and the active
 link](#bonds-and-the-active-link)); the app chooses which, and it chooses
 per device (2026-09-15, host-tested, hardware pending): a device carries its
@@ -26,6 +27,26 @@ exists today" describes the starting point, the
 and [staging checklist](#staging-checklist) what was done. Kernel-side tasks are mirrored in the kernel tree at
 `Documentation/couch/bluetooth.md` on the `bluetooth` branch of
 [dangerouslaser/couch-kernel](https://github.com/dangerouslaser/couch-kernel).
+
+## Status: experimental
+
+**The feature works; Wi-Fi alongside it does not yet.** Pairing, a bond per
+device, one active link and keys that survive a reboot are all in place, but a
+*connected* Bluetooth device can slow the remote's Wi-Fi badly. Measured
+2026-09-15 against a MacBook link (15 ms connection interval, no slave
+latency): a 355 KB download over Wi-Fi took 40 s and stalled, against about
+1 s with no Bluetooth link, and an update check failed outright. The LG
+negotiated 60 ms with slave latency 5, which should cost far less, but that
+has not been measured. The user-visible consequence is that Home Assistant
+control, the web UI and update downloads may be slow or fail while a device is
+linked, and the workaround is to turn Bluetooth off; the site, the
+[user guide](bluetooth-tv.md), Settings › Bluetooth and the web UI's Remote
+page all say so. The fix to try is asking for a longer connection interval and
+slave latency in a connection-parameter update once the link is up, which is
+not implemented. Until then Bluetooth is labelled experimental everywhere a
+user meets it. It is also off after every restart — the toggle does not start
+the stack at boot, so it has to be switched on by hand each time — which is a
+known gap on the list rather than a settled choice.
 
 ## Goal
 
@@ -482,6 +503,15 @@ are `apk add`ed over SSH on the development remote meanwhile.
    Wi-Fi only under sustained BT activity. A HID peripheral advertises and holds
    a low-rate connection rather than scanning, so its expected impact is small;
    confirm once HID lands, and prefer duty-cycled advertising over any scanning.
+
+   **That last expectation was wrong, measured 2026-09-15 once HID landed.** A
+   *connected* device is not cheap: on a MacBook link (15 ms connection
+   interval, no slave latency) a 355 KB download over Wi-Fi took 40 s and
+   stalled, against about 1 s with no link, and an update check failed. A
+   gentler interval is expected to cost much less (the LG negotiated 60 ms with
+   slave latency 5) but has not been measured, and nothing yet asks for one.
+   This is the reason Bluetooth ships labelled experimental
+   ([status](#status-experimental)).
 3. *HID over GATT.* **In progress (`clients/couch-bt-hid`, 2026-09-14).** A
    separate daemon on zbus (bluer was rejected: it needs libdbus, a C lib).
    It registers a HID-over-GATT application (Device Information, Battery, and

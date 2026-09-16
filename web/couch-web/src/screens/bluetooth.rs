@@ -190,7 +190,7 @@ pub fn device_bluetooth(app: App, _config: &Config, room: &Id, device: &Device) 
     };
     let bonded = bond.is_some();
     view! {<section class="device-ir device-bluetooth">
-        <div class="device-ir-heading"><div><h4>"Bluetooth"</h4><p class="dim">{bonded_line}</p></div>
+        <div class="device-ir-heading"><div><h4>"Bluetooth · experimental"</h4><p class="dim">{bonded_line}</p></div>
         <div class="power-actions">
             <button type="button" class="ghost" disabled=move || { let b = remote.get().bluetooth; app.busy.get() || !b.running || b.pairing.in_window() } on:click=move |_| control("pair", true)>{if bonded {"Pair again"} else {"Pair over Bluetooth"}}</button>
             {move || { let b = remote.get().bluetooth; (b.pairing.in_window() && b.pairing.is_for(&id.get_value())).then(|| view! {
@@ -202,6 +202,7 @@ pub fn device_bluetooth(app: App, _config: &Config, room: &Id, device: &Device) 
                 app.run(api::put(path.get_value(), next));
             }>"Unpair"</button>})}
         </div></div>
+        <p class="dim">"Experimental: while a device is connected over Bluetooth the remote's Wi-Fi can slow badly, so Home Assistant control, this web UI and update downloads may be slow or fail. Turning Bluetooth off under Remote restores them."</p>
         <p role="status">{move || if note.get().is_empty() { status() } else { note.get() }}</p>
     </section>}.into_any()
 }
