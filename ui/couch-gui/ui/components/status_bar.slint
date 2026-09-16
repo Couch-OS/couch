@@ -40,9 +40,8 @@ export component StatusBar inherits Rectangle {
         width: max(0px, 2 * (wifi.x - 12px) - parent.width);
         horizontal-alignment: center;
         overflow: elide;
-        // Tracked out, not scaled up: 15px is a size the section labels and the
-        // keyboard already embed, and the 16px this asked for was 21KB of
-        // charset for one line.
+        // Match the section labels and keyboard at 15px, with letter spacing
+        // to keep the area title distinct from the clock.
         font-size: 15px;
         letter-spacing: 0.12 * 15px;
         color: Theme.accent;

@@ -181,6 +181,11 @@ that the field is live, and it stops when the keyboard is dismissed.
 
 ## What it costs
 
+The measurements in this section describe the original bitmap-font build.
+The current GUI uses [SDF font embedding](slint-notes.md#glyph-embedding-happens-at-compile-time),
+which shares one scalable glyph set per face; the historical per-size font
+costs below no longer apply to it.
+
 Measured, not estimated. `ui/keyboard-probe` builds the same minimal binary for
 `armv7-unknown-linux-musleabihf` three ways, with couch-gui's Slint feature set
 (`default-features = false`, no `std`) and its release profile:

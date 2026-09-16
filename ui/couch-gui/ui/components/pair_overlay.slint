@@ -38,16 +38,9 @@ export component PairOverlay inherits Rectangle {
             border-color: Theme.accent;
             Text {
                 text: root.pin;
-                // 48px rather than the 72px this first wanted. Glyphs are
-                // rasterised into the binary per size used, for the whole
-                // charset rather than the ten characters this needs, so the
-                // jump to 72px cost 327KB against 162KB here - and the remote
-                // is in your hand while you type, not across the room.
-                //
-                // The two labels around it are at 15px for the same reason
-                // read the other way: the section labels and the keyboard
-                // already pay for that size, and 16px, which is what they
-                // were, was a size of their own for 21KB.
+                // 48px keeps the PIN readable while the remote is in hand.
+                // This size originally also reduced the per-size bitmap font
+                // payload; SDF now shares one glyph set across sizes.
                 font-size: 48px;
                 font-weight: 700;
                 letter-spacing: 8px;

@@ -101,3 +101,31 @@ Full logs and binary hashes are in [the benchmark record](performance/ha100-2026
 
 Mimalloc remains opt-in: the modest additional gain merits longer voice/UI
 soak testing before adding a C toolchain dependency to every deployment build.
+
+## Cyrillic font comparison (2026-09-16)
+
+Compared the bitmap-font Cyrillic build with SDF on the HA100, using the same
+ARMv7 release profile and musl allocator. Each binary ran for 22 seconds with
+`COUCH_DEMO=1 COUCH_NAV=1 COUCH_SLIDE=1`, followed by restoration of the installed
+GUI. The device was on battery, with the interactive governor and cores 0–2
+online; CPU frequency at the end of each run was 604.5MHz. Both builds used
+the same bounded Cyrillic character set.
+
+| Font build | Frames reported | Mean work | Worst observed work | RSS |
+|---|---:|---:|---:|---:|
+| Bitmap, run 1 | 543 | 3.869ms | 19.717ms | 13,268KiB |
+| SDF | 545 | 4.072ms | 21.120ms | 12,088KiB |
+| Bitmap, run 2 | 544 | 3.872ms | 19.943ms | 12,944KiB |
+
+SDF added about 0.20ms (5.2%) to mean rendering work in this sample and used
+856–1,180KiB less resident memory. The weighted means cover the reported
+five-second windows, excluding deliberate frame pacing; these short runs do
+not establish input latency or worst-case bounds. This tradeoff buys a smaller
+executable and runtime package even compared with the original Latin-only
+build; see [font size measurements and UI samples](slint-notes.md#glyph-embedding-happens-at-compile-time).
+
+The production-font regression test also passed on the HA100, rendering all
+76 seeded Cyrillic characters and the runtime temperature symbols in both
+Lato weights. Headless production-UI samples cover small labels, thermostat
+targets, pairing digits and keyboard text. Recheck appearance and timing when
+changing the font inputs or Slint version.

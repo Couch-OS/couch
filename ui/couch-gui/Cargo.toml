@@ -44,7 +44,7 @@ qrcodegen = "1.8"
 mimalloc = { version = "0.1.52", default-features = false, optional = true }
 
 [build-dependencies]
-slint-build = "1.17"
+slint-build = { version = "1.17", features = ["sdf-fonts"] }
 
 [features]
 mimalloc = ["dep:mimalloc"]

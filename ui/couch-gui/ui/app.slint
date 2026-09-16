@@ -163,10 +163,12 @@ export component App inherits Window {
     public function focus-camera(){camera-page.take-focus();}
     in-out property <bool> thermostat-shown;
     in-out property <string> thermostat-title;
-    // Runtime HA values include these glyphs. Software font embedding scans
-    // Slint literals, so retain degree, range dash and unknown placeholders.
+    // Runtime HA text includes degree/range symbols and unknown placeholders, while
+    // entity names may contain Cyrillic. Software font embedding scans Slint
+    // literals, so retain all dynamic text glyph coverage here.
     in-out property <string> thermostat-current: "—°C";
     in-out property <string> thermostat-target: "—°C – —°C";
+    in property <string> runtime-cyrillic-glyphs: "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюяҐґЄєІіЇїЎў";
     in-out property <string> thermostat-status;
     in-out property <string> thermostat-detail;
     in-out property <string> thermostat-mode;
