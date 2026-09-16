@@ -50,9 +50,8 @@ export component StatusBar inherits Rectangle {
     }
 
 
-    // The source uses the kernel gauge's real state: a lightning bolt only
-    // means actively charging. The generic outline says the gauge is absent,
-    // rather than pretending that an unknown capacity is empty.
+    // The bolt follows the kernel's reported charging state, not cable
+    // presence. The generic outline represents an unavailable percentage.
     battery-icon := Image {
         width: 24px;
         height: 24px;

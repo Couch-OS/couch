@@ -16,10 +16,12 @@ not activate the underlying room/device; holding a wake key does not send repeat
 The microphone key retains its hold-to-talk behavior. Undocking dismisses the clock
 and starts the usual idle timers. Pairing, setup and recording take precedence.
 
-The kernel battery status (`Charging` or `Full`) enables the dock behavior. It
-also applies while charging over USB; this hardware interface does not identify
-the physical dock separately. Charger presence without active charging is not
-sufficient. Normal dim/off timeouts remain adjustable on the remote itself.
+External power reported by the USB/AC/wireless `online` nodes enables the dock
+behavior, including while Full or charging is paused. On older kernels without
+readable supply nodes, `Charging`/`Full` status is the fallback. This hardware
+interface does not distinguish the physical dock from a USB cable. The caption
+reports Charging, Full, or Plugged in independently from percentage availability.
+Normal dim/off timeouts remain adjustable on the remote itself.
 
 Settings are stored in `config.json` under `remote`, with backward-compatible
 defaults. `PUT /api/remote` validates timezone against `GET /api/remote/timezones`.
@@ -62,7 +64,10 @@ resolver file, sysfs) every two seconds while the panel is up; nothing is run.
 
 The **Power** section at the end of the menu starts with **Battery percentage**.
 Left, right or OK toggles the percentage beside the status-bar battery icon;
-it is off by default and persists across GUI restarts. The remaining rows are
+it is off by default and persists across GUI restarts. Missing or invalid readings
+show the generic icon without a percentage; the percentage is an uncalibrated
+kernel estimate (see the [battery gauge review](ha100-battery-gauge.md)). The
+charging bolt follows charge status, not external power alone. The remaining rows are
 **Power off**, **Restart** and **Restart into recovery**. The first two act on
 one OK. Recovery takes two presses within six seconds, because it leaves the
 remote on a screen with no UI: recovery brings up Wi-Fi, SSH and a USB shell

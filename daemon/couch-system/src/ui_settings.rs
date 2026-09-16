@@ -125,8 +125,8 @@ impl Settings {
 }
 
 /// Where the file is: an explicit host override, the device runtime mount, or
-/// the host path. The GUI runs from the initramfs while the writable runtime is
-/// mounted at `/mnt/alpine`, so `/opt/couch` is only valid for host runs.
+/// host/chroot path. The GUI runs from the initramfs while the writable runtime
+/// is mounted at `/mnt/alpine`; Alpine services see `/opt/couch` inside it.
 pub fn path() -> PathBuf {
     if let Some(path) = std::env::var_os("COUCH_SETTINGS_FILE") {
         return PathBuf::from(path);

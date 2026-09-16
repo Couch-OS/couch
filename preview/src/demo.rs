@@ -614,6 +614,7 @@ pub fn state_json() -> String {
         result=format!("{{\"room\":{},\"player\":{},\"panel\":{},\"paused\":{},\"chooser\":{},\"brightness\":{},\"level\":{},\"focus\":{},\"tv\":{},\"tv_panel\":{},\"android_tv\":{},\"apple_tv\":{},\"infrared\":{}}}",d.room.map(|r|r.to_string()).unwrap_or("null".into()),a.get_player_shown(),a.get_player_panel(),a.get_player_paused(),a.get_chooser_shown(),a.get_brightness_shown(),d.room.map(|r|d.levels[r][0]).unwrap_or(0),a.get_focus_row(),a.get_tv_shown(),a.get_tv_panel(),a.get_tv_android(),a.get_tv_apple(),a.get_tv_ir());
         result.pop();
         result.push_str(&format!(",\"camera\":{}",a.get_camera_shown()));
+        result.push_str(&format!(",\"dock_clock\":{},\"battery_caption\":\"{}\"", a.get_dock_clock_shown(), a.get_battery_caption()));
         result.push_str(&format!(",\"battery\":{},\"battery_known\":{},\"battery_charging\":{},\"battery_percentage\":{},\"settings\":{},\"settings_panel\":{}", a.get_battery(), a.get_battery_known(), a.get_battery_charging(), a.get_show_battery_percentage(), a.get_settings_shown(), a.get_settings_panel()));
         result.push_str(&format!(",\"thermostat\":{},\"thermostat_modes\":{},\"thermostat_target\":\"{}\",\"thermostat_mode\":\"{}\",\"thermostat_adjustable\":{},\"thermostat_range\":{}", a.get_thermostat_shown(), a.get_thermostat_modes_shown(), a.get_thermostat_target(), a.get_thermostat_mode(), a.get_thermostat_adjustable(), a.get_thermostat_range()));
         result.push_str(&format!(",\"media_active\":{},\"media_live\":{},\"media_has_duration\":{},\"media_has_art\":{},\"media_paused\":{}}}", a.get_tv_media_active(), a.get_tv_media_live(), a.get_tv_media_has_duration(), a.get_tv_media_has_art(), a.get_tv_media_state() == "Paused"));
@@ -640,6 +641,8 @@ pub fn documentation_screen(name: &str) {
             a.set_battery_known(true);
             a.set_battery_charging(false);
             a.set_show_battery_percentage(false);
+            a.set_dock_clock_shown(false);
+            a.set_battery_caption("Battery unavailable".into());
             match name.as_str() {
                 "protect-camera" => {
                     let mut frame=slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(480,270);
@@ -683,6 +686,21 @@ pub fn documentation_screen(name: &str) {
                 "battery-full" => a.set_battery(60),
                 "battery-charging" => { a.set_battery(42); a.set_battery_charging(true); }
                 "battery-unknown" => a.set_battery_known(false),
+                "battery-dock-full" => {
+                    a.set_battery(100);
+                    a.set_battery_caption("Full · 100%".into());
+                    a.set_dock_clock_shown(true);
+                }
+                "battery-dock-inhibited" => {
+                    a.set_battery(83);
+                    a.set_battery_caption("Plugged in · 83%".into());
+                    a.set_dock_clock_shown(true);
+                }
+                "battery-dock-unknown" => {
+                    a.set_battery_known(false);
+                    a.set_battery_caption("Plugged in · Battery unavailable".into());
+                    a.set_dock_clock_shown(true);
+                }
                 "battery-percentage-setting" => {
                     a.set_battery(42);
                     a.set_settings_panel(6);

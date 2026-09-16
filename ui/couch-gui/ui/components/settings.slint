@@ -54,11 +54,10 @@ component SettingsRow inherits Rectangle {
 // than one whose every key has to be forwarded, and returning focus to the
 // shell on close is a single `.focus()`.
 //
-    // The shell holds the values (brightness, timeouts and battery percentage)
-    // and the host applies and persists them; this only shows them and emits
-    // what changed. Left and right step a value where a row has one; OK enters
-    // a section or fires an action; BACK climbs one tier, and closes from the
-    // root.
+// The shell holds the values (brightness, timeouts and battery percentage)
+// and the host applies and persists them; this only shows them and emits
+// what changed. Left and right step a value where a row has one; OK enters
+// a section or fires an action; BACK climbs one tier, and closes from the root.
 export component Settings inherits Rectangle {
     in property <bool> shown: false;
 

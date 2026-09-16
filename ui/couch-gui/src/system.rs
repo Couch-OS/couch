@@ -17,52 +17,9 @@ pub fn report_gui_health() -> std::io::Result<()> {
     std::fs::rename(temporary, "/tmp/couch-gui.health")
 }
 
-const BATTERY: &str = "/sys/class/power_supply/battery/";
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BatteryState {
-    Charging,
-    Full,
-    Discharging,
-    NotCharging,
-    Unknown,
-}
-impl BatteryState {
-    fn from_kernel(status: &str) -> Self {
-        match status {
-            "Charging" => Self::Charging,
-            "Full" => Self::Full,
-            "Discharging" => Self::Discharging,
-            "Not charging" => Self::NotCharging,
-            _ => Self::Unknown,
-        }
-    }
-    pub const fn charging(self) -> bool {
-        matches!(self, Self::Charging)
-    }
-    pub const fn external_power(self) -> bool {
-        matches!(self, Self::Charging | Self::Full)
-    }
-}
-
-pub struct Battery {
-    pub percent: i32,
-    pub state: BatteryState,
-}
-
-/// Reads the kernel's own gauge. `status` distinguishes an actively charging
-/// battery from a full one; both mean external power is present, but only the
-/// former earns the charging icon. `usb/online` only reports that a cable is
-/// present, which it always is while the remote sits on a bench being debugged,
-/// so it would read as charging forever. Returns None rather than inventing a
-/// figure if the gauge is missing.
-pub fn battery() -> Option<Battery> {
-    let percent: i32 = read_trimmed(&format!("{BATTERY}capacity"))?.parse().ok()?;
-    let status = read_trimmed(&format!("{BATTERY}status")).unwrap_or_default();
-    Some(Battery {
-        percent: percent.clamp(0, 100),
-        state: BatteryState::from_kernel(&status),
-    })
+/// Read the kernel's estimate and supply state without inventing missing data.
+pub fn battery() -> crate::battery::Battery {
+    crate::battery::Battery::read(std::path::Path::new("/sys/class/power_supply"))
 }
 
 /// Wi-Fi signal, as bars: 0 is disconnected, 1 through 4 climb with the RSSI.
@@ -341,31 +298,4 @@ pub fn bluetooth_activate(address: &str) {
             }
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::BatteryState;
-
-    #[test]
-    fn kernel_battery_status_keeps_full_distinct_from_charging() {
-        assert_eq!(
-            BatteryState::from_kernel("Charging"),
-            BatteryState::Charging
-        );
-        assert_eq!(BatteryState::from_kernel("Full"), BatteryState::Full);
-        assert_eq!(
-            BatteryState::from_kernel("Discharging"),
-            BatteryState::Discharging
-        );
-        assert_eq!(
-            BatteryState::from_kernel("Not charging"),
-            BatteryState::NotCharging
-        );
-        assert_eq!(BatteryState::from_kernel("Unknown"), BatteryState::Unknown);
-        assert!(BatteryState::Charging.charging());
-        assert!(!BatteryState::Full.charging());
-        assert!(BatteryState::Full.external_power());
-        assert!(!BatteryState::Discharging.external_power());
-    }
 }

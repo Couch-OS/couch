@@ -129,6 +129,7 @@ pub struct Panel {
     /// so the picture is current the moment it comes back; nothing is copied
     /// to a panel that is not showing it.
     blanked: bool,
+    core_floor: crate::core_floor::CoreFloor,
 }
 
 /// Keypad backlight policy, see `Panel::set_keys_policy`. Defaults keep the
@@ -174,6 +175,7 @@ impl Panel {
             var: var.map(|mut v| { v[4] = 0; v[5] = 0; v }),
             pacing: Pacing::Sleep,
             blanked: false,
+            core_floor: crate::core_floor::CoreFloor::new("/proc/hps/num_base_perf_serv"),
         };
         panel.pacing = panel.probe_pacing();
         Ok(panel)
@@ -350,6 +352,13 @@ impl Panel {
     /// Power the panel down or back up. Coming back, the whole picture is
     /// pushed from RAM: the panel was re-initialised and RAM is the truth.
     pub fn blank(&mut self, off: bool) {
+        // Restore the active floor before wake/rendering. Repeated calls also
+        // retry a failed floor write, without repeating the display ioctl.
+        if !off || off == self.blanked {
+            if let Err(error) = self.core_floor.display_off(off) {
+                println!("couch-gui: CPU floor: {error}");
+            }
+        }
         if off == self.blanked {
             return;
         }
@@ -360,6 +369,11 @@ impl Panel {
             return;
         }
         self.blanked = off;
+        if off {
+            if let Err(error) = self.core_floor.display_off(true) {
+                println!("couch-gui: standby CPU floor: {error}");
+            }
+        }
         if !off {
             self.refresh_all();
             self.present();

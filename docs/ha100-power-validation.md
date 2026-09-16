@@ -5,6 +5,13 @@ The September 10 IR fix restored stock GPIO17 supply, GPIO14 standby and GPIO61
 charging-related initialization. Their electrical relationships are not fully
 established; do not experiment with their polarity based on their names.
 
+See the [battery gauge review](ha100-battery-gauge.md) before interpreting these
+readings. The pinned build forces battery temperature to 25°C, assigns health
+`Good`, and uses an inherited phone battery model. Those fields cannot validate
+thermal behavior or cell health. The separate reporting fix withholds the fixed
+temperature, reports Unknown health, and exposes labeled cached gauge state; it
+does not change charging policy or validate the inherited model.
+
 ## Take one read-only snapshot
 
 ```sh
@@ -13,19 +20,23 @@ ssh -i ~/.ssh/couch_dev -o IdentitiesOnly=yes root@192.168.1.127 sh -s \
 ```
 
 The script reads an allowlist of battery fields, GPIO14/17/58/61, LED brightness,
-IR telemetry enablement, and GUI heartbeat freshness. It contains no delays,
+IR telemetry enablement, GUI heartbeat freshness, uptime and CPU/HPS state.
+When present, it also reads the kernel’s cached `couch_gauge` snapshot. It contains no delays,
 transmissions, reboots, process signals or device writes. It does not report
 serial numbers, network configuration, credentials or process command lines.
-An optional filesystem-root argument supports offline regression fixtures.
+Missing properties and readable sysfs nodes returning ENODATA appear as
+`unavailable`; the remainder of the snapshot is still collected. An optional
+filesystem-root argument supports offline regression fixtures.
 Capture each transition separately; do not leave an unattended polling loop.
 
 Legacy battery units: `batt_temp` is tenths of a degree Celsius, `batt_vol` is
 microvolts, `BatterySenseVoltage` and `ChargerVoltage` are millivolts, and
-`current_now` is microamps. The vendor driver converts `BMT_status.CURRENT_NOW`
-by multiplying its 0.1 mA value by 100. Do not infer current direction or net
-charging from a positive value alone. `BatteryAverageCurrent` comes from
-`BMT_status.ICharging`; compare it with reported status rather than treating
-these two current fields as interchangeable.
+`current_now` is microamps. On the reviewed software-gauge build it is a model
+estimate: positive means modeled discharge, negative modeled charging. It is
+not an independent measurement of battery current. `BatteryAverageCurrent`
+comes from `BMT_status.ICharging` in milliamps and estimates charging current
+from sense ADCs; its input becomes zero without a charger. These two fields
+are not interchangeable.
 
 ## Observed docked snapshot
 
@@ -36,6 +47,8 @@ one second old, LCD brightness 42, and IR output telemetry was disabled.
 
 This confirms the reported full/docked state, not a measured charge-termination
 cycle or thermal trend. The exact docked IR volume test was confirmed separately.
+The reported 25°C and Good are not independent physical measurements; the
+reviewed driver forces those values.
 
 **LED brightness caches can differ from hardware:** `red/brightness` read zero
 while GPIO61 was high from board initialization. Read actual GPIO output for
@@ -51,9 +64,10 @@ otherwise, on reported charging/level changes. Stock therefore requests GPIO61
 low at 100% and high below 100%.
 
 Couch currently has no equivalent userspace writer. Its full/docked GPIO61-high
-state differs from that stock policy, but the PMIC already reports Full and
-zero averaged charging current. Establish what the external charging circuit
-controls before implementing a policy; this observation alone does not prove
+state differs from that stock policy, while the kernel reports Full and
+zero averaged charging current. Full is partly derived from displayed SOC,
+not an independent charge-termination measurement. Establish what the external
+charging circuit controls before implementing a policy; this observation alone does not prove
 overcharging or justify forcing the pin low. Preserve kernel PMIC protections.
 
 ## Physical checks still needed
@@ -71,6 +85,8 @@ A single snapshot cannot prove a charging trend. Record readings at meaningful
 transitions and actual physical results separately. Missing network access
 while undocked is not by itself proof of a frozen device. Complete these checks
 before removing diagnostics or replacing the already tested kernel binary.
+Temperature checks above require an independent measurement until the
+thermistor path is validated and the fixed-temperature behavior is corrected.
 
 ## Room-view idle regression
 
@@ -103,3 +119,17 @@ and the backlight reading dropped from 255 to 42. The user then confirmed side
 power sleep/wake and IR commands before and after sleeping the undocked remote.
 TV IR power off/on and held Volume Up repeats were also confirmed. These checks
 do not validate the docked/full-charge policy; that investigation remains open.
+
+## CPU minimum during display standby
+
+The GUI releases `/proc/hps/num_base_perf_serv` to 1 after successful panel
+power-down and restores the saved active minimum before unblanking. The startup
+supervisor reinstates 3 before every GUI launch, including after a crash while
+asleep. This is an HPS minimum, not a forced online count; load can keep extra
+cores online. Display dimming and the dock clock keep the active floor.
+
+Compare `cpu.active_floor` and `cpu.online` in snapshots while active, dimmed,
+asleep and awake again. Verify side-button, key, touch and lift wake, followed
+by ordinary IR control, and a GUI restart during standby. Test with Bluetooth
+and Wi-Fi enabled as normally used. A failed/unsupported floor write must not
+prevent panel wake. Measure physical power before claiming a runtime improvement.

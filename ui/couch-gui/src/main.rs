@@ -9,6 +9,8 @@
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod battery;
+mod core_floor;
 mod evdev;
 mod keypad;
 mod mic;
@@ -1413,21 +1415,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 None => app.set_pair_shown(false),
             }
-            // Full means power is still present for the dock clock, but only
-            // Charging gets the lightning icon in the status bar.
-            let battery_external_power = match system::battery() {
-                Some(b) => {
-                    app.set_battery(b.percent);
-                    app.set_battery_known(true);
-                    app.set_battery_charging(b.state.charging());
-                    b.state.external_power()
-                }
-                None => {
-                    app.set_battery_known(false);
-                    app.set_battery_charging(false);
-                    false
-                }
-            };
+            // Capacity, charge state and external power can be unavailable
+            // independently. Dock mode follows power even when charging stops.
+            let battery = system::battery();
+            app.set_battery(battery.percent.unwrap_or(0));
+            app.set_battery_known(battery.percent.is_some());
+            app.set_battery_charging(battery.charging());
+            app.set_battery_caption(battery.caption().into());
             app.set_wifi_level(system::wifi_level());
             app.set_wifi_ssid(system::wifi_ssid().into());
             app.set_wifi_signal(system::wifi_dbm().map(|dbm| format!("{dbm} dBm")).unwrap_or_else(|| "—".into()).into());
@@ -1468,7 +1462,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             // Off-after of 0 means never power the panel down, only dim.
             let off_us = off_after_us.get();
-            let dock = dock_clock_enabled && battery_external_power && !hold;
+            let dock = dock_clock_enabled && battery.external_power && !hold;
             if !dock && app.get_dock_clock_shown() {
                 app.set_dock_clock_shown(false);
                 wake(&mut screen, active_level.get());

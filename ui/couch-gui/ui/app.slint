@@ -37,6 +37,7 @@ export component App inherits Window {
     in-out property <int> battery: 0;
     in-out property <bool> battery-known: false;
     in-out property <bool> battery-charging: false;
+    in-out property <string> battery-caption: "Battery unavailable";
     in-out property <bool> show-battery-percentage: false;
     in-out property <int> wifi-level: 0;
     in-out property <string> wifi-signal: "—";
@@ -845,7 +846,7 @@ export component App inherits Window {
             y: 420px + root.dock-clock-shift * 16px;
             width: parent.width - 48px;
             height: 32px;
-            text: "Charging · " + root.battery + "%";
+            text: root.battery-caption;
             font-size: 20px;
             color: #737373;
             horizontal-alignment: center;

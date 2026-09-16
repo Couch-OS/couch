@@ -13,10 +13,13 @@ class PowerSnapshotTests(unittest.TestCase):
             for name, value in files.items():
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(value)
-            before = {name: (root / name).read_bytes() for name in files}
+                if value is None:
+                    path.mkdir()
+                else:
+                    path.write_text(value)
+            before = {name: (root / name).read_bytes() for name, value in files.items() if value is not None}
             result = subprocess.check_output(['sh', str(SCRIPT), directory], text=True, timeout=3)
-            self.assertEqual(before, {name: (root / name).read_bytes() for name in files})
+            self.assertEqual(before, {name: (root / name).read_bytes() for name in before})
             return result
 
     def test_only_allowlisted_fields_and_pins_are_reported(self):
@@ -30,6 +33,33 @@ class PowerSnapshotTests(unittest.TestCase):
         self.assertIn('gpio.17.mode=0 din=1 dout=1 direction=1', result)
         self.assertIn('gui.health_age_seconds=2', result)
         self.assertIn('gui.health_fresh=yes', result)
+
+    def test_cached_gauge_allows_only_known_fields_and_units(self):
+        result = self.snapshot({'sys/class/power_supply/battery/couch_gauge':
+            'schema=1\nready=1\nsequence=13\nmethod=software\ncalibration=unverified\n'
+            'current_estimate_ua=-497100\ncurrent_estimate_positive=discharge\n'
+            'temperature_fixed=1\nprofile_qmax_25_mah=2535\n'
+            'serial_number=PRIVATE\nmethod=PRIVATE\nvoltage_mv=PRIVATE\n',
+            'proc/hps/num_base_perf_serv': '1\n',
+            'sys/devices/system/cpu/online': '0-1\n'})
+        self.assertIn('power.gauge.method=software\n', result)
+        self.assertIn('power.gauge.current_estimate_ua=-497100\n', result)
+        self.assertIn('power.gauge.current_estimate_positive=discharge\n', result)
+        self.assertIn('power.gauge.temperature_fixed=1\n', result)
+        self.assertIn('cpu.active_floor=1\n', result)
+        self.assertIn('cpu.online=0-1\n', result)
+        self.assertNotIn('PRIVATE', result)
+
+    def test_failed_reads_and_legacy_kernels_do_not_abort_snapshot(self):
+        # A directory is readable but fails read(2), like a sysfs ENODATA node.
+        result = self.snapshot({'sys/class/power_supply/battery/batt_temp': None,
+            'sys/class/power_supply/battery/couch_gauge': None,
+            'sys/class/power_supply/battery/BatterySenseVoltage': '4200\n'})
+        self.assertIn('power.battery.batt_temp=unavailable\n', result)
+        self.assertIn('power.battery.BatterySenseVoltage=4200\n', result)
+        self.assertIn('power.gauge=unavailable\n', result)
+        self.assertIn('gui.health=unavailable\n', result)
+        self.assertIn('power.gauge=unavailable\n', self.snapshot({}))
 
     def test_absent_stale_and_malformed_health(self):
         self.assertIn('gui.health=unavailable', self.snapshot({}))
