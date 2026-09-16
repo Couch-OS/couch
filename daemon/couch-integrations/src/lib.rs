@@ -24,6 +24,9 @@ use std::{
 };
 
 pub const DEFAULT_ROOT: &str = "/opt/couch/integrations";
+/// Trust only the Couch integration signing key by default. Alpine's system
+/// repository keys authorize OS packages and must not also authorize plugins.
+pub const DEFAULT_KEYS_DIR: &str = "/opt/couch/integration-keys/official";
 pub const PROTOCOL_VERSION: u32 = couch_plugin::PROTOCOL_VERSION;
 const MAX_APK_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -91,7 +94,7 @@ impl Store {
             apk: std::env::var_os("COUCH_APK")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("apk")),
-            keys_dir: PathBuf::from("/etc/apk/keys"),
+            keys_dir: PathBuf::from(DEFAULT_KEYS_DIR),
         }
     }
     pub fn from_environment() -> Self {

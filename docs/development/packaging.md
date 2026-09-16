@@ -41,14 +41,28 @@ configuration.
 ## Create a signed APK
 
 Run Couch's packaging helper in Alpine with `abuild` and `abuild-sign`
-installed. Keep the private key outside the repository.
+installed. The ARM binary can be cross-compiled on Linux or macOS, but the APK
+helper itself needs an Alpine packaging shell or container. Create a dedicated
+development key outside the source checkout:
+
+```sh
+KEY_DIR="$HOME/.local/share/couch-integration-signing"
+mkdir -p "$KEY_DIR"
+openssl genrsa -out "$KEY_DIR/developer.rsa" 4096
+openssl rsa -in "$KEY_DIR/developer.rsa" -pubout \
+  -out "$KEY_DIR/developer.rsa.pub"
+chmod 600 "$KEY_DIR/developer.rsa"
+```
+
+Keep the private key on the packaging host. Only the `.rsa.pub` file belongs
+in a device trust directory.
 
 ```sh
 tools/integrations/build-apk.sh \
   YOUR_ID 0.1.0 \
   clients/target/armv7-unknown-linux-musleabihf/release/couch-plugin-YOUR_ID \
   clients/couch-YOUR_ID/plugin.json \
-  /secure/path/integration.rsa \
+  "$KEY_DIR/developer.rsa" \
   build/integrations
 ```
 
@@ -58,14 +72,19 @@ architecture to `armv7`, and adds no install scripts.
 ## Trust
 
 Both sideload and repository installation require a valid APK signature from a
-key already provisioned in the device's integration trust directory. Sideload
-does not mean unsigned. Never commit a signing key or copy it into a package.
+key already provisioned in the selected integration trust directory. Sideload
+does not mean unsigned. Keep each feed's public keys under a dedicated path
+such as `/opt/couch/integration-keys/custom/my-feed`; do not add integration
+keys to Alpine's global `/etc/apk/keys`. An integration-capable runtime defaults
+to `/opt/couch/integration-keys/official`. Pass `--keys-dir` explicitly for a
+custom or developer feed so it cannot inherit official or unrelated system
+trust. Never commit a private signing key or copy it to a device or package.
 
 For a repository, collect signed APKs and create a signed Alpine index:
 
 ```sh
 tools/integrations/build-repository.sh \
-  /secure/path/integration.rsa \
+  "$KEY_DIR/developer.rsa" \
   build/integrations \
   build/repository
 ```
@@ -80,13 +99,25 @@ Alpine's `apk` run inside the mounted Alpine system. Enter that environment for
 package operations; running the bare command from the outer shell will not have
 the required APK tooling.
 
+These commands require an integration-capable Couch runtime. The current `.170`
+device release predates this host and cannot install integration APKs. After an
+eligible runtime is installed, this probe exits successfully:
+
+```sh
+chroot /mnt/alpine /opt/couch/runtime/current/couch-confd \
+  --supports-integration-protocol=1
+```
+
 The development CLI is exposed under `couch-confd integrations`. From the
-outer root shell, invoke it through the Alpine chroot:
+outer root shell, invoke it through the Alpine chroot and name the exact trust
+directory for that package source:
 
 ```sh
 chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+  --keys-dir /opt/couch/integration-keys/custom/developer \
   install-sideload /path/inside/alpine/couch-integration-YOUR_ID-0.1.0-r0.apk
 chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+  --keys-dir /opt/couch/integration-keys/custom/my-feed \
   install-repository couch-integration-YOUR_ID \
   --repository https://packages.example.invalid/couch
 chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations list
@@ -97,6 +128,38 @@ chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations remove YO
 The sideload path must be visible inside `/mnt/alpine`; copy the APK into that
 filesystem first or use the corresponding path after entering the chroot.
 
+For example, copy a development package and its **public** key from the build
+host, then admit the package through Couch:
+
+```sh
+ssh root@couch.local \
+  'mkdir -p /mnt/alpine/opt/couch/integration-keys/custom/developer'
+scp "$KEY_DIR/developer.rsa.pub" \
+  root@couch.local:/mnt/alpine/opt/couch/integration-keys/custom/developer/
+scp build/integrations/couch-integration-YOUR_ID-0.1.0-r0.apk \
+  root@couch.local:/mnt/alpine/tmp/
+ssh root@couch.local \
+  'chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+    --keys-dir /opt/couch/integration-keys/custom/developer \
+    install-sideload /tmp/couch-integration-YOUR_ID-0.1.0-r0.apk'
+```
+
+The paths given to `scp` and the outer SSH shell include `/mnt/alpine`. Paths
+given after `chroot /mnt/alpine` do not. Installing with `apk add` directly is
+not equivalent: it bypasses Couch's payload audit, protocol handshake,
+immutable slot store, activation record, and rollback path.
+
+Custom repositories use the same CLI. Couch does not currently save repository
+URLs or expose repository management in the web UI, so every repository
+installation supplies the URL and its dedicated key directory explicitly:
+
+```sh
+chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+  --keys-dir /opt/couch/integration-keys/custom/acme-lab \
+  install-repository couch-integration-YOUR_ID \
+  --repository https://packages.example.invalid/couch
+```
+
 Repository installation verifies the signed index, then verifies the package
 again during admission. The store keeps immutable version slots and active and
 previous slot hashes paired in one atomic state record. A candidate must pass
@@ -105,6 +168,15 @@ hashes in that record.
 
 Removing a package does not erase a user's connection record. Commands stop
 until a compatible package is installed again.
+
+An admitted integration is trusted native code. The host starts it in a
+separate process and drops root to the unprivileged integration identity; on
+the HA100 it grants only the supplemental network group needed to open normal
+Internet sockets. Protocol framing, deadlines, capability checks, and process
+retirement contain failures. This is privilege separation, not a complete
+sandbox: integrations share an unprivileged UID, can reach the LAN, and do not
+run in separate mount or network namespaces. Install code only from a feed
+whose signing key you trust.
 
 ## Distribution checklist
 
@@ -118,18 +190,23 @@ until a compatible package is installed again.
 ## Hosting a feed on GitHub
 
 An APK feed is static files: a signed `APKINDEX.tar.gz` and its signed APKs
-under an architecture directory. A separate `couch-integrations` repository
-can hold the reviewed sources, catalog, and build workflow, with GitHub Pages
-serving this layout:
+under an architecture directory. The public
+[`dangerouslaser/couch-integrations`](https://github.com/dangerouslaser/couch-integrations)
+repository is the home for reviewed sources, catalog, and build workflow.
+GitHub Pages will serve this layout once feed publishing is enabled:
 
 ```text
+preview/armv7/APKINDEX.tar.gz
+preview/armv7/couch-integration-YOUR_ID-0.1.0-r0.apk
 stable/armv7/APKINDEX.tar.gz
-stable/armv7/couch-integration-YOUR_ID-0.1.0-r0.apk
 ```
 
-The proposed client repository URL would be
-`https://dangerouslaser.github.io/couch-integrations/stable`; the installer
-adds `armv7`. This is an example deployment, not an existing published feed.
+The proposed preview URL is
+`https://dangerouslaser.github.io/couch-integrations/preview`; the installer
+adds `armv7`. It is not a published feed until that URL serves a signed index
+and the matching official public key ships on Couch. The initial `stable` feed
+is deliberately empty; a preview Denon package does not become stable merely
+because it is hosted.
 GitHub Packages does not offer a native APK registry among its
 [supported formats](https://docs.github.com/en/packages/learn-github-packages/introduction-to-github-packages).
 Pages is suitable for an initial public feed within its
@@ -144,11 +221,12 @@ eligible catalog tiers, retain prior immutable package versions for rollback,
 and deploy the complete index and package set together. Archives and release
 receipts can also live in GitHub Releases.
 
-Provision the repository URL and public trust key on the remote once. Future
-integration releases can then ship independently of the core runtime. Key
-rotation must overlap trusted old and new keys before removing the old key.
-Changing hosting does not remove the initial runtime update needed to install
-the plugin host and package manager.
+Provision an official public trust key on the remote once. The current CLI does
+not persist the repository URL, so each install still names the preview or
+stable URL. Future integration releases can then ship independently of the
+core runtime. Key rotation must overlap trusted old and new keys before
+removing the old key. Changing hosting does not remove the initial runtime
+update needed to install the plugin host and package manager.
 
 ## Source references
 

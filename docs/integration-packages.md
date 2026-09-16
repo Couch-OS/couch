@@ -35,20 +35,32 @@ binary and a manifest whose ID, version, or executable does not match the
 requested package, then produces an `armv7` APK with no scripts:
 
 ```sh
+KEY_DIR="$HOME/.local/share/couch-integration-signing"
+mkdir -p "$KEY_DIR"
+openssl genrsa -out "$KEY_DIR/developer.rsa" 4096
+openssl rsa -in "$KEY_DIR/developer.rsa" -pubout \
+  -out "$KEY_DIR/developer.rsa.pub"
+chmod 600 "$KEY_DIR/developer.rsa"
+
 tools/integrations/build-apk.sh echo 0.1.0 \
   clients/target/armv7-unknown-linux-musleabihf/release/couch-plugin-echo \
-  clients/couch-echo/plugin.json DEV_KEY.rsa build/integrations
+  clients/couch-echo/plugin.json "$KEY_DIR/developer.rsa" build/integrations
 tools/integrations/build-apk.sh denon 0.1.0 \
   clients/target/armv7-unknown-linux-musleabihf/release/couch-plugin-denon \
-  clients/couch-denon/plugin.json DEV_KEY.rsa build/integrations
-tools/integrations/build-repository.sh DEV_KEY.rsa build/integrations build/integration-repository
+  clients/couch-denon/plugin.json "$KEY_DIR/developer.rsa" build/integrations
+tools/integrations/build-repository.sh "$KEY_DIR/developer.rsa" \
+  build/integrations build/integration-repository
 ```
 
-The corresponding `DEV_KEY.rsa.pub` must sit beside the private key. The build
+The corresponding `.rsa.pub` must sit beside the private key. The build
 environment needs that public key in its APK key directory to check packages
 while `abuild` makes its local index. Publish the resulting repository directory
-over HTTPS; it contains `armv7/APKINDEX.tar.gz` and the two signed APKs.
-Provision only the public key in Couch's integration trust directory.
+over HTTPS; it contains `armv7/APKINDEX.tar.gz` and the signed APKs. Keep the
+private key on the packaging host. Provision only the public key in a dedicated
+Couch directory under `/opt/couch/integration-keys`. Integration-capable
+runtimes use `/opt/couch/integration-keys/official` by default; custom feeds use
+`/opt/couch/integration-keys/custom/NAME`. Do not add integration keys to
+Alpine's global `/etc/apk/keys`.
 
 On a Docker-capable Linux build host, `tools/integrations/smoke.sh OUTPUT_DIR`
 reads **every** entry in `integrations/catalog.json`, then performs the package
@@ -91,3 +103,66 @@ concatenated gzip/tar streams. It rejects archive links, special entries,
 escaping names, excessive members, and excessive compressed or decompressed
 sizes. Native `apk` then verifies the package signature inside a fresh private
 root before Couch audits the extracted tree.
+
+## Install from a development host
+
+The HA100 SSH root shell is the outer initramfs. The runtime binary, package
+paths, and integration key paths are inside the Alpine filesystem mounted at
+`/mnt/alpine`. These commands require an integration-capable runtime; the
+current `.170` device release predates the plugin host. Once a suitable runtime
+is installed, this probe exits successfully:
+
+```sh
+chroot /mnt/alpine /opt/couch/runtime/current/couch-confd \
+  --supports-integration-protocol=1
+```
+
+Create a development trust directory and copy only the public key and APK from
+the build host:
+
+```sh
+ssh root@couch.local \
+  'mkdir -p /mnt/alpine/opt/couch/integration-keys/custom/developer'
+scp "$KEY_DIR/developer.rsa.pub" \
+  root@couch.local:/mnt/alpine/opt/couch/integration-keys/custom/developer/
+scp build/integrations/couch-integration-YOUR_ID-0.1.0-r0.apk \
+  root@couch.local:/mnt/alpine/tmp/
+ssh root@couch.local \
+  'chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+    --keys-dir /opt/couch/integration-keys/custom/developer \
+    install-sideload /tmp/couch-integration-YOUR_ID-0.1.0-r0.apk'
+```
+
+Paths used by the outer SSH shell include `/mnt/alpine`; paths after `chroot`
+are relative to the Alpine root. Do not run `apk add` against an integration
+package. Direct installation bypasses Couch's audit, handshake, immutable
+slots, activation record, saved-settings compatibility check, and rollback.
+
+## Install from a custom repository
+
+A custom repository is selected for one installation by passing both its
+dedicated trust directory and base URL:
+
+```sh
+chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+  --keys-dir /opt/couch/integration-keys/custom/acme-lab \
+  install-repository couch-integration-YOUR_ID \
+  --repository https://packages.example.invalid/couch
+```
+
+There is no persistent repository configuration or repository-management UI
+yet. Repeat `--repository` for every repository install. A proposed official
+preview base is `https://dangerouslaser.github.io/couch-integrations/preview`,
+using the default `/opt/couch/integration-keys/official`; it is not a public
+feed until the signed index is deployed and the matching key is provisioned.
+The initial stable feed is intentionally empty.
+
+## Native-code boundary
+
+Plugins are trusted native code. On a production Linux device the host launches
+each plugin as a separate process, drops root to UID/GID 65534, and on the
+HA100 grants supplemental group 3003 for ordinary network sockets. The framed
+protocol, capability checks, timeouts, and process retirement provide fault and
+privilege separation. They are not a full sandbox: plugins share an
+unprivileged UID, can reach the LAN, and have no separate mount or network
+namespace. Admit packages only from a signing key you trust.
