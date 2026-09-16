@@ -79,6 +79,14 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // The panel may retain a pre-migration native target. Reject those stale
+    // broker requests before exposing either control service after a restart.
+    for original in store.config().denon_migrations.values() {
+        if let Err(error) = couch_control::block_denon(&original.host, original.port) {
+            eprintln!("couch-confd: cannot establish Denon ownership: {error}");
+            std::process::exit(1);
+        }
+    }
     println!(
         "couch-confd: config {} at revision {}",
         store.path().display(),

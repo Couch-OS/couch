@@ -28,6 +28,9 @@ const calls = [];
 const operations = new Map([['resume', {polls: 0, message: 'Resuming package operation…'}]]);
 let sequence = 0;
 let catalogReads = 0;
+let migrationRevision = 7;
+let migrationState = 'native';
+let rejectStaleMigration = true;
 function operation(message) {
   const id = `op-${++sequence}`;
   operations.set(id, {polls: 0, message});
@@ -46,7 +49,7 @@ await page.route('**/api/**', async route => {
   calls.push({path, method: request.method(), body});
   const json = value => route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(value)});
   if (request.method() === 'GET' && path === '/api/auth/status') return json({authenticated: true, pairing: false, expires_in: 0, tries_left: 0, disabled: true});
-  if (request.method() === 'GET' && path === '/api/config') return json({schema_version: 1, revision: 0, areas: [], rooms: [], scenes: [], activities: []});
+  if (request.method() === 'GET' && path === '/api/config') return json({schema_version: 1, revision: migrationRevision, areas: [], rooms: [], scenes: [], activities: []});
   if (request.method() === 'POST' && path === '/api/updates/check') return json({});
   if (request.method() === 'GET' && path === '/api/updates') return json({installed: 'test', channel: 'stable', available: null, notes: '', phase: 'idle', message: '', can_install: false, automatic_checks: false});
   if (request.method() === 'GET' && path === '/api/integrations/catalog') {
@@ -55,6 +58,19 @@ await page.route('**/api/**', async route => {
     return json(catalog);
   }
   if (request.method() === 'GET' && path === '/api/integrations/recovery') return json({recovery: {integrations_active: false, revision: 4, path: '/opt/couch/legacy-config.json', pending_path: null}});
+  if (request.method() === 'GET' && path === '/api/integrations/migrations/denon') return json({revision: migrationRevision, package_available: true, connections: [{id: 'living-avr', name: 'Living room receiver', state: migrationState}]});
+  if (request.method() === 'POST' && path === '/api/integrations/migrations/denon/living-avr') {
+    assert.equal(body.revision, migrationRevision);
+    if (rejectStaleMigration) {
+      rejectStaleMigration = false;
+      migrationRevision += 1;
+      return route.fulfill({status: 409, contentType: 'application/json', body: JSON.stringify({error: 'Configuration changed; refresh before migrating'})});
+    }
+    assert(['migrate', 'restore-native'].includes(body.action));
+    migrationState = body.action === 'migrate' ? 'migrated' : 'native';
+    migrationRevision += 1;
+    return json({changed: true, revision: migrationRevision});
+  }
   if (request.method() === 'GET' && path === '/api/integrations/operations/current') return json({operation: {id: 'resume', state: 'running', phase: 'download', message: 'Resuming package operation…'}});
   if (request.method() === 'POST' && path === '/api/integrations/refresh') return json({operation_id: 'expired'});
   if (request.method() === 'POST' && /^\/api\/integrations\/(install|update|remove|rollback)$/.test(path)) return json(operation('Verifying package signature…'));
@@ -91,6 +107,22 @@ try {
   assert(catalogReads >= 2, 'a transient catalog lock reloads after the resumed operation completes');
   await page.getByRole('heading', {name: 'Denon AVR', exact: true}).waitFor();
   await page.getByText('Saved connection settings are retained.').waitFor();
+  await page.getByText(/Preview limitation:.*volume in dB/).waitFor();
+  await page.getByRole('button', {name: 'Switch to Denon package', exact: true}).click();
+  assert.equal(calls.filter(c => c.method === 'POST' && c.path.includes('/migrations/')).length, 0, 'reviewing migration must not change a connection');
+  await page.getByRole('button', {name: 'Cancel', exact: true}).click();
+  await page.getByRole('button', {name: 'Switch to Denon package', exact: true}).click();
+  await page.getByRole('button', {name: 'Confirm switch', exact: true}).click();
+  await page.getByText('Configuration changed; refresh before migrating', {exact: true}).waitFor();
+  await page.getByRole('button', {name: 'Switch to Denon package', exact: true}).click();
+  await page.getByRole('button', {name: 'Confirm switch', exact: true}).click();
+  await page.getByText('This connection now uses the Denon package.', {exact: true}).waitFor();
+  await page.getByRole('button', {name: 'Restore built-in control', exact: true}).click();
+  await page.getByRole('button', {name: 'Confirm restore', exact: true}).click();
+  await page.getByText('Built-in Denon control restored.', {exact: true}).waitFor();
+  assert.deepEqual(calls.filter(c => c.method === 'POST' && c.path.includes('/migrations/')).map(c => c.body), [
+    {action: 'migrate', revision: 7}, {action: 'migrate', revision: 8}, {action: 'restore-native', revision: 9},
+  ]);
   await page.getByRole('button', {name: 'Update to 1.5.0', exact: true}).click();
   await page.getByText('Package operation complete.').waitFor();
   const update = calls.find(call => call.path === '/api/integrations/update');

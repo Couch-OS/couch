@@ -93,6 +93,11 @@ jobs:
           cargo build --locked --manifest-path daemon/Cargo.toml -p couch-confd
       - name: Test package lifecycle library
         run: cargo test --locked --manifest-path daemon/Cargo.toml -p couch-integrations
+      - name: Test migration persistence and exclusive receiver ownership
+        run: |
+          cargo test --locked --manifest-path model/Cargo.toml -p couch-model
+          cargo test --locked --manifest-path clients/Cargo.toml -p couch-control
+          cargo test --locked --manifest-path daemon/Cargo.toml -p couch-confd
       - name: Exercise daemon, package, HTTP, panel, and fake device together
         run: python3 tools/tests/integrations-e2e.py
 

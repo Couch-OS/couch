@@ -45,6 +45,7 @@ impl std::error::Error for ValidationError {}
 impl Config {
     pub fn validate(&self) -> Result<(), ValidationError> {
         let mut problems = Vec::new();
+        self.validate_denon_migrations(&mut problems);
         self.validate_app_shortcuts(&mut problems);
         self.validate_shortcuts(&mut problems);
         if self.appearance.rgb().is_none() {

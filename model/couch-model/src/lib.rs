@@ -69,8 +69,10 @@ pub use connection::{Connection, PluginCapability, PluginComponent, PluginStatus
 pub use remote::RemoteSettings;
 mod icon;
 mod id;
+mod integration_migration;
 mod seed;
 mod storage;
+pub use integration_migration::DenonMigration;
 mod validate;
 pub use storage::StoredConfig;
 
@@ -121,6 +123,12 @@ pub struct Config {
     pub remote: RemoteSettings,
     #[serde(default)]
     pub connections: Vec<Connection>,
+    /// Explicit native Denon migration receipts; also restore the old-core projection.
+    #[serde(
+        default,
+        skip_serializing_if = "alloc::collections::BTreeMap::is_empty"
+    )]
+    pub denon_migrations: alloc::collections::BTreeMap<Id, DenonMigration>,
     #[serde(
         default,
         skip_serializing_if = "alloc::collections::BTreeMap::is_empty"
@@ -144,6 +152,7 @@ impl Default for Config {
             appearance: Appearance::default(),
             remote: RemoteSettings::default(),
             connections: Vec::new(),
+            denon_migrations: Default::default(),
             app_shortcuts: Default::default(),
             areas: Vec::new(),
             rooms: Vec::new(),

@@ -369,6 +369,14 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
     let cached_inputs = *supports_inputs;
     let cached_presentation = presentation.clone();
     let connection_id = connection.id.to_string();
+    let migrated_id = connection.id.clone();
+    let migrated = Memo::new(move |_| {
+        app.config.with(|config| {
+            config
+                .as_ref()
+                .is_some_and(|config| config.migrated_denon(&migrated_id).is_some())
+        })
+    });
     let base = StoredValue::new(format!("/api/connections/{connection_id}/plugin"));
     let manifest = RwSignal::new(None::<PluginManifest>);
     let values = RwSignal::new(BTreeMap::<String, Value>::new());
@@ -451,7 +459,8 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
             <h2>"Integration settings"</h2>
             <p class="dim">"Settings are stored in the remote’s private connection store and never appear in the home configuration."</p>
             <p role="status">{move ||message.get()}</p>
-            {move ||manifest.get().map(|installed|plugin_form(app,base,installed,values,saved_secrets,clear_secrets,configured,busy,message))}
+            {move || migrated.get().then(|| view! { <p class="notice">"This connection is part of the Denon migration pilot. Restore built-in control on the Integrations page before changing its receiver address."</p> })}
+            {move || (!migrated.get()).then(|| manifest.get().map(|installed|plugin_form(app,base,installed,values,saved_secrets,clear_secrets,configured,busy,message)))}
         </section>
         {plugin_controls(app,connection_id,cached,manifest,busy)}
     }.into_any()

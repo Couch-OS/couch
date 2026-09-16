@@ -11,8 +11,8 @@ use std::{
     },
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc, Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc, Arc, Condvar, Mutex, OnceLock,
     },
     time::{Duration, Instant},
 };
@@ -160,10 +160,41 @@ struct Lane {
     tx: mpsc::SyncSender<Job>,
     stats: Arc<Counters>,
     last_used: Instant,
+    retirement: Arc<Retirement>,
+}
+#[derive(Default)]
+struct Retirement {
+    requested: AtomicBool,
+    stopped: Mutex<bool>,
+    changed: Condvar,
+}
+impl Retirement {
+    fn wait(&self, timeout: Duration) -> Result<()> {
+        let (stopped, _) = self
+            .changed
+            .wait_timeout_while(self.stopped.lock().unwrap(), timeout, |done| !*done)
+            .unwrap();
+        if *stopped {
+            Ok(())
+        } else {
+            Err(Error::Remote(
+                "Native receiver is still stopping; migration was not activated".into(),
+            ))
+        }
+    }
+}
+struct BlockedEndpoint {
+    retirement: Arc<Retirement>,
+    resume_when_stopped: bool,
+}
+#[derive(Default)]
+struct PoolState {
+    lanes: HashMap<String, Lane>,
+    blocked: HashMap<String, BlockedEndpoint>,
 }
 #[derive(Default)]
 struct Pool {
-    lanes: Mutex<HashMap<String, Lane>>,
+    state: Mutex<PoolState>,
 }
 static POOL: OnceLock<Pool> = OnceLock::new();
 static SOCKET: OnceLock<PathBuf> = OnceLock::new();
@@ -175,10 +206,86 @@ fn pool() -> &'static Pool {
     POOL.get_or_init(Pool::default)
 }
 impl Pool {
+    fn block(&self, key: String) -> Result<()> {
+        self.block_for(key, Duration::from_secs(16))
+    }
+    fn block_for(&self, key: String, timeout: Duration) -> Result<()> {
+        let retirement = {
+            let mut state = self.state.lock().unwrap();
+            if let Some(blocked) = state.blocked.get_mut(&key) {
+                blocked.resume_when_stopped = false;
+                blocked.retirement.clone()
+            } else {
+                let retirement = if let Some(lane) = state.lanes.remove(&key) {
+                    lane.retirement.requested.store(true, Ordering::SeqCst);
+                    lane.retirement.clone()
+                } else {
+                    Arc::new(Retirement {
+                        stopped: Mutex::new(true),
+                        ..Retirement::default()
+                    })
+                };
+                state.blocked.insert(
+                    key,
+                    BlockedEndpoint {
+                        retirement: retirement.clone(),
+                        resume_when_stopped: false,
+                    },
+                );
+                retirement
+            }
+        };
+        // Never hold the registry mutex while an already-issued command ends.
+        // A timeout leaves the native endpoint blocked until an explicit restore.
+        retirement.wait(timeout)
+    }
+    fn unblock(&self, key: &str) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        if let Some(blocked) = state.blocked.get_mut(key) {
+            if !*blocked.retirement.stopped.lock().unwrap() {
+                // A failed handover still has native configuration. Restore
+                // admission automatically once the old socket closes, without
+                // permitting a replacement owner to overlap that socket.
+                blocked.resume_when_stopped = true;
+                return Ok(());
+            }
+        }
+        state.blocked.remove(key);
+        Ok(())
+    }
     fn call(&self, packet: Packet) -> Result<Value> {
         let (reply, rx) = mpsc::sync_channel(1);
-        let mut lanes = self.lanes.lock().unwrap();
-        lanes.retain(|_, lane| lane.last_used.elapsed() < Duration::from_secs(60));
+        let mut state = self.state.lock().unwrap();
+        state.blocked.retain(|_, blocked| {
+            !(blocked.resume_when_stopped && *blocked.retirement.stopped.lock().unwrap())
+        });
+        if state.blocked.contains_key(&packet.spec.key()) {
+            return if matches!(packet.op, Op::Release) {
+                Ok(Value::Null)
+            } else {
+                Err(Error::Remote(
+                    "This receiver now uses its integration package; refresh the connection".into(),
+                ))
+            };
+        }
+        let lanes = &mut state.lanes;
+        lanes.retain(|_, lane| {
+            if lane.last_used.elapsed() < Duration::from_secs(60) {
+                return true;
+            }
+            lane.retirement.requested.store(true, Ordering::SeqCst);
+            // Keep the retirement handle until socket closure is acknowledged.
+            // A migration arriving during eviction must still wait for it.
+            !*lane.retirement.stopped.lock().unwrap()
+        });
+        if lanes
+            .get(&packet.spec.key())
+            .is_some_and(|lane| lane.retirement.requested.load(Ordering::SeqCst))
+        {
+            return Err(Error::Remote(
+                "Device connection is stopping; try again".into(),
+            ));
+        }
         if lanes.len() >= 128 && !lanes.contains_key(&packet.spec.key()) {
             return Err(Error::Remote("Too many active connections".into()));
         }
@@ -186,11 +293,19 @@ impl Pool {
             let (tx, rx) = mpsc::sync_channel(16);
             let stats = Arc::new(Counters::default());
             let metrics = stats.clone();
-            std::thread::spawn(move || run_lane(rx, metrics));
+            let retirement = Arc::new(Retirement::default());
+            let worker_retirement = retirement.clone();
+            std::thread::spawn(move || {
+                run_lane(rx, metrics, &worker_retirement);
+                // run_lane has dropped its client/socket before acknowledging.
+                *worker_retirement.stopped.lock().unwrap() = true;
+                worker_retirement.changed.notify_all();
+            });
             Lane {
                 tx,
                 stats,
                 last_used: Instant::now(),
+                retirement,
             }
         });
         lane.last_used = Instant::now();
@@ -207,14 +322,23 @@ impl Pool {
             lane.stats.dropped.fetch_add(1, Ordering::Relaxed);
             return Err(Error::Remote("Device command queue is full".into()));
         }
-        drop(lanes);
+        drop(state);
         rx.recv_timeout(Duration::from_secs(15)).map_err(|_| {
             Error::Remote("Device control timed out; command was not retried".into())
         })?
     }
 }
+/// Hand over a native Denon endpoint to a package. Local daemon use only;
+/// stale GUI leases are rejected at the shared broker after this returns.
+pub fn block_denon(host: &str, port: u16) -> Result<()> {
+    pool().block(format!("denon:{host}:{port}"))
+}
+/// Call only after the package worker has stopped and native config is durable.
+pub fn unblock_denon(host: &str, port: u16) -> Result<()> {
+    pool().unblock(&format!("denon:{host}:{port}"))
+}
 pub fn metrics() -> Value {
-    Value::Array(pool().lanes.lock().unwrap().iter().map(|(key,l)|json!({"endpoint":key,"requests":l.stats.requests.load(Ordering::Relaxed),"dropped":l.stats.dropped.load(Ordering::Relaxed),"queue_us":l.stats.queue_us.load(Ordering::Relaxed),"max_queue_us":l.stats.max_queue_us.load(Ordering::Relaxed)})).collect())
+    Value::Array(pool().state.lock().unwrap().lanes.iter().map(|(key,l)|json!({"endpoint":key,"requests":l.stats.requests.load(Ordering::Relaxed),"dropped":l.stats.dropped.load(Ordering::Relaxed),"queue_us":l.stats.queue_us.load(Ordering::Relaxed),"max_queue_us":l.stats.max_queue_us.load(Ordering::Relaxed)})).collect())
 }
 enum Client {
     Kodi(couch_kodi::Kodi),
@@ -303,11 +427,14 @@ impl Client {
         }
     }
 }
-fn run_lane(rx: mpsc::Receiver<Job>, stats: Arc<Counters>) {
+fn run_lane(rx: mpsc::Receiver<Job>, stats: Arc<Counters>, retirement: &Retirement) {
     let mut client = None;
     let mut identity = Vec::new();
     let mut owners = HashMap::<u64, Instant>::new();
     loop {
+        if retirement.requested.load(Ordering::SeqCst) {
+            return;
+        }
         let job = rx.recv_timeout(Duration::from_millis(100));
         owners.retain(|_, at| at.elapsed() < Duration::from_secs(30));
         if owners.is_empty() {
@@ -327,6 +454,12 @@ fn run_lane(rx: mpsc::Receiver<Job>, stats: Arc<Counters>) {
             }
             Err(_) => return,
         };
+        if retirement.requested.load(Ordering::SeqCst) {
+            let _ = job
+                .reply
+                .send(Err(Error::Remote("Native receiver is stopping".into())));
+            return;
+        }
         if matches!(job.packet.op, Op::Release) {
             owners.remove(&job.packet.lease);
             if owners.is_empty() {
@@ -369,6 +502,12 @@ fn run_lane(rx: mpsc::Receiver<Job>, stats: Arc<Counters>) {
             client = None;
             let _ = job.reply.send(Err(error));
             continue;
+        }
+        if retirement.requested.load(Ordering::SeqCst) {
+            let _ = job
+                .reply
+                .send(Err(Error::Remote("Native receiver is stopping".into())));
+            return;
         }
         // Opening a replacement socket can take longer than the queue limit.
         // Never send that old key after a slow handshake. Keep the now-open
@@ -419,7 +558,12 @@ impl Drop for Handle {
     }
 }
 fn dispatch(packet: Packet) -> Result<Value> {
-    if let Some(path) = SOCKET.get().filter(|p| p.exists()) {
+    dispatch_via(SOCKET.get().map(PathBuf::as_path), packet)
+}
+fn dispatch_via(socket: Option<&Path>, packet: Packet) -> Result<Value> {
+    // Once the GUI selects the daemon as owner, a missing/restarting daemon is
+    // an error. Falling back to a GUI-local socket bypasses migration fencing.
+    if let Some(path) = socket {
         let mut stream = UnixStream::connect(path)?;
         stream.set_read_timeout(Some(Duration::from_secs(16)))?;
         stream.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -591,6 +735,80 @@ mod tests {
         server.join().unwrap();
     }
     #[test]
+    fn migration_waits_for_inflight_work_and_rejects_stale_native_leases() {
+        let pool = Arc::new(Pool::default());
+        let (entered, waiting) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let (port, closed, server) = receiver(Some((entered, blocked)));
+        let p = pool.clone();
+        let request = std::thread::spawn(move || p.call(packet(port, 71, Op::AvrStatus)));
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let key = format!("denon:127.0.0.1:{port}");
+        pool.state
+            .lock()
+            .unwrap()
+            .lanes
+            .get_mut(&key)
+            .unwrap()
+            .last_used = Instant::now() - Duration::from_secs(61);
+        assert!(
+            pool.call(packet(port, 72, Op::AvrStatus)).is_err(),
+            "idle eviction must retain a draining lane"
+        );
+        let p = pool.clone();
+        let takeover_key = key.clone();
+        let (done, finished) = mpsc::channel();
+        let takeover = std::thread::spawn(move || done.send(p.block(takeover_key)).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !pool.state.lock().unwrap().blocked.contains_key(&key) {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(
+            finished.try_recv().is_err(),
+            "takeover must wait for the issued request"
+        );
+        assert!(pool.call(packet(port, 72, Op::AvrStatus)).is_err());
+        release.send(()).unwrap();
+        request.join().unwrap().unwrap();
+        finished
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        closed.recv_timeout(Duration::from_secs(2)).unwrap();
+        takeover.join().unwrap();
+        server.join().unwrap();
+        assert!(pool.call(packet(port, 71, Op::AvrStatus)).is_err());
+        pool.call(packet(port, 71, Op::Release)).unwrap();
+        pool.block(key.clone()).unwrap();
+        pool.unblock(&key).unwrap();
+        assert!(!pool.state.lock().unwrap().blocked.contains_key(&key));
+    }
+    #[test]
+    fn failed_takeover_resumes_native_only_after_the_old_socket_closes() {
+        let pool = Arc::new(Pool::default());
+        let (entered, waiting) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let (port, closed, server) = receiver(Some((entered, blocked)));
+        let p = pool.clone();
+        let request = std::thread::spawn(move || p.call(packet(port, 81, Op::AvrStatus)));
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let key = format!("denon:127.0.0.1:{port}");
+        assert!(pool
+            .block_for(key.clone(), Duration::from_millis(10))
+            .is_err());
+        pool.unblock(&key).unwrap();
+        assert!(pool.call(packet(port, 82, Op::AvrStatus)).is_err());
+        release.send(()).unwrap();
+        request.join().unwrap().unwrap();
+        closed.recv_timeout(Duration::from_secs(2)).unwrap();
+        server.join().unwrap();
+        let retirement = pool.state.lock().unwrap().blocked[&key].retirement.clone();
+        retirement.wait(Duration::from_secs(2)).unwrap();
+        pool.call(packet(port, 81, Op::Release)).unwrap();
+        assert!(!pool.state.lock().unwrap().blocked.contains_key(&key));
+    }
+    #[test]
     fn private_service_and_local_consumer_share_the_same_connection() {
         let path =
             std::env::temp_dir().join(format!("couch-control-test-{}.sock", std::process::id()));
@@ -631,6 +849,20 @@ mod tests {
         ));
         a.write_all(&(5 * 1024 * 1024u32).to_be_bytes()).unwrap();
         assert!(matches!(read_frame::<Packet>(&mut b), Err(Error::Protocol)));
+    }
+    #[test]
+    fn missing_selected_broker_does_not_fall_back_to_a_second_network_owner() {
+        let receiver = TcpListener::bind("127.0.0.1:0").unwrap();
+        receiver.set_nonblocking(true).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("couch-absent-control-{}.sock", std::process::id()));
+        assert!(!path.exists());
+        assert!(dispatch_via(
+            Some(&path),
+            packet(receiver.local_addr().unwrap().port(), 91, Op::AvrStatus)
+        )
+        .is_err());
+        assert!(matches!(receiver.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
     }
 }
 

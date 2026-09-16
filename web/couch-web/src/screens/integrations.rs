@@ -548,6 +548,7 @@ pub fn screen(app: App) -> AnyView {
             <h2>"Available packages" <span class="count">{move || catalog.get().available.len()}</span></h2>
             <div class="integration-grid">{move || catalog.get().available.into_iter().map(|item| available_card(app, item, busy, operation, message, error, result)).collect_view()}</div>
         </section>
+        {super::integration_migrations::section(app, busy)}
         <section class="creation integration-repositories">
             <h2>"Trusted repositories"</h2>
             <p class="dim">"Official repositories are built in. To add a custom repository, paste its public signing key from a source you trust; Couch does not fetch or trust a key automatically."</p>

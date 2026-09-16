@@ -40,6 +40,12 @@ impl StoredConfig {
 fn projection(config: &Config) -> Config {
     let mut result = config.clone();
     let mut disabled = Vec::new();
+    for connection in &mut result.connections {
+        if let Some(original) = config.migrated_denon(&connection.id) {
+            connection.provider = original.provider();
+        }
+    }
+    result.denon_migrations.clear();
     result
         .connections
         .retain(|connection| !matches!(connection.provider, Provider::Plugin { .. }));
@@ -47,9 +53,12 @@ fn projection(config: &Config) -> Config {
         for device in &mut room.devices {
             let external = match &device.integration {
                 Integration::Plugin { .. } => true,
-                Integration::Connection { connection_id, .. } => config
-                    .connection(connection_id)
-                    .is_some_and(|c| matches!(c.provider, Provider::Plugin { .. })),
+                Integration::Connection { connection_id, .. } => {
+                    config.migrated_denon(connection_id).is_none()
+                        && config
+                            .connection(connection_id)
+                            .is_some_and(|c| matches!(c.provider, Provider::Plugin { .. }))
+                }
                 _ => false,
             };
             if external {

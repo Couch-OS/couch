@@ -2,6 +2,10 @@
 
 For how work reaches a release at all (the `dev` and `main` branches and the
 Stable, Alpha and Dev channels), see [development flow](development-flow.md).
+For a core runtime paired with an independently signed integration package, see
+the [integration release rollout](integration-release-rollout.md). It defines
+the pinned tested-set receipt used by runtime inventory and keeps package
+publication separate from runtime and installer payloads.
 
 `tools/release/clean_stage.py` assembles a deterministic **noninstallable** rootfs staging archive. It takes a hash-pinned clean Alpine ARMv7 minirootfs and an explicit list of Couch artifacts. It never copies a running remote's rootfs, extracts archive links onto the host, or includes vendor files automatically.
 

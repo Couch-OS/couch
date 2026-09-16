@@ -13,6 +13,13 @@ python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json
 
 `BASE_SPEC` supplies the pinned clean Alpine input and timestamp. Its artifact list is replaced by the explicit runtime list. Run on the checkout holding the ARM build artifacts; on the release host that is the checkout `tools/build-release.sh` just ran in ([releases.md](releases.md#build-host)). The inventory's Git commit describes the audited checkout, **not** an attestation that existing binaries were built from that commit. Tracked payload changes are represented only by a cleanliness flag and diff hash; their contents are not copied into the report.
 
+The inventory also validates and records
+`tools/release/tested-integrations.json`. For an integration rollout candidate,
+generate the offline feed-byte receipt described in
+[integration release rollout](integration-release-rollout.md#produce-the-tested-set-receipt)
+and pass it with `--integration-receipt`. The receipt is provenance only; the
+manifest and integration APK are not copied into `/opt/couch`.
+
 ## Runtime files
 
 | Role | Files and checks |
