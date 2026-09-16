@@ -47,6 +47,7 @@ development key outside the source checkout:
 
 ```sh
 KEY_DIR="$HOME/.local/share/couch-integration-signing"
+umask 077
 mkdir -p "$KEY_DIR"
 openssl genrsa -out "$KEY_DIR/developer.rsa" 4096
 openssl rsa -in "$KEY_DIR/developer.rsa" -pubout \
@@ -94,67 +95,78 @@ the Couch device.
 
 ## Install and operate on a remote
 
-The SSH root shell on an HA100 is the outer initramfs, while `couch-confd` and
-Alpine's `apk` run inside the mounted Alpine system. Enter that environment for
-package operations; running the bare command from the outer shell will not have
-the required APK tooling.
+The normal HA100 SSH server runs inside Alpine, so an SSH session sees
+`/opt/couch` and `/opt/couch/integration-keys` directly. The USB serial and
+early recovery shells run in the outer initramfs, where the same files are
+under `/mnt/alpine`. Detect which shell you have before copying files or adding
+`chroot`:
+
+```sh
+if [ -f /etc/alpine-release ]; then
+  echo "Alpine shell"
+elif [ -f /mnt/alpine/etc/alpine-release ]; then
+  echo "outer initramfs shell"
+fi
+```
 
 These commands require an integration-capable Couch runtime. The current `.170`
 device release predates this host and cannot install integration APKs. After an
 eligible runtime is installed, this probe exits successfully:
 
 ```sh
-chroot /mnt/alpine /opt/couch/runtime/current/couch-confd \
+/opt/couch/runtime/current/couch-confd \
   --supports-integration-protocol=1
 ```
 
-The development CLI is exposed under `couch-confd integrations`. From the
-outer root shell, invoke it through the Alpine chroot and name the exact trust
-directory for that package source:
+The development CLI is exposed under `couch-confd integrations`. In the normal
+Alpine SSH session, name the exact trust directory for that package source:
 
 ```sh
-chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+/opt/couch/runtime/current/couch-confd integrations \
   --keys-dir /opt/couch/integration-keys/custom/developer \
-  install-sideload /path/inside/alpine/couch-integration-YOUR_ID-0.1.0-r0.apk
-chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+  install-sideload /tmp/couch-integration-YOUR_ID-0.1.0-r0.apk
+/opt/couch/runtime/current/couch-confd integrations \
   --keys-dir /opt/couch/integration-keys/custom/my-feed \
   install-repository couch-integration-YOUR_ID \
   --repository https://packages.example.invalid/couch
-chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations list
-chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations rollback YOUR_ID
-chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations remove YOUR_ID
+/opt/couch/runtime/current/couch-confd integrations list
+/opt/couch/runtime/current/couch-confd integrations rollback YOUR_ID
+/opt/couch/runtime/current/couch-confd integrations remove YOUR_ID
 ```
 
-The sideload path must be visible inside `/mnt/alpine`; copy the APK into that
-filesystem first or use the corresponding path after entering the chroot.
-
 For example, copy a development package and its **public** key from the build
-host, then admit the package through Couch:
+host into the normal Alpine SSH environment, then admit it through Couch:
 
 ```sh
 ssh root@couch.local \
-  'mkdir -p /mnt/alpine/opt/couch/integration-keys/custom/developer'
+  'test -f /etc/alpine-release && \
+   mkdir -p /opt/couch/integration-keys/custom/developer'
 scp "$KEY_DIR/developer.rsa.pub" \
-  root@couch.local:/mnt/alpine/opt/couch/integration-keys/custom/developer/
+  root@couch.local:/opt/couch/integration-keys/custom/developer/
 scp build/integrations/couch-integration-YOUR_ID-0.1.0-r0.apk \
-  root@couch.local:/mnt/alpine/tmp/
+  root@couch.local:/tmp/
 ssh root@couch.local \
-  'chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+  '/opt/couch/runtime/current/couch-confd integrations \
     --keys-dir /opt/couch/integration-keys/custom/developer \
     install-sideload /tmp/couch-integration-YOUR_ID-0.1.0-r0.apk'
 ```
 
-The paths given to `scp` and the outer SSH shell include `/mnt/alpine`. Paths
-given after `chroot /mnt/alpine` do not. Installing with `apk add` directly is
-not equivalent: it bypasses Couch's payload audit, protocol handshake,
-immutable slot store, activation record, and rollback path.
+From an outer initramfs or serial shell, prefix the runtime command with
+`chroot /mnt/alpine` and use `/mnt/alpine/opt/...` or `/mnt/alpine/tmp/...`
+when manipulating files outside the chroot. Command arguments after `chroot`
+remain Alpine paths such as `/opt/couch/integration-keys/custom/developer` and
+`/tmp/package.apk`.
+
+Installing with `apk add` directly is not equivalent: it bypasses Couch's
+payload audit, protocol handshake, immutable slot store, activation record,
+and rollback path.
 
 Custom repositories use the same CLI. Couch does not currently save repository
 URLs or expose repository management in the web UI, so every repository
 installation supplies the URL and its dedicated key directory explicitly:
 
 ```sh
-chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+/opt/couch/runtime/current/couch-confd integrations \
   --keys-dir /opt/couch/integration-keys/custom/acme-lab \
   install-repository couch-integration-YOUR_ID \
   --repository https://packages.example.invalid/couch
@@ -192,8 +204,10 @@ whose signing key you trust.
 An APK feed is static files: a signed `APKINDEX.tar.gz` and its signed APKs
 under an architecture directory. The public
 [`dangerouslaser/couch-integrations`](https://github.com/dangerouslaser/couch-integrations)
-repository is the home for reviewed sources, catalog, and build workflow.
-GitHub Pages will serve this layout once feed publishing is enabled:
+repository holds publication policy, a pinned Couch source revision, and the
+Pages build and deployment workflow. Integration implementations and the
+admission catalog remain canonical in the Couch repository. GitHub Pages will
+serve this layout once feed publishing is enabled:
 
 ```text
 preview/armv7/APKINDEX.tar.gz

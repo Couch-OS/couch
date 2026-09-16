@@ -36,6 +36,7 @@ requested package, then produces an `armv7` APK with no scripts:
 
 ```sh
 KEY_DIR="$HOME/.local/share/couch-integration-signing"
+umask 077
 mkdir -p "$KEY_DIR"
 openssl genrsa -out "$KEY_DIR/developer.rsa" 4096
 openssl rsa -in "$KEY_DIR/developer.rsa" -pubout \
@@ -106,14 +107,24 @@ root before Couch audits the extracted tree.
 
 ## Install from a development host
 
-The HA100 SSH root shell is the outer initramfs. The runtime binary, package
-paths, and integration key paths are inside the Alpine filesystem mounted at
-`/mnt/alpine`. These commands require an integration-capable runtime; the
-current `.170` device release predates the plugin host. Once a suitable runtime
-is installed, this probe exits successfully:
+The normal HA100 SSH server runs inside Alpine: `/opt/couch` in that session is
+the directory an outer initramfs or USB serial shell sees as
+`/mnt/alpine/opt/couch`. Detect the shell before choosing paths:
 
 ```sh
-chroot /mnt/alpine /opt/couch/runtime/current/couch-confd \
+if [ -f /etc/alpine-release ]; then
+  echo "Alpine shell"
+elif [ -f /mnt/alpine/etc/alpine-release ]; then
+  echo "outer initramfs shell"
+fi
+```
+
+These commands require an integration-capable runtime; the current `.170`
+device release predates the plugin host. From the normal Alpine SSH session,
+this probe exits successfully once a suitable runtime is installed:
+
+```sh
+/opt/couch/runtime/current/couch-confd \
   --supports-integration-protocol=1
 ```
 
@@ -122,21 +133,24 @@ the build host:
 
 ```sh
 ssh root@couch.local \
-  'mkdir -p /mnt/alpine/opt/couch/integration-keys/custom/developer'
+  'test -f /etc/alpine-release && \
+   mkdir -p /opt/couch/integration-keys/custom/developer'
 scp "$KEY_DIR/developer.rsa.pub" \
-  root@couch.local:/mnt/alpine/opt/couch/integration-keys/custom/developer/
+  root@couch.local:/opt/couch/integration-keys/custom/developer/
 scp build/integrations/couch-integration-YOUR_ID-0.1.0-r0.apk \
-  root@couch.local:/mnt/alpine/tmp/
+  root@couch.local:/tmp/
 ssh root@couch.local \
-  'chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+  '/opt/couch/runtime/current/couch-confd integrations \
     --keys-dir /opt/couch/integration-keys/custom/developer \
     install-sideload /tmp/couch-integration-YOUR_ID-0.1.0-r0.apk'
 ```
 
-Paths used by the outer SSH shell include `/mnt/alpine`; paths after `chroot`
-are relative to the Alpine root. Do not run `apk add` against an integration
-package. Direct installation bypasses Couch's audit, handshake, immutable
-slots, activation record, saved-settings compatibility check, and rollback.
+From an outer initramfs or serial shell, prefix the runtime command with
+`chroot /mnt/alpine`; use `/mnt/alpine/...` when manipulating files outside
+the chroot and Alpine paths such as `/opt/...` and `/tmp/...` in arguments to
+the chrooted command. Do not run `apk add` against an integration package.
+Direct installation bypasses Couch's audit, handshake, immutable slots,
+activation record, saved-settings compatibility check, and rollback.
 
 ## Install from a custom repository
 
@@ -144,7 +158,7 @@ A custom repository is selected for one installation by passing both its
 dedicated trust directory and base URL:
 
 ```sh
-chroot /mnt/alpine /opt/couch/runtime/current/couch-confd integrations \
+/opt/couch/runtime/current/couch-confd integrations \
   --keys-dir /opt/couch/integration-keys/custom/acme-lab \
   install-repository couch-integration-YOUR_ID \
   --repository https://packages.example.invalid/couch
