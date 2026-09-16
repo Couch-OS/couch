@@ -37,14 +37,35 @@ impl Package {
         let manifest: Manifest =
             serde_json::from_str(adapter.manifest_json).expect("valid embedded plugin manifest");
         manifest.validate().expect("valid plugin manifest");
-        let root = std::env::temp_dir().join(format!(
-            "couch-plugin-admission-{}-{}",
-            std::process::id(),
-            NEXT_PACKAGE.fetch_add(1, Ordering::Relaxed)
-        ));
+        // Reserve the package root atomically. create_dir_all would silently
+        // reuse debris if the operating system reused a test process ID.
+        let parent = adapter.binary.parent().expect("test binary parent");
+        let root = loop {
+            let candidate = parent.join(format!(
+                ".couch-plugin-admission-{}-{}-{}",
+                manifest.id,
+                std::process::id(),
+                NEXT_PACKAGE.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create admission package: {error}"),
+            }
+        };
         let executable = root.join(&manifest.executable);
         std::fs::create_dir_all(executable.parent().expect("binary parent"))
             .expect("create admission package");
+        // On Linux, fork can inherit another test thread's still write-open
+        // copy destination. CLOEXEC is applied too late to prevent execve from
+        // rejecting that executable with ETXTBSY. The Cargo artifact is
+        // already immutable and on this same filesystem, so link it without a
+        // writable window, matching production's immutable package slots.
+        #[cfg(target_os = "linux")]
+        std::fs::hard_link(adapter.binary, &executable).expect("link immutable real plugin binary");
+        // Concurrent execution through one inode timed out on macOS; separate
+        // copies do not have Linux's inherited-writer failure there.
+        #[cfg(not(target_os = "linux"))]
         std::fs::copy(adapter.binary, &executable).expect("copy real plugin binary");
         Self { root, manifest }
     }

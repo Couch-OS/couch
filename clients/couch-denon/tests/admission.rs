@@ -18,6 +18,21 @@ fn settings(device: &MockHost) -> serde_json::Value {
 }
 
 #[test]
+fn concurrent_package_startup_is_offline_and_race_free() {
+    std::thread::scope(|scope| {
+        for _ in 0..16 {
+            scope.spawn(|| {
+                let package = testing::Package::new(adapter());
+                drop(package.endpoint(
+                    json!({"host":"127.0.0.1","port":1}),
+                    std::time::Duration::from_secs(3),
+                ));
+            });
+        }
+    });
+}
+
+#[test]
 fn conformance() {
     testing::conformance(
         adapter(),
