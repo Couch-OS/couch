@@ -673,8 +673,10 @@ Bluetooth, the preferred one first. Edit device offers **Preferred control**
 once the device has more than one transport (`preferred_transport`: `ir`,
 `ip` or `bluetooth`; Automatic is infrared, then the connection, then
 Bluetooth); a key falls through to the next when the preferred one is not
-available for that press. See [Bluetooth](bluetooth-tv.md). The activity
-editor warns above the device list when two Bluetooth-paired TVs are in one
+available for that press. The section is labelled **experimental**: a
+connected Bluetooth device can slow the remote's Wi-Fi badly, and it says so
+— see [Bluetooth](bluetooth-tv.md). The activity editor warns above the
+device list when two Bluetooth-paired TVs are in one
 activity and the one that is not the main screen has no other transport,
 because the remote keeps one Bluetooth link at a time.
 
