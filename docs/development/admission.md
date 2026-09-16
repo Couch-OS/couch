@@ -18,8 +18,11 @@ not an announcement of a public package repository or enabled branch protection.
 | `production` | Eligible for a production catalog once distribution exists. | Must have validated hardware evidence. |
 
 Echo TV is synthetic and test-only. Denon is a preview: its fake-receiver tests
-exercise the protocol implementation, but no physical receiver evidence is
-recorded yet. Neither status should be read as a published package.
+exercise the protocol implementation. Read-only status and input enumeration
+also passed against a physical receiver from the HA100 package host, but exact
+model/firmware evidence and physical command validation are still outstanding.
+Its complete hardware-validation status therefore remains `not-tested`. Neither
+tier should be read as a published package.
 
 ## Required tests
 
@@ -79,6 +82,32 @@ The workflow's final admission job always appears on pull requests. The
 expensive layers are skipped for unrelated changes and required when the
 integration, daemon, model, catalog, or packaging paths change. This describes
 the workflow behavior only; branch protection is not claimed to be configured.
+
+## Require admission before merging
+
+Once this workflow is merged into each target branch and has completed a run,
+an administrator can enable a branch ruleset for `dev` and `main`:
+
+1. Open **Settings → Rules → Rulesets**, create an active branch ruleset, and
+   target those branches (or edit their existing branch protection rules).
+2. Enable **Require a pull request before merging** and **Require status checks
+   to pass**. Add the exact check name `admission`, with **GitHub Actions** as
+   its expected source. In REST check-run results that app is `github-actions`
+   with app ID `15368`; the workflow title is not the check name.
+3. Require branches to be up to date before merging. Preserve any other
+   required checks. Limit bypass permissions if admission must apply to admins.
+4. Verify with a failing test PR that merging is blocked, then fix it and verify
+   the required check succeeds. A check must have run recently to appear in
+   GitHub's selector.
+
+Merge the workflow before enforcing its check so older branches do not become
+blocked on a check they cannot produce. Keep the final job on every PR, without
+workflow-level path filters. If enabling a merge queue, first add a
+`merge_group` trigger and validate the gate on queue commits. A separate
+integration repository needs its own equivalent workflow and branch rule;
+protection in this monorepo does not transfer automatically.
+
+See GitHub's [required status check rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-status-checks-to-pass-before-merging).
 
 ## Review checklist
 

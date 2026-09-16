@@ -80,6 +80,38 @@ not tested.
 Do not turn a simulator result into a hardware support claim. A package can be
 correct up to its wire format while still misunderstanding a vendor's device.
 
+### Validate the package host on an HA100
+
+Use an isolated directory under `/opt/couch` for the test daemon, config,
+connection settings, package store, and public trust key. Bind its HTTP API to
+loopback and use a separate socket and port. Keep the production runtime slot,
+configuration, and trust keys unchanged. Do not install synthetic test packages
+into the user's active store.
+
+Exercise signed sideload, a real version upgrade, rollback, signed repository
+installation, untrusted-key rejection, removal, and reinstallation. Confirm
+that settings survive replacement and that HTTP and the panel socket share one
+plugin/device connection. Send queue spikes, malformed replies, and ambiguous
+timeouts only to a controlled fake peer; verify wire command counts to detect
+unintended retries.
+
+Inspect the live plugin process credentials on the remote as well as testing
+transport behavior. The HA100 kernel's Android network restrictions differ
+from ordinary Linux CI containers, so a successful container test alone does
+not establish device compatibility.
+
+For screen validation, use a separate GUI home and settings file, capture the
+framebuffer, and verify an input event reaches the fake integration. Restore
+the production GUI with a bounded recovery timer if temporarily stopping its
+supervisor. Confirm its heartbeat advances afterward and compare production
+configuration hashes and runtime selections before and after the trial.
+Record physical button/touch tests separately from injected evdev events.
+
+A receiver trial limited to status and input enumeration does not certify
+power, volume, input changes, reconnect behavior, or all receiver models. Keep
+such an integration in preview until the full declared behavior and the exact
+hardware/firmware are recorded.
+
 ## Compatibility record
 
 For each published build, record:

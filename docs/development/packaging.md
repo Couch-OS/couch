@@ -115,6 +115,41 @@ until a compatible package is installed again.
 - State which Couch source or release the package was tested against.
 - Do not describe a repository as public until it is actually hosted.
 
+## Hosting a feed on GitHub
+
+An APK feed is static files: a signed `APKINDEX.tar.gz` and its signed APKs
+under an architecture directory. A separate `couch-integrations` repository
+can hold the reviewed sources, catalog, and build workflow, with GitHub Pages
+serving this layout:
+
+```text
+stable/armv7/APKINDEX.tar.gz
+stable/armv7/couch-integration-YOUR_ID-0.1.0-r0.apk
+```
+
+The proposed client repository URL would be
+`https://dangerouslaser.github.io/couch-integrations/stable`; the installer
+adds `armv7`. This is an example deployment, not an existing published feed.
+GitHub Packages does not offer a native APK registry among its
+[supported formats](https://docs.github.com/en/packages/learn-github-packages/introduction-to-github-packages).
+Pages is suitable for an initial public feed within its
+[limits](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits):
+1 GB published size and a soft 100 GB monthly bandwidth limit. Larger feeds
+can keep source and CI on GitHub and move static delivery to object storage.
+
+Publishing needs a trusted post-merge or approved release workflow, protected
+signing-key access, and Pages deployment permissions. Never expose the signing
+key to pull-request builds. Require admission before publication, publish only
+eligible catalog tiers, retain prior immutable package versions for rollback,
+and deploy the complete index and package set together. Archives and release
+receipts can also live in GitHub Releases.
+
+Provision the repository URL and public trust key on the remote once. Future
+integration releases can then ship independently of the core runtime. Key
+rotation must overlap trusted old and new keys before removing the old key.
+Changing hosting does not remove the initial runtime update needed to install
+the plugin host and package manager.
+
 ## Source references
 
 - [`tools/integrations/build-apk.sh`](https://github.com/dangerouslaser/couch/blob/main/tools/integrations/build-apk.sh)

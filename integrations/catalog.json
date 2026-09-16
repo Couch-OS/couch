@@ -11,7 +11,7 @@
       "tier": "preview",
       "synthetic": false,
       "limitations": [
-        "No physical Denon receiver validation is recorded yet.",
+        "Read-only status and input enumeration passed on one physical receiver; full command validation and exact model/firmware evidence remain outstanding.",
         "The client covers the receiver main zone only."
       ],
       "tests": {
@@ -23,7 +23,7 @@
       "hardware_validation": {
         "status": "not-tested",
         "evidence": [],
-        "notes": "Fake-receiver coverage is not physical-device evidence."
+        "notes": "HA100 package-host trial passed read-only status and input enumeration against a configured physical receiver. The receiver model/firmware and command behavior are not certified, so complete hardware validation remains not-tested and the integration stays preview."
       }
     },
     {
