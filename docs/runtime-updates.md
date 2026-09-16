@@ -36,10 +36,8 @@ archive SHA-256, and each allowlisted file's size/hash/mode. Archives cannot
 contain links, special files, configuration, or partition images. The file
 list is closed: the required binaries and scripts, `fbcon`, web assets and
 licence texts, and (from .142 on) further top-level `couch-*` executables.
-Before .142 a bundle carrying any other name was refused outright, which is
-why a new binary cannot simply be added to the runtime until every deployed
-remote runs an updater that tolerates it; the Bluetooth bridge ships in the
-boot ramdisk meanwhile. Download and
+What a bundle may actually contain is decided by the *oldest deployed* updater,
+not this one - see [compatibility floor](#compatibility-floor). Download and
 extraction limits are enforced. Files are staged under
 `/opt/couch/runtime/slots/<archive-sha256>` while the running version remains
 active. The user separately confirms **Install & restart**.
@@ -80,6 +78,107 @@ and every other slot directory is removed. Nothing is pruned while a candidate
 still awaits its boot confirmation, and only names that are slot ids are
 considered, so the private staging temporary survives. Do not manually remove
 the active or previous slot.
+
+## Compatibility floor
+
+A runtime bundle is refused **before it is downloaded**, on the signed manifest
+alone, by any updater whose allowlist does not know every file name in it. And a
+check offers only the single newest release on the channel: there is no fallback
+to an older one when the newest is unusable. Together those two facts turn one
+unknown name into a permanent stop. One published bundle carrying one unknown
+name strands every remote whose updater predates that name - not only on that
+release, but on every release after it, until someone reinstalls the full OS.
+
+So the rule is not "the updater in this checkout accepts it". It is:
+
+> A published runtime bundle may contain only names the **oldest deployed
+> updater** accepts.
+
+That updater is the one in the OS image the public installer writes, today
+**v0.1.0-alpha.20260910.24**. A remote installed this morning runs .24's runtime
+and .24's updater until it updates itself, so .24 is the floor.
+
+### What the floor accepts
+
+Transcribed from `git show v0.1.0-alpha.20260910.24:daemon/couch-updates/src/staging.rs`:
+
+- the sixteen `REQUIRED` names: `couch-gui`, `couch-confd`, `couch-system`,
+  `couch-sonos`, `couch-coreelec`, `couch-wmt-properties.so`, `stage2.sh`,
+  `hardware-init.sh`, `gui-start.sh`, `system.sh`, `confd.sh`, `setup-mode.sh`,
+  `portal.sh`, `station.sh`, `wifi-conf.sh`, `build.json` - all of them, or the
+  bundle is incomplete;
+- `fbcon`;
+- `www/` files ending `.html`, `.css`, `.js`, `.svg`, `.png` or `.woff2`, and
+  exactly `www/cgi-bin/{save,scan,enroll,setpw}`;
+- `licenses/*.txt`;
+- with every file at mode 0644 or 0755, scripts, `couch-*` and the CGI at 0755,
+  no file over 64 MiB and no bundle over 128 MiB.
+
+Note what is **absent**: any `couch-*` wildcard. This checkout's updater accepts
+a further top-level `couch-*` executable - that arrived in .142 - and the
+floor's does not, so **a new binary cannot enter the runtime bundle**. Note also
+what is **present**: `licenses/*.txt`, which the floor has taken since the first
+signed update. Licence texts have never been what a floor updater refuses.
+
+### Where a new binary goes instead
+
+The boot ramdisk's `/extra`, delivered by the signed
+[boot payload](#boot-image-updates) and so only to images that take it. The
+whole Bluetooth stack lives there - `couch-bt-bridge`, `couch-bt-hid` and
+`couch-bluetoothd` - beside the kernel that gives it `/dev/vhci`.
+`tools/release/prepare_boot_candidates.py` puts them in the ramdisk from
+`runtime_inventory.BOOT_EXTRA`; `couch_system::bluetooth::base()` prefers a
+runtime copy if one is ever there, then `/extra` (copied into `/tmp`, which is
+bind-mounted into the Alpine root), then Alpine's own `bluetoothd`.
+
+### Checking a bundle before publishing
+
+`tools/release/update_floor.py` holds the floor's rules, once, with the reason
+they cannot move. It prints the bundle contents and every reason the floor would
+refuse them, and exits non-zero on a refusal:
+
+```sh
+python3 tools/release/update_floor.py --inventory                  # this checkout's lists
+python3 tools/release/update_floor.py --tree CLEAN_RUNTIME         # a staged clean tree
+python3 tools/release/update_floor.py --manifest couch-VERSION-ha100-update.json
+```
+
+It is not the only gate. `couch_updates::bundle` runs the same check in Rust
+(`staging::check_floor`) and **refuses to sign** a bundle that fails it, so a
+promotion cannot produce an unpublishable release by accident. CI runs the
+`--inventory` form and the unit tests in
+`tools/release/test_update_floor.py`, which assert that nothing in
+`runtime_inventory.RUNTIME` is a name the floor refuses.
+
+### When the floor can move
+
+Only when both are true: the installer's OS image has been rebuilt with a newer
+runtime, **and** every remote installed from the older image has updated past
+it. Rebuilding that image is the real fix and a known task - see
+[installer](installer.md#what-version-a-fresh-install-runs). Until then, moving
+the constant in `update_floor.py` and `staging.rs` breaks remotes in the field,
+which is exactly what the constant exists to prevent.
+
+### What this cost, twice
+
+- **.141.dev** could not be installed anywhere: `couch-bt-bridge` had been added
+  to the runtime bundle. Fixed by moving the bridge into the boot ramdisk, and
+  by teaching the updater the `couch-*` wildcard so that a *future* release
+  could add one.
+- **.160.dev, .163.dev and .164.dev** repeated it: the wildcard made the bundles
+  installable by a current remote, so the binaries came back into the runtime -
+  `couch-bt-bridge`, `couch-bt-hid`, then `couch-bluetoothd` - and a remote on
+  the floor refuses all three. These are published, non-draft prereleases, and
+  .164.dev sorts above .148, so `discover()` offers them and nothing else. The
+  floor's updater has no dev channel: to it `alpha.20260913.164.dev` is an
+  ordinary `alpha.*` prerelease, so an Alpha remote is offered it and refuses
+  it, with no fallback to .148. (A Stable remote is offered nothing at all,
+  because every release so far is a prerelease.) That is the report this section
+  exists to answer: see
+  [the installer FAQ](installer.md#the-web-ui-reports-an-older-version-than-the-installer-i-used).
+
+A released `.dev` prerelease is visible to every remote whose updater predates
+the Dev channel. Until the floor moves past .142, a `.dev` tag is not private.
 
 ## Boot image updates
 

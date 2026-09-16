@@ -5,17 +5,20 @@
 //! powers the radio and creates hci0), then dbus, bluetoothd, and couch-bt-hid
 //! (the HID GATT app + raw-HCI advertising). Everything runs under one
 //! `chroot /mnt/alpine` so they share the same dbus. The orchestration is here,
-//! in Rust, rather than a shipped shell script: a new script in the runtime
-//! bundle would be refused by updaters older than this one, whereas the new
-//! couch-bt-hid binary is accepted (a couch-* executable). Wi-Fi and Bluetooth
-//! share one radio, so the stack starts only on the user's toggle.
+//! in Rust, rather than a shipped shell script: a new script - or a new binary -
+//! in the runtime bundle is refused outright by the oldest deployed updater, and
+//! that refusal strands the remote on the release it has
+//! (`tools/release/update_floor.py`, docs/runtime-updates.md). So none of the
+//! three binaries is published in the runtime bundle: they ride in the boot
+//! ramdisk's `/extra`, and `base()` finds them there. Wi-Fi and Bluetooth share
+//! one radio, so the stack starts only on the user's toggle.
 //!
 //! Bring-up takes a few seconds, so the service publishes its progress in a
 //! state file (`starting`, `on`, `off`, or `error <sentence>`) that the GUI,
 //! the web UI and the API read while they wait, instead of showing "off" until
 //! the last piece is up.
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path, process::Command, thread, time::Duration};
+use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command, thread, time::Duration};
 
 const HCI0: &str = "/sys/class/bluetooth/hci0";
 /// /tmp is shared between the initramfs root and Alpine.
@@ -40,7 +43,8 @@ const BLUETOOTHD_CONF_TEXT: &str = "[General]\nControllerMode = le\nPairable = f
 const WIFI_MAC: &str = "/sys/class/net/wlan0/address";
 /// Alpine's bluetoothd, inside the Alpine root.
 const STOCK_BLUETOOTHD: &str = "/usr/lib/bluetooth/bluetoothd";
-/// The patched bluetoothd a runtime may carry next to couch-bt-hid: Alpine's
+/// The patched bluetoothd, found next to couch-bt-hid wherever base() found
+/// that: the boot ramdisk's /extra, or a runtime that carries a copy. Alpine's
 /// BlueZ 5.79 plus a patch that stores a bonded TV's report subscriptions
 /// (CCC values) and restores them when bluetoothd starts. Stock bluetoothd
 /// keeps them only in memory, and a bonded TV does not write them again after
@@ -53,9 +57,15 @@ const PATCHED_BLUETOOTHD: &str = "couch-bluetoothd";
 const BLUETOOTHD_COMMS: &[&str] = &["bluetoothd", "couch-bluetooth"];
 
 /// Where the Bluetooth binaries are, as an Alpine-relative directory: a
-/// runtime slot copy wins over the base install, and a boot image's `/extra`
-/// fallback (copied into Alpine's /tmp, which is shared) covers runtimes that
-/// do not carry them yet.
+/// runtime slot copy wins over the base install, and then the boot image's
+/// `/extra`, which is where a published release actually puts them (none of
+/// these names can go in a runtime bundle, see the module comment). /tmp is
+/// bind-mounted into Alpine, so one path names the copies in both roots.
+///
+/// The two that make the radio work decide the directory. couch-bluetoothd is
+/// optional: without it `bluetoothd_path` falls back to Alpine's own, which
+/// works apart from bonded devices' subscriptions, so an older boot image
+/// without it still brings Bluetooth up.
 fn base() -> Option<String> {
     for (probe, alpine) in [
         (
@@ -71,10 +81,21 @@ fn base() -> Option<String> {
     if Path::new("/extra/couch-bt-hid").exists() && Path::new("/extra/couch-bt-bridge").exists() {
         let dir = Path::new("/tmp/couch-bt");
         fs::create_dir_all(dir).ok()?;
-        for name in ["couch-bt-hid", "couch-bt-bridge"] {
-            let to = dir.join(name);
-            if !to.exists() {
-                fs::copy(Path::new("/extra").join(name), &to).ok()?;
+        for (name, required) in [
+            ("couch-bt-hid", true),
+            ("couch-bt-bridge", true),
+            (PATCHED_BLUETOOTHD, false),
+        ] {
+            let (from, to) = (Path::new("/extra").join(name), dir.join(name));
+            if to.exists() || (!required && !from.exists()) {
+                continue;
+            }
+            match fs::copy(&from, &to) {
+                Ok(_) => {
+                    let _ = fs::set_permissions(&to, fs::Permissions::from_mode(0o755));
+                }
+                Err(_) if !required => {}
+                Err(_) => return None,
             }
         }
         return Some("/tmp/couch-bt".into());

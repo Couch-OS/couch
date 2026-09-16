@@ -14,7 +14,7 @@ import tempfile
 import unittest
 
 from clean_stage import artifact_destination, LICENSE_FILES, RECOVERY_CGI, REPO
-from runtime_inventory import audit, CGI, LICENSES, RUNTIME, SCRIPTS
+from runtime_inventory import audit, BOOT_EXTRA, CGI, LICENSES, RUNTIME, RUNTIME_ALPINE, SCRIPTS
 
 CARGO_OUTPUT = 'target/armv7-unknown-linux-musleabihf/release/'
 STAGING = REPO / 'daemon/couch-updates/src/staging.rs'
@@ -60,12 +60,24 @@ class RuntimePayloadListTests(unittest.TestCase):
         binaries = {name for name in required if not name.endswith(('.sh', '.so', '.json'))}
         self.assertEqual(binaries - set(RUNTIME), set())
 
-    def test_build_release_builds_exactly_the_cargo_binaries_the_payload_stages(self):
+    def test_build_release_builds_exactly_the_cargo_binaries_the_release_stages(self):
         # fbcon and couch-wmt-properties.so have their own build scripts; this
-        # is only the ARM cargo output both files name by path.
+        # is only the ARM cargo output both files name by path. One release
+        # build produces both destinations, so both lists are compared here.
         cargo = {name for name, source in RUNTIME.items() if CARGO_OUTPUT in source}
+        cargo |= {name for name, (source, _) in BOOT_EXTRA.items() if CARGO_OUTPUT in source}
         built = set(re.findall(r'/target/\$TARGET/release/([A-Za-z0-9._-]+)', BUILD.read_text()))
         self.assertEqual(cargo, built)
+
+    def test_the_boot_ramdisk_binaries_never_reach_the_runtime_payload(self):
+        """The split is the whole point: a name in BOOT_EXTRA is one the oldest
+        deployed updater refuses, so it must not be staged into /opt/couch,
+        where the publisher would bundle it (tools/release/update_floor.py)."""
+        self.assertEqual(set(BOOT_EXTRA) & set(RUNTIME), set())
+        self.assertEqual(set(BOOT_EXTRA) & set(RUNTIME_ALPINE), set())
+        staged_names = {destination.rsplit('/', 1)[1] for destination in staged()}
+        self.assertEqual(set(BOOT_EXTRA) & staged_names, set())
+        self.assertEqual(rust_required() & set(BOOT_EXTRA), set())
 
     def test_the_duplicated_licence_and_cgi_lists_agree(self):
         self.assertEqual(set(LICENSES), set(LICENSE_FILES))

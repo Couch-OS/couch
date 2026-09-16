@@ -1,7 +1,9 @@
 # couch-bluetoothd
 
 Alpine 3.21's `bluetoothd` (BlueZ 5.79, aports `main/bluez` 5.79-r0) with one
-Couch patch, shipped in the runtime bundle as `couch-bluetoothd`. The system
+Couch patch, shipped in the boot ramdisk's `/extra` as `couch-bluetoothd`
+(never in the runtime bundle: docs/runtime-updates.md, "Compatibility
+floor"). The system
 service starts it instead of `/usr/lib/bluetooth/bluetoothd` whenever the
 runtime carries it (`daemon/couch-system/src/bluetooth.rs`).
 

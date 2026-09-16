@@ -281,11 +281,16 @@ re-read the services when Service Changed told it to, did not subscribe
 again, and every key went nowhere (`dropped consumer report …: nothing
 subscribed`, 2026-09-15). Restarting only couch-bt-hid did not help either.
 
-- **couch-bluetoothd.** The runtime bundle carries Alpine 3.21's bluetoothd
+- **couch-bluetoothd.** The boot ramdisk carries Alpine 3.21's bluetoothd
   (BlueZ 5.79-r0) with one patch, built by `third_party/bluez/build.sh` in a
   pinned container against the remote's own glib, dbus and libudev; see
-  [third_party/bluez/README.md](../third_party/bluez/README.md). The system
-  service starts `<runtime>/couch-bluetoothd` when it is there and
+  [third_party/bluez/README.md](../third_party/bluez/README.md). It rides in
+  `/extra` with the bridge and the HID daemon rather than in the runtime
+  bundle, because the oldest deployed updater refuses a bundle carrying any of
+  those names ([compatibility
+  floor](runtime-updates.md#compatibility-floor)), and the system service
+  copies it into shared `/tmp`. The system
+  service starts `<base>/couch-bluetoothd` when it is there and
   `/usr/lib/bluetooth/bluetoothd` otherwise, or if the patched one does not
   stay up; both are found and stopped by their `/proc` comm (`bluetoothd`,
   and `couch-bluetooth`, the 15 bytes the kernel keeps). Same paths,
@@ -333,7 +338,7 @@ subscribed`, 2026-09-15). Restarting only couch-bt-hid did not help either.
   so with a restored subscription the daemon never hears one. `push()`
   always sets the value and emits the change; bluetoothd decides who gets it.
 - **One re-pair for older bonds.** A bond made by stock bluetoothd has no
-  `[GattCCC]` entries. After the first runtime with couch-bluetoothd, such a
+  `[GattCCC]` entries. After the first boot image with couch-bluetoothd, such a
   TV needs pairing once more (delete *Couch Remote* on the TV, forget the
   bond on the remote, pairing mode); from then on its subscriptions are
   stored when it subscribes.

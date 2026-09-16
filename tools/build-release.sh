@@ -8,6 +8,15 @@
 #
 # Afterwards, run tools/release/runtime_inventory.py on this same checkout
 # (docs/runtime-payload.md) so the hashes describe the binaries just built.
+#
+# Not everything built here goes to the same place. The runtime bundle carries
+# only names the OLDEST DEPLOYED UPDATER accepts; the Bluetooth stack does not
+# qualify, so it goes in the boot ramdisk's /extra instead
+# (tools/release/prepare_boot_candidates.py). The two lists are
+# runtime_inventory.RUNTIME and runtime_inventory.BOOT_EXTRA, the split is
+# explained in tools/release/update_floor.py, and
+# `python3 tools/release/update_floor.py --tree CLEAN_RUNTIME` checks a staged
+# tree before it is signed.
 set -eu
 cd "$(dirname "$0")/.."
 [ "$#" -eq 0 ] || { echo 'Usage: tools/build-release.sh' >&2; exit 2; }
@@ -27,11 +36,12 @@ echo '= couch-sonos'
 tools/build-sonos.sh
 echo '= couch-coreelec'
 (cd clients && cargo build --locked --release --target "$TARGET" -p couch-coreelec)
-echo '= couch-bt-bridge'
+# The Bluetooth stack: boot ramdisk, not runtime bundle (see the header).
+echo '= couch-bt-bridge (boot ramdisk /extra)'
 (cd clients && cargo build --locked --release --target "$TARGET" -p couch-bt)
-echo '= couch-bt-hid'
+echo '= couch-bt-hid (boot ramdisk /extra)'
 (cd clients && cargo build --locked --release --target "$TARGET" -p couch-bt-hid)
-echo '= couch-bluetoothd (patched BlueZ, docker)'
+echo '= couch-bluetoothd (patched BlueZ, docker; boot ramdisk /extra)'
 # Rebuilt only when the patch, the recipe or its README changed since the
 # last build: under emulation it takes a few minutes (third_party/bluez).
 bluez_current() {
@@ -46,13 +56,16 @@ if ! bluez_current; then
     third_party/bluez/build.sh build/bluez
 fi
 
-echo '= release binaries'
+echo '= runtime bundle binaries (published in the signed update)'
 for bin in ui/target/$TARGET/release/couch-gui \
     daemon/target/$TARGET/release/couch-confd \
     daemon/target/$TARGET/release/couch-system \
     clients/target/$TARGET/release/couch-sonos \
-    clients/target/$TARGET/release/couch-coreelec \
-    clients/target/$TARGET/release/couch-bt-bridge \
+    clients/target/$TARGET/release/couch-coreelec; do
+    printf '%s (%s bytes)\n' "$bin" "$(wc -c < "$bin" | tr -d ' ')"
+done
+echo '= boot ramdisk /extra binaries (never in the runtime bundle)'
+for bin in clients/target/$TARGET/release/couch-bt-bridge \
     clients/target/$TARGET/release/couch-bt-hid \
     build/bluez/couch-bluetoothd; do
     printf '%s (%s bytes)\n' "$bin" "$(wc -c < "$bin" | tr -d ' ')"
