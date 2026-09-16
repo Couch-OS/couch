@@ -1,5 +1,5 @@
 //! The remote's own settings: brightness, key backlight, the two standby
-//! timeouts, and whether SSH and Bluetooth should run.
+//! timeouts, SSH, Bluetooth, and status-bar battery percentage.
 //!
 //! One small file, `/opt/couch/settings.conf`, written atomically and read
 //! leniently. It lives here rather than in the GUI so the web UI's daemon can
@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const PATH: &str = "/opt/couch/settings.conf";
+/// The mounted runtime's persistent settings location on the device.
+pub const DEVICE_PATH: &str = "/mnt/alpine/opt/couch/settings.conf";
 
 /// Dim-after choices, seconds and their labels, index-aligned with the menu.
 pub const DIM_SECS: [u64; 5] = [15, 30, 60, 120, 300];
@@ -37,6 +39,11 @@ pub struct Settings {
     /// Bluetooth core can honour it. Absent from older files.
     #[serde(default)]
     pub bluetooth: bool,
+    /// Show the known battery charge as a percentage beside the status icon.
+    /// Off by default so existing status bars keep their icon-only layout.
+    /// Absent from older files.
+    #[serde(default)]
+    pub battery_percentage: bool,
 }
 
 impl Settings {
@@ -51,6 +58,7 @@ impl Settings {
             off_index: 3,
             ssh,
             bluetooth: false,
+            battery_percentage: false,
         }
     }
     /// Every field within its range; the file and the web API both go
@@ -70,13 +78,14 @@ impl Settings {
     /// The file's text, one `key=value` per line.
     pub fn render(&self) -> String {
         format!(
-            "brightness={}\nkeys={}\ndim={}\noff={}\nssh={}\nbluetooth={}\n",
+            "brightness={}\nkeys={}\ndim={}\noff={}\nssh={}\nbluetooth={}\nbattery_percentage={}\n",
             self.brightness,
             u8::from(self.keys),
             self.dim_index,
             self.off_index,
             u8::from(self.ssh),
-            u8::from(self.bluetooth)
+            u8::from(self.bluetooth),
+            u8::from(self.battery_percentage)
         )
     }
     /// The file's text over `defaults`: unknown keys and unparsable values
@@ -107,6 +116,7 @@ impl Settings {
                 }
                 "ssh" => s.ssh = v == "1",
                 "bluetooth" => s.bluetooth = v == "1",
+                "battery_percentage" => s.battery_percentage = v == "1",
                 _ => {}
             }
         }
@@ -114,12 +124,19 @@ impl Settings {
     }
 }
 
-/// Where the file is: the fixed device path, or `COUCH_SETTINGS_FILE` for a
-/// host run.
+/// Where the file is: an explicit host override, the device runtime mount, or
+/// the host path. The GUI runs from the initramfs while the writable runtime is
+/// mounted at `/mnt/alpine`, so `/opt/couch` is only valid for host runs.
 pub fn path() -> PathBuf {
-    std::env::var_os("COUCH_SETTINGS_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(PATH))
+    if let Some(path) = std::env::var_os("COUCH_SETTINGS_FILE") {
+        return PathBuf::from(path);
+    }
+    let device_path = PathBuf::from(DEVICE_PATH);
+    if device_path.parent().is_some_and(Path::exists) {
+        device_path
+    } else {
+        PathBuf::from(PATH)
+    }
 }
 
 pub fn load(defaults: Settings) -> Settings {
@@ -303,6 +320,7 @@ mod tests {
             off_index: 5,
             ssh: true,
             bluetooth: true,
+            battery_percentage: true,
         };
         assert_eq!(Settings::parse(&s.render(), Settings::defaults(false)), s);
         // A file from before `keys` existed: keys keep the default (lit).
@@ -317,6 +335,7 @@ mod tests {
                 off_index: 0,
                 ssh: false,
                 bluetooth: false,
+                battery_percentage: false,
             }
         );
         // Junk and out-of-range values clamp or fall back rather than fail.

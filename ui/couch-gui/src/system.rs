@@ -19,21 +19,49 @@ pub fn report_gui_health() -> std::io::Result<()> {
 
 const BATTERY: &str = "/sys/class/power_supply/battery/";
 
-pub struct Battery {
-    pub percent: i32,
-    pub charging: bool,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BatteryState {
+    Charging,
+    Full,
+    Discharging,
+    NotCharging,
+    Unknown,
+}
+impl BatteryState {
+    fn from_kernel(status: &str) -> Self {
+        match status {
+            "Charging" => Self::Charging,
+            "Full" => Self::Full,
+            "Discharging" => Self::Discharging,
+            "Not charging" => Self::NotCharging,
+            _ => Self::Unknown,
+        }
+    }
+    pub const fn charging(self) -> bool {
+        matches!(self, Self::Charging)
+    }
+    pub const fn external_power(self) -> bool {
+        matches!(self, Self::Charging | Self::Full)
+    }
 }
 
-/// Reads the kernel's own gauge. "status" is the authoritative charging signal:
-/// usb/online only reports that a cable is present, which it always is while
-/// the remote sits on a bench being debugged, so it would read as charging for
-/// ever. Returns None rather than inventing a figure if the gauge is missing.
+pub struct Battery {
+    pub percent: i32,
+    pub state: BatteryState,
+}
+
+/// Reads the kernel's own gauge. `status` distinguishes an actively charging
+/// battery from a full one; both mean external power is present, but only the
+/// former earns the charging icon. `usb/online` only reports that a cable is
+/// present, which it always is while the remote sits on a bench being debugged,
+/// so it would read as charging forever. Returns None rather than inventing a
+/// figure if the gauge is missing.
 pub fn battery() -> Option<Battery> {
     let percent: i32 = read_trimmed(&format!("{BATTERY}capacity"))?.parse().ok()?;
     let status = read_trimmed(&format!("{BATTERY}status")).unwrap_or_default();
     Some(Battery {
         percent: percent.clamp(0, 100),
-        charging: status == "Charging" || status == "Full",
+        state: BatteryState::from_kernel(&status),
     })
 }
 
@@ -137,10 +165,10 @@ fn read_trimmed(path: &str) -> Option<String> {
 /// /sbin.
 // --- user settings ----------------------------------------------------------
 //
-// Brightness, key backlight and the two standby timeouts, chosen in the
-// settings menu or on the web UI's Remote settings page, kept across restarts
-// in one small file that couch-system's `ui_settings` module owns the format
-// of, so the web daemon reads and writes the same values.
+// Brightness, key backlight, standby timeouts and the status-bar battery
+// percentage, chosen in the settings menu or on the web UI's Remote settings
+// page, are kept across restarts in one small file that couch-system's
+// `ui_settings` module owns, so the web daemon reads and writes the same values.
 pub use couch_system::ui_settings::{DIM_LABELS, DIM_SECS, OFF_LABELS, OFF_SECS};
 pub type UiSettings = couch_system::ui_settings::Settings;
 
@@ -313,4 +341,31 @@ pub fn bluetooth_activate(address: &str) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BatteryState;
+
+    #[test]
+    fn kernel_battery_status_keeps_full_distinct_from_charging() {
+        assert_eq!(
+            BatteryState::from_kernel("Charging"),
+            BatteryState::Charging
+        );
+        assert_eq!(BatteryState::from_kernel("Full"), BatteryState::Full);
+        assert_eq!(
+            BatteryState::from_kernel("Discharging"),
+            BatteryState::Discharging
+        );
+        assert_eq!(
+            BatteryState::from_kernel("Not charging"),
+            BatteryState::NotCharging
+        );
+        assert_eq!(BatteryState::from_kernel("Unknown"), BatteryState::Unknown);
+        assert!(BatteryState::Charging.charging());
+        assert!(!BatteryState::Full.charging());
+        assert!(BatteryState::Full.external_power());
+        assert!(!BatteryState::Discharging.external_power());
+    }
 }

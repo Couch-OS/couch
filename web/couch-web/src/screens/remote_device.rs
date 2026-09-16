@@ -61,6 +61,8 @@ struct Device {
     dim_index: i32,
     off_index: i32,
     #[serde(default)]
+    battery_percentage: bool,
+    #[serde(default)]
     dim_choices: Vec<String>,
     #[serde(default)]
     off_choices: Vec<String>,
@@ -169,8 +171,9 @@ pub fn sections(app: App) -> AnyView {
         spawn_local(async move {
             let body = serde_json::json!({
                 "brightness": next.brightness, "keys": next.keys,
-                "dim_index": next.dim_index, "off_index": next.off_index, "ssh": next.ssh.enabled,
-                "bluetooth": next.bluetooth.enabled,
+                "dim_index": next.dim_index, "off_index": next.off_index,
+                "battery_percentage": next.battery_percentage,
+                "ssh": next.ssh.enabled, "bluetooth": next.bluetooth.enabled,
             });
             match api::ha("PUT", "/api/remote/device", Some(body)).await {
                 Ok(v) => {
@@ -264,6 +267,7 @@ pub fn sections(app: App) -> AnyView {
             </dl>
         }.into_any())}
         {ui::section("Power", Some("Each button asks once more before acting. Recovery has no web UI: the remote stays there until its flag is cleared over USB or SSH."), view! {
+            <label><input type="checkbox" prop:checked=move || device.get().battery_percentage on:change=move |e| { let mut d = device.get_untracked(); d.battery_percentage = event_target_checked(&e); save(d); }/>"Show battery percentage in the status bar"</label>
             <div class="power-actions">
                 {ui::confirm_button("Restart", "Confirm restart", move || power("restart"))}
                 {ui::confirm_button("Power off", "Confirm power off", move || power("off"))}

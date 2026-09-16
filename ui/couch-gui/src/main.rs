@@ -623,10 +623,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // is counted apart, because it is slack rather than work.
     let (mut frames, mut render_us, mut frame_max, mut wait_us) = (0u64, 0u64, 0u64, 0u64);
 
-    // Standby timings and brightness come from the saved settings, adjustable
-    // live from the menu, so they are shared cells the menu callbacks write and
-    // the loop reads. COUCH_DIM_S/COUCH_OFF_S still override for testing: a
-    // value of 0 for off means never.
+    // Standby timings, brightness and battery percentage come from the saved
+    // settings, adjustable live from the menu, so they are shared cells the
+    // menu callbacks write and the loop reads. COUCH_DIM_S/COUCH_OFF_S still
+    // override for testing: a value of 0 for off means never.
     let cfg = system::load_settings();
     let active_level = Rc::new(Cell::new(system::brightness_level(cfg.brightness)));
     // Dim to a sixth of the set brightness, never below a faint floor and never
@@ -653,6 +653,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.set_setting_keys_on(s.keys);
         app.set_dim_index(s.dim_index);
         app.set_off_index(s.off_index);
+        app.set_show_battery_percentage(s.battery_percentage);
         Panel::set_keys_policy(s.keys, active_level.get());
     }
     // Apply the saved brightness now: claim() and backlight_on() above lit the
@@ -664,7 +665,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut settings_seen = couch_system::ui_settings::modified(&couch_system::ui_settings::path());
 
     // Brightness applies to the panel at once (the menu is up, so the screen is
-    // active); the timeouts take effect on the next idle. All three persist.
+    // active); the timeouts and battery percentage take effect immediately.
     {
         let (al, dl, sett) = (active_level.clone(), dim_level.clone(), settings.clone());
         app.on_setting_brightness_changed(move |pct| {
@@ -700,6 +701,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let i = i.clamp(0, system::OFF_SECS.len() as i32 - 1);
             oa.set(system::OFF_SECS[i as usize] * 1_000_000);
             sett.borrow_mut().off_index = i;
+            system::save_settings(&sett.borrow());
+        });
+    }
+    {
+        let sett = settings.clone();
+        app.on_setting_battery_percentage_changed(move |show| {
+            sett.borrow_mut().battery_percentage = show;
             system::save_settings(&sett.borrow());
         });
     }
@@ -1340,6 +1348,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         off_after_us.set(fresh.off_secs() * 1_000_000);
                         app.set_off_index(fresh.off_index);
                     }
+                    if fresh.battery_percentage != previous.battery_percentage {
+                        app.set_show_battery_percentage(fresh.battery_percentage);
+                    }
                     if fresh.ssh != previous.ssh {
                         ssh_probe();
                     }
@@ -1402,13 +1413,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 None => app.set_pair_shown(false),
             }
-            match system::battery() {
+            // Full means power is still present for the dock clock, but only
+            // Charging gets the lightning icon in the status bar.
+            let battery_external_power = match system::battery() {
                 Some(b) => {
                     app.set_battery(b.percent);
-                    app.set_charging(b.charging);
+                    app.set_battery_known(true);
+                    app.set_battery_charging(b.state.charging());
+                    b.state.external_power()
                 }
-                None => {app.set_battery(0);app.set_charging(false);},
-            }
+                None => {
+                    app.set_battery_known(false);
+                    app.set_battery_charging(false);
+                    false
+                }
+            };
             app.set_wifi_level(system::wifi_level());
             app.set_wifi_ssid(system::wifi_ssid().into());
             app.set_wifi_signal(system::wifi_dbm().map(|dbm| format!("{dbm} dBm")).unwrap_or_else(|| "—".into()).into());
@@ -1449,7 +1468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             // Off-after of 0 means never power the panel down, only dim.
             let off_us = off_after_us.get();
-            let dock = dock_clock_enabled && app.get_charging() && !hold;
+            let dock = dock_clock_enabled && battery_external_power && !hold;
             if !dock && app.get_dock_clock_shown() {
                 app.set_dock_clock_shown(false);
                 wake(&mut screen, active_level.get());
