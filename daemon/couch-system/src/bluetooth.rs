@@ -38,6 +38,19 @@ const BLUETOOTHD_CONF_TEXT: &str = "[General]\nControllerMode = le\nPairable = f
 /// different between remotes, which is exactly what the controller address
 /// needs to be and what the MediaTek firmware does not give it.
 const WIFI_MAC: &str = "/sys/class/net/wlan0/address";
+/// Alpine's bluetoothd, inside the Alpine root.
+const STOCK_BLUETOOTHD: &str = "/usr/lib/bluetooth/bluetoothd";
+/// The patched bluetoothd a runtime may carry next to couch-bt-hid: Alpine's
+/// BlueZ 5.79 plus a patch that stores a bonded TV's report subscriptions
+/// (CCC values) and restores them when bluetoothd starts. Stock bluetoothd
+/// keeps them only in memory, and a bonded TV does not write them again after
+/// a reconnect, so every reboot, update or toggle left the TV's keys
+/// silently dropped (third_party/bluez, docs/bluetooth.md).
+const PATCHED_BLUETOOTHD: &str = "couch-bluetoothd";
+/// Every bluetoothd as /proc/<pid>/comm names it. comm keeps 15 bytes, so the
+/// patched one is `couch-bluetooth`; both are looked for and stopped, whichever
+/// a previous runtime started.
+const BLUETOOTHD_COMMS: &[&str] = &["bluetoothd", "couch-bluetooth"];
 
 /// Where the Bluetooth binaries are, as an Alpine-relative directory: a
 /// runtime slot copy wins over the base install, and a boot image's `/extra`
@@ -187,13 +200,9 @@ fn set_controller_address() -> Result<(), String> {
         println!("couch-system: bluetooth: no Wi-Fi MAC to derive an address from; keeping the controller's own");
         return Ok(());
     };
-    if crate::ui_settings::process_running("bluetoothd") {
-        kill_comm(&["bluetoothd"])?;
-        wait_for(
-            || !crate::ui_settings::process_running("bluetoothd"),
-            20,
-            Duration::from_millis(100),
-        );
+    if bluetoothd_running() {
+        kill_comm(BLUETOOTHD_COMMS)?;
+        wait_for(|| !bluetoothd_running(), 20, Duration::from_millis(100));
     }
     let bytes = wanted
         .iter()
@@ -223,6 +232,56 @@ fn set_controller_address() -> Result<(), String> {
             format_mac(&wanted)
         )),
     }
+}
+
+fn bluetoothd_running() -> bool {
+    BLUETOOTHD_COMMS
+        .iter()
+        .any(|comm| crate::ui_settings::process_running(comm))
+}
+
+/// The bluetoothd to start, as an Alpine path: the runtime's patched one when
+/// the runtime at BASE carries it, Alpine's otherwise (an older runtime, or
+/// the boot image's /extra fallback, which has no bluetoothd).
+fn bluetoothd_path(base: &str) -> String {
+    let patched = format!("{base}/{PATCHED_BLUETOOTHD}");
+    if Path::new(&format!("/mnt/alpine{patched}")).is_file() {
+        patched
+    } else {
+        STOCK_BLUETOOTHD.into()
+    }
+}
+
+/// Start bluetoothd unless one of either kind runs. A patched binary that
+/// does not stay up (a runtime built against libraries this OS image does not
+/// have) falls back to Alpine's, so Bluetooth still comes up, without the
+/// stored subscriptions.
+fn start_bluetoothd(base: &str) -> Result<(), String> {
+    if bluetoothd_running() {
+        return Ok(());
+    }
+    let path = bluetoothd_path(base);
+    // Constant paths only: BASE is one of base()'s fixed directories.
+    let start = |path: &str, log: &str| {
+        alpine_sh(&format!(
+            "setsid {path} </dev/null {log}/tmp/bluetoothd.log 2>&1 &"
+        ))
+    };
+    start(&path, ">")?;
+    if path == STOCK_BLUETOOTHD {
+        return Ok(());
+    }
+    if wait_for(bluetoothd_running, 20, Duration::from_millis(100)) {
+        thread::sleep(Duration::from_millis(500));
+        if bluetoothd_running() {
+            println!("couch-system: bluetooth: started {path}");
+            return Ok(());
+        }
+    }
+    eprintln!(
+        "couch-system: bluetooth: {path} did not stay up (see /tmp/bluetoothd.log); starting {STOCK_BLUETOOTHD}"
+    );
+    start(STOCK_BLUETOOTHD, ">>")
 }
 
 fn publish(state: &str) {
@@ -337,12 +396,8 @@ fn wait_for(what: impl Fn() -> bool, steps: u32, step: Duration) -> bool {
 /// open of /dev/stpbt failed with ENODEV for a while.
 fn stop_stack(bridge: bool) -> Result<(), String> {
     kill_comm(&["couch-bt-hid"])?;
-    kill_comm(&["bluetoothd"])?;
-    wait_for(
-        || !crate::ui_settings::process_running("bluetoothd"),
-        20,
-        Duration::from_millis(100),
-    );
+    kill_comm(BLUETOOTHD_COMMS)?;
+    wait_for(|| !bluetoothd_running(), 20, Duration::from_millis(100));
     if bridge {
         kill_comm(&["couch-bt-bridge"])?;
         wait_for(
@@ -486,9 +541,7 @@ fn up() -> Result<(), String> {
         fs::write(BLUETOOTHD_CONF, BLUETOOTHD_CONF_TEXT)
             .map_err(|e| format!("Could not write bluetoothd's configuration: {e}"))?;
     }
-    alpine_sh(
-        "pidof bluetoothd >/dev/null || setsid /usr/lib/bluetooth/bluetoothd </dev/null >/tmp/bluetoothd.log 2>&1 &",
-    )?;
+    start_bluetoothd(&base)?;
     alpine_sh(&format!(
         "pidof couch-bt-hid >/dev/null || setsid {base}/couch-bt-hid </dev/null >/tmp/couch-bt-hid.log 2>&1 &"
     ))?;
@@ -583,5 +636,14 @@ mod tests {
             Some([0x02, 0x28, 0x7d, 0x8f, 0xe1, 0x6f])
         );
         assert_eq!(parse_reported_address("hci0:\tType: Primary\n"), None);
+    }
+
+    #[test]
+    fn both_bluetoothds_are_found_by_the_comm_the_kernel_gives_them() {
+        // TASK_COMM_LEN is 16 including the NUL.
+        let comm = |name: &'static str| &name[..name.len().min(15)];
+        assert!(BLUETOOTHD_COMMS.contains(&comm(PATCHED_BLUETOOTHD)));
+        assert!(BLUETOOTHD_COMMS.contains(&comm("bluetoothd")));
+        assert!(STOCK_BLUETOOTHD.ends_with("/bluetoothd"));
     }
 }

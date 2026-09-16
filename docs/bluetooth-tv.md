@@ -148,12 +148,25 @@ its TV, and two remotes in one house are two devices.
   remote's reports; most TVs do that on their own within a second or two,
   and some (LG) first ask you to press a key: press OK. If the card never
   reaches DONE, `/tmp/couch-bt-hid.log` on the remote says whether a
-  `StartNotify` arrived and which reports were dropped for want of one.
+  `StartNotify` arrived.
 - **It paired once and never reconnects.** Turn Bluetooth off and on
   (Settings › Bluetooth); the row should say `ON · <TV name>` within a few
   seconds of the TV being on. If the TV was paired to the remote before the
   address policy above (the `00:00:46:65:80:xx` addresses), delete it on the
   TV and pair again once.
+- **Keys worked until a reboot, an update or Bluetooth off and on; the TV
+  still reconnects but ignores every key.** The TV subscribed to the
+  remote's key reports when it paired and does not do so again when it
+  reconnects; the remote has to remember that subscription. Runtimes that
+  carry `couch-bluetoothd` do (Bluetooth's own patched BlueZ, see
+  [bluetooth.md](bluetooth.md#subscriptions-across-restarts-couch-bluetoothd)).
+  A TV paired before the remote had it must pair once more: delete **Couch
+  Remote** from the TV's Bluetooth list, forget the pairing on the remote,
+  and pair again. `/tmp/system.log` on the remote says which bluetoothd
+  started (`started /opt/couch/runtime/current/couch-bluetoothd`), and the
+  TV's bond file
+  (`/var/lib/bluetooth/<remote>/<TV>/info`) gains a `[GattCCC]` group once
+  the TV has subscribed.
 
 A HID peripheral holds one link at a time. The remote keeps a bond per TV
 and lets one of them, the active one, connect: the controller's white list

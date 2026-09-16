@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare kernel or Rust standard-library source-only receipts for release assembly."""
+"""Prepare kernel, Rust standard-library or patched BlueZ source-only receipts for release assembly."""
 import argparse
 import gzip
 import json
@@ -93,12 +93,48 @@ def rust_std(sysroot, output, rustc='rustc'):
     return receipt(output, 'rust-stdlib', source.sha(binary[0]), {'rust_release': fields['release'], 'rust_commit': fields['commit-hash']})
 
 
+def bluez(build, output):
+    """Source component for couch-bluetoothd from a third_party/bluez/build.sh output directory."""
+    built = json.loads((build / 'build.json').read_text())
+    if built.get('schema') != 1 or built.get('kind') != 'couch-bluez-build':
+        raise ValueError('Not a third_party/bluez/build.sh receipt')
+    binary = build / built['binary']
+    if binary.is_symlink() or not binary.is_file() or source.sha(binary) != built['binary_sha256']:
+        raise ValueError('couch-bluetoothd differs from its build receipt')
+    files = built['source_files']
+    tarball = f"bluez-{built['bluez_version']}.tar.xz"
+    needed = [tarball, 'build.sh', 'aports/APKBUILD', *('aports/' + p for p in built['aports_patches']), *built['couch_patches']]
+    if files.get(tarball) != built['bluez_sha256'] or not built['couch_patches'] or any(n not in files for n in needed):
+        raise ValueError('BlueZ build receipt lacks its tarball, recipe, patches or build script')
+    if output.exists():
+        raise ValueError('Use a fresh external source directory')
+    for name, expected in sorted(files.items()):
+        source.checked_path(name)
+        path = build / 'source' / name
+        if path.is_symlink() or not path.is_file() or source.sha(path) != expected:
+            raise ValueError('BlueZ source differs from its build receipt: ' + name)
+        source.write(output / name, path.read_bytes())
+    source.report(output / 'configuration.json', {
+        'bluez_version': built['bluez_version'], 'bluez_url': built['bluez_url'],
+        'aports_commit': built['aports_commit'], 'aports_recipe': built['aports_recipe'],
+        'patch_order': [*('aports/' + p for p in built['aports_patches']), *built['couch_patches']],
+        'configure': 'the ./configure line in build.sh (the aports recipe\'s build())',
+        'cflags': built['cflags'], 'ldflags': built['ldflags'], 'target': 'src/bluetoothd, stripped'})
+    source.report(output / 'toolchain.json', {key: built[key] for key in ('container', 'platform', 'pinned_packages', 'packages', 'needed')})
+    source.write(output / 'BUILD.md', (f'# couch-bluetoothd source\n\nBlueZ {built["bluez_version"]} ({tarball}, unchanged upstream tarball) as Alpine builds it (aports/ holds the recipe at aports commit {built["aports_commit"]} and its local files), plus the Couch patches ({", ".join(built["couch_patches"])}). build.sh is the exact recipe: on a Linux host with docker and linux/arm/v7 emulation, put this directory\'s files where build.sh expects them (third_party/bluez/ in the Couch tree, which also carries them) and run `third_party/bluez/build.sh OUTDIR`. It applies the recipe\'s patches in the order in configuration.json, then the Couch patches, configures with the recipe\'s flags, builds src/bluetoothd and strips it. toolchain.json names the build container digest and every package version installed in it. The binary is identified only by SHA256 (binary_sha256 in receipt.json); it is not part of this source.\n').encode())
+    return receipt(output, 'bluez', built['binary_sha256'], {
+        'source_archive': tarball, 'build_recipe': 'BUILD.md', 'bluez_version': built['bluez_version'],
+        'aports_commit': built['aports_commit'], 'couch_patches': built['couch_patches']})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__); sub = parser.add_subparsers(dest='kind', required=True)
     p = sub.add_parser('kernel'); p.add_argument('--repo', type=Path, required=True); p.add_argument('--build', type=Path, required=True); p.add_argument('--couch', type=Path, required=True); p.add_argument('--pin', type=Path, required=True); p.add_argument('--output', type=Path, required=True)
     p = sub.add_parser('rust-stdlib'); p.add_argument('--sysroot', type=Path, required=True); p.add_argument('--rustc', default='rustc'); p.add_argument('--output', type=Path, required=True)
+    p = sub.add_parser('bluez'); p.add_argument('--build', type=Path, required=True, help='third_party/bluez/build.sh OUTDIR'); p.add_argument('--output', type=Path, required=True)
     a = parser.parse_args()
     if a.kind == 'kernel': kernel(a.repo, a.build, a.couch, a.pin, a.output)
+    elif a.kind == 'bluez': bluez(a.build, a.output)
     else: rust_std(a.sysroot, a.output, a.rustc)
 
 

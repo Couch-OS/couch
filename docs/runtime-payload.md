@@ -4,7 +4,7 @@
 
 ```sh
 tools/build-wmt-properties.sh
-tools/build-release.sh   # couch-gui, couch-confd, couch-system, couch-sonos, couch-coreelec, couch-bt-bridge, couch-bt-hid
+tools/build-release.sh   # couch-gui, couch-confd, couch-system, couch-sonos, couch-coreelec, couch-bt-bridge, couch-bt-hid, couch-bluetoothd
 python3 tools/release/runtime_inventory.py build/alpine-staging-input.json build/runtime-payload
 python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json \
   build/offline-armv7 build/packaged-runtime
@@ -21,9 +21,10 @@ python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json
 | Sonos LAN control | `couch-sonos`, built with `tools/build-sonos.sh`; static ARM32 ELF installed at `/opt/couch/couch-sonos` |
 | Bluetooth HID daemon | `couch-bt-hid`, built in the clients workspace (`-p couch-bt-hid`); static ARM32 ELF. The BLE HID peripheral: registers the HID GATT app with bluetoothd (zbus) and advertises over raw HCI. Started, with dbus + bluetoothd + the bridge, by the system service's Bluetooth toggle (`couch_system::bluetooth`, all under one `chroot /mnt/alpine`). Needs `dbus` and `bluez` in the image. A copy also rides in the boot ramdisk (`/extra/couch-bt-hid`) with the bridge, and the system service copies both into shared `/tmp` when the runtime lacks them, so a runtime bundle can stay within the strict allowlist of updaters before .142 |
 | Bluetooth bridge | `couch-bt-bridge`, built in the clients workspace (`-p couch-bt`); static ARM32 ELF at `/opt/couch/couch-bt-bridge`. In the runtime bundle from .143 (updaters from .142 accept extra top-level `couch-*` executables); a copy also rides in the boot ramdisk (`/extra/couch-bt-bridge`) as a fallback for the first Bluetooth-capable image. The system service starts it only on the Bluetooth toggle, looking beside itself (the runtime slot) first, then `/extra`, then `/opt/couch`; a whole-file lock keeps it a singleton |
+| Patched bluetoothd | `couch-bluetoothd`, Alpine 3.21's BlueZ 5.79 `bluetoothd` with the patch in `third_party/bluez` (bonded devices' CCC values survive a restart), built by `third_party/bluez/build.sh` in the pinned `alpine:3.21` arm/v7 container, which `tools/build-release.sh` runs when the patch, script or README changed (output `build/bluez/`). A musl ARM32 ELF linked against the Alpine root's glib, dbus and libudev, so it runs inside the chroot, never from the initramfs; the inventory checks that instead of static linking. The system service starts it in place of `/usr/lib/bluetooth/bluetoothd` when the runtime carries it. GPL-2.0-or-later: `licenses/BlueZ-GPL-2.0.txt` rides along, and a release carrying it publishes the `bluez` source component ([corresponding-source.md](corresponding-source.md)) |
 | Runtime scripts | `stage2.sh`, `runtime-boot.sh`, `hardware-init.sh`, `gui-start.sh`, `system.sh`, `confd.sh`, `setup-mode.sh`, `portal.sh`, `wifi-conf.sh`, `station.sh` |
 | Recovery portal | `www/index.html` and exactly `cgi-bin/{save,setpw,scan,enroll}` |
-| Readable notices | Lato/Inter OFL and Lucide ISC notices under `/opt/couch/licenses` |
+| Readable notices | Lato/Inter OFL, Lucide ISC, IRDB and BlueZ (GPL-2.0, LGPL-2.1, BSD-2-Clause) notices under `/opt/couch/licenses` |
 | GUI resources | Lato fonts, Slint source/assets and build-policy hashes; fonts/images are embedded by Slint, and the raw Lucide alpha catalog is verified inside the GUI binary |
 | Configuration webUI | Every current `web/couch-web/dist` file must occur verbatim in the daemon binary, including HTML, JavaScript and WASM; a placeholder or stale bundle fails |
 

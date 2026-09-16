@@ -1,6 +1,7 @@
 #!/bin/sh
 # Build every ARM binary the runtime payload inventory lists, on the release
-# host, in one command. Each step is the same script or cargo invocation a
+# host, in one command (couch-bluetoothd also needs docker with arm/v7
+# emulation). Each step is the same script or cargo invocation a
 # developer runs by hand; this file only fixes the order and makes sure the
 # two pieces of environment that cargo cannot supply - the ARM musl C compiler
 # for ring, and the Sonos developer key - are set once for all of them.
@@ -30,6 +31,20 @@ echo '= couch-bt-bridge'
 (cd clients && cargo build --locked --release --target "$TARGET" -p couch-bt)
 echo '= couch-bt-hid'
 (cd clients && cargo build --locked --release --target "$TARGET" -p couch-bt-hid)
+echo '= couch-bluetoothd (patched BlueZ, docker)'
+# Rebuilt only when the patch, the recipe or its README changed since the
+# last build: under emulation it takes a few minutes (third_party/bluez).
+bluez_current() {
+    [ -f build/bluez/build.json ] && [ -f build/bluez/couch-bluetoothd ] || return 1
+    for f in third_party/bluez/0*.patch third_party/bluez/build.sh third_party/bluez/README.md; do
+        grep -q "\"${f##*/}\": \"$(sha256sum "$f" | cut -d' ' -f1)\"" build/bluez/build.json || return 1
+    done
+    [ "$(ls third_party/bluez/0*.patch | wc -l)" -eq "$(grep -c '^    "0.*\.patch": ' build/bluez/build.json)" ]
+}
+if ! bluez_current; then
+    rm -rf build/bluez
+    third_party/bluez/build.sh build/bluez
+fi
 
 echo '= release binaries'
 for bin in ui/target/$TARGET/release/couch-gui \
@@ -38,6 +53,7 @@ for bin in ui/target/$TARGET/release/couch-gui \
     clients/target/$TARGET/release/couch-sonos \
     clients/target/$TARGET/release/couch-coreelec \
     clients/target/$TARGET/release/couch-bt-bridge \
-    clients/target/$TARGET/release/couch-bt-hid; do
+    clients/target/$TARGET/release/couch-bt-hid \
+    build/bluez/couch-bluetoothd; do
     printf '%s (%s bytes)\n' "$bin" "$(wc -c < "$bin" | tr -d ' ')"
 done

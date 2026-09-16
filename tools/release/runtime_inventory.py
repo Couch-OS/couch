@@ -25,13 +25,20 @@ RUNTIME = {
     'couch-confd': 'daemon/target/armv7-unknown-linux-musleabihf/release/couch-confd',
     'fbcon': 'build/fbcon',
 }
+# Runtime executables linked against the Alpine root's shared libraries, which
+# run inside the chroot: bluetoothd patched to keep bonded devices' CCCs
+# (third_party/bluez/build.sh, run by tools/build-release.sh).
+RUNTIME_ALPINE = {
+    'couch-bluetoothd': 'build/bluez/couch-bluetoothd',
+}
 SCRIPTS = ('stage2.sh', 'runtime-boot.sh', 'hardware-init.sh', 'gui-start.sh', 'confd.sh', 'setup-mode.sh', 'portal.sh', 'system.sh',
            'wifi-conf.sh', 'station.sh')
 CGI = ('save', 'setpw', 'scan', 'enroll')
 LICENSES = {'Lato-OFL.txt': 'tools/release/licenses/Lato-OFL.txt',
             'Inter-OFL.txt': 'assets/inter/LICENSE.txt', 'Lucide-ISC.txt': 'assets/lucide/LICENSE',
             'IRDB-MIT.txt': 'daemon/couch-confd/assets/ir/LICENSE-Flipper-MIT.txt',
-            'IRDB-CC0.txt': 'daemon/couch-confd/assets/ir/LICENSE-CC0.txt'}
+            'IRDB-CC0.txt': 'daemon/couch-confd/assets/ir/LICENSE-CC0.txt',
+            'BlueZ-GPL-2.0.txt': 'tools/release/licenses/BlueZ-GPL-2.0.txt'}
 VENDOR_REQUIRED = (
     'vendor/lib/modules/wmt_drv.ko', 'vendor/lib/modules/wmt_chrdev_wifi.ko',
     'vendor/lib/modules/wlan_drv.ko', 'vendor/bin/wmt_loader', 'vendor/bin/wmt_launcher',
@@ -67,6 +74,12 @@ def arm_static(data):
             'Invalid executable program headers')
     require(all(struct.unpack_from('<I', data, offset + i * stride)[0] not in (2, 3)
                 for i in range(count)), 'Runtime executable requires dynamic loader/libraries')
+
+
+def arm_alpine(data):
+    require(len(data) >= 52 and data[:6] == b'\x7fELF\x01\x01' and data[18:20] == b'\x28\x00',
+            'Expected little-endian ARM32 ELF')
+    require(b'/lib/ld-musl-armhf.so.1\x00' in data, 'Expected a musl ARM executable for the Alpine root')
 
 
 def describe(root, relative):
@@ -151,7 +164,9 @@ def audit(root=REPO, vendor=None, boot='build/couch-board-init-fixed.img', recov
     def add(source, destination, mode, executable=False):
         try:
             data = regular(root / source)
-            if executable:
+            if executable == 'alpine':
+                arm_alpine(data)
+            elif executable:
                 arm_static(data)
             artifacts.append({'source': source, 'destination': destination, 'mode': mode, 'sha256': sha(data)})
             return data
@@ -159,6 +174,8 @@ def audit(root=REPO, vendor=None, boot='build/couch-board-init-fixed.img', recov
             blockers.append(f'{destination}: {error}')
     for name, source in RUNTIME.items():
         binaries[name] = add(source, 'opt/couch/' + name, 0o755, True)
+    for name, source in RUNTIME_ALPINE.items():
+        binaries[name] = add(source, 'opt/couch/' + name, 0o755, 'alpine')
     add('build/couch-wmt-properties.so', 'opt/couch/couch-wmt-properties.so', 0o755)
     for name in SCRIPTS:
         add('stage2/' + name, 'opt/couch/' + name, 0o755)

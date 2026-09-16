@@ -11,7 +11,10 @@ Wi-Fi cost. Pairing is a deliberate two-minute window from Settings or the
 web page ([pairing mode](#pairing-mode)); outside it the remote is not
 discoverable. The daemon holds any number of TV bonds and lets exactly one
 of them, the active bond, connect ([bonds and the active
-link](#bonds-and-the-active-link)); the app chooses which. An
+link](#bonds-and-the-active-link)); the app chooses which. The runtime
+carries its own patched bluetoothd so a bonded TV's key subscriptions
+survive a reboot, update or toggle
+([subscriptions across restarts](#subscriptions-across-restarts-couch-bluetoothd)). An
 in-kernel HCI driver now exists (`hci_stp`, see
 [kernel-backports-research.md](kernel-backports-research.md#outcome-2026-09-15-the-in-kernel-driver-on-both-cores)). The sections below are the design record: "what
 exists today" describes the starting point, the
@@ -166,10 +169,13 @@ socket and reads its state file.
 - **Peers** come from polling `org.freedesktop.DBus.ObjectManager
   .GetManagedObjects` on `org.bluez` (every 500 ms in the window, every 3 s
   otherwise) for `Device1` `Connected`/`Paired`/`Bonded`/`Name`/`Alias`;
-  `StartNotify`/`StopNotify` per characteristic and any report `push()`
-  dropped for want of a subscriber are logged in `/tmp/couch-bt-hid.log`,
-  because a TV that pairs but never subscribes looks, from outside, exactly
-  like keys being ignored.
+  `StartNotify`/`StopNotify` per characteristic are logged in
+  `/tmp/couch-bt-hid.log`, because a TV that pairs but never subscribes
+  looks, from outside, exactly like keys being ignored. Reports are sent
+  whether or not a StartNotify arrived (a subscription bluetoothd restored
+  has none, [below](#subscriptions-across-restarts-couch-bluetoothd)); the
+  first one sent without a current StartNotify is logged once, saying
+  whether one was ever seen.
 - **State file** `/tmp/couch-bt-pair.state` (format and parser in the crate's
   lib, `PairStatus`): line 1 `<phase>[ <detail>]` with phase
   `idle|pairing|connected|paired|done|failed` (detail = the peer's name, or
@@ -259,6 +265,78 @@ follows from that.
 - **Windows and the active bond.** A window forgets nothing and does not
   change the active bond unless it ends in `done`, in which case the new
   TV becomes it. Bonded TVs are dropped on sight during the window (above).
+
+## Subscriptions across restarts (couch-bluetoothd)
+
+A HID report reaches a TV only if the TV has written the report's Client
+Characteristic Configuration descriptor (CCC): bluetoothd forwards a value
+change to exactly the devices whose CCC for it is on. A bonded TV writes it
+once, when it pairs, and never again: for a bonded device the server is
+required to remember it (Core Specification Vol 3, Part G, 3.3.3.3). Stock
+BlueZ remembers it in memory only; it stores the Service Changed CCC and
+nothing else (`gatt_database_free()` in `src/gatt-database.c` carries a TODO
+for it, still on master). On the remote bluetoothd restarts on every reboot,
+update install and Bluetooth toggle, and after each one the LG reconnected,
+re-read the services when Service Changed told it to, did not subscribe
+again, and every key went nowhere (`dropped consumer report …: nothing
+subscribed`, 2026-09-15). Restarting only couch-bt-hid did not help either.
+
+- **couch-bluetoothd.** The runtime bundle carries Alpine 3.21's bluetoothd
+  (BlueZ 5.79-r0) with one patch, built by `third_party/bluez/build.sh` in a
+  pinned container against the remote's own glib, dbus and libudev; see
+  [third_party/bluez/README.md](../third_party/bluez/README.md). The system
+  service starts `<runtime>/couch-bluetoothd` when it is there and
+  `/usr/lib/bluetooth/bluetoothd` otherwise, or if the patched one does not
+  stay up; both are found and stopped by their `/proc` comm (`bluetoothd`,
+  and `couch-bluetooth`, the 15 bytes the kernel keeps). Same paths,
+  configuration and bond storage as the stock daemon, so switching between
+  them loses nothing but the stored subscriptions.
+- **The patch** stores the CCC values of bonded devices in the device's
+  `info` file and restores them. Storage, under
+  `/var/lib/bluetooth/<adapter>/<device>/info`:
+
+  ```
+  [GattCCC]
+  LE_0x012b=0x0001 00002a4d-0000-1000-8000-00805f9b34fb
+  LE_0x012f=0x0001 00002a4d-0000-1000-8000-00805f9b34fb
+  ```
+
+  key = bearer and CCC handle, value = CCC value and the UUID of the
+  characteristic the CCC belongs to (the keyboard and consumer Report
+  characteristics). Written on every CCC write by a bonded device, when a
+  bonded device disconnects, and when a device becomes bonded (subscriptions
+  written before its keys arrived); only in-memory states are written and a
+  0 removes the entry, so couch-bt-hid unregistering (which takes its
+  services' states out of memory) never erases the file. Restored for every
+  bonded device at startup and whenever a service is added, for the handles
+  that service covers, so they come back when couch-bt-hid registers, and
+  again if it restarts alone. An entry is restored only while the attribute
+  at its handle is the CCC of a characteristic with the stored UUID; an
+  entry inside a registered service that fails the check is removed (logged
+  `dropping stored CCC <key>: no matching CCC`), one no service covers yet
+  is kept. `forget` (`Adapter1.RemoveDevice`) deletes the device's directory
+  and the entries with it. The first write of the same value after a restore
+  still calls the application, so a TV that does subscribe again produces a
+  StartNotify as before.
+- **A fixed attribute table.** Stored subscriptions name handles, and
+  couch-bt-hid's used to move. bluetoothd lays an application out in the
+  order its `GetManagedObjects` reply lists the objects, and zbus's
+  ObjectManager lists them in per-process HashMap order: the dev remote's
+  `/var/lib/bluetooth/*/attributes` held three different tables for the same
+  application. bluetoothd also places an application after the highest
+  handle it ever allocated, so a couch-bt-hid restart moved it up. The daemon
+  now answers `GetManagedObjects` itself, in object-path order, and pins each
+  service's `Handle`: Device Information at 0x0100, Battery at 0x0110, HID
+  at 0x0120–0x0130, with the report CCCs at **0x012b** (keyboard) and
+  **0x012f** (consumer). A unit test holds the list order and the arithmetic.
+- **No StartNotify gate.** bluetoothd calls StartNotify only on a CCC write,
+  so with a restored subscription the daemon never hears one. `push()`
+  always sets the value and emits the change; bluetoothd decides who gets it.
+- **One re-pair for older bonds.** A bond made by stock bluetoothd has no
+  `[GattCCC]` entries. After the first runtime with couch-bluetoothd, such a
+  TV needs pairing once more (delete *Couch Remote* on the TV, forget the
+  bond on the remote, pairing mode); from then on its subscriptions are
+  stored when it subscribes.
 
 ## Implementation plan (branch `bluetooth`, rebased onto `dev` 2026-09-14)
 
@@ -428,6 +506,16 @@ Userland (this repo):
       state lines `link <ADDR> <name>`, `active <ADDR>`, `peer <ADDR> <name>`
       ([details](#bonds-and-the-active-link)). Which bond an activity or
       device picks is the app's side.
+- [x] Subscriptions survive bluetoothd restarts (2026-09-15, branch
+      `bluetooth-ccc-persist`): couch-bluetoothd (BlueZ 5.79 with CCC
+      storage for bonded devices), a fixed GATT attribute table in
+      couch-bt-hid, reports sent without StartNotify
+      ([details](#subscriptions-across-restarts-couch-bluetoothd)). Verified
+      by hand on the dev remote with the LG's entries written into its bond:
+      restored at registration, notifications on air at 0x012e after a
+      bluetoothd restart and after a couch-bt-hid restart, entries untouched
+      by the shutdown, a mismatched entry dropped. The LG re-pair and the
+      reboot/toggle/TV power cycle acceptance are Bryan's.
 - [ ] Re-advertise immediately on disconnect. Done where bluetoothd exports
       `LEAdvertisingManager1` (the backported core, see
       [kernel backports research](kernel-backports-research.md)):

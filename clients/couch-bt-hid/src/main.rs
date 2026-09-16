@@ -33,7 +33,7 @@ use couch_bt_hid::{
     consumer_usage, keyboard_report, normalize_address, Control, PairPhase, PairStatus, Peer,
     ACTIVE_PATH, PAIR_STATE_PATH, PAIR_WINDOW_SECS, SOCKET_MODE, SOCKET_PATH,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -76,6 +76,17 @@ const CONSUMER_ID: u8 = 2;
 const KEYBOARD_REPORT: &str = "/couch/hid/app/s2/c4";
 const CONSUMER_REPORT: &str = "/couch/hid/app/s2/c5";
 
+// Where each service starts in bluetoothd's attribute table. A bonded TV's
+// subscriptions are stored per handle (couch-bluetoothd, third_party/bluez),
+// so the table has to come out the same every time. Unpinned, bluetoothd
+// places an application after the highest handle it has ever allocated, so
+// registering again without restarting bluetoothd moves every handle up;
+// pinned, the services land here again. Far above bluetoothd's own services
+// (GAP, GATT and Device Information end at 0x0014 on 5.79).
+const DEVICE_INFO_HANDLE: u16 = 0x0100;
+const BATTERY_HANDLE: u16 = 0x0110;
+const HID_HANDLE: u16 = 0x0120;
+
 #[rustfmt::skip]
 const REPORT_MAP_BYTES: &[u8] = &[
     0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x85, KEYBOARD_ID,
@@ -88,9 +99,10 @@ const REPORT_MAP_BYTES: &[u8] = &[
     0x75, 0x10, 0x95, 0x01, 0x81, 0x00, 0xc0,
 ];
 
-/// A GATT service object: UUID and whether it is a primary service.
+/// A GATT service object: UUID, primary, and the handle it must start at.
 struct GattService {
     uuid: String,
+    handle: u16,
 }
 #[interface(name = "org.bluez.GattService1")]
 impl GattService {
@@ -102,7 +114,69 @@ impl GattService {
     fn primary(&self) -> bool {
         true
     }
+    #[zbus(property)]
+    fn handle(&self) -> u16 {
+        self.handle
+    }
 }
+
+/// The application's ObjectManager, in place of zbus's own. bluetoothd lays
+/// an application out in the order GetManagedObjects lists it (every
+/// service, then every characteristic, then every descriptor, each pass in
+/// reply order), and zbus lists objects in HashMap order, which is seeded
+/// differently in every process: the dev remote's bluetoothd had recorded
+/// three different tables for the same application, the report CCCs at
+/// other handles each time. This one answers in object-path order.
+struct AppObjects;
+type Interfaces = HashMap<String, HashMap<String, OwnedValue>>;
+#[interface(name = "org.freedesktop.DBus.ObjectManager")]
+impl AppObjects {
+    async fn get_managed_objects(
+        &self,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+    ) -> zbus::fdo::Result<BTreeMap<ObjectPath<'static>, Interfaces>> {
+        use zbus::object_server::Interface;
+        let mut objects = BTreeMap::new();
+        for path in APP_OBJECTS {
+            let mut interfaces = Interfaces::new();
+            if let Ok(i) = server.interface::<_, GattService>(*path).await {
+                interfaces.insert(
+                    GattService::name().to_string(),
+                    i.get().await.get_all().await?,
+                );
+            } else if let Ok(i) = server.interface::<_, GattChar>(*path).await {
+                interfaces.insert(GattChar::name().to_string(), i.get().await.get_all().await?);
+            } else if let Ok(i) = server.interface::<_, ReportRef>(*path).await {
+                interfaces.insert(
+                    ReportRef::name().to_string(),
+                    i.get().await.get_all().await?,
+                );
+            } else {
+                continue;
+            }
+            objects.insert(ObjectPath::from_static_str_unchecked(path), interfaces);
+        }
+        Ok(objects)
+    }
+}
+
+/// Every object of the GATT application, which `main` registers and
+/// `AppObjects` lists.
+const APP_OBJECTS: &[&str] = &[
+    "/couch/hid/app/s0",
+    "/couch/hid/app/s0/c0",
+    "/couch/hid/app/s1",
+    "/couch/hid/app/s1/c0",
+    "/couch/hid/app/s2",
+    "/couch/hid/app/s2/c0",
+    "/couch/hid/app/s2/c1",
+    "/couch/hid/app/s2/c2",
+    "/couch/hid/app/s2/c3",
+    KEYBOARD_REPORT,
+    "/couch/hid/app/s2/c4/d0",
+    CONSUMER_REPORT,
+    "/couch/hid/app/s2/c5/d0",
+];
 
 /// One characteristic. `value` is the current report/attribute value; for the
 /// input-report characteristics the key loop updates it and emits a Value
@@ -115,6 +189,10 @@ struct GattChar {
     flags: Vec<String>,
     value: Vec<u8>,
     notifying: bool,
+    /// Whether any StartNotify ever arrived, and whether the "sent without
+    /// one" line has been logged since the last Start/StopNotify: for the log.
+    ever_notified: bool,
+    quiet: bool,
 }
 #[interface(name = "org.bluez.GattCharacteristic1")]
 impl GattChar {
@@ -138,8 +216,8 @@ impl GattChar {
     fn value(&self) -> Vec<u8> {
         self.value.clone()
     }
-    async fn read_value(&self, _options: HashMap<String, OwnedValue>) -> Vec<u8> {
-        self.value.clone()
+    async fn read_value(&self, options: HashMap<String, OwnedValue>) -> Vec<u8> {
+        read_at(&self.value, &options)
     }
     async fn write_value(&mut self, value: Vec<u8>, _options: HashMap<String, OwnedValue>) {
         self.value = value;
@@ -150,10 +228,13 @@ impl GattChar {
     async fn start_notify(&mut self) {
         println!("couch-bt-hid: StartNotify {}", self.label);
         self.notifying = true;
+        self.ever_notified = true;
+        self.quiet = false;
     }
     async fn stop_notify(&mut self) {
         println!("couch-bt-hid: StopNotify {}", self.label);
         self.notifying = false;
+        self.quiet = false;
     }
 }
 
@@ -175,11 +256,26 @@ impl ReportRef {
     }
     #[zbus(property)]
     fn flags(&self) -> Vec<String> {
-        vec!["read".to_string()]
+        vec!["encrypt-read".to_string()]
     }
-    async fn read_value(&self, _options: HashMap<String, OwnedValue>) -> Vec<u8> {
-        self.value.clone()
+    async fn read_value(&self, options: HashMap<String, OwnedValue>) -> Vec<u8> {
+        read_at(&self.value, &options)
     }
+}
+
+/// The part of a value a ReadValue call asks for. A host whose ATT MTU is
+/// smaller than the value (the report map is 72 bytes; macOS reads it 49 at
+/// a time) continues with Read Blob, which bluetoothd passes on as an
+/// `offset` option. Returning the whole value every time made macOS stitch
+/// together the first 49 bytes over and over: a report map with no
+/// consumer-control collection, so none of our keys decoded. An offset at
+/// or past the end reads as empty, which ends the host's blob loop.
+fn read_at(value: &[u8], options: &HashMap<String, OwnedValue>) -> Vec<u8> {
+    let offset = match options.get("offset").map(|v| &**v) {
+        Some(Value::U16(o)) => usize::from(*o),
+        _ => 0,
+    };
+    value.get(offset..).unwrap_or_default().to_vec()
 }
 
 /// Just-works pairing agent.
@@ -273,6 +369,8 @@ fn char_obj(
         flags: flags.iter().map(|s| s.to_string()).collect(),
         value,
         notifying: false,
+        ever_notified: false,
+        quiet: false,
     }
 }
 
@@ -610,20 +708,30 @@ async fn set_adapter(conn: &Connection, prop: &str, value: Value<'_>) -> zbus::R
 }
 
 /// Push a report: set the characteristic's value and emit the change, which
-/// BlueZ forwards as a notification when the TV has subscribed. A report
-/// nobody subscribed to goes nowhere, and says so in the log: that silence
-/// is otherwise indistinguishable from a TV ignoring the key.
+/// bluetoothd forwards as a notification to every device whose CCC for it
+/// is on. Always emitted, whether or not this daemon saw a StartNotify:
+/// bluetoothd calls StartNotify only when a CCC is written, and a bonded TV
+/// does not write it again after bluetoothd restarts. couch-bluetoothd
+/// restores the TV's stored subscription instead (third_party/bluez), so
+/// the report reaches it with no StartNotify here at all. The first report
+/// sent without a current StartNotify says so in the log, once until the
+/// next Start/StopNotify, with whether one was ever seen.
 async fn push(conn: &Connection, path: &str, value: Vec<u8>) {
     let Ok(iref) = conn.object_server().interface::<_, GattChar>(path).await else {
         return;
     };
     let mut c = iref.get_mut().await;
-    if !c.notifying {
+    if !c.notifying && !c.quiet {
         println!(
-            "couch-bt-hid: dropped {} report {value:02x?}: nothing subscribed",
-            c.label
+            "couch-bt-hid: sending {} reports with no StartNotify {}: only a subscription bluetoothd restored from storage receives them",
+            c.label,
+            if c.ever_notified {
+                "since the last StopNotify"
+            } else {
+                "seen since start"
+            }
         );
-        return;
+        c.quiet = true;
     }
     c.value = value;
     let _ = c.value_changed(iref.signal_context()).await;
@@ -993,13 +1101,14 @@ async fn main() -> zbus::Result<()> {
     server.at(AGENT_PATH, Agent).await?;
 
     // GATT application object tree, under an ObjectManager BlueZ enumerates.
-    server.at(APP, zbus::fdo::ObjectManager).await?;
+    server.at(APP, AppObjects).await?;
 
     server
         .at(
             "/couch/hid/app/s0",
             GattService {
                 uuid: uuid16(DEVICE_INFO_SERVICE),
+                handle: DEVICE_INFO_HANDLE,
             },
         )
         .await?;
@@ -1021,6 +1130,7 @@ async fn main() -> zbus::Result<()> {
             "/couch/hid/app/s1",
             GattService {
                 uuid: uuid16(BATTERY_SERVICE),
+                handle: BATTERY_HANDLE,
             },
         )
         .await?;
@@ -1042,6 +1152,7 @@ async fn main() -> zbus::Result<()> {
             "/couch/hid/app/s2",
             GattService {
                 uuid: uuid16(HID_SERVICE),
+                handle: HID_HANDLE,
             },
         )
         .await?;
@@ -1052,7 +1163,7 @@ async fn main() -> zbus::Result<()> {
                 HID_INFORMATION,
                 "HID information",
                 "/couch/hid/app/s2",
-                &["read"],
+                &["encrypt-read"],
                 vec![0x11, 0x01, 0x00, 0x03],
             ),
         )
@@ -1064,7 +1175,7 @@ async fn main() -> zbus::Result<()> {
                 REPORT_MAP,
                 "report map",
                 "/couch/hid/app/s2",
-                &["read"],
+                &["encrypt-read"],
                 REPORT_MAP_BYTES.to_vec(),
             ),
         )
@@ -1100,7 +1211,7 @@ async fn main() -> zbus::Result<()> {
                 REPORT,
                 "keyboard",
                 "/couch/hid/app/s2",
-                &["read", "notify"],
+                &["encrypt-read", "encrypt-notify"],
                 vec![0u8; 8],
             ),
         )
@@ -1121,7 +1232,7 @@ async fn main() -> zbus::Result<()> {
                 REPORT,
                 "consumer",
                 "/couch/hid/app/s2",
-                &["read", "notify"],
+                &["encrypt-read", "encrypt-notify"],
                 vec![0u8; 2],
             ),
         )
@@ -1427,6 +1538,48 @@ async fn main() -> zbus::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_honour_the_blob_offset() {
+        let map = REPORT_MAP_BYTES;
+        let at = |o: Option<u16>| {
+            let mut options = HashMap::new();
+            if let Some(o) = o {
+                options.insert("offset".to_string(), OwnedValue::from(o));
+            }
+            read_at(map, &options)
+        };
+        assert_eq!(at(None), map);
+        assert_eq!(at(Some(0)), map);
+        // Stitching the chunks a small-MTU host reads gives back the map.
+        let mut stitched = at(Some(0))[..49].to_vec();
+        stitched.extend(at(Some(49)));
+        assert_eq!(stitched, map);
+        assert!(at(Some(map.len() as u16)).is_empty());
+        assert!(at(Some(0x188)).is_empty());
+    }
+
+    #[test]
+    fn the_gatt_application_is_listed_in_one_fixed_order_and_its_services_do_not_overlap() {
+        // AppObjects answers in object-path order; the list is that order,
+        // so bluetoothd's table follows it exactly.
+        assert!(APP_OBJECTS.windows(2).all(|w| w[0] < w[1]));
+        assert!(APP_OBJECTS
+            .iter()
+            .all(|p| p.starts_with("/couch/hid/app/s")));
+        assert!(APP_OBJECTS.contains(&KEYBOARD_REPORT) && APP_OBJECTS.contains(&CONSUMER_REPORT));
+        // Attributes per service as bluetoothd counts them: the declaration,
+        // two per characteristic, one per CCC and one per descriptor.
+        let (device_info, battery, hid) = (1 + 2, 1 + 2, 1 + 4 * 2 + 2 * (2 + 1 + 1));
+        assert!(DEVICE_INFO_HANDLE + device_info <= BATTERY_HANDLE);
+        assert!(BATTERY_HANDLE + battery <= HID_HANDLE);
+        // The report CCCs a TV's stored subscriptions name (docs/bluetooth.md).
+        assert_eq!(hid, 17);
+        assert_eq!(
+            (HID_HANDLE + 1 + 4 * 2 + 2, HID_HANDLE + 1 + 4 * 2 + 4 + 2),
+            (0x012b, 0x012f)
+        );
+    }
 
     fn bytes(data: &[String]) -> Vec<u8> {
         data.iter()
