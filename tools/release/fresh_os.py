@@ -15,17 +15,59 @@ from clean_stage import archive_name, checksum, require
 from os_baseline import MARKER, PIN
 from prepare_rootfs import normalize
 from runtime_inventory import RUNTIME, regular
-from verify_integration_set import DEFAULT, verify_receipt
+from verify_integration_set import DEFAULT, receipt as integration_receipt, verify_receipt
 
 CORE = {name: path for name, path in RUNTIME.items() if name != 'fbcon'}
 
+# Exact protocol-1 receipt shipped with the .171.dev release.
+# manifest_sha256 is the SHA-256 of tools/release/tested-integrations.json at
+# this immutable candidate. Legacy admission is limited to this identity;
+# changing a newer receipt's schema must never bypass its host evidence.
+LEGACY_TESTED_SET = dict(
+    schema=1, kind='couch-tested-integration-set-verification',
+    name='denon-preview-0.1.1',
+    candidate_commit='61217bce2ac5e37fb34000a3101c6f4d04cef82f',
+    core_tested_commit='b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb',
+    manifest_sha256='b43417ef5c39436995c2a153664794059fea8a8da3ea3c70ffda1256d74e4358',
+    integration_versions={'denon': '0.1.1'}, protocol_version=1,
+    artifact_bytes_verified=True,
+    rollout=dict(bundle_packages_in_runtime=False, bundle_packages_in_installer=False,
+                 automatic_install=False, automatic_configuration_migration=False))
 
-def validate_binding(binding, source_commit, rootfs_sha256, *, baseline=None, key_sha256=None):
+
+def same_json(actual, expected):
+    # Python equality treats True == 1 == 1.0; evidence schemas do not.
+    return json.dumps(actual, sort_keys=True, separators=(',', ':')) == json.dumps(
+        expected, sort_keys=True, separators=(',', ':'))
+
+
+def validate_tested_set(tested, source_commit, integration_set):
+    require(isinstance(tested, dict) and type(tested.get('schema')) is int
+            and tested.get('candidate_commit') == source_commit
+            and tested.get('artifact_bytes_verified') is True,
+            'Fresh OS needs the verified same-source unbundled integration set')
+    if tested['schema'] == 1:
+        expected = LEGACY_TESTED_SET
+    elif tested['schema'] == 2:
+        # Revalidate the current reviewed manifest and its hash-bound host proof.
+        # The enclosing input receipt was verified with actual package bytes by
+        # bind(); downstream packaging still requires this exact snapshot.
+        expected = integration_receipt(integration_set)
+        require(type(expected.get('schema')) is int and expected['schema'] == 2,
+                'Fresh OS schema2 requires the current schema2 tested set')
+        expected['artifact_bytes_verified'] = True
+    else:
+        require(False, 'Unsupported fresh OS tested integration schema')
+    require(same_json(tested, expected),
+            'Fresh OS tested set differs from the exact reviewed receipt')
+
+
+def validate_binding(binding, source_commit, rootfs_sha256, *, baseline=None, key_sha256=None, integration_set=DEFAULT):
     """Admission at each builder boundary; the enclosing receipt is hash-pinned."""
     baseline = json.loads(PIN.read_text()) if baseline is None else baseline
     if key_sha256 is None:
-        key_sha256 = json.loads(DEFAULT.read_text())['feed']['public_key']['sha256']
-    require(isinstance(binding, dict) and binding.get('schema') == 1
+        key_sha256 = json.loads(integration_set.read_text())['feed']['public_key']['sha256']
+    require(isinstance(binding, dict) and type(binding.get('schema')) is int and binding.get('schema') == 1
             and binding.get('kind') == 'couch-fresh-os-core-binding'
             and binding.get('installable') is False,
             'Fresh OS requires a verified core binding; old userdata cannot be relabeled')
@@ -39,13 +81,7 @@ def validate_binding(binding, source_commit, rootfs_sha256, *, baseline=None, ke
             'Fresh OS requires the reviewed bootstrap and package baseline')
     require(binding.get('official_integration_key_sha256') == key_sha256,
             'Fresh OS official integration key differs')
-    tested = binding.get('tested_integration_set', {})
-    require(tested.get('candidate_commit') == source_commit
-            and tested.get('artifact_bytes_verified') is True and tested.get('protocol_version') == 1
-            and tested.get('rollout') == {
-                'bundle_packages_in_runtime': False, 'bundle_packages_in_installer': False,
-                'automatic_install': False, 'automatic_configuration_migration': False},
-            'Fresh OS needs the verified same-source unbundled integration set')
+    validate_tested_set(binding.get('tested_integration_set'), source_commit, integration_set)
     files = binding.get('core_files', {})
     require(set(files) == set(CORE), 'Fresh OS core inventory is incomplete')
     for item in files.values():
@@ -132,7 +168,7 @@ def bind(staging, inventory_path, build_path, integration_path, *, integration_s
                    official_integration_key_sha256=checksum(key), os_baseline=expected_marker,
                    runtime_boot_sha256=baseline['runtime_boot_sha256'],
                    package_closure_sha256=baseline['package_closure_sha256'])
-    return validate_binding(binding, commit, checksum(data))
+    return validate_binding(binding, commit, checksum(data), integration_set=integration_set)
 
 
 if __name__ == '__main__':

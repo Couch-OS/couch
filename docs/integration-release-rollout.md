@@ -206,10 +206,19 @@ automatic migration instruction.
 
 ### Bind the fresh rootfs before image assembly
 
-This binding schema covers the protocol-1 tested set used by core commit
-`61217bce2ac5e37fb34000a3101c6f4d04cef82f`. A core with protocol-2 changes needs a
-new frozen tested-core identity and explicit compatibility evidence; this
-receipt does not establish protocol-2 Denon behavior or hardware acceptance.
+New fresh builds use the exact current schema2 tested-set receipt: core protocol
+support `[1, 2]`, the published Denon `0.1.1` package at protocol 1, its original
+hardware-evidence core, and the hash-bound renewed host compatibility proof.
+Every packaging boundary revalidates that complete snapshot against the reviewed
+metadata. Missing host proof, changed protocol sets, relabelled hardware evidence,
+or downgrading a newer core to a protocol-1 receipt are rejected.
+
+Legacy schema1 binding remains readable only for the exact historical candidate
+`61217bce2ac5e37fb34000a3101c6f4d04cef82f`, tested core `b9eb59f`, and its original
+manifest digest and receipt fields. This preserves historical noninstallable
+staging; it does not relabel that staging as a new build. Protocol-2 Denon packages
+remain unreleased. The renewed host proof does not establish their behavior or
+new hardware acceptance, and this tooling change does not create a fresh OS image.
 
 Keep the original `couch-unsigned-runtime-build` receipt emitted for the frozen
 ARM build. It names `source_commit`, target `armv7-unknown-linux-musleabihf`, and
@@ -234,7 +243,10 @@ python3 tools/release/prepare_public_userdata.py \
   --fresh-core BUILD/fresh-core.json
 ```
 
-Run these commands in the frozen payload checkout. `fresh_os.py` verifies every
+Run these commands and subsequent userdata/public packaging in the same frozen
+payload checkout. Schema2 admission derives the candidate from that checkout;
+a later tools checkout or an independent installer build identity must not replace
+the OS source identity. `fresh_os.py` verifies every
 inventoried runtime file inside the packaged archive, checks the five executable
 hashes against the original build receipt, and requires the official tested key
 bytes inside `couch-confd`. All source identities and the tested integration

@@ -1,6 +1,7 @@
 import copy
 import io
 import json
+import subprocess
 from pathlib import Path
 import tarfile
 import tempfile
@@ -14,7 +15,7 @@ import fresh_os
 def binding_fixture():
     baseline = json.loads(fresh_os.PIN.read_text())
     return dict(schema=1, kind='couch-fresh-os-core-binding', installable=False,
-                source_commit='a' * 40, rootfs_archive_sha256='b' * 64,
+                source_commit=fresh_os.LEGACY_TESTED_SET['candidate_commit'], rootfs_archive_sha256='b' * 64,
                 runtime_inventory_sha256='c' * 64, runtime_build_receipt_sha256='d' * 64,
                 integration_receipt_sha256='e' * 64,
                 official_integration_key_sha256=json.loads(fresh_os.DEFAULT.read_text())['feed']['public_key']['sha256'],
@@ -22,10 +23,7 @@ def binding_fixture():
                 package_closure_sha256=baseline['package_closure_sha256'],
                 os_baseline={key: baseline[key] for key in ('schema', 'model', 'id')},
                 core_files={name: dict(size=20, sha256='f' * 64) for name in fresh_os.CORE},
-                tested_integration_set=dict(candidate_commit='a' * 40, artifact_bytes_verified=True,
-                    protocol_version=1, rollout=dict(bundle_packages_in_runtime=False,
-                    bundle_packages_in_installer=False, automatic_install=False,
-                    automatic_configuration_migration=False)))
+                tested_integration_set=copy.deepcopy(fresh_os.LEGACY_TESTED_SET))
 
 
 class FreshOsTests(unittest.TestCase):
@@ -43,14 +41,14 @@ class FreshOsTests(unittest.TestCase):
                      for name, data in self.files.items() if name.startswith('opt/couch/')
                      and name not in GENERATED and name != fresh_os.MARKER]
         self.inventory = dict(kind='couch-runtime-payload-inventory', clean_runtime_ready=True,
-                              tracked_payload_worktree_clean=True, inventory_source_commit='a' * 40,
+                              tracked_payload_worktree_clean=True, inventory_source_commit=fresh_os.LEGACY_TESTED_SET['candidate_commit'],
                               tested_integration_set=self.binding['tested_integration_set'], artifacts=artifacts)
-        self.build = dict(schema=1, kind='couch-unsigned-runtime-build', source_commit='a' * 40,
+        self.build = dict(schema=1, kind='couch-unsigned-runtime-build', source_commit=fresh_os.LEGACY_TESTED_SET['candidate_commit'],
                           target='armv7-unknown-linux-musleabihf', files=[
                               dict(path=path, size=len(self.files['opt/couch/' + name]),
                                    sha256=checksum(self.files['opt/couch/' + name]))
                               for name, path in fresh_os.CORE.items()])
-        self.manifest = dict(kind='couch-packaged-staging', installable=False, source_commit='a' * 40,
+        self.manifest = dict(kind='couch-packaged-staging', installable=False, source_commit=fresh_os.LEGACY_TESTED_SET['candidate_commit'],
                              source_date_epoch=100, package_closure_sha256=self.binding['package_closure_sha256'])
         self.write()
         self.verifier = patch.object(fresh_os, 'verify_receipt', return_value=self.binding['tested_integration_set'])
@@ -83,6 +81,23 @@ class FreshOsTests(unittest.TestCase):
         self.assertEqual(result['runtime_inventory_sha256'], checksum((self.root / 'inventory.json').read_bytes()))
         self.assertEqual(result['core_files']['couch-confd']['sha256'], checksum(self.files['opt/couch/couch-confd']))
         self.assertFalse(result['installable'])
+
+    def test_schema2_bind_preserves_current_verified_snapshot(self):
+        expected = fresh_os.integration_receipt()
+        expected['artifact_bytes_verified'] = True
+        self.binding['tested_integration_set'].clear()
+        self.binding['tested_integration_set'].update(expected)
+        commit = expected['candidate_commit']
+        self.inventory['inventory_source_commit'] = commit
+        self.build['source_commit'] = self.manifest['source_commit'] = commit
+        self.write()
+        result = self.bind()
+        self.assertEqual(result['source_commit'], commit)
+        self.assertEqual(result['tested_integration_set'], expected)
+        self.assertEqual(expected['core_supported_protocol_versions'], [1, 2])
+        self.assertEqual(expected['integration_protocol_versions'], {'denon': 1})
+        self.assertEqual(expected['hardware_evidence_core_commits'],
+                         {'denon': fresh_os.LEGACY_TESTED_SET['core_tested_commit']})
 
     def test_old_core_cannot_be_relabelled_even_if_inventory_is_rewritten(self):
         self.files['opt/couch/couch-confd'] = b'old core bytes'
@@ -119,7 +134,7 @@ class FreshOsTests(unittest.TestCase):
         self.write()
         with self.assertRaisesRegex(StageError, 'same frozen core commit'):
             self.bind()
-        self.build['source_commit'] = 'a' * 40
+        self.build['source_commit'] = fresh_os.LEGACY_TESTED_SET['candidate_commit']
         self.binding['tested_integration_set']['artifact_bytes_verified'] = False
         self.write()
         with self.assertRaisesRegex(StageError, 'verified same-source'):
@@ -140,11 +155,109 @@ class FreshOsTests(unittest.TestCase):
                       {**self.binding, 'runtime_boot_sha256': '0' * 64},
                       {**self.binding, 'rootfs_archive_sha256': '0' * 64}]:
             with self.subTest(value=value), self.assertRaises(StageError):
-                fresh_os.validate_binding(value, 'a' * 40, 'b' * 64)
+                fresh_os.validate_binding(value, fresh_os.LEGACY_TESTED_SET['candidate_commit'], 'b' * 64)
         altered = copy.deepcopy(self.binding)
         del altered['core_files']['couch-confd']
         with self.assertRaises(StageError):
-            fresh_os.validate_binding(altered, 'a' * 40, 'b' * 64)
+            fresh_os.validate_binding(altered, fresh_os.LEGACY_TESTED_SET['candidate_commit'], 'b' * 64)
+
+
+class TestedSetBoundaryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.current = fresh_os.integration_receipt()
+        cls.current['artifact_bytes_verified'] = True
+
+    def validate(self, binding):
+        return fresh_os.validate_binding(binding, binding['source_commit'], 'b' * 64)
+
+    def current_binding(self):
+        binding = binding_fixture()
+        binding['source_commit'] = self.current['candidate_commit']
+        binding['tested_integration_set'] = copy.deepcopy(self.current)
+        return binding
+
+    def test_historical_manifest_pin_matches_immutable_source_blob(self):
+        historical = fresh_os.LEGACY_TESTED_SET
+        raw = subprocess.check_output(['git', 'show', historical['candidate_commit'] +
+                                       ':tools/release/tested-integrations.json'],
+                                      cwd=fresh_os.DEFAULT.parents[2])
+        self.assertEqual(checksum(raw), historical['manifest_sha256'])
+        manifest = json.loads(raw)
+        self.assertEqual(manifest['core']['tested_commit'], historical['core_tested_commit'])
+        self.assertIs(self.validate(binding_fixture())['installable'], False)
+
+    def test_exact_current_schema2_snapshot_is_accepted(self):
+        self.assertEqual(self.validate(self.current_binding())['tested_integration_set'], self.current)
+
+    def test_schema2_proof_protocol_hardware_source_and_artifact_changes_are_rejected(self):
+        mutations = [
+            ('host_compatibility_sha256', None), ('host_compatibility_sha256', '0' * 64),
+            ('core_supported_protocol_versions', [1]), ('core_supported_protocol_versions', [2]),
+            ('core_supported_protocol_versions', [1, True]), ('core_supported_protocol_versions', [1, 2.0]),
+            ('core_supported_protocol_versions', [2, 1]),
+            ('integration_protocol_versions', {'denon': 2}),
+            ('integration_protocol_versions', {'denon': True}),
+            ('hardware_evidence_core_commits', {'denon': self.current['core_tested_commit']}),
+            ('hardware_evidence_core_commits', {}),
+            ('core_tested_commit', fresh_os.LEGACY_TESTED_SET['core_tested_commit']),
+            ('candidate_commit', '0' * 40), ('manifest_sha256', '0' * 64),
+            ('artifact_bytes_verified', False), ('artifact_bytes_verified', 1),
+            ('integration_versions', {'denon': '0.2.0'}), ('schema', 2.0),
+            ('protocol_version', 1), ('unexpected', 'field'),
+        ]
+        for key, value in mutations:
+            binding = self.current_binding()
+            if value is None:
+                del binding['tested_integration_set'][key]
+            else:
+                binding['tested_integration_set'][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(StageError):
+                self.validate(binding)
+
+    def test_current_core_cannot_downshift_to_a_legacy_receipt(self):
+        binding = self.current_binding()
+        binding['tested_integration_set'] = copy.deepcopy(fresh_os.LEGACY_TESTED_SET)
+        binding['tested_integration_set']['candidate_commit'] = binding['source_commit']
+        with self.assertRaisesRegex(StageError, 'exact reviewed receipt'):
+            self.validate(binding)
+        # Merely stripping the schema2-only fields also cannot create legacy proof.
+        tested = copy.deepcopy(self.current)
+        for key in ('core_supported_protocol_versions', 'integration_protocol_versions',
+                    'hardware_evidence_core_commits', 'host_compatibility_sha256'):
+            del tested[key]
+        tested.update(schema=1, protocol_version=1)
+        binding['tested_integration_set'] = tested
+        with self.assertRaises(StageError):
+            self.validate(binding)
+
+    def test_legacy_requires_exact_shape_identity_and_json_types(self):
+        mutations = [('schema', True), ('schema', 1.0), ('protocol_version', True),
+                     ('protocol_version', 1.0), ('manifest_sha256', '0' * 64),
+                     ('core_tested_commit', '0' * 40), ('name', 'other'),
+                     ('integration_versions', {}), ('artifact_bytes_verified', 1),
+                     ('unexpected', None), ('host_compatibility_sha256', '0' * 64)]
+        for key, value in mutations:
+            binding = binding_fixture()
+            binding['tested_integration_set'][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(StageError):
+                self.validate(binding)
+        for schema in (True, 1.0):
+            binding = binding_fixture()
+            binding['schema'] = schema
+            with self.assertRaises(StageError):
+                self.validate(binding)
+        for key in fresh_os.LEGACY_TESTED_SET:
+            binding = binding_fixture()
+            del binding['tested_integration_set'][key]
+            with self.subTest(missing=key), self.assertRaises(StageError):
+                self.validate(binding)
+        for fixture in (binding_fixture(), self.current_binding()):
+            for value in (0, 0.0):
+                binding = copy.deepcopy(fixture)
+                binding['tested_integration_set']['rollout']['automatic_install'] = value
+                with self.assertRaises(StageError):
+                    self.validate(binding)
 
 
 if __name__ == '__main__':

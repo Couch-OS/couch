@@ -1,3 +1,4 @@
+import copy
 import gzip
 import hashlib
 import io
@@ -11,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import package_public_installer as package
+import fresh_os
 from test_fresh_os import binding_fixture
 
 
@@ -44,11 +46,11 @@ class PublicInstallerTests(unittest.TestCase):
                          source_kernel_commit='b'*40, files={name: self.files[name] for name in ('boot.cpio.gz', 'recovery.cpio.gz', 'zImage')}),
             'logo': dict(schema=1, kind='couch-public-logo-frame', file='logo.bgra',
                          source_sha256=hashlib.sha256(b'canonical PNG fixture').hexdigest(), **self.files['logo.bgra'])}
-        self.source_bytes = self.git_archive('a'*40)
+        self.source_bytes = self.git_archive(binding_fixture()['source_commit'])
         self.receipts['userdata']['fresh_core'] = binding_fixture()
         self.receipts['userdata']['rootfs_archive_sha256'] = 'b' * 64
         (self.root / 'source.tar.gz').write_bytes(self.source_bytes)
-        self.attestation = dict(schema=1, kind='couch-public-os-build', source_commit='a'*40,
+        self.attestation = dict(schema=1, kind='couch-public-os-build', source_commit=binding_fixture()['source_commit'],
                                 source_archive_sha256=hashlib.sha256(self.source_bytes).hexdigest(), complete=True, private_inputs=False,
                                 files=self.files, builder_receipts={})
         self.write_receipts()
@@ -93,7 +95,7 @@ class PublicInstallerTests(unittest.TestCase):
             self.assertTrue(all(m.isreg() and m.mode == 0o644 and m.mtime == 0 and not m.pax_headers for m in members))
             manifest = json.load(archive.extractfile('manifest.json'))
             self.assertEqual(manifest['files'], self.files)
-            self.assertEqual(manifest['source_commit'], 'a'*40)
+            self.assertEqual(manifest['source_commit'], binding_fixture()['source_commit'])
         descriptor = json.loads((self.root / 'output/installer.json').read_bytes())
         self.assertEqual(set(descriptor), {'schema', 'kind', 'model', 'version', 'source_commit', 'payload'})
         self.assertEqual(descriptor['payload']['sha256'], hashlib.sha256(data).hexdigest())
@@ -121,6 +123,35 @@ class PublicInstallerTests(unittest.TestCase):
             self.receipts['userdata']['fresh_core'] = binding
             self.write_receipts()
             with self.assertRaises(ValueError):
+                self.build()
+            self.assertFalse((self.root / 'output').exists())
+
+    def test_schema2_packager_requires_host_proof_and_refuses_legacy_downshift(self):
+        tested = fresh_os.integration_receipt()
+        tested['artifact_bytes_verified'] = True
+        commit = tested['candidate_commit']
+        binding = binding_fixture()
+        binding.update(source_commit=commit, tested_integration_set=tested)
+        self.receipts['userdata']['fresh_core'] = binding
+        source = self.git_archive(commit)
+        (self.root / 'source.tar.gz').write_bytes(source)
+        self.attestation.update(source_commit=commit, source_archive_sha256=hashlib.sha256(source).hexdigest())
+        self.write_receipts()
+        self.assertFalse(self.build('schema2')['published'])
+        for change in ('missing_host', 'hardware', 'package_protocol', 'legacy'):
+            altered = copy.deepcopy(tested)
+            if change == 'missing_host':
+                del altered['host_compatibility_sha256']
+            elif change == 'hardware':
+                altered['hardware_evidence_core_commits']['denon'] = altered['core_tested_commit']
+            elif change == 'package_protocol':
+                altered['integration_protocol_versions']['denon'] = 2
+            else:
+                altered = copy.deepcopy(fresh_os.LEGACY_TESTED_SET)
+                altered['candidate_commit'] = commit
+            binding['tested_integration_set'] = altered
+            self.write_receipts()
+            with self.subTest(change=change), self.assertRaises(ValueError):
                 self.build()
             self.assertFalse((self.root / 'output').exists())
 
@@ -158,7 +189,7 @@ class PublicInstallerTests(unittest.TestCase):
         item.type, item.size = tarfile.XGLTYPE, 2 * 1024**3
         data = gzip.compress(item.tobuf(format=tarfile.USTAR_FORMAT))
         with self.assertRaisesRegex(ValueError, 'bounded Git archive'):
-            package.verify_source_commit(io.BytesIO(data), 'a'*40)
+            package.verify_source_commit(io.BytesIO(data), binding_fixture()['source_commit'])
 
     def test_archive_is_flushed_before_link_and_json_outputs_before_return(self):
         events = []
