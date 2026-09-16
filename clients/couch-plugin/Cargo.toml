@@ -1,0 +1,15 @@
+[package]
+name = "couch-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Versioned subprocess integration protocol and bounded Couch host"
+
+[features]
+testing = ["couch-sdk/testing"]
+
+[dependencies]
+couch-sdk = { path = "../couch-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"

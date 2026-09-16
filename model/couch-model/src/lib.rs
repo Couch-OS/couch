@@ -65,7 +65,7 @@ mod connection;
 mod device;
 mod remote;
 pub use appearance::Appearance;
-pub use connection::{Connection, Provider};
+pub use connection::{Connection, PluginCapability, PluginComponent, PluginStatusField, Provider};
 pub use remote::RemoteSettings;
 mod icon;
 mod id;

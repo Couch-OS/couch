@@ -172,6 +172,18 @@ impl Function {
         }
     }
     pub fn supports(&self, integration: &Integration) -> bool {
+        if let Integration::Plugin {
+            capabilities,
+            supports_inputs,
+            ..
+        } = integration
+        {
+            if let Self::Input(id) = self {
+                return *supports_inputs && valid_id(id);
+            }
+            let id = self.id();
+            return capabilities.iter().any(|capability| capability.id == id);
+        }
         match self {
             Self::Input(id) => match integration {
                 Integration::WebOs => valid_id(id),

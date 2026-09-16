@@ -101,6 +101,60 @@ fn sonos_target(config: &Config, id: &str) -> Option<crate::sonos_player::Target
         _ => None,
     }
 }
+
+/// An installed-package device behind this id, if the device itself or the
+/// activity source resolves to one. The package only supplies data; Pages
+/// renders it with Couch's built-in controls.
+fn plugin_target(config: &Config, id: &str) -> Option<pages::PluginTarget> {
+    let (device, activity, room) = if let Some(id) = id.strip_prefix("device:") {
+        let room = config
+            .rooms
+            .iter()
+            .find(|room| room.devices.iter().any(|device| device.id.as_str() == id))?;
+        let device = room
+            .devices
+            .iter()
+            .find(|device| device.id.as_str() == id)?;
+        (device, device.name.clone(), room.name.clone())
+    } else {
+        let activity = config
+            .activities
+            .iter()
+            .find(|activity| activity.id.as_str() == id)?;
+        let room = config.room(&activity.room)?;
+        let source = activity.source.as_ref()?;
+        let device = config
+            .devices()
+            .find(|(_, device)| &device.id == source)
+            .map(|(_, device)| device)?;
+        (device, activity.name.clone(), room.name.clone())
+    };
+    match config.resolve_integration(&device.integration)? {
+        Integration::Plugin {
+            connection_id,
+            capabilities,
+            supports_inputs,
+            presentation,
+            ..
+        } => {
+            let label = config
+                .connection(&connection_id)
+                .map(|connection| connection.provider.label().to_owned())
+                .unwrap_or_else(|| device.name.clone());
+            Some(pages::PluginTarget {
+                activity,
+                room,
+                device: device.id.to_string(),
+                connection: connection_id.to_string(),
+                label,
+                capabilities,
+                supports_inputs,
+                presentation,
+            })
+        }
+        _ => None,
+    }
+}
 fn kodi_client(t: &Target) -> Kodi {
     if let Ok(s) =
         couch_kodi::settings::Settings::load(&crate::connections::file(&t.connection, "kodi"))
@@ -478,6 +532,25 @@ impl Controller {
                 app.set_player_has_logo(false);
                 app.set_player_logo(slint::Image::default());
                 self.sonos.open(app, target);
+                return;
+            }
+            if let Some(target) = plugin_target(&config, id) {
+                self.generation += 1;
+                self.active_generation
+                    .store(self.generation, std::sync::atomic::Ordering::Release);
+                self.snapshot = None;
+                self.target = None;
+                self.busy = false;
+                self.art_key.clear();
+                let _ = self.tx.try_send((self.generation, Request::Close));
+                if app.get_tv_shown() {
+                    app.invoke_tv_action("close".into());
+                    app.set_tv_shown(false);
+                }
+                app.set_player_shown(true);
+                app.set_player_panel(0);
+                self.pages.open_plugin(app, config.clone(), target);
+                app.invoke_focus_player();
                 return;
             }
             if let Some(activity) = config.activities.iter().find(|a| a.id.as_str() == id) {
@@ -1154,5 +1227,45 @@ mod tests {
         assert_eq!(clock(-1.), "0:00");
         assert!(target(&Config::default(), "gone").is_err());
         assert_eq!(seconds(&json!({"minutes":2,"seconds":3})), 123.);
+    }
+
+    #[test]
+    fn plugin_activity_source_assembles_the_cached_native_presentation() {
+        let mut config = Config::seed();
+        config.connections.push(couch_model::Connection {
+            id: "community-tv".into(),
+            name: "Community TV".into(),
+            provider: couch_model::Provider::Plugin {
+                id: "community-tv".into(),
+                label: "Community TV".into(),
+                capabilities: vec![couch_model::PluginCapability {
+                    id: "power-on".into(),
+                    label: "Power on".into(),
+                }],
+                supports_inputs: false,
+                presentation: vec![couch_model::PluginComponent::StatusText {
+                    label: "Now playing".into(),
+                    field: couch_model::PluginStatusField::Title,
+                }],
+            },
+        });
+        let device = config
+            .rooms
+            .iter_mut()
+            .flat_map(|room| &mut room.devices)
+            .find(|device| device.id.as_str() == "living-kodi")
+            .unwrap();
+        device.integration = Integration::Connection {
+            connection_id: "community-tv".into(),
+            resource_id: String::new(),
+        };
+        let target = plugin_target(&config, config.activities[0].id.as_str()).unwrap();
+        assert_eq!(target.connection, "community-tv");
+        assert_eq!(target.device, "living-kodi");
+        assert_eq!(target.activity, config.activities[0].name);
+        assert!(matches!(
+            target.presentation.as_slice(),
+            [couch_model::PluginComponent::StatusText { label, .. }] if label == "Now playing"
+        ));
     }
 }

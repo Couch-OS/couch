@@ -17,6 +17,10 @@ description = "Config server for Couch: the REST API and the web UI it serves"
 # static musl cross-build a one-liner - the constraint that has already cost
 # this project a day over yeslogic-fontconfig-sys.
 [dependencies]
+couch-plugin = { path = "../../clients/couch-plugin" }
+couch-integrations = { path = "../couch-integrations" }
+couch-sdk = { path = "../../clients/couch-sdk" }
+libc = "0.2"
 couch-sonos = { path = "../../clients/couch-sonos" }
 couch-coreelec = { path = "../../clients/couch-coreelec" }
 couch-system = { path = "../couch-system" }

@@ -18,6 +18,7 @@ pub enum Error {
     Io(io::Error),
     Parse(serde_json::Error),
     Invalid(ValidationError),
+    Compatibility(String),
     /// The client sent an `If-Match` that no longer matches.
     Stale {
         expected: u64,
@@ -31,6 +32,7 @@ impl std::fmt::Display for Error {
             Error::Io(e) => write!(f, "{e}"),
             Error::Parse(e) => write!(f, "not valid JSON: {e}"),
             Error::Invalid(e) => write!(f, "{e}"),
+            Error::Compatibility(message) => f.write_str(message),
             Error::Stale { expected, actual } => write!(
                 f,
                 "config changed underneath you (you had revision {expected}, it is now {actual})"
@@ -231,6 +233,12 @@ impl Store {
         next.migrate();
         next.revision = self.config.revision.wrapping_add(1);
         next.validate().map_err(Error::Invalid)?;
+        if has_plugins(&next) && !has_plugins(&self.config) {
+            crate::plugins::check_core_rollback(
+                self.path.parent().unwrap_or_else(|| Path::new(".")),
+            )
+            .map_err(Error::Compatibility)?;
+        }
 
         let previous = std::mem::replace(&mut self.config, next);
         if let Err(e) = self.write() {
@@ -276,6 +284,119 @@ impl Store {
             }
         }
         Ok(())
+    }
+}
+
+fn has_plugins(config: &Config) -> bool {
+    config
+        .connections
+        .iter()
+        .any(|c| matches!(c.provider, couch_model::Provider::Plugin { .. }))
+        || config
+            .devices()
+            .any(|(_, d)| matches!(d.integration, couch_model::Integration::Plugin { .. }))
+}
+
+#[cfg(test)]
+mod plugin_rollback_tests {
+    use super::*;
+    use couch_model::{Connection, Id, Provider};
+    use std::{
+        os::unix::fs::PermissionsExt,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    struct Home(PathBuf);
+    impl Home {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "couch-store-plugin-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("build.json"), "{}").unwrap();
+            Self(path)
+        }
+        fn base(&self, supports: bool) {
+            let path = self.0.join("couch-confd");
+            fs::write(
+                &path,
+                if supports {
+                    "#!/bin/sh\ntest \"$1\" = '--supports-integration-protocol=1'\n"
+                } else {
+                    "#!/bin/sh\nexit 2\n"
+                },
+            )
+            .unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn connection() -> Connection {
+        Connection {
+            id: Id::new("example"),
+            name: "Example".into(),
+            provider: Provider::Plugin {
+                id: "echo".into(),
+                label: "Echo".into(),
+                capabilities: vec![],
+                supports_inputs: true,
+                presentation: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn first_plugin_mutation_preserves_disk_memory_and_revision_if_rollback_is_old() {
+        let home = Home::new();
+        home.base(false);
+        let path = home.0.join("config.json");
+        let mut store = Store::open(&path).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let original = store.config().clone();
+        let result = store.mutate(None, |cfg| cfg.connections.push(connection()));
+        assert!(matches!(result, Err(Error::Compatibility(_))));
+        assert_eq!(store.config(), &original);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        // Whole-configuration imports use the same persistence boundary.
+        let mut imported = original.clone();
+        imported.connections.push(connection());
+        assert!(matches!(
+            store.mutate(None, |cfg| *cfg = imported),
+            Err(Error::Compatibility(_))
+        ));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn compatible_rollback_accepts_plugin_config_and_missing_package_does_not_erase_it() {
+        let home = Home::new();
+        home.base(true);
+        let path = home.0.join("config.json");
+        let mut store = Store::open(&path).unwrap();
+        let before = store.revision();
+        store
+            .mutate(Some(before), |cfg| cfg.connections.push(connection()))
+            .unwrap();
+        assert_eq!(store.revision(), before + 1);
+        assert_eq!(Store::open(&path).unwrap().config(), store.config());
+        assert!(
+            !home.0.join("integrations").exists(),
+            "config preservation does not require an installed executable"
+        );
+        home.base(false);
+        // Already-persisted plugin configurations must remain editable so the
+        // user can remove integrations or repair other settings.
+        store
+            .mutate(None, |cfg| cfg.connections[0].name = "Renamed".into())
+            .unwrap();
+        store.mutate(None, |cfg| cfg.connections.clear()).unwrap();
+        assert!(store.config().connections.is_empty());
     }
 }
 

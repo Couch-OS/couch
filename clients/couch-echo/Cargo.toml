@@ -10,8 +10,11 @@ description = "A worked example integration for couch-sdk: copy this crate to st
 # builds, runs and passes its tests on any machine - no remote, no TV, no
 # credentials, no network beyond loopback.
 [dependencies]
+couch-plugin = { path = "../couch-plugin" }
+serde_json = "1"
 couch-sdk = { path = "../couch-sdk" }
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 couch-sdk = { path = "../couch-sdk", features = ["testing"] }
+couch-plugin = { path = "../couch-plugin", features = ["testing"] }

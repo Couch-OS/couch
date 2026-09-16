@@ -56,3 +56,8 @@ Questions, install reports and hardware findings are welcome on the
 See the [repository guide](AGENTS.md), [web UI guide](docs/webui.md) and
 [kernel build guide](kernel/README.md). Hardware work starts with the
 [partition layout and recovery guide](docs/device-recovery.md).
+
+To write an independently installable integration, start with the
+[integration developer guide](docs/development/index.md) and
+[catalog admission requirements](docs/development/admission.md). These Markdown
+pages are also the source for the website's developer documentation.

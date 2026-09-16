@@ -1,0 +1,106 @@
+Title: Testing and compatibility
+Description: Prove package behavior without hardware, then record real-device limits.
+Order: 6
+
+# Testing and compatibility
+
+Tests can prove your settings, command gate, wire parser, timeouts, subprocess
+contract, and package lifecycle without a remote. They cannot prove that a real
+device behaves like the protocol documentation. Keep those claims separate.
+
+## Host test ladder
+
+Run the smallest relevant suites while developing:
+
+```sh
+cargo test --manifest-path clients/Cargo.toml \
+  -p couch-sdk --features testing
+cargo test --manifest-path clients/Cargo.toml \
+  -p couch-plugin -p couch-YOUR_ID
+```
+
+The shared host tests cover framing, manifest validation, handshake mismatch,
+malformed and oversized replies, absolute deadlines, process cleanup, bounded
+queues, expired requests, and restart after a failed child.
+
+Your package tests should use a fake implementation of the device protocol and
+exercise real subprocess boundaries. Copy the structure from
+`clients/couch-echo/tests/plugin.rs`.
+
+## Product-flow test
+
+Couch also has an end-to-end host test that builds the daemon and Echo plugin,
+installs a fixture package into an isolated store, configures it through the
+HTTP API, and controls a fake television through both HTTP and the panel socket.
+
+```sh
+cargo build --manifest-path clients/Cargo.toml \
+  -p couch-echo --bin couch-plugin-echo
+cargo build --manifest-path daemon/Cargo.toml -p couch-confd
+python3 tools/tests/integrations-e2e.py
+```
+
+The test mocks only APK extraction on the host. Native signature and repository
+checks belong in the Alpine packaging-tool tests.
+
+## Compatibility rules
+
+Treat these values as one compatibility set:
+
+- manifest `protocol_version`;
+- the host protocol version;
+- manifest ID, version, executable, capabilities, and presentation;
+- the binary's hello manifest;
+- the `DeviceClient` capability declaration.
+
+The installed manifest and hello manifest must match. A protocol mismatch is
+`incompatible`, not a best-effort downgrade. Existing connection metadata
+remains readable when a package is missing, but no command can run without a
+compatible active package.
+
+## Failure behavior to verify
+
+- Unknown commands are refused before device I/O.
+- Settings validate without opening the device.
+- Credentials never appear in logs, process arguments, environment, or exported
+  house configuration.
+- Each operation has an absolute deadline, including partial replies.
+- Ambiguous command failures are never retried.
+- A dead child is reaped and only a later explicit request starts another.
+- Input identifiers are bounded and validated before persistence.
+- Standard output contains only framed protocol messages.
+
+## Real-device validation
+
+After host tests pass, record the exact hardware and firmware tested. Check
+power states, sleep and wake, authentication expiry, malformed device data,
+network loss, input enumeration, and every declared command. Report what was
+not tested.
+
+Do not turn a simulator result into a hardware support claim. A package can be
+correct up to its wire format while still misunderstanding a vendor's device.
+
+## Compatibility record
+
+For each published build, record:
+
+| Field | Example |
+| --- | --- |
+| Package | `example-receiver 0.1.0` |
+| Couch source or release | full commit SHA or release tag |
+| Protocol | `1` |
+| Target | `armv7-unknown-linux-musleabihf` |
+| Host tests | command and date |
+| Hardware | model, firmware, and tested behaviors |
+| Known gaps | pairing, discovery, events, or device-specific limits |
+
+An integration cannot advance by changing this prose alone. The machine-read
+[catalog admission policy](admission.md) requires named conformance, failure,
+timeout/no-retry, and spike tests, and requires physical-device evidence before
+an entry can be marked production.
+
+## Source references
+
+- [`clients/couch-plugin/tests/protocol.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-plugin/tests/protocol.rs)
+- [`clients/couch-echo/tests/plugin.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-echo/tests/plugin.rs)
+- [`tools/tests/integrations-e2e.py`](https://github.com/dangerouslaser/couch/blob/main/tools/tests/integrations-e2e.py)

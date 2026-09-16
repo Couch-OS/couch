@@ -8,13 +8,15 @@ The configuration now includes saved connections; legacy inline device definitio
 
 ### Set up a home
 
-1. Open **Connections**, choose **Add a connection**, and select Kodi, Home Assistant,
-   Philips Hue or Infrared. Save the player address, server credentials or bridge pairing.
+1. Open **Connections**, choose **Add a connection**, and select a built-in
+   provider or an installed integration package. Save the player address,
+   private manifest-defined settings, server credentials or bridge pairing.
 2. Open **Rooms & devices**, create or open a room, then choose **From connection**.
    Search discovered HA/Hue lights or name a Kodi/infrared device and choose
    **Add to this room**. Infrared devices carry a codeset name.
-3. Open **Activities** or **Scenes** to arrange device commands. Saving a command
-   does not execute it; execution remains pending.
+3. Open **Activities** or **Scenes** to arrange device commands. An external
+   integration contributes only the finite capabilities in its signed manifest;
+   discovered inputs become `input:<id>` commands.
 4. Open **Areas** to choose which rooms, activities and scenes appear
    together. Rooms always remain accessible in All rooms on the physical remote.
 
@@ -617,6 +619,14 @@ device assignment or light controls. Kodi supports multiple connections; HA,
 Hue and infrared each support one. Infrared sending remains unavailable on the
 current production kernel.
 
+The add picker also loads `/api/integrations`. Each installed package contributes
+its display name, a finite command catalog, an optional input list, and a
+declarative settings schema and optional native presentation recipe. The
+connection page renders text, secret, integer and boolean controls directly in
+Leptos; it does not load package scripts. A
+secret is never echoed to the browser. Blank secret input preserves a saved
+value and the adjacent clear control sends an explicit `null`.
+
 **Rooms & devices** creates rooms and assigns devices from saved connections.
 Open a room, select **From connection**, then search discovered HA/Hue lights or
 name a Kodi/infrared device. Infrared codesets belong to devices. Light controls
@@ -629,6 +639,21 @@ The model rejects deleting an in-use connection. Removing a connection retains
 private HA/Hue credentials so **Use saved connection** can restore it without
 another pairing. Existing inline device configurations remain readable. On first
 upgrade, existing HA/Hue private settings are adopted as saved connections.
+External connections similarly keep a public snapshot of their label and
+capabilities, so uninstalling a package leaves rooms and mappings intact. Their
+settings and live test buttons stay unavailable until the package returns.
+
+Activity physical-button and sequence pickers merge a package's cached command
+catalog with live `/plugin/inputs` results. The connection page can refresh
+status, enumerate inputs and test declared commands through `/plugin/action`.
+The physical remote sends the same function over the private local plugin
+socket; `couch-confd` remains the only process that owns plugin children and
+private settings.
+
+Presentation recipes use a fixed Couch component library: command groups,
+status text, boolean toggles and input selectors. The browser and panel use
+their existing native controls and styles, and refresh status or inputs through
+the package protocol. No package markup, JavaScript or Slint is loaded.
 
 Tests: `node web/tests/hue.mjs`, `node web/tests/home-assistant.mjs`, and
 `COUCH_TEST_URL=http://127.0.0.1:PORT node web/tests/browser.mjs` against disposable

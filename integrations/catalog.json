@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "protocol_version": 1,
+  "integrations": [
+    {
+      "id": "denon",
+      "manifest": "clients/couch-denon/plugin.json",
+      "crate": "clients/couch-denon",
+      "cargo_package": "couch-denon",
+      "binary": "couch-plugin-denon",
+      "tier": "preview",
+      "synthetic": false,
+      "limitations": [
+        "No physical Denon receiver validation is recorded yet.",
+        "The client covers the receiver main zone only."
+      ],
+      "tests": {
+        "conformance": {"target": "admission", "case": "conformance"},
+        "failure": {"target": "admission", "case": "failure"},
+        "timeout_no_retry": {"target": "admission", "case": "timeout_no_retry"},
+        "spike": {"target": "admission", "case": "spike"}
+      },
+      "hardware_validation": {
+        "status": "not-tested",
+        "evidence": [],
+        "notes": "Fake-receiver coverage is not physical-device evidence."
+      }
+    },
+    {
+      "id": "echo",
+      "manifest": "clients/couch-echo/plugin.json",
+      "crate": "clients/couch-echo",
+      "cargo_package": "couch-echo",
+      "binary": "couch-plugin-echo",
+      "tier": "test-only",
+      "synthetic": true,
+      "limitations": [
+        "Echo TV is a deliberately fictional device used only for SDK and host tests."
+      ],
+      "tests": {
+        "conformance": {"target": "admission", "case": "conformance"},
+        "failure": {"target": "admission", "case": "failure"},
+        "timeout_no_retry": {"target": "admission", "case": "timeout_no_retry"},
+        "spike": {"target": "admission", "case": "spike"}
+      },
+      "hardware_validation": {
+        "status": "not-applicable",
+        "evidence": [],
+        "notes": "There is no Echo TV hardware; all peers are local test fixtures."
+      }
+    }
+  ]
+}

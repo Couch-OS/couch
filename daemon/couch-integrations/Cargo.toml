@@ -1,0 +1,15 @@
+[package]
+name = "couch-integrations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Verified, isolated lifecycle manager for Couch integration APKs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+couch-plugin = { path = "../../clients/couch-plugin" }
+libc = "0.2"
+flate2 = "1"
+tar = "0.4"
