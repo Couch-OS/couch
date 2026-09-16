@@ -222,10 +222,18 @@ properties removed by the new kernel correctly appear as unavailable.
 
 Charge voltage, current limits, thermistor conversion, temperature policy,
 Qmax/OCV/resistance tables and GPIO61 policy remain unchanged. The release pin
-also remains unchanged: the reporting kernel needs hardware validation and a
-matching Bluetooth module build before it can be promoted or installed.
+selects merged kernel `81d180fc19ec` for `.167.dev`, with all four Bluetooth
+backport modules rebuilt for that exact kernel.
 
 ## Validation and next measurements
+
+The `.167.dev` candidate booted the HA100 through the existing OTA activation
+path with a healthy GUI and system service. The gauge reported `ready=1` with
+an advancing sequence, Discharging while unplugged and health Unknown; the
+standard modeled-current and forced-temperature exports were unavailable.
+This checks reporting and startup, not battery calibration, discharge accuracy
+or charge termination. Undocked runtime and the full standby/wake, IR and
+Bluetooth acceptance round remain to be measured on this kernel.
 
 A read-only snapshot from the development remote running
 `3.18.79-couch-normal-g08fd6f4d2efa` reported Charging, 97%, 4.365 V,

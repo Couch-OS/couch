@@ -1,15 +1,14 @@
 # Kernel candidate and remaining hardware checks
 
-`kernel/release-pin.json` pins source commit `ea122a39` and the exact normal-profile
-zImage, effective configuration, compiler and container hashes used in the
-September 10 board-initialization test. It contains no device identity or private
-firmware. This promotes the tested kernel into release staging; it does not make
-an installer image production-ready.
+`kernel/release-pin.json` pins source commit `81d180fc19ec` and the exact
+normal-profile zImage, effective configuration, compiler and container hashes
+used in the September 16 `.167.dev` battery reporting test. It contains no
+device identity or private firmware. This selects the tested kernel for release
+staging; it does not make an installer image production-ready.
 
-The default Ollie `~/couch-kernel/base` checkout was fast-forwarded to that commit.
-Normal builds reject source histories missing this baseline. Later descendants
-may be developed, but release verification still requires the exact pinned
-candidate and hashes until separately reviewed and validated.
+Normal builds enforce the source ancestry in `kernel/source_policy.py`.
+Later descendants may be developed, but release verification still requires
+the exact pinned candidate and hashes until separately reviewed and validated.
 
 Verify an existing local candidate before staging:
 
@@ -28,6 +27,13 @@ changes USB write gates, release signatures, private/vendor input requirements,
 or boot/recovery tests. A matching kernel does not attest a new ramdisk or DTB.
 
 ## Validation scope
+
+The `.167.dev` candidate booted through the existing OTA activation path with
+the new kernel, healthy GUI/system service and advancing cached battery gauge
+samples. Its four Bluetooth backport modules match the new kernel's vermagic.
+See [the battery audit](ha100-battery-gauge.md) for the reporting checks and
+remaining calibration questions. The hardware checks below were performed on
+earlier candidates; repeat the full round on this kernel before promotion.
 
 Confirmed: LG B4 volume up with one repeat while awake and USB docked; button
 backlight changes affect GPIO58 without changing touch-reset GPIO4 or board
