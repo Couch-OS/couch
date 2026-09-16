@@ -111,8 +111,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: web
-      - name: Install the browser bundle builder
-        run: cargo install --version 0.21.14 --locked trunk
+      - name: Install the pinned browser bundle builder
+        run: |
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/trunk.tar.gz" \
+            https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz
+          echo "f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b  $RUNNER_TEMP/trunk.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/trunk-bin"
+          tar -xzf "$RUNNER_TEMP/trunk.tar.gz" -C "$RUNNER_TEMP/trunk-bin" trunk
+          echo "$RUNNER_TEMP/trunk-bin" >> "$GITHUB_PATH"
       - name: Build the package-management UI
         run: trunk build --release
         working-directory: web/couch-web
