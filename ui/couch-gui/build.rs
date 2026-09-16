@@ -12,9 +12,12 @@ fn main() {
         std::env::set_var("SLINT_DEFAULT_FONT", fonts.join("Lato-Regular.ttf"));
     }
 
-    // Embed fonts and images into the binary, rasterised for the software
-    // renderer: there is no font system on the device to fall back to.
+    // There is no font system on the device. SDF keeps one scalable glyph set
+    // per Lato face instead of a bitmap at every UI size, so runtime Cyrillic
+    // coverage does not multiply the font payload across all those sizes.
+    // The conversion dependencies run on the build host, not on the remote.
     let cfg = slint_build::CompilerConfiguration::new()
-        .embed_resources(slint_build::EmbedResourcesKind::EmbedForSoftwareRenderer);
+        .embed_resources(slint_build::EmbedResourcesKind::EmbedForSoftwareRenderer)
+        .with_sdf_fonts(true);
     slint_build::compile_with_config("ui/app.slint", cfg).expect("compiling ui/app.slint");
 }
