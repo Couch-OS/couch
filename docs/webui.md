@@ -676,6 +676,42 @@ unimplemented integration; these controls configure ownership/source/steps.
 Regression: node web/tests/icons.mjs tests icon previews, search, persistence,
 mobile layout and room activity ownership with an isolated local daemon.
 
+## Software updates
+
+The **Updates** page is the web half of the same story the remote's
+**Settings > Updates** section tells, reading the same `GET /api/updates`
+status, so the two never disagree. Couch ships as two separately signed parts
+and the page says so in as many words: the software is the apps, services and
+this web UI; the kernel and boot image is a second payload written to the boot
+partition, published only when the kernel itself changes.
+
+The first card is **What is installed**: `Software <version>`, and
+`Kernel and boot image <version>` with, in plain words, whether it is up to
+date, from an earlier build with no newer kernel published for it, or older
+than the software with its update still to install. The second card's heading
+is the step: `Step 1 of 2: Couch software <version>`, `Step 2 of 2: kernel and
+boot image`, `Available: <version>` for a one-step release, or `This update is
+not finished`. Under it, in a notice box, is the daemon's `guidance` sentence,
+the same one the remote shows.
+
+The install buttons follow the step. Step 1 is **Download & verify update**
+and then a confirmation checkbox plus **Install & restart**, whose paragraph
+says the kernel and boot image will be offered here as step 2 once the remote
+is back. Step 2 is **Finish update: download the kernel and boot image**, then
+**Finish update & restart**. A remote that is half-updated with nothing yet on
+offer gets **Find the rest of this update**, which is the ordinary check.
+
+The banner at the top of the app also carries the unfinished state: it appears
+for an available build, for an outstanding step 2 ("Finish updating Couch
+<version>: step 2 of 2 is the kernel and boot image"), and for a remote whose
+last update never finished even before a check has found the payload.
+
+While a saved previous boot image exists, the first card offers to write it
+back, with the note that it verifies the saved image first, does not restart,
+and that a kernel which boots but never brings the GUI up puts the remote into
+recovery on its own. Channels, publishing and the state behind all of this:
+[runtime-updates.md](runtime-updates.md).
+
 ## Connection and remote settings updates
 
 See [Connections](connections.md) for multiple bridges/servers/TVs and private Kodi

@@ -82,7 +82,8 @@ export component Settings inherits Rectangle {
     in property <string> bt-peer;              // the TV connected now, "" if none
     // Updates. The host mirrors the system service's status here.
     in property <string> update-installed;
-    in property <string> update-boot;          // installed boot image, "" if none
+    in property <string> update-boot;          // the kernel row's value, "" if unknown
+    in property <string> update-action;       // what the step row's OK does now
     in property <string> update-channel;       // "Stable" / "Alpha"
     in property <string> update-summary;       // the value on the check row
     in property <bool> update-can-install;
@@ -339,22 +340,23 @@ export component Settings inherits Rectangle {
             // service's own message underneath.
             if root.panel == 4: VerticalLayout {
                 spacing: root.gap;
-                SettingsRow { title: "Installed"; value: root.update-installed; stepper: false; }
+                SettingsRow { title: "Software"; value: root.update-installed; stepper: false; }
                 SettingsRow { title: "Channel"; value: root.update-channel; }
                 SettingsRow { title: "Check for updates"; value: root.update-summary; stepper: false; }
                 // One step row: what to do next, or what is happening now. It
                 // stays put while a download runs so the cursor has somewhere
                 // to be until "Install & restart" takes its place.
                 if root.update-can-install || root.update-busy || root.update-ready: SettingsRow {
-                    title: root.update-ready ? "Install & restart" : root.update-busy ? "Working…" : "Download & verify";
+                    title: root.update-action;
                     value: root.update-ready ? (root.update-armed ? "OK again" : "") : root.update-busy ? root.update-summary : "";
                     arrow: !root.update-busy && !(root.update-ready && root.update-armed);
                     stepper: false;
                 }
-                // Which kernel and boot ramdisk the partition carries, written
-                // by a separate boot payload. Read-only, and last, so the
-                // cursor's fixed row indices above are undisturbed.
-                if root.update-boot != "": SettingsRow { title: "Boot image"; value: root.update-boot; stepper: false; }
+                // Which release the kernel and boot ramdisk on the partition
+                // came from, and whether that matches the software above it.
+                // Read-only, and last, so the cursor's fixed row indices above
+                // are undisturbed.
+                if root.update-boot != "": SettingsRow { title: "Kernel"; value: root.update-boot; stepper: false; }
                 Text {
                     text: root.update-message;
                     font-size: 15px;

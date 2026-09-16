@@ -127,6 +127,64 @@ It does not restart: use the Power menu. The saved image is consumed once it is
 back, because the image it replaced is no longer installed, so the next check
 offers that boot payload again.
 
+### What the two steps look like
+
+A release carrying both payloads is one update in the user's head and two
+installs on the device, and both UIs say so rather than offering "an update"
+twice. `Status` carries what they read:
+
+* `steps` is 2 when the offered release publishes a boot payload as well as a
+  runtime and 1 when it publishes software alone. It comes from the asset
+  listing the check already holds, no extra request, so step 1 can name step 2
+  before it runs. `kind` says which step is on the table: a boot payload is
+  only ever offered for the release whose runtime is installed, so
+  `kind: "boot"` is always the second step.
+* `boot_release` is the release whose kernel and boot ramdisk the partition
+  carries: the boot payload this updater wrote, or, when it has written none,
+  the build the full OS image shipped. That image's `build.json` sits at the
+  root of `/opt/couch` rather than inside a runtime slot, so runtime updates
+  never replace it and it still names the image the partition was written
+  from. This is what lets a remote installed from the .124 image say its
+  kernel is .124 without asking anyone.
+* `boot_behind` says that release is older than the installed software.
+* `boot_pending` says the second step is still outstanding: its boot payload is
+  on offer, or step 1 left the note below. An older kernel on its own is not an
+  unfinished update - most releases publish software alone, and the kernel then
+  stays where the last boot payload left it - so only `boot_pending` produces
+  the "not finished" wording, and a merely older kernel is shown without
+  comment.
+* `guidance` is the one sentence both UIs put above the buttons: "Update to
+  .165 - step 1 of 2: Couch software. The kernel ships as a second signed image
+  and needs its own restart...", "Update to .165 - step 2 of 2: kernel and boot
+  image. The Couch software is already .165; the kernel is still .124...", or
+  "This update is not finished...". Composing it in the daemon is what keeps
+  the remote's screen and the web page from telling different stories about the
+  same state.
+
+Step 1 writes `/opt/couch/updates/pending-boot.json`, naming the version it
+staged, when that release publishes a boot payload too. After the restart the
+updater reads it back: if that build is the one now installed and the partition
+does not carry its kernel, the second step is outstanding, and the remote says
+so with no network at all. A note naming some other build, or one whose kernel
+has caught up, is deleted rather than believed.
+
+Finishing without a fresh check: opening **Settings > Updates** on a remote
+whose `boot_pending` is set sends one automatic check, the same rate-limited
+call the web UI makes when it opens - at most one per six hours per service
+session, and skipped entirely when automatic checks are off. It downloads and
+installs nothing; it only puts step 2 on the screen, so a user who does not
+know to press **Check for updates** is not left half-updated.
+
+If the new kernel does not work, the image it replaced is still on the remote
+as `/opt/couch/boot/previous.img` with `previous.json` naming what it was. A
+kernel that boots but never brings a healthy GUI up lands in recovery on its
+own, because init arms `boot-recovery` before anything can hang; from there,
+and from the Updates page while the remote is up, the saved image can be
+written back. A kernel that dies before init needs the physical route, holding
+**Back** while powering on. Nothing rolls back by itself, and the recovery
+partition is never written by an update; see
+[restoring the previous boot image](device-recovery.md#restoring-the-previous-boot-image).
+
 ## Publishing
 
 Build the current web bundle, ARM daemon/GUI and Sonos client, then assemble the

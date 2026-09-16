@@ -68,8 +68,41 @@ uses into the bootloader control block before `reboot -f`.
 
 ## Updates on the remote
 
-The Settings menu also has an **Updates** section. It shows the installed
-build and the release channel, checks for updates, downloads and verifies an
-offered build, and installs it with a two-press restart. It drives the same
-system service the web UI's Updates page does; see
+The Settings menu also has an **Updates** section. It drives the same system
+service the web UI's Updates page does; see
 [runtime updates](runtime-updates.md).
+
+Its rows, in order: **Software**, the installed build in full; **Channel**,
+stepped left and right; **Check for updates**, whose value says where things
+stand at a glance; one step row that comes and goes with the service's state
+and is what OK acts on; and **Kernel**, read-only and last, so the rows above
+keep the fixed indices the D-pad cursor uses. Under them is one paragraph,
+which shows the service's own line while something is running, staged or
+failed, and otherwise the sentence that names the update in progress.
+
+Couch installs in two signed parts, and the section's job is to make that
+obvious rather than to offer "an update" twice:
+
+* Software alone: **Check for updates** reads `.166 available`, the step row
+  reads **Download & verify** and then **Install & restart**, which takes OK
+  twice within six seconds.
+* A release that also publishes a kernel: the check row reads
+  `.166 · step 1 of 2` and the paragraph says the kernel ships as a second
+  signed image with its own restart, offered as step 2 once this one is done.
+* After that restart: the check row reads `Finish: step 2 of 2` and the step
+  row reads **Finish update: kernel**, then **Install & restart** again.
+* Half-finished, before any check: the check row reads `Update unfinished`,
+  the **Kernel** row reads `.124 · older than software`, and the paragraph
+  says the software is .165 while the kernel is still .124. Opening the
+  section also sends one rate-limited automatic check, so step 2 usually
+  appears without the user pressing anything. Nothing downloads or installs
+  without a press either way.
+* Kernel and software in step: the **Kernel** row reads `.165 · up to date`.
+  A kernel from an earlier release for which no boot payload is published -
+  the usual state between kernel changes - is shown as the bare version, with
+  no warning attached to it.
+
+A kernel that fails to bring the GUI up puts the remote into recovery by
+itself, and the image it replaced stays on the remote at
+`/opt/couch/boot/previous.img` to be written back; see
+[runtime updates](runtime-updates.md#boot-image-updates).

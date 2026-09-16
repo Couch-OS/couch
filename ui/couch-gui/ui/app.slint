@@ -320,6 +320,7 @@ export component App inherits Window {
     in-out property <string> update-installed;
     // The boot image on the boot partition, empty until one is installed.
     in-out property <string> update-boot;
+    in-out property <string> update-action;
     in-out property <string> update-channel;
     in-out property <string> update-summary;
     in-out property <bool> update-can-install: false;
@@ -670,6 +671,7 @@ export component App inherits Window {
         bt-peer: root.bt-peer;
         update-installed: root.update-installed;
         update-boot: root.update-boot;
+        update-action: root.update-action;
         update-channel: root.update-channel;
         update-summary: root.update-summary;
         update-can-install: root.update-can-install;
