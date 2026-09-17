@@ -36,9 +36,9 @@ runtime tags. The installer version is not the version of the installed OS.
 An installer-only fix can select the same OS archive and source revision as its
 predecessor. Runtime releases do not require an installer build.
 
-Installer downloads may use exactly `dangerouslaser/couch` or
+Installer downloads may use exactly `Couch-OS/couch` or
 `Couch-OS/couch-installer`; OS payload downloads remain in
-`dangerouslaser/couch`. Select the installer location with the descriptor
+`Couch-OS/couch`. Select the installer location with the descriptor
 builder's `--installer-repository` option. The host rejects other repositories,
 domains and mutable download locations. Existing published URLs stay valid.
 

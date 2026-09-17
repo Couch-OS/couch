@@ -82,6 +82,6 @@ an arbitrary layout through this API.
 
 ## Source references
 
-- [`model/couch-model/src/connection.rs`](https://github.com/dangerouslaser/couch/blob/main/model/couch-model/src/connection.rs)
-- [`clients/couch-plugin/src/manifest.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-plugin/src/manifest.rs)
-- [`clients/couch-denon/plugin.json`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-denon/plugin.json)
+- [`model/couch-model/src/connection.rs`](https://github.com/Couch-OS/couch/blob/main/model/couch-model/src/connection.rs)
+- [`clients/couch-plugin/src/manifest.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/manifest.rs)
+- [`clients/couch-denon/plugin.json`](https://github.com/Couch-OS/couch/blob/main/clients/couch-denon/plugin.json)

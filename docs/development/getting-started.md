@@ -127,7 +127,7 @@ Continue with [packaging and signing](packaging.md), then use the
 
 ## Source references
 
-- [`clients/couch-echo/src/lib.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-echo/src/lib.rs)
-- [`clients/couch-echo/src/bin/couch-plugin-echo.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-echo/src/bin/couch-plugin-echo.rs)
-- [`clients/couch-echo/tests/plugin.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-echo/tests/plugin.rs)
-- [`docs/client-sdk.md`](https://github.com/dangerouslaser/couch/blob/main/docs/client-sdk.md)
+- [`clients/couch-echo/src/lib.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-echo/src/lib.rs)
+- [`clients/couch-echo/src/bin/couch-plugin-echo.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-echo/src/bin/couch-plugin-echo.rs)
+- [`clients/couch-echo/tests/plugin.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-echo/tests/plugin.rs)
+- [`docs/client-sdk.md`](https://github.com/Couch-OS/couch/blob/main/docs/client-sdk.md)
