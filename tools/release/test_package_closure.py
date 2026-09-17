@@ -68,6 +68,73 @@ class PackageClosureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'architecture'):
             inventory(self.root, ['musl'], IMAGE, 'unknown')
 
+    def test_exact_version_root_is_retained_and_checked_against_downloaded_packages(self):
+        self.fixture()
+        requested = ['musl=1.2.5-r11']
+        manifest = inventory(self.root, requested, IMAGE)
+        self.assertEqual(manifest['requested'], requested)
+        (self.root / 'closure.json').write_text(json.dumps(manifest))
+        self.assertEqual(verify(self.root), manifest)
+        for request in ['musl=1.2.5-r10', 'musl=0-r0', 'missing=1-r0']:
+            with self.subTest(request=request), self.assertRaisesRegex(ValueError, 'exact package version'):
+                inventory(self.root, [request], IMAGE)
+        # Rewriting the request in otherwise matching receipt bytes is refused.
+        manifest['requested'] = ['musl=1.2.5-r10']
+        (self.root / 'closure.json').write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, 'exact package version'):
+            verify(self.root)
+
+    def test_hyphenated_package_name_preserves_its_exact_version(self):
+        self.fixture()
+        filename = 'openssh-client-common-9.9_p2-r0.apk'
+        (self.root / 'packages/musl-1.2.5-r11.apk').rename(self.root / 'packages' / filename)
+        (self.root / 'package-urls.txt').write_text(PREFIX + 'main/armv7/' + filename + '\n')
+        request = 'openssh-client-common=9.9_p2-r0'
+        manifest = inventory(self.root, [request], IMAGE)
+        self.assertEqual(manifest['requested'], [request])
+        with self.assertRaisesRegex(ValueError, 'exact package version'):
+            inventory(self.root, ['openssh-client-common=9.9_p2-r1'], IMAGE)
+
+    def test_exact_root_refuses_multiple_resolved_versions(self):
+        self.fixture()
+        (self.root / 'packages/musl-1.2.5-r10.apk').write_bytes(b'other-version')
+        with (self.root / 'package-urls.txt').open('a') as output:
+            output.write(PREFIX + 'main/armv7/musl-1.2.5-r10.apk\n')
+        with self.assertRaisesRegex(ValueError, 'exact package version'):
+            inventory(self.root, ['musl=1.2.5-r11'], IMAGE)
+
+    def test_prepare_cannot_silently_drop_a_pin_or_emit_a_success_receipt(self):
+        output = self.root / 'new'
+        requested = ['musl=1.2.5-r10']
+        def wrong_version(command, check):
+            self.assertTrue(check)
+            self.assertEqual(command[-1:], requested)
+            (output / 'packages').mkdir()
+            (output / 'indexes').mkdir()
+            (output / 'packages/musl-1.2.5-r11.apk').write_bytes(b'latest-unpinned-version')
+            (output / 'indexes/APKINDEX.test.tar.gz').write_bytes(b'fixture-index')
+            (output / 'package-urls.txt').write_text(PREFIX + 'main/armv7/musl-1.2.5-r11.apk\n')
+        with patch('package_closure.subprocess.run', side_effect=wrong_version):
+            with self.assertRaisesRegex(ValueError, 'exact package version'):
+                prepare(output, IMAGE, requested)
+        self.assertFalse((output / 'closure.json').exists())
+
+    def test_version_constraint_grammar_is_bounded_before_running_builder(self):
+        with patch('package_closure.subprocess.run') as run:
+            for request in ['musl>=1.2', 'musl=', 'musl=1=2', 'musl\nopenssh', '--world', None]:
+                with self.subTest(request=request), self.assertRaises(ValueError):
+                    prepare(self.root / 'new', IMAGE, [request])
+            for requested in ('musl', {'musl': '1.2.5-r11'}, None, []):
+                with self.subTest(requested=requested), self.assertRaises(ValueError):
+                    prepare(self.root / 'new', IMAGE, requested)
+            run.assert_not_called()
+        self.assertFalse((self.root / 'new').exists())
+        manifest = self.fixture()
+        manifest['requested'] = 'musl'
+        (self.root / 'closure.json').write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, 'package names or exact'):
+            verify(self.root)
+
     def test_prepare_rejects_unpinned_builder_options_and_existing_output(self):
         with patch('package_closure.subprocess.run') as run:
             with self.assertRaises(ValueError):

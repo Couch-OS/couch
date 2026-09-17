@@ -13,13 +13,17 @@ apk --version > "$OUT/apk-version.txt"
 # A separate root prevents the x86 builder's installed packages satisfying ARM
 # dependencies. Keep signed indexes and keys as reviewable provenance inputs.
 mkdir -p /tmp/resolver/etc/apk /tmp/resolver/lib/apk/db
-touch /tmp/resolver/lib/apk/db/installed /tmp/resolver/etc/apk/world
+touch /tmp/resolver/lib/apk/db/installed
+# apk-tools 2.14 fetch treats positional arguments as literal package names.
+# WORLD is its dependency-constraint interface: retain exact name=version roots
+# for the solver instead of silently fetching the latest unpinned package.
+printf '%s\n' "$@" > /tmp/resolver/etc/apk/world
 apk --root /tmp/resolver --arch "$APK_ARCH" --keys-dir "$OUT/keys" \
     --repositories-file /tmp/repositories --cache-dir "$OUT/indexes" update
 apk --root /tmp/resolver --arch "$APK_ARCH" --keys-dir "$OUT/keys" \
     --repositories-file /tmp/repositories --cache-dir "$OUT/indexes" \
-    fetch --recursive --simulate --url "$@" > "$OUT/package-urls.txt"
+    fetch --world --recursive --simulate --url > "$OUT/package-urls.txt"
 apk --root /tmp/resolver --arch "$APK_ARCH" --keys-dir "$OUT/keys" \
     --repositories-file /tmp/repositories --cache-dir "$OUT/indexes" \
-    fetch --recursive --output "$OUT/packages" "$@"
+    fetch --world --recursive --output "$OUT/packages"
 sh /check.sh > "$OUT/offline-solve.txt"

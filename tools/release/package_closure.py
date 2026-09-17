@@ -34,9 +34,17 @@ def files(root):
     return result
 
 
+def validate_requested(requested):
+    if not isinstance(requested, (list, tuple)) or not requested or any(
+            not isinstance(p, str) or not re.fullmatch(
+                r'[a-z0-9][a-z0-9+_.-]*(=[a-zA-Z0-9+_.~-]+)?', p) for p in requested):
+        raise ValueError('Use package names or exact name=version constraints')
+
+
 def inventory(root, requested, image, architecture="armv7"):
     if architecture not in ("armv7", "x86_64"):
         raise ValueError("Unsupported package architecture")
+    validate_requested(requested)
     urls = {}
     for url in (root / 'package-urls.txt').read_text().splitlines():
         parsed = urlsplit(url)
@@ -52,6 +60,14 @@ def inventory(root, requested, image, architecture="armv7"):
     packages = {p.name for p in (root / 'packages').iterdir()}
     if not packages or packages != set(urls):
         raise ValueError('Downloaded package set differs from resolved source URLs')
+    # Independently bind concrete pinned roots to the resolved/downloaded APKs.
+    # This also fails closed if a helper accidentally drops the WORLD constraints.
+    for request in requested:
+        if '=' in request:
+            name, version = request.split('=', 1)
+            resolved = {package for package in packages if package.rsplit('-', 2)[0] == name}
+            if resolved != {f'{name}-{version}.apk'}:
+                raise ValueError('Requested exact package version differs from closure: ' + request)
     hashes = files(root)
     if not any(name.startswith('indexes/') for name in hashes):
         raise ValueError('Missing signed repository indexes')
@@ -82,8 +98,7 @@ def prepare(output, image, requested, architecture="armv7"):
         raise ValueError("Unsupported package architecture")
     if not re.fullmatch(r'alpine@sha256:[0-9a-f]{64}', image):
         raise ValueError('Builder must be an explicit Alpine image digest')
-    if not requested or any(not re.fullmatch(r'[a-z0-9][a-z0-9+_.-]*(=[a-zA-Z0-9+_.~-]+)?', p) for p in requested):
-        raise ValueError('Use package names or exact name=version constraints')
+    validate_requested(requested)
     output.mkdir()  # Never overwrite an earlier cache.
     helper = Path(__file__).with_name('prepare_packages.sh').resolve()
     # Read-only builder, no privileges, and only the new output directory is
