@@ -77,8 +77,8 @@ output belongs exclusively to framed protocol messages.
 
 The public documentation is generated from this directory at the exact Couch
 commit pinned by the website build. The implementation lives in
-[`clients/couch-plugin`](https://github.com/dangerouslaser/couch/tree/main/clients/couch-plugin),
+[`clients/couch-plugin`](https://github.com/Couch-OS/couch/tree/main/clients/couch-plugin),
 the reusable client contract in
-[`clients/couch-sdk`](https://github.com/dangerouslaser/couch/tree/main/clients/couch-sdk),
+[`clients/couch-sdk`](https://github.com/Couch-OS/couch/tree/main/clients/couch-sdk),
 and the complete example in
-[`clients/couch-echo`](https://github.com/dangerouslaser/couch/tree/main/clients/couch-echo).
+[`clients/couch-echo`](https://github.com/Couch-OS/couch/tree/main/clients/couch-echo).

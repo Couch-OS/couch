@@ -188,6 +188,6 @@ physical-device evidence.
 
 ## Source references
 
-- [`integrations/catalog.json`](https://github.com/dangerouslaser/couch/blob/main/integrations/catalog.json)
-- [`tools/integrations/validate_catalog.py`](https://github.com/dangerouslaser/couch/blob/main/tools/integrations/validate_catalog.py)
-- [`clients/couch-plugin/tests/protocol.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-plugin/tests/protocol.rs)
+- [`integrations/catalog.json`](https://github.com/Couch-OS/couch/blob/main/integrations/catalog.json)
+- [`tools/integrations/validate_catalog.py`](https://github.com/Couch-OS/couch/blob/main/tools/integrations/validate_catalog.py)
+- [`clients/couch-plugin/tests/protocol.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/tests/protocol.rs)

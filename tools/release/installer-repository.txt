@@ -1,1 +1,1 @@
-dangerouslaser/couch
+Couch-OS/couch-installer

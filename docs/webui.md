@@ -87,6 +87,16 @@ node web/tests/home-assistant.mjs  # an HA fixture, loopback only
 node web/tests/hue.mjs             # an HTTPS bridge fixture, loopback only
 ```
 
+`integrations.mjs` and `updates.mjs` intercept every `/api/` call instead, so
+they need no daemon at all: any static server over `web/couch-web/dist` will do,
+which is how CI runs them.
+
+```sh
+python3 -m http.server 18093 --bind 127.0.0.1 --directory web/couch-web/dist &
+COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/integrations.mjs
+COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/updates.mjs  # Updates screen copy
+```
+
 
 
 How the house gets described: `couch-confd`, a static binary on the remote that
@@ -732,10 +742,14 @@ and the page says so in as many words: the software is the apps, services and
 this web UI; the kernel and boot image is a second payload written to the boot
 partition, published only when the kernel itself changes.
 
-The first card is **What is installed**: `Software <version>`, and
-`Kernel and boot image <version>` with, in plain words, whether it is up to
-date, from an earlier build with no newer kernel published for it, or older
-than the software with its update still to install. The second card's heading
+The first card is **What is installed**, one line at a time:
+`Software <version>`, `Kernel and boot image <version>`, and then one sentence
+for how that kernel stands against the software — it matches it, it is older
+than it, or (with `boot_pending`) the kernel that belongs with that software is
+not installed yet. Nothing there says whether a newer kernel exists, because
+the status alone cannot know: that is what the card below, and a check, are
+for. The kernel commit from the payload's notes follows as a
+labelled `Kernel source <commit>` detail. The second card's heading
 is the step: `Step 1 of 2: Couch software <version>`, `Step 2 of 2: kernel and
 boot image`, `Available: <version>` for a one-step release, or `This update is
 not finished`. Under it, in a notice box, is the daemon's `guidance` sentence,
@@ -753,10 +767,13 @@ for an available build, for an outstanding step 2 ("Finish updating Couch
 <version>: step 2 of 2 is the kernel and boot image"), and for a remote whose
 last update never finished even before a check has found the payload.
 
-While a saved previous boot image exists, the first card offers to write it
-back, with the note that it verifies the saved image first, does not restart,
-and that a kernel which boots but never brings the GUI up puts the remote into
-recovery on its own. Channels, publishing and the state behind all of this:
+While a saved previous boot image exists, a **Saved boot image** card of its
+own offers to write it back: a confirmation checkbox, **Restore boot image**,
+and a short note that restoring does not restart the remote, so the saved
+kernel runs after a restart from the Power menu. The panel does not reproduce
+the recovery routes; it points at
+[restoring the previous boot image](device-recovery.md#restoring-the-previous-boot-image),
+which stays complete. Channels, publishing and the state behind all of this:
 [runtime-updates.md](runtime-updates.md).
 
 ## Connection and remote settings updates

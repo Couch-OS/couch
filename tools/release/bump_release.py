@@ -27,9 +27,15 @@ GOVERNED = ('README.md', 'docs/installer.md')
 # Dated tags here are ordering examples and test fixtures, not install
 # instructions, so a bump has to leave them alone.
 EXEMPT = (SOURCE,
+          # Records which releases the retained dangerouslaser/couch archive
+          # serves; not install instructions.
+          'docs/github-org-transfer.md',
           # Version-rendering and boot-release tests: sample tags, not install
           # instructions, and one of them is whatever number a promotion takes.
           'daemon/couch-updates/src/lib.rs',
+          # Updates-screen copy and its browser test show a mocked installed
+          # version; neither is an install instruction.
+          'web/couch-web/src/screens/updates.rs', 'web/tests/updates.mjs',
           # Historical decoder vocabulary used to validate first-upgrade rollback.
           'model/couch-model/src/storage.rs')
 # v0.1.0-alpha.<date>.<n>. The leading v is optional because the site's JSON-LD
