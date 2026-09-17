@@ -95,7 +95,7 @@ try {
   // about publishing or paths.
   status.boot_pending = true;
   status.guidance = 'A previous update still needs its boot image checked. Check for updates to finish it.';
-  await card.getByText('The kernel that belongs with the installed software is not on the remote yet.', {exact: true}).waitFor();
+  await card.getByText('The kernel that belongs with this software is not installed yet.', {exact: true}).waitFor();
   const pendingCopy = await copy();
   assert(!pendingCopy.includes('published'), pendingCopy);
   assert(!pendingCopy.includes('/opt/couch'), pendingCopy);

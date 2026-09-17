@@ -745,10 +745,10 @@ partition, published only when the kernel itself changes.
 The first card is **What is installed**, one line at a time:
 `Software <version>`, `Kernel and boot image <version>`, and then one sentence
 for how that kernel stands against the software — it matches it, it is older
-than it, or (with `boot_pending`) the kernel that belongs with the installed
-software is not on the remote yet. Nothing there says whether a newer kernel
-exists, because the status alone cannot know: that is what the card below, and
-a check, are for. The kernel commit from the payload's notes follows as a
+than it, or (with `boot_pending`) the kernel that belongs with that software is
+not installed yet. Nothing there says whether a newer kernel exists, because
+the status alone cannot know: that is what the card below, and a check, are
+for. The kernel commit from the payload's notes follows as a
 labelled `Kernel source <commit>` detail. The second card's heading
 is the step: `Step 1 of 2: Couch software <version>`, `Step 2 of 2: kernel and
 boot image`, `Available: <version>` for a one-step release, or `This update is

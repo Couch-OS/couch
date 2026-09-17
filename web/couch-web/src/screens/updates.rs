@@ -121,7 +121,7 @@ fn boot_state(status: &Status) -> &'static str {
         // A two-step update whose second step never ran, or a release whose
         // signed boot payload is not the one on the partition. Either way the
         // kernel that belongs with this software is not installed yet.
-        "The kernel that belongs with the installed software is not on the remote yet."
+        "The kernel that belongs with this software is not installed yet."
     } else if status.boot_release == status.installed {
         "This kernel matches the installed software."
     } else if status.boot_behind {
@@ -239,7 +239,7 @@ mod tests {
         s.boot_pending = true;
         assert_eq!(
             boot_state(&s),
-            "The kernel that belongs with the installed software is not on the remote yet."
+            "The kernel that belongs with this software is not installed yet."
         );
     }
 
