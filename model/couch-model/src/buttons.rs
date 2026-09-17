@@ -365,6 +365,7 @@ mod tests {
             }],
             supports_inputs: false,
             presentation: vec![],
+            actions: vec![],
         };
         assert_eq!(
             function_choices(&integration),

@@ -20,9 +20,12 @@ pub struct Status {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>,
     /// 0-100, for devices with a percentage scale. Devices reporting decibels
-    /// (an AVR) keep their own richer state and leave this `None`.
+    /// (an AVR) use `volume_db` and leave this `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
+    /// Observed decibels or the receiver's explicit minimum sentinel (v2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_db: Option<couch_model::VolumeDb>,
     /// The selected input's ID, as the device names it - the same string an
     /// `input:<id>` function carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]

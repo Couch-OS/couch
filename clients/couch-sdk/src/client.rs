@@ -51,6 +51,29 @@ pub trait DeviceClient: Sized {
     /// `couch_sdk::testing::contract_findings` checks it at test time instead.
     fn capabilities() -> &'static [Capability];
 
+    /// Bounded typed actions; separate from persisted button command strings.
+    fn actions() -> &'static [crate::PluginActionSchema] {
+        &[]
+    }
+
+    /// Refuse unsupported or out-of-range values before transport I/O.
+    fn validate_action(action: crate::TypedAction) -> Result<()> {
+        let schema = Self::actions().first().ok_or(Error::Unsupported)?;
+        if !schema.accepts(action) {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+
+    fn action(&mut self, action: crate::TypedAction) -> Result<()> {
+        Self::validate_action(action)?;
+        self.execute_action(action)
+    }
+
+    fn execute_action(&mut self, _action: crate::TypedAction) -> Result<()> {
+        Err(Error::Unsupported)
+    }
+
     /// Open the transport. Validate settings first; do not retry internally.
     fn connect(settings: &Self::Settings) -> Result<Self>;
 

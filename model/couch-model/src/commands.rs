@@ -57,7 +57,7 @@ pub enum Function {
 }
 impl Function {
     pub fn parse(value: &str) -> Option<Self> {
-        if let Some(id) = value.strip_prefix("input:").filter(|s| valid_id(s)) {
+        if let Some(id) = value.strip_prefix("input:").filter(|s| valid_input_id(s)) {
             return Some(Self::Input(id.into()));
         }
         if let Some(id) = value
@@ -179,7 +179,7 @@ impl Function {
         } = integration
         {
             if let Self::Input(id) = self {
-                return *supports_inputs && valid_id(id);
+                return *supports_inputs && valid_input_id(id);
             }
             let id = self.id();
             return capabilities.iter().any(|capability| capability.id == id);
@@ -190,7 +190,8 @@ impl Function {
                 // Samsung source keys are fixed; there is no input list to discover.
                 Integration::Tizen => TIZEN_INPUTS.contains(&id.as_str()),
                 Integration::Denon { .. } => {
-                    id.len() <= 25
+                    valid_input_id(id)
+                        && id.len() <= 25
                         && id.bytes().all(|b| {
                             b.is_ascii_uppercase() || b.is_ascii_digit() || b" /+-".contains(&b)
                         })
@@ -292,6 +293,17 @@ fn percent(value: &str, prefix: &str) -> Option<u8> {
     }
     digits.parse::<u8>().ok().filter(|p| *p <= 100)
 }
+/// Persisted input IDs preserve internal ASCII spaces exactly. Boundary
+/// whitespace, controls, delimiters and non-ASCII whitespace are not tokens.
+pub fn valid_input_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with(' ')
+        && !id.ends_with(' ')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" ._/-+".contains(&b))
+}
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -302,6 +314,34 @@ fn valid_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn input_tokens_preserve_internal_spaces_without_expanding_other_grammars() {
+        for id in ["SAT/CBL", "HD RADIO", "IPOD DIRECT", "A  B"] {
+            let text = alloc::format!("input:{id}");
+            let function = Function::parse(&text).unwrap();
+            assert_eq!(function.id(), text);
+            assert!(function.supports(&Integration::Denon {
+                host: "avr".into(),
+                port: 23
+            }));
+        }
+        for id in [
+            "",
+            " HD RADIO",
+            "HD RADIO ",
+            "HD\tRADIO",
+            "HD\rMV98",
+            "HD\nRADIO",
+            "HD\u{a0}RADIO",
+            "HD:RADIO",
+            "HD;RADIO",
+        ] {
+            assert!(Function::parse(&alloc::format!("input:{id}")).is_none());
+        }
+        assert!(Function::parse("app:HD RADIO").is_none());
+        assert!(Function::parse("input:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_none());
+    }
+
     #[test]
     fn all_catalog_entries_round_trip_and_dynamic_functions_are_provider_checked() {
         for integration in [

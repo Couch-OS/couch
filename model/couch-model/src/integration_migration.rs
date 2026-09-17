@@ -61,6 +61,7 @@ mod tests {
             .collect(),
             supports_inputs: true,
             presentation: alloc::vec![],
+            actions: alloc::vec![],
         };
         config.validate().unwrap();
         (config, id, plugin)

@@ -54,6 +54,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod buttons;
 pub mod commands;
+pub mod volume;
+pub use volume::{PluginActionSchema, TypedAction, VolumeDb};
 mod shortcuts;
 pub use shortcuts::{Shortcut, ShortcutAction, SHORTCUT_BUTTONS};
 mod app_shortcuts;

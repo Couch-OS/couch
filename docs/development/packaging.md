@@ -161,9 +161,10 @@ elif [ -f /mnt/alpine/etc/alpine-release ]; then
 fi
 ```
 
-These commands require an integration-capable Couch runtime. The current `.170`
-device release predates this host and cannot install integration APKs. After an
-eligible runtime is installed, this probe exits successfully:
+These commands require an integration-capable Couch runtime. The published
+`v0.1.0-alpha.20260916.171.dev` prerelease is protocol-v1-capable; the older
+`.170` release predates the host. Treat the following probe, rather than a
+release-number assumption, as the compatibility check on a particular remote:
 
 ```sh
 /opt/couch/runtime/current/couch-confd \
@@ -306,9 +307,9 @@ to Alpine's global key store. The complete manual preview install command is:
   --repository https://packages.couch-os.dev/preview
 ```
 
-The production `.170` runtime still predates the package host; publishing the
-feed does not make that command available until an integration-capable runtime
-is installed.
+The `.170` runtime predates the package host; publishing the feed alone does
+not make that command available there. Confirm protocol support on the target
+runtime with the probe above before attempting an install.
 GitHub Packages does not offer a native APK registry among its
 [supported formats](https://docs.github.com/en/packages/learn-github-packages/introduction-to-github-packages).
 Pages is suitable for an initial public feed within its

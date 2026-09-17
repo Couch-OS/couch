@@ -53,6 +53,12 @@ dependencies on `couch-plugin` and `couch-sdk` must all name the same Couch
 commit. Vendoring protocol types or copying the harness is not equivalent: it
 allows the source under test to redefine the contract it is supposed to meet.
 
+An independent repository is ready for feed review only when its lock file,
+normal dependencies, development dependencies, manifest, and test output all
+identify the same full Couch revision. The feed then records a separate full
+commit for that repository and rebuilds the reviewed source; a branch name,
+tag, or an APK supplied by a contributor is not a substitute.
+
 The curated feed requires a fifth `#[test]` in the same file,
 `concurrent_package_startup_is_offline_and_race_free`, and checks that it names
 `testing::Package::new` itself. It needs no device: several threads each build a
@@ -147,6 +153,12 @@ The workflow's final admission job always appears on pull requests. The
 expensive layers are skipped for unrelated changes and required when the
 integration, daemon, model, catalog, or packaging paths change. This describes
 the workflow behavior only; branch protection is not claimed to be configured.
+
+Protocol v2 remains unreleased. A future v2 admission must additionally prove
+that declared typed actions reject malformed, out-of-range, and off-step
+values before device I/O, retain no-retry behavior on an ambiguous write, and
+match the manifest's minimum core protocol version. Until the catalog schema
+and validator accept that protocol version, it cannot enter a curated feed.
 
 ## Require admission before merging
 

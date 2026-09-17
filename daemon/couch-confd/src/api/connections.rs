@@ -191,6 +191,7 @@ impl Api {
                     capabilities,
                     supports_inputs,
                     presentation,
+                    actions,
                 } = &mut input.provider
                 {
                     match self.plugins.manifest(id) {
@@ -206,6 +207,7 @@ impl Api {
                                 .collect();
                             *supports_inputs = manifest.supports_inputs;
                             *presentation = manifest.presentation;
+                            *actions = manifest.actions;
                         }
                         Err(_) => {
                             return Reply::error(

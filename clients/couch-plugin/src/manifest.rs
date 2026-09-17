@@ -1,5 +1,8 @@
 use crate::{Error, Result, PROTOCOL_VERSION};
-use couch_sdk::couch_model::{commands::Function, PluginComponent};
+use couch_sdk::couch_model::{
+    commands::{valid_input_id, Function},
+    PluginActionSchema, PluginComponent, PluginStatusField, TypedAction,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -39,6 +42,10 @@ pub struct SettingField {
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub protocol_version: u32,
+    #[serde(default = "protocol_one", skip_serializing_if = "is_protocol_one")]
+    pub min_core_protocol_version: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<PluginActionSchema>,
     pub id: String,
     pub label: String,
     pub version: String,
@@ -51,6 +58,13 @@ pub struct Manifest {
     /// Native controls rendered by Couch; packages never supply UI code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub presentation: Vec<PluginComponent>,
+}
+
+fn protocol_one() -> u32 {
+    1
+}
+fn is_protocol_one(value: &u32) -> bool {
+    *value == 1
 }
 
 fn identifier(id: &str) -> bool {
@@ -78,7 +92,9 @@ impl SettingField {
 }
 impl Manifest {
     pub fn validate(&self) -> Result<()> {
-        if self.protocol_version != PROTOCOL_VERSION {
+        if !(1..=PROTOCOL_VERSION).contains(&self.protocol_version)
+            || self.min_core_protocol_version != self.protocol_version
+        {
             return Err(Error::Incompatible);
         }
         if !identifier(&self.id)
@@ -98,6 +114,9 @@ impl Manifest {
             || self.capabilities.len() > 128
             || self.settings.len() > 32
             || self.presentation.len() > 16
+            || self.actions.len() > 1
+            || self.actions.iter().any(|action| !action.is_valid())
+            || (self.protocol_version == 1 && !self.actions.is_empty())
         {
             return Err(Error::Invalid);
         }
@@ -134,7 +153,13 @@ impl Manifest {
                         && commands.len() <= 32
                         && commands.iter().all(|id| declared(id) && seen.insert(id))
                 }
-                PluginComponent::StatusText { label: text, .. } => label(text),
+                PluginComponent::StatusText { label: text, field } => {
+                    label(text)
+                        && (*field != PluginStatusField::VolumeDb || self.protocol_version >= 2)
+                }
+                PluginComponent::VolumeDbControl { label: text } => {
+                    label(text) && self.protocol_version >= 2 && self.actions.len() == 1
+                }
                 PluginComponent::Toggle {
                     label: text,
                     state,
@@ -185,11 +210,25 @@ impl Manifest {
         Ok(settings)
     }
 
+    pub fn validate_action(&self, action: TypedAction) -> Result<()> {
+        if self.protocol_version < 2 {
+            return Err(Error::Unsupported);
+        }
+        let schema = self.actions.first().ok_or(Error::Unsupported)?;
+        if !schema.accepts(action) {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+
     pub fn supports(&self, function: &str) -> bool {
+        if Function::parse(function).is_none() {
+            return false;
+        }
         self.capabilities.iter().any(|c| c.id == function)
             || (self.supports_inputs
-                && function.strip_prefix("input:").is_some_and(|id| {
-                    !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
-                }))
+                && function
+                    .strip_prefix("input:")
+                    .is_some_and(|id| valid_input_id(id)))
     }
 }

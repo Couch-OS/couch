@@ -1,6 +1,5 @@
 use crate::{
     protocol::Envelope, read_frame, write_frame, Error, Manifest, Request, Response, Result,
-    PROTOCOL_VERSION,
 };
 use couch_sdk::{ClientSettings, DeviceClient};
 
@@ -15,7 +14,10 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
             label: (*label).into(),
         })
         .collect();
-    if manifest.id != C::KIND || manifest.capabilities != expected {
+    if manifest.id != C::KIND
+        || manifest.capabilities != expected
+        || manifest.actions != C::actions()
+    {
         return Err(Error::Invalid);
     }
     let stdin = std::io::stdin();
@@ -35,7 +37,7 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
         let response = (|| -> Result<Response> {
             match envelope.body {
                 Request::Hello { protocol_version } => {
-                    if hello || protocol_version != PROTOCOL_VERSION {
+                    if hello || protocol_version != manifest.protocol_version {
                         return Err(Error::Incompatible);
                     }
                     hello = true;
@@ -62,6 +64,10 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                             return Err(Error::Unsupported);
                         }
                     }
+                    if let Request::Action { action } = &request {
+                        manifest.validate_action(*action)?;
+                        C::validate_action(*action)?;
+                    }
                     if matches!(request, Request::Inputs) && !manifest.supports_inputs {
                         return Err(Error::Unsupported);
                     }
@@ -73,9 +79,16 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                         Request::Command { function } => {
                             client_ref.command(&function).map(|()| Response::Ok)
                         }
-                        Request::Status => client_ref
-                            .status()
-                            .map(|status| Response::Status { status }),
+                        Request::Action { action } => {
+                            client_ref.action(action).map(|()| Response::Ok)
+                        }
+                        Request::Status => client_ref.status().map(|mut status| {
+                            // A v1 SDK adapter retains its exact wire contract.
+                            if manifest.protocol_version == 1 {
+                                status.volume_db = None;
+                            }
+                            Response::Status { status }
+                        }),
                         Request::Inputs => client_ref
                             .inputs()
                             .map(|inputs| Response::Inputs { inputs }),

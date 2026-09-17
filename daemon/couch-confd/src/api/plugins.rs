@@ -41,6 +41,7 @@ impl Api {
                 capabilities,
                 supports_inputs,
                 presentation,
+                actions,
             } = &mut connection.provider
             {
                 let Some(manifest) = manifests.iter().find(|manifest| &manifest.id == id) else {
@@ -61,6 +62,7 @@ impl Api {
                 }
                 *supports_inputs |= manifest.supports_inputs;
                 *presentation = manifest.presentation.clone();
+                *actions = manifest.actions.clone();
             }
         }
         if next.connections != store.config().connections {
@@ -147,6 +149,13 @@ impl Api {
         let request = match (method, path) {
             ("GET", ["status"]) => Request::Status,
             ("GET", ["inputs"]) => Request::Inputs,
+            ("POST", ["typed-action"]) => {
+                let action: couch_model::TypedAction = match parse(body) {
+                    Ok(value) => value,
+                    Err(reply) => return reply,
+                };
+                Request::Action { action }
+            }
             ("POST", ["action"]) => {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
