@@ -15,6 +15,8 @@ import verify_integration_set as verify
 
 
 class TestedIntegrationSetTests(unittest.TestCase):
+    HARNESS = "clients/couch-plugin/src/testing.rs"
+
     def setUp(self):
         self.support = tempfile.TemporaryDirectory()
         self.addCleanup(self.support.cleanup)
@@ -61,6 +63,22 @@ class TestedIntegrationSetTests(unittest.TestCase):
                 "provenance_sha256": item["provenance"]["sha256"],
             } for item in self.manifest["integrations"]],
         }
+
+    @staticmethod
+    def in_tree_digest(path):
+        return verify.digest(verify.regular(verify.REPO / path))
+
+    @staticmethod
+    def diff_reports(tested, *paths):
+        """Pretend the contract diff since `tested` listed exactly these paths."""
+        real_git = verify.git
+
+        def patched(*args, **kwargs):
+            if args[:3] == ("diff", "--name-only", tested):
+                return subprocess.CompletedProcess(args, 0, "".join(path + "\n" for path in paths), "")
+            return real_git(*args, **kwargs)
+
+        return mock.patch.object(verify, "git", side_effect=patched)
 
     def write_manifest(self, root):
         if self.manifest["schema"] == 2:
@@ -110,6 +128,7 @@ class TestedIntegrationSetTests(unittest.TestCase):
         self.manifest["schema"] = 1
         self.manifest["core"].pop("supported_protocol_versions")
         self.manifest["core"]["protocol_version"] = 1
+        harness = self.manifest["core"].pop("harness_paths")
         self.manifest.pop("host_compatibility", None)
         for item in self.manifest["integrations"]:
             item.pop("protocol_version")
@@ -125,6 +144,12 @@ class TestedIntegrationSetTests(unittest.TestCase):
             self.assertEqual(receipt["schema"], 1)
             self.assertEqual(receipt["protocol_version"], 1)
             self.assertNotIn("host_compatibility_sha256", receipt)
+            self.assertNotIn("core_harness_paths", receipt)
+            # Schema 1 predates the harness exemption and refuses it outright,
+            # so no legacy set can acquire one by editing its manifest.
+            self.manifest["core"]["harness_paths"] = harness
+            with self.assertRaisesRegex(ValueError, "core has missing or unexpected fields"):
+                verify.validate_manifest(self.write_manifest(Path(directory)))
 
     def test_receipt_exact_types_scope_checks_and_artifact_identity_are_required(self):
         mutations = [
@@ -252,6 +277,10 @@ class TestedIntegrationSetTests(unittest.TestCase):
                 path.write_text(json.dumps(bad))
                 with self.assertRaisesRegex(ValueError, "differs from this candidate"):
                     verify.verify_receipt(manifest, path, require_artifacts=False)
+            # A saved receipt cannot quietly drop the harness exemption it was cut with.
+            path.write_text(json.dumps({**receipt, "core_harness_paths": {}}))
+            with self.assertRaisesRegex(ValueError, "core_harness_paths differs from this candidate"):
+                verify.verify_receipt(manifest, path, require_artifacts=False)
             path.write_text(json.dumps(receipt))
             self.assertEqual(verify.verify_receipt(manifest, path, require_artifacts=False), receipt)
             with self.assertRaisesRegex(ValueError, "does not cover"):
@@ -263,6 +292,8 @@ class TestedIntegrationSetTests(unittest.TestCase):
         self.assertEqual(receipt["integration_versions"], {"denon": "0.1.1"})
         self.assertFalse(receipt["artifact_bytes_verified"])
         self.assertTrue(all(value is False for value in receipt["rollout"].values()))
+        # The committed set exempts the admission harness and nothing else.
+        self.assertEqual(set(receipt["core_harness_paths"]), {self.HARNESS})
 
     def test_core_and_feed_repositories_may_name_either_couch_owner_only(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -348,6 +379,99 @@ class TestedIntegrationSetTests(unittest.TestCase):
             with mock.patch.object(verify, "git", side_effect=changed_contract):
                 with self.assertRaisesRegex(ValueError, "Integration contract changed"):
                     verify.receipt(self.write_manifest(root))
+
+    def test_recorded_harness_change_keeps_device_evidence_without_a_hardware_rerun(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tested = self.manifest["core"]["tested_commit"]
+            pinned = {self.HARNESS: self.in_tree_digest(self.HARNESS)}
+            self.manifest["core"]["harness_paths"] = pinned
+            with self.diff_reports(tested, self.HARNESS):
+                receipt = verify.receipt(self.write_manifest(root))
+            self.assertEqual(receipt["core_harness_paths"], pinned)
+            self.assertEqual(receipt["hardware_evidence_core_commits"], {"denon": verify.LEGACY_EVIDENCE_COMMIT})
+            # Undeclared, the same compiled-out file still invalidates the set.
+            self.manifest["core"].pop("harness_paths")
+            with self.diff_reports(tested, self.HARNESS):
+                with self.assertRaisesRegex(ValueError, "Integration contract changed"):
+                    verify.receipt(self.write_manifest(root))
+
+    def test_declared_harness_never_excuses_a_real_contract_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tested = self.manifest["core"]["tested_commit"]
+            self.manifest["core"]["harness_paths"] = {self.HARNESS: self.in_tree_digest(self.HARNESS)}
+            path = self.write_manifest(root)
+            for contract in ("clients/couch-plugin/src/protocol.rs", "clients/couch-plugin/src/lib.rs",
+                             "clients/couch-sdk/src/lib.rs", "daemon/couch-confd/src/main.rs",
+                             "daemon/couch-integrations/src/lib.rs", "model/couch-model/src/validate.rs"):
+                with self.subTest(contract=contract), self.diff_reports(tested, self.HARNESS, contract):
+                    with self.assertRaises(ValueError) as caught:
+                        verify.receipt(path)
+                    self.assertEqual(str(caught.exception),
+                                     "Integration contract changed after its tested commit: " + contract)
+
+    def test_contract_file_cannot_be_laundered_into_the_harness_exemption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tested = self.manifest["core"]["tested_commit"]
+            for contract in ("clients/couch-plugin/src/protocol.rs", "clients/couch-plugin/src/lib.rs",
+                             "clients/couch-plugin", "daemon/couch-confd/src/main.rs",
+                             "model/couch-model/src/validate.rs"):
+                # A genuine digest of a genuine contract file buys nothing: only
+                # the in-code allowlist decides what may leave the freeze.
+                self.manifest["core"]["harness_paths"] = {contract: self.in_tree_digest(contract)
+                    if (verify.REPO / contract).is_file() else "a" * 64}
+                with self.subTest(contract=contract), self.diff_reports(tested, contract):
+                    with self.assertRaisesRegex(ValueError, "Only a recorded compiled-out harness"):
+                        verify.receipt(self.write_manifest(root))
+
+    def test_harness_exemption_needs_current_bytes_a_gated_module_and_a_contract_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            actual = self.in_tree_digest(self.HARNESS)
+            self.manifest["core"]["harness_paths"] = {self.HARNESS: "0" * 64}
+            with self.assertRaisesRegex(ValueError, "rerun the admission suite and record .*" + actual):
+                verify.receipt(self.write_manifest(root))
+            self.manifest["core"]["harness_paths"] = {self.HARNESS: actual}
+            ungated = {self.HARNESS: ("clients/couch-plugin/src/lib.rs", r"pub mod testing;\s*// shipped")}
+            with mock.patch.object(verify, "HARNESS_PATHS", ungated):
+                with self.assertRaisesRegex(ValueError, "no longer compiled out of shipped builds"):
+                    verify.receipt(self.write_manifest(root))
+            outside = "tools/tests/denon-v1-host-compatibility.py"
+            self.manifest["core"]["harness_paths"] = {outside: self.in_tree_digest(outside)}
+            with mock.patch.object(verify, "HARNESS_PATHS", {outside: verify.HARNESS_PATHS[self.HARNESS]}):
+                with self.assertRaisesRegex(ValueError, "not inside a frozen contract path"):
+                    verify.receipt(self.write_manifest(root))
+
+    def test_harness_paths_reject_traversal_absolute_and_malformed_digests(self):
+        actual = self.in_tree_digest(self.HARNESS)
+        cases = [
+            ({"/" + self.HARNESS: actual}, "Invalid core harness path"),
+            ({"../couch/" + self.HARNESS: actual}, "Invalid core harness path"),
+            ({"clients/couch-plugin/../couch-plugin/src/testing.rs": actual}, "Invalid core harness path"),
+            ({"": actual}, "Invalid core harness path"),
+            ({self.HARNESS: "not-a-sha256"}, "Invalid harness SHA-256"),
+            ({self.HARNESS: actual.upper()}, "Invalid harness SHA-256"),
+            ({self.HARNESS: None}, "Invalid harness SHA-256"),
+            ([self.HARNESS], "path to SHA-256 object"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for harness, message in cases:
+                self.manifest["core"]["harness_paths"] = harness
+                with self.subTest(harness=harness), self.assertRaisesRegex(ValueError, message):
+                    verify.receipt(self.write_manifest(root))
+
+    def test_deleted_harness_cannot_pass_as_an_exempt_change(self):
+        gone = "clients/couch-plugin/src/never-written.rs"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.manifest["core"]["harness_paths"] = {gone: "b" * 64}
+            with mock.patch.object(verify, "HARNESS_PATHS", {gone: verify.HARNESS_PATHS[self.HARNESS]}):
+                with self.diff_reports(self.manifest["core"]["tested_commit"], gone):
+                    with self.assertRaisesRegex(ValueError, "Expected regular file"):
+                        verify.receipt(self.write_manifest(root))
 
 
 if __name__ == "__main__":

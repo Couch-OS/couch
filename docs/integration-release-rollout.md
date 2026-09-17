@@ -14,7 +14,8 @@ ARM emulation with a simulated receiver. The machine-readable identity is
 `tools/release/tested-integrations.json`. Its schema 2 separates:
 
 - the core's supported protocol versions `[1, 2]`, the package's protocol
-  version `1`, and the core files whose host behavior was tested;
+  version `1`, the core files whose host behavior was tested, and the
+  digest-pinned admission harness carved out of that freeze;
 - the immutable preview feed release snapshot, official public key and Denon
   APK bytes;
 - the independent Denon source commit and its Couch SDK/tooling commits;
@@ -33,6 +34,38 @@ package. A later release candidate may use a descendant Couch commit only while
 the pinned protocol and native host/adapter paths are unchanged. The verifier
 fails if one of those paths changes. Files outside those pinned contract paths
 can advance without relabelling the protocol as newly tested.
+
+## The admission harness is pinned, not frozen
+
+`core.harness_paths` is the one carve-out from that freeze, and it is a digest
+pin rather than a hole. An admission harness such as
+`clients/couch-plugin/src/testing.rs` sits inside a contract path but is
+declared `#[cfg(feature = "testing")]`, so no published APK links it. Changing
+it cannot alter the wire protocol, the manifest format or the host behavior of a
+package already in the feed, which is what the contract freeze protects.
+
+It does decide what "passed admission" means, so the manifest records its exact
+SHA-256 and the verifier requires the in-tree bytes to match it. Editing the
+harness therefore costs a rerun of the admission suite and a one-line recorded
+digest update in `tested-integrations.json`. It does not cost a repeat of the
+Denon hardware validation, whose core identity stays in
+`hardware_evidence_core_commit`.
+
+Two limits in `verify_integration_set.py` keep that carve-out honest, and a
+manifest edit alone can move neither:
+
+- `CONTRACT_PATHS` is the floor: every schema 2 `contract_paths` must contain it.
+- `HARNESS_PATHS` is the ceiling. It names every path a manifest may exempt,
+  each with the declaration that keeps the module out of shipped builds. A path
+  absent from it cannot be exempted whatever the manifest says; a listed path
+  must still sit inside a contract path; and the exemption lapses if that
+  declaration stops compiling the module out or the file stops existing. Adding
+  an entry is a reviewed change to the verifier, not a manifest edit.
+
+`harness_paths` is optional and schema 2 only. A schema 2 set without it freezes
+every contract byte, and a schema 1 set cannot carry one at all. The generated
+receipt records the exemptions as `core_harness_paths`, so release provenance
+names exactly which scaffolding was carved out and at which bytes.
 
 The release checkout needs complete Git history for these ancestry and path
 checks. Preserve the tested commit through a merge commit or fast-forward. A
@@ -79,7 +112,8 @@ python3 tools/release/verify_integration_set.py \
 
 This is an offline verifier: it does not download, sign, publish, install or
 contact a device. It verifies the embedded core key, source ancestry, unchanged
-contract paths, catalog preview status, artifact hashes, provenance fields and
+contract paths, the pinned bytes of any exempt harness, catalog preview status,
+artifact hashes, provenance fields and
 the package's exact signed-index entry. For schema 2 it also verifies the
 executed harness/report hashes and reads the protocol, manifest and executable
 identity directly from the pinned APK. The receipt names the candidate Couch
