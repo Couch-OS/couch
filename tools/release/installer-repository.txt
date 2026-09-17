@@ -1,1 +1,1 @@
-Couch-OS/couch
+Couch-OS/couch-installer
