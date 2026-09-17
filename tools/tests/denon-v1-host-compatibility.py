@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import socket
 import socketserver
@@ -20,7 +21,6 @@ import time
 import urllib.error
 import urllib.request
 
-CORE = "f274804c5219db00446f1b9e5ce46391adcfd37c"
 EXPECTED = {
     "apk": "61e135854816bd4f996e46d918386937913860e583ccdb3bda7eac739252b270",
     "key": "80f3a73d86759cda103cb4f9a876cd4caee9d25c235c6d782b4be8a900b2696c",
@@ -119,8 +119,23 @@ class Handler(socketserver.BaseRequestHandler):
             with avr.lock: avr.active -= 1
 
 
+def validate_core_build(args):
+    """Bind this run to a separately recorded clean frozen ARM build."""
+    assert re.fullmatch(r"[0-9a-f]{40}", args.core_commit), "invalid frozen core commit"
+    assert args.build_receipt.is_file() and not args.build_receipt.is_symlink()
+    assert 0 < args.build_receipt.stat().st_size <= 65536
+    build = json.loads(args.build_receipt.read_text())
+    assert set(build) == {"schema", "kind", "source_commit", "target", "binary_sha256", "git_clean"}
+    assert type(build["schema"]) is int and build["schema"] == 1
+    assert build["kind"] == "couch-arm-confd-build"
+    assert build["source_commit"] == args.core_commit, "build receipt core differs from frozen commit"
+    assert build["target"] == "armv7-unknown-linux-musleabihf" and build["git_clean"] is True
+    assert isinstance(build["binary_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", build["binary_sha256"])
+    assert digest(args.confd) == build["binary_sha256"], "core binary differs from frozen build receipt"
+
+
 def run(args):
-    assert args.core_commit == CORE
+    validate_core_build(args)
     for key in ("apk", "key", "provenance"):
         assert digest(getattr(args, key)) == EXPECTED[key], "wrong public " + key
     core_bytes = args.confd.read_bytes()
@@ -223,7 +238,7 @@ def run(args):
                     assert settings_path.read_bytes() == settings_before
                     assert avr.requests == expected
                     checks["signed_package_lifecycle"] = "passed"
-                    report = {"schema":1,"kind":"couch-integration-host-test-report","core_commit":CORE,
+                    report = {"schema":1,"kind":"couch-integration-host-test-report","core_commit":args.core_commit,
                         "checks":checks,"signature_checks":{"trusted_apk":"passed","untrusted_key":"rejected","tampered_apk":"rejected"},
                         "lifecycle":["signed_install","same_version_readmission","removal_preserves_config_and_settings","signed_reinstall_preserves_settings"],
                         "wire_requests":expected,"http_panel_device_connections":1,"maximum_simultaneous_device_connections":1,
@@ -237,20 +252,21 @@ def run(args):
                             process.wait()
                     avr.shutdown()
     args.out.mkdir(parents=True,exist_ok=True)
-    report_path = args.out / "denon-0.1.1-core-f274804-host-report.json"
+    prefix = "denon-0.1.1-core-" + args.core_commit[:7]
+    report_path = args.out / (prefix + "-host-report.json")
     report_path.write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
     receipt = {"schema":1,"kind":"couch-integration-host-compatibility","evidence_level":"host-protocol-compatibility",
-        "core":{"source_commit":CORE,"supported_protocol_versions":[1,2],"target":"armv7-unknown-linux-musleabihf","binary_sha256":digest(args.confd)},
+        "core":{"source_commit":args.core_commit,"supported_protocol_versions":[1,2],"target":"armv7-unknown-linux-musleabihf","binary_sha256":digest(args.confd)},
         "integrations":[{"id":"denon","version":"0.1.1","protocol_version":1,"apk_sha256":EXPECTED["apk"],"manifest_sha256":EXPECTED["manifest"],"binary_sha256":EXPECTED["plugin"],"provenance_sha256":EXPECTED["provenance"]}],
         "checks":checks,"hardware_validation":False,"harness_sha256":digest(__file__),"report_sha256":digest(report_path)}
-    receipt_path = args.out / "denon-0.1.1-core-f274804-host-compatibility.json"
+    receipt_path = args.out / (prefix + "-host-compatibility.json")
     receipt_path.write_text(json.dumps(receipt,indent=2,sort_keys=True)+"\n")
     print(json.dumps(receipt,indent=2,sort_keys=True))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ["confd","apk","key","provenance","out"]:
+    for name in ["confd","apk","key","provenance","out","build-receipt"]:
         parser.add_argument("--"+name,type=Path,required=True)
     parser.add_argument("--core-commit",required=True)
     run(parser.parse_args())

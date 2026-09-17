@@ -1,0 +1,43 @@
+{
+  "checks": {
+    "fake_receiver_command": "passed",
+    "fake_receiver_inputs": "passed",
+    "fake_receiver_status": "passed",
+    "shared_transport_ownership": "passed",
+    "signed_package_lifecycle": "passed",
+    "v1_handshake": "passed",
+    "v2_action_refused_for_v1": "passed"
+  },
+  "core_commit": "c57ccce589985e7d910b57fca7553e0f53a1069b",
+  "hardware_validation": false,
+  "http_panel_device_connections": 1,
+  "kind": "couch-integration-host-test-report",
+  "lifecycle": [
+    "signed_install",
+    "same_version_readmission",
+    "removal_preserves_config_and_settings",
+    "signed_reinstall_preserves_settings"
+  ],
+  "maximum_simultaneous_device_connections": 1,
+  "schema": 1,
+  "signature_checks": {
+    "tampered_apk": "rejected",
+    "trusted_apk": "passed",
+    "untrusted_key": "rejected"
+  },
+  "wire_requests": [
+    "ZM?",
+    "MV?",
+    "MU?",
+    "SI?",
+    "SSFUN ?",
+    "MVUP",
+    "MV?",
+    "MUON",
+    "MU?",
+    "ZM?",
+    "MV?",
+    "MU?",
+    "SI?"
+  ]
+}

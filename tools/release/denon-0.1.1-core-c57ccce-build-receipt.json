@@ -1,0 +1,8 @@
+{
+  "binary_sha256": "de01a2a07d980ff883000bcaf306f113e3f6951a76af1681fff5059f3a5ff582",
+  "git_clean": true,
+  "kind": "couch-arm-confd-build",
+  "schema": 1,
+  "source_commit": "c57ccce589985e7d910b57fca7553e0f53a1069b",
+  "target": "armv7-unknown-linux-musleabihf"
+}
