@@ -86,6 +86,11 @@ def index_records(text):
     return records
 
 
+def github_repositories(name):
+    """A Couch repository under either owner; they move to the Couch-OS organization."""
+    return tuple(f"https://github.com/{owner}/{name}.git" for owner in ("dangerouslaser", "Couch-OS"))
+
+
 def validate_manifest(path=DEFAULT):
     raw = regular(path, 1024 * 1024)
     manifest = json.loads(raw)
@@ -94,7 +99,7 @@ def validate_manifest(path=DEFAULT):
             and isinstance(manifest["name"], str) and manifest["name"], "Unsupported tested-set identity")
     core = manifest["core"]
     exact(core, ("repository", "tested_commit", "protocol_version", "compatibility_floor", "contract_paths"), "core")
-    require(core["repository"] == "https://github.com/dangerouslaser/couch.git"
+    require(core["repository"] in github_repositories("couch")
             and HEX40.fullmatch(core["tested_commit"]) and core["protocol_version"] == 1,
             "Invalid core identity")
     require(commit_exists(core["tested_commit"]), "Tested core commit is absent from this checkout")
@@ -115,7 +120,7 @@ def validate_manifest(path=DEFAULT):
 
     feed = manifest["feed"]
     exact(feed, ("repository", "source_commit", "base_url", "channel", "architecture", "public_key", "index"), "feed")
-    require(feed["repository"] == "https://github.com/dangerouslaser/couch-integrations.git"
+    require(feed["repository"] in github_repositories("couch-integrations")
             and HEX40.fullmatch(feed["source_commit"])
             and feed["base_url"].startswith("https://")
             and feed["channel"] == "preview" and feed["architecture"] == "armv7", "Invalid feed identity")
@@ -157,8 +162,9 @@ def validate_manifest(path=DEFAULT):
             require(HEX40.fullmatch(provenance[key]), f"{where}.provenance.{key} is invalid")
         for key in ("sha256", "binary_sha256", "manifest_sha256"):
             require(HEX64.fullmatch(provenance[key]), f"{where}.provenance.{key} is invalid")
-        require(provenance["sdk_repository"] == core["repository"]
-                and provenance["tooling_repository"] == core["repository"]
+        # Packages built before the Couch-OS move record the previous owner.
+        require(provenance["sdk_repository"] in github_repositories("couch")
+                and provenance["tooling_repository"] in github_repositories("couch")
                 and commit_exists(provenance["sdk_commit"])
                 and commit_exists(provenance["tooling_commit"])
                 and ancestor(provenance["sdk_commit"], core["tested_commit"])

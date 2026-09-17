@@ -696,7 +696,22 @@ pub fn bundle(
         .map_err(|_| "Could not finish runtime archive")?
         .finish()
         .map_err(|_| "Could not compress runtime archive")?;
-    let manifest=Manifest{schema:1,model:"sanytron-ha100".into(),version:version.into(),kind:"runtime".into(),installable:true,notes:format!("Couch apps and services {version}"),url:format!("https://github.com/dangerouslaser/couch/releases/download/{version}/couch-{version}-ha100-runtime.tar.gz"),size:data.len() as u64,sha256:release::digest(&data),files,required_os_baseline};
+    let manifest = Manifest {
+        schema: 1,
+        model: "sanytron-ha100".into(),
+        version: version.into(),
+        kind: "runtime".into(),
+        installable: true,
+        notes: format!("Couch apps and services {version}"),
+        url: format!(
+            "{}{version}/couch-{version}-ha100-runtime.tar.gz",
+            release::PREFIX
+        ),
+        size: data.len() as u64,
+        sha256: release::digest(&data),
+        files,
+        required_os_baseline,
+    };
     staging::validate_inventory(&manifest)?;
     // Installable by this updater is not enough: it has to be installable by
     // the oldest one in the field, or the release strands every remote on it.

@@ -2,8 +2,29 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{io::Read, path::Path, time::Duration};
-const API: &str = "https://api.github.com/repos/dangerouslaser/couch/releases?per_page=100";
-pub(crate) const PREFIX: &str = "https://github.com/dangerouslaser/couch/releases/download/";
+/// The Couch repository by its permanent GitHub ID, which survives the move from
+/// dangerouslaser to the Couch-OS organization. An owner-named URL would stop
+/// listing releases for remotes still running this updater after that move.
+const API: &str = "https://api.github.com/repositories/1363054496/releases?per_page=100";
+/// Download locations of Couch releases under either repository owner. GitHub
+/// lists assets under the current owner, and releases signed before the move
+/// name the previous one.
+pub(crate) const PREFIXES: [&str; 2] = [
+    "https://github.com/dangerouslaser/couch/releases/download/",
+    "https://github.com/Couch-OS/couch/releases/download/",
+];
+/// Where new releases are published and what their signed manifests name.
+/// Updaters older than PREFIXES accept only this owner, so it changes to
+/// Couch-OS only after the repository has moved.
+pub(crate) const PREFIX: &str = PREFIXES[0];
+
+/// The accepted asset URL for `name` in release `tag`, if `url` is one.
+fn release_url(url: &str, tag: &str, name: &str) -> bool {
+    let path = format!("{tag}/{name}");
+    PREFIXES
+        .iter()
+        .any(|prefix| url.strip_prefix(prefix) == Some(path.as_str()))
+}
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
@@ -86,7 +107,7 @@ pub(crate) fn version(tag: &str) -> Option<semver::Version> {
     semver::Version::parse(tag.strip_prefix('v')?).ok()
 }
 pub(crate) fn fetch(url: &str, limit: u64) -> Result<Vec<u8>> {
-    if url != API && !url.starts_with(PREFIX) {
+    if url != API && !PREFIXES.iter().any(|prefix| url.starts_with(prefix)) {
         return Err("Unsupported update origin".into());
     }
     let agent = ureq::Agent::config_builder()
@@ -133,11 +154,11 @@ pub(crate) fn verify(bytes: &[u8], key: &[u8], expected: &str) -> Result<Manifes
         || m.sha256.len() != 64
         || decode_hex(&m.sha256).is_err()
         || !matches!(m.kind.as_str(), "runtime" | "boot")
-        || m.url
-            != format!(
-                "{PREFIX}{}/couch-{}-ha100-{}.tar.gz",
-                m.version, m.version, m.kind
-            )
+        || !release_url(
+            &m.url,
+            &m.version,
+            &format!("couch-{}-ha100-{}.tar.gz", m.version, m.kind),
+        )
     {
         return Err("Update does not match this remote or selected release".into());
     }
@@ -169,10 +190,13 @@ fn listed(release: &serde_json::Value, tag: &str, name: &str) -> Result<Option<L
     else {
         return Ok(None);
     };
-    let url = format!("{PREFIX}{tag}/{name}");
-    if asset["browser_download_url"] != url {
+    let Some(url) = asset["browser_download_url"]
+        .as_str()
+        .filter(|url| release_url(url, tag, name))
+    else {
         return Ok(None);
-    }
+    };
+    let url = url.to_owned();
     let size = asset["size"]
         .as_u64()
         .filter(|n| *n > 0 && *n <= 256 * 1024)
@@ -360,6 +384,68 @@ mod tests {
         assert!(listed(&release, tag, &name).is_err());
     }
 
+    #[test]
+    fn releases_are_found_under_either_repository_owner_and_no_other() {
+        assert!(API.starts_with("https://api.github.com/repositories/"));
+        let tag = "v1.2.4";
+        let name = format!("couch-{tag}-ha100-update.json");
+        for prefix in PREFIXES {
+            let release = serde_json::json!({"assets": [{"name": name,
+                "browser_download_url": format!("{prefix}{tag}/{name}"),
+                "size": 512, "digest": format!("sha256:{}", "a".repeat(64))}]});
+            let found = listed(&release, tag, &name).unwrap().unwrap();
+            assert_eq!(found.url, format!("{prefix}{tag}/{name}"));
+        }
+        for url in [
+            format!("https://github.com/other/couch/releases/download/{tag}/{name}"),
+            format!("https://github.com/couch-os/couch/releases/download/{tag}/{name}"),
+            format!("https://github.com/Couch-OS/couch-installer/releases/download/{tag}/{name}"),
+            format!("{PREFIX}v1.2.5/{name}"),
+            format!("{PREFIX}{tag}/{name}?download=1"),
+        ] {
+            let release = serde_json::json!({"assets": [{"name": name,
+                "browser_download_url": url,
+                "size": 512, "digest": format!("sha256:{}", "a".repeat(64))}]});
+            assert!(listed(&release, tag, &name).unwrap().is_none(), "{url}");
+        }
+        assert!(fetch(
+            &format!("https://github.com/other/couch/releases/download/{tag}/{name}"),
+            1
+        )
+        .is_err_and(|e| e.to_string().contains("Unsupported update origin")));
+    }
+    #[test]
+    fn signed_manifests_may_name_either_owner_but_not_another() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let sealed = |url: String| {
+            let m = Manifest {
+                schema: 1,
+                model: "sanytron-ha100".into(),
+                version: "v1.2.3".into(),
+                kind: "runtime".into(),
+                installable: true,
+                notes: String::new(),
+                url,
+                size: 123,
+                sha256: "a".repeat(64),
+                files: Vec::new(),
+                required_os_baseline: None,
+            };
+            let signature = hex(&key.sign(&serde_json::to_vec(&m).unwrap()).to_bytes());
+            serde_json::to_vec(&SignedManifest {
+                signed: m,
+                signature,
+            })
+            .unwrap()
+        };
+        let key_bytes = key.verifying_key();
+        for prefix in PREFIXES {
+            let bytes = sealed(format!("{prefix}v1.2.3/couch-v1.2.3-ha100-runtime.tar.gz"));
+            assert!(verify(&bytes, key_bytes.as_bytes(), "v1.2.3").is_ok());
+        }
+        let bytes = sealed("https://github.com/other/couch/releases/download/v1.2.3/couch-v1.2.3-ha100-runtime.tar.gz".into());
+        assert!(verify(&bytes, key_bytes.as_bytes(), "v1.2.3").is_err());
+    }
     #[test]
     fn publisher_signature_binds_version_model_and_payload() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
