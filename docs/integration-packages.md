@@ -195,16 +195,20 @@ does not automatically select a web-managed repository.
 The public official feed bases are:
 
 ```text
-https://dangerouslaser.github.io/couch-integrations/preview
-https://dangerouslaser.github.io/couch-integrations/stable
+https://packages.couch-os.dev/preview
+https://packages.couch-os.dev/stable
 ```
+
+Runtimes up to `.171.dev` still read the official feeds from
+`dangerouslaser.github.io/couch-integrations`, which redirects here until
+that repository moves to the Couch-OS organization.
 
 The installer appends `armv7`. Preview initially contains Denon. Stable serves
 a valid signed empty index and has no installable packages until a
 production-tier integration has validated hardware evidence.
 
 The official public key can be inspected at
-`https://dangerouslaser.github.io/couch-integrations/preview/couch-integrations.rsa.pub`.
+`https://packages.couch-os.dev/preview/couch-integrations.rsa.pub`.
 Its PEM file SHA-256 is:
 
 ```text
@@ -226,7 +230,7 @@ No manual key provisioning is needed for this official preview install:
 ```sh
 /opt/couch/runtime/current/couch-confd integrations \
   install-repository couch-integration-denon \
-  --repository https://dangerouslaser.github.io/couch-integrations/preview
+  --repository https://packages.couch-os.dev/preview
 ```
 
 The released `.170` runtime predates the package host and cannot run this
