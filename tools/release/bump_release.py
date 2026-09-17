@@ -34,7 +34,11 @@ EXEMPT = (SOURCE,
           # instructions, and one of them is whatever number a promotion takes.
           'daemon/couch-updates/src/lib.rs',
           # Historical decoder vocabulary used to validate first-upgrade rollback.
-          'model/couch-model/src/storage.rs')
+          'model/couch-model/src/storage.rs',
+          # Updates-screen fixtures: the tag a mocked status reports, not an
+          # install instruction.
+          'web/couch-web/src/screens/updates.rs',
+          'web/tests/updates.mjs')
 # v0.1.0-alpha.<date>.<n>. The leading v is optional because the site's JSON-LD
 # softwareVersion omits it, and the bounds keep .dev builds, the <date>.<n>
 # placeholders in the flow documents and older undated alphas out.
