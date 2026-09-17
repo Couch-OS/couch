@@ -87,6 +87,16 @@ node web/tests/home-assistant.mjs  # an HA fixture, loopback only
 node web/tests/hue.mjs             # an HTTPS bridge fixture, loopback only
 ```
 
+`integrations.mjs` and `updates.mjs` intercept every `/api/` call instead, so
+they need no daemon at all: any static server over `web/couch-web/dist` will do,
+which is how CI runs them.
+
+```sh
+python3 -m http.server 18093 --bind 127.0.0.1 --directory web/couch-web/dist &
+COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/integrations.mjs
+COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/updates.mjs  # Updates screen copy
+```
+
 
 
 How the house gets described: `couch-confd`, a static binary on the remote that
