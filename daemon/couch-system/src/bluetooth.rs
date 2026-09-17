@@ -443,6 +443,87 @@ fn publish(state: &str) {
     let _ = fs::write(STATE_FILE, format!("{state}\n"));
 }
 
+/// Publish a complete machine ID without replacing an identity another caller
+/// may have created. The temporary file and destination share a filesystem.
+fn publish_machine_id(path: &Path, id: &[u8]) -> Result<(), std::io::Error> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let parent = path.parent().unwrap();
+    fs::create_dir_all(parent)?;
+    let (temporary, mut file) = loop {
+        let temporary = parent.join(format!(
+            ".couch-machine-id-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(&temporary)
+        {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let result = (|| {
+        file.write_all(id)?;
+        file.write_all(b"\n")?;
+        file.set_permissions(fs::Permissions::from_mode(0o644))?;
+        file.sync_all()?;
+        fs::hard_link(&temporary, path)?;
+        fs::File::open(parent)?.sync_all()
+    })();
+    let _ = fs::remove_file(temporary);
+    result
+}
+
+/// Neutral images carry no machine identity. Generate it only on first use,
+/// or preserve the identity from either standard location on an older image.
+fn ensure_machine_ids(
+    root: &Path,
+    generate: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
+    fn parse(bytes: &[u8]) -> Result<Vec<u8>, String> {
+        let id = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+        if id.len() != 32 || !id.iter().all(u8::is_ascii_hexdigit) {
+            return Err("Invalid persistent D-Bus machine ID".into());
+        }
+        // Hex case and an optional newline do not change the UUID.
+        Ok(id.iter().map(u8::to_ascii_lowercase).collect())
+    }
+    fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
+        match fs::read(path) {
+            Ok(bytes) => parse(&bytes).map(Some),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("Could not read D-Bus machine ID: {error}")),
+        }
+    }
+    let etc = root.join("etc/machine-id");
+    let dbus = root.join("var/lib/dbus/machine-id");
+    let etc_id = read(&etc)?;
+    let dbus_id = read(&dbus)?;
+    if let (Some(etc_id), Some(dbus_id)) = (&etc_id, &dbus_id) {
+        if etc_id != dbus_id {
+            return Err("Persistent D-Bus machine IDs disagree".into());
+        }
+    }
+    let id = match etc_id.as_ref().or(dbus_id.as_ref()) {
+        Some(id) => id.clone(),
+        None => parse(&generate()?)?,
+    };
+    for (path, existing) in [(&etc, &etc_id), (&dbus, &dbus_id)] {
+        if existing.is_none() {
+            publish_machine_id(path, &id)
+                .map_err(|error| format!("Could not persist D-Bus machine ID: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// Run a fixed shell snippet inside the Alpine root. The snippets are internal
 /// constants, never built from a request.
 fn alpine_sh(script: &str) -> Result<(), String> {
@@ -678,9 +759,18 @@ fn up() -> Result<(), String> {
     }
     // dbus, then bluetoothd, then the HID daemon. The HID daemon waits for
     // bluetoothd's adapter itself, so the three start back to back.
+    ensure_machine_ids(Path::new("/mnt/alpine"), || {
+        let output = Command::new("/bin/busybox")
+            .args(["chroot", "/mnt/alpine", "/usr/bin/dbus-uuidgen"])
+            .output()
+            .map_err(|error| format!("Could not generate D-Bus machine ID: {error}"))?;
+        if !output.status.success() {
+            return Err("Could not generate D-Bus machine ID".into());
+        }
+        Ok(output.stdout)
+    })?;
     alpine_sh(
-        "[ -f /var/lib/dbus/machine-id ] || { mkdir -p /var/lib/dbus; cp /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null; }; \
-         mkdir -p /run/dbus; \
+        "mkdir -p /run/dbus; \
          pidof dbus-daemon >/dev/null || { rm -f /run/dbus/dbus.pid; setsid dbus-daemon --system --nopidfile </dev/null >/tmp/dbus.log 2>&1 & }",
     )?;
     if !wait_for(
@@ -801,6 +891,145 @@ mod tests {
         assert!(BLUETOOTHD_COMMS.contains(&comm(PATCHED_BLUETOOTHD)));
         assert!(BLUETOOTHD_COMMS.contains(&comm("bluetoothd")));
         assert!(STOCK_BLUETOOTHD.ends_with("/bluetoothd"));
+    }
+}
+
+#[cfg(test)]
+mod machine_id_tests {
+    use super::*;
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+    const ID: &[u8] = b"0123456789abcdef0123456789abcdef\n";
+    const OTHER: &[u8] = b"fedcba9876543210fedcba9876543210\n";
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    struct Root(PathBuf);
+    impl Root {
+        fn new() -> Self {
+            loop {
+                let path = std::env::temp_dir().join(format!(
+                    "couch-machine-id-test-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("create fixture root: {error}"),
+                }
+            }
+        }
+        fn write(&self, name: &str, bytes: &[u8]) {
+            let path = self.0.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        fn read(&self, name: &str) -> Vec<u8> {
+            fs::read(self.0.join(name)).unwrap()
+        }
+    }
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn first_use_generates_one_persistent_identity_and_later_use_preserves_it() {
+        let root = Root::new();
+        ensure_machine_ids(&root.0, || Ok(ID.to_vec())).unwrap();
+        for name in ["etc/machine-id", "var/lib/dbus/machine-id"] {
+            assert_eq!(root.read(name), ID);
+            assert_eq!(
+                fs::metadata(root.0.join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o644
+            );
+        }
+        ensure_machine_ids(&root.0, || panic!("existing identity must not rotate")).unwrap();
+        assert_eq!(root.read("etc/machine-id"), ID);
+        assert_eq!(root.read("var/lib/dbus/machine-id"), ID);
+    }
+
+    #[test]
+    fn either_existing_location_seeds_the_other_without_rewriting_original_bytes() {
+        for original in ["etc/machine-id", "var/lib/dbus/machine-id"] {
+            let root = Root::new();
+            root.write(original, &ID[..32]);
+            ensure_machine_ids(&root.0, || panic!("existing identity must be reused")).unwrap();
+            assert_eq!(root.read(original), &ID[..32]);
+            let other = if original == "etc/machine-id" {
+                "var/lib/dbus/machine-id"
+            } else {
+                "etc/machine-id"
+            };
+            assert_eq!(root.read(other), ID);
+        }
+    }
+
+    #[test]
+    fn equivalent_existing_ids_are_preserved_but_mismatches_fail_without_overwriting() {
+        let root = Root::new();
+        let uppercase: Vec<_> = ID.iter().map(u8::to_ascii_uppercase).collect();
+        root.write("etc/machine-id", &uppercase);
+        root.write("var/lib/dbus/machine-id", &ID[..32]);
+        ensure_machine_ids(&root.0, || panic!("no generation")).unwrap();
+        assert_eq!(root.read("etc/machine-id"), uppercase);
+        assert_eq!(root.read("var/lib/dbus/machine-id"), &ID[..32]);
+        root.write("var/lib/dbus/machine-id", OTHER);
+        assert!(ensure_machine_ids(&root.0, || panic!("no generation"))
+            .unwrap_err()
+            .contains("disagree"));
+        assert_eq!(root.read("etc/machine-id"), uppercase);
+        assert_eq!(root.read("var/lib/dbus/machine-id"), OTHER);
+    }
+
+    #[test]
+    fn failed_or_malformed_generation_publishes_no_identity() {
+        for generated in [
+            Err("generator failed".into()),
+            Ok(vec![]),
+            Ok(b"not-an-id".to_vec()),
+            Ok(vec![b'z'; 32]),
+            Ok([ID, b"extra"].concat()),
+        ] {
+            let root = Root::new();
+            assert!(ensure_machine_ids(&root.0, || generated).is_err());
+            assert!(!root.0.join("etc/machine-id").exists());
+            assert!(!root.0.join("var/lib/dbus/machine-id").exists());
+        }
+    }
+
+    #[test]
+    fn malformed_existing_identity_is_not_replaced_or_copied() {
+        for original in ["etc/machine-id", "var/lib/dbus/machine-id"] {
+            let root = Root::new();
+            root.write(original, b"invalid existing identity");
+            assert!(
+                ensure_machine_ids(&root.0, || panic!("invalid identity must not rotate")).is_err()
+            );
+            assert_eq!(root.read(original), b"invalid existing identity");
+            let other = if original == "etc/machine-id" {
+                "var/lib/dbus/machine-id"
+            } else {
+                "etc/machine-id"
+            };
+            assert!(!root.0.join(other).exists());
+        }
+    }
+
+    #[test]
+    fn atomic_publication_never_overwrites_a_concurrently_created_identity() {
+        let root = Root::new();
+        root.write("etc/machine-id", OTHER);
+        let error = publish_machine_id(&root.0.join("etc/machine-id"), &ID[..32]).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(root.read("etc/machine-id"), OTHER);
+        assert_eq!(fs::read_dir(root.0.join("etc")).unwrap().count(), 1);
     }
 }
 

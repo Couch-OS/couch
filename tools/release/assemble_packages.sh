@@ -18,6 +18,20 @@ apk --root /tmp/root --arch armv7 --keys-dir /usr/share/apk/keys/armv7 \
 for key in /tmp/root/etc/ssh/ssh_host_*; do
     [ ! -e "$key" ] || { echo 'Package installation generated SSH host keys' >&2; exit 1; }
 done
+# dbus's signed post-install hook creates a builder-local identity. Remove only
+# this expected generated regular file; the public rootfs validator continues
+# to reject either machine-id path and all other private state. couch-system
+# creates a persistent per-device identity when D-Bus is first needed.
+machine_id=/tmp/root/etc/machine-id
+if [ -e "$machine_id" ] || [ -L "$machine_id" ]; then
+    [ -f "$machine_id" ] && [ ! -L "$machine_id" ] &&
+        [ "$(wc -c < "$machine_id")" -eq 33 ] &&
+        [ "$(tail -c 1 "$machine_id" | wc -l)" -eq 1 ] &&
+        grep -Eq '^[0-9a-f]{32}$' "$machine_id" || {
+        echo 'Unexpected package-generated machine ID' >&2; exit 1;
+    }
+    rm "$machine_id"
+fi
 chroot /tmp/root /sbin/wpa_supplicant -v > /out/runtime-checks.txt
 chroot /tmp/root /usr/sbin/sshd -V >> /out/runtime-checks.txt 2>&1
 # CoreELEC OS controls require OpenSSH client options, not Dropbear. -G only

@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 from clean_stage import GENERATED, StageError
-from prepare_rootfs import normalize, prepare
+from prepare_rootfs import normalize, prepare, REVIEWED_SET_ID
 
 
 class PackagedRootfsTests(unittest.TestCase):
@@ -61,6 +61,45 @@ class PackagedRootfsTests(unittest.TestCase):
             normalize(self.fixture([('etc/shadow', b'root:$6$hash:::::::\n', tarfile.REGTYPE, '')]), 1234)
         with self.assertRaises(StageError):
             normalize(self.fixture([('etc/shadow', b'malformed\n', tarfile.REGTYPE, '')]), 1234)
+
+    def set_id_fixture(self, name='usr/libexec/dbus-daemon-launch-helper',
+                       content=b'reviewed helper', mode=0o4750, uid=0, gid=101,
+                       kind=tarfile.REGTYPE, group=b'messagebus:x:101:\n'):
+        output = io.BytesIO()
+        with tarfile.open(fileobj=io.BytesIO(self.fixture()), mode='r:gz') as source:
+            with tarfile.open(fileobj=output, mode='w:gz') as target:
+                for member in source:
+                    target.addfile(member, source.extractfile(member))
+                member = tarfile.TarInfo('etc/group')
+                member.size = len(group)
+                target.addfile(member, io.BytesIO(group))
+                member = tarfile.TarInfo(name)
+                member.type, member.mode, member.uid, member.gid = kind, mode, uid, gid
+                member.size = len(content) if kind == tarfile.REGTYPE else 0
+                member.linkname = 'bin/unreviewed' if kind == tarfile.SYMTYPE else ''
+                target.addfile(member, io.BytesIO(content) if member.size else None)
+        return output.getvalue()
+
+    def test_reviewed_helper_retains_set_id_and_requires_exact_identity(self):
+        from clean_stage import checksum
+        name = 'usr/libexec/dbus-daemon-launch-helper'
+        reviewed = (checksum(b'reviewed helper'), 0o4750, 0, 101)
+        with patch.dict(REVIEWED_SET_ID, {name: reviewed}, clear=True):
+            normalized, _ = normalize(self.set_id_fixture(), 1234)
+            with tarfile.open(fileobj=io.BytesIO(normalized)) as archive:
+                helper = archive.getmember(name)
+                self.assertEqual((helper.mode, helper.uid, helper.gid), (0o4750, 0, 101))
+            for change in ({'name': 'usr/bin/unreviewed'}, {'content': b'changed'},
+                           {'mode': 0o6750}, {'uid': 1}, {'gid': 102},
+                           {'kind': tarfile.SYMTYPE}):
+                with self.subTest(change=change), self.assertRaisesRegex(StageError, 'Set-ID'):
+                    normalize(self.set_id_fixture(**change), 1234)
+            for group in (b'other:x:101:\n', b'messagebus:x:102:\n',
+                          b'messagebus:x:102:\nmessagebus:x:101:\n',
+                          b'messagebus:x:101:\nmessagebus:x:101:\n',
+                          b'messagebus:x:101:\nother:x:101:\n'):
+                with self.subTest(group=group), self.assertRaisesRegex(StageError, 'messagebus group'):
+                    normalize(self.set_id_fixture(group=group), 1234)
 
 
 if __name__ == '__main__':

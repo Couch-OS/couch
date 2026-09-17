@@ -16,6 +16,16 @@ from clean_stage import (GENERATED, StageError, archive_name, build, checksum,
 from package_closure import verify
 from os_baseline import PIN as BASELINE_PIN, seed as seed_os_baseline
 
+# Alpine D-Bus 1.14.10-r4's signed activation helper is deliberately setuid.
+# Its post-install script changes the APK's group to the installed messagebus
+# group (101 in the reviewed HA100 base). Preserve upstream system activation;
+# changing the binary, ownership or mode requires a new review.
+REVIEWED_SET_ID = {
+    'usr/libexec/dbus-daemon-launch-helper': (
+        '26334163ead6299bdcb3f8b2e72ae3033cd80094ecdf731d7f934aaf623c782a',
+        0o4750, 0, 101),
+}
+
 
 def normalize(data, epoch, private_files=None):
     """Validate without host extraction and normalize order/times, retaining IDs."""
@@ -35,7 +45,6 @@ def normalize(data, epoch, private_files=None):
             require(not secret_path(name) or name in private_files or (member.isdir() and name in private_dirs), f'Private runtime state in assembled rootfs: {name}')
             require(member.isdir() or member.isreg() or member.issym() or member.islnk(),
                     'Special filesystem entry after package installation')
-            require(not member.mode & 0o6000, 'Set-ID package file requires separate review')
             require(not name.startswith('dev/'), 'Runtime /dev entry in assembled rootfs')
             if member.issym() or member.islnk():
                 require('\\' not in member.linkname, 'Invalid assembled link')
@@ -43,6 +52,11 @@ def normalize(data, epoch, private_files=None):
                     posixpath.dirname(name) if member.issym() else '', member.linkname))
                 require(target != '..' and not target.startswith('../'), 'Assembled link escape')
             content = archive.extractfile(member).read() if member.isreg() else b''
+            if member.mode & 0o6000:
+                require(member.isreg() and
+                        REVIEWED_SET_ID.get(name) ==
+                        (checksum(content), member.mode, member.uid, member.gid),
+                        'Set-ID package file requires separate review')
             if name in private_files:
                 require(member.isreg() and checksum(content) == private_files[name], 'Private vendor member mismatch')
             if name == 'etc/shadow':
@@ -50,6 +64,17 @@ def normalize(data, epoch, private_files=None):
                             for line in content.splitlines() if line), 'Assembled password credentials')
             entries[name] = (member, content)
     require(set(private_files) <= set(entries), 'Missing private vendor member')
+    helper = entries.get('usr/libexec/dbus-daemon-launch-helper')
+    if helper and helper[0].mode & 0o6000:
+        group = entries.get('etc/group')
+        require(group is not None and group[0].isreg(),
+                'Reviewed D-Bus helper requires the messagebus group')
+        rows = [line.split(b':') for line in group[1].splitlines()]
+        named = [row for row in rows if row[0] == b'messagebus']
+        numbered = [row for row in rows if len(row) == 4 and row[2] == b'101']
+        require(len(named) == 1 and len(named[0]) == 4 and
+                named[0][2] == b'101' and numbered == named,
+                'Reviewed D-Bus helper requires the messagebus group')
     for name, content in GENERATED.items():
         require(name in entries and entries[name][0].isreg() and entries[name][1] == content,
                 f'Package installation changed clean defaults: {name}')
@@ -66,7 +91,7 @@ def normalize(data, epoch, private_files=None):
             for name, (member, content) in sorted(entries.items()):
                 item = tarfile.TarInfo(name)
                 item.type = tarfile.REGTYPE if member.isreg() else member.type
-                item.mode = member.mode & 0o777
+                item.mode = member.mode & 0o7777
                 item.uid, item.gid = member.uid, member.gid
                 item.linkname, item.mtime = member.linkname, epoch
                 item.size = len(content) if member.isreg() else 0

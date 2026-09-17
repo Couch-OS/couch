@@ -28,6 +28,21 @@ and [staging checklist](#staging-checklist) what was done. Kernel-side tasks are
 `Documentation/couch/bluetooth.md` on the `bluetooth` branch of
 [dangerouslaser/couch-kernel](https://github.com/dangerouslaser/couch-kernel).
 
+## Machine identity on first use
+
+Owner-neutral OS images omit `/etc/machine-id` and `/var/lib/dbus/machine-id`.
+Before starting the Bluetooth system bus, `couch-system` preserves a valid ID
+from either location and creates only the missing copy. If both are absent, it
+uses Alpine's `dbus-uuidgen` once and atomically publishes the validated ID;
+subsequent starts reuse it. Invalid or conflicting existing IDs fail without
+being replaced. No device identity is generated into the release image.
+
+An isolated ARM package test confirmed that `dbus-daemon` can start with both
+files absent, but `org.freedesktop.DBus.Peer.GetMachineId` then fails with
+`FileNotFound`; with a generated persistent ID the call succeeds. The probe used
+a temporary root-only allowance for that method, which the distro's default bus
+policy otherwise denies. This establishes host behavior, not hardware validation.
+
 ## Status: experimental
 
 **The feature works; Wi-Fi alongside it does not yet.** Pairing, a bond per
