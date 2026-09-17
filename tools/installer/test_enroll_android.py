@@ -13,6 +13,17 @@ import enroll_android as enrollment
 
 
 class EnrollmentTests(unittest.TestCase):
+    def test_pin_directory_prefers_source_pins_and_falls_back_to_worker_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'; source.mkdir(); (source / 'pins').mkdir()
+            session = root / 'session'; session.mkdir()
+            worker = session / 'mtk-adapter'; worker.mkdir(); (session / 'release').mkdir()
+            with patch.object(enrollment, '__file__', str(source / 'enroll_android.py')):
+                self.assertEqual(enrollment.pin_directory(), (source / 'pins').resolve())
+            with patch.object(enrollment, '__file__', str(worker / 'enroll_android.py')):
+                self.assertEqual(enrollment.pin_directory(), (session / 'release').resolve())
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

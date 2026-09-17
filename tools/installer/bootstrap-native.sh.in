@@ -26,7 +26,7 @@ installer_work=$(mktemp -d "${TMPDIR:-/tmp}/couch-installer.XXXXXXXX")
 trap 'rm -rf "$installer_work"' 0
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
-base="https://github.com/dangerouslaser/couch/releases/download/$version"
+base='@RELEASE_URL@'
 download() {
     name=$1 expected_size=$2 expected_hash=$3 destination=$4
     curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \

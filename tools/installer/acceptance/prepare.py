@@ -11,8 +11,14 @@ import sys
 
 SOURCE = os.environ.get('SOURCE_COMMIT', '57a3e22b4e86d8d6620dbaedbf30847e26b9bbd4')
 PAYLOAD_SOURCE = os.environ.get('PAYLOAD_SOURCE_COMMIT', '271704728c77c13add1763aea7d1f9bd629c63ca')
-VERSION = 'v0.1.0-alpha.20260910.24'
+INSTALLER_VERSION = os.environ.get('INSTALLER_VERSION', 'v0.1.0')
+INSTALLER_REPOSITORY = os.environ.get('INSTALLER_REPOSITORY', 'dangerouslaser/couch')
+INSTALLER_REPOSITORIES = ('dangerouslaser/couch', 'Couch-OS/couch-installer')
+OS_VERSION = os.environ.get('OS_VERSION', 'v0.1.0-alpha.20260910.24')
+# Kept for the frozen fixture helpers which predate separate installer releases.
+VERSION = OS_VERSION
 PLATFORMS = ('linux-x64', 'macos-universal', 'windows-x64')
+VERSION_PATTERN = r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?'
 
 
 def digest(path):
@@ -23,12 +29,16 @@ def digest(path):
 
 
 def prepare(downloads, frozen, output):
+    if INSTALLER_REPOSITORY not in INSTALLER_REPOSITORIES:
+        raise ValueError('Invalid independently pinned installer repository')
     for name, value in (('host', SOURCE), ('payload', PAYLOAD_SOURCE)):
         if not re.fullmatch('[0-9a-f]{40}', value): raise ValueError(f'Invalid independently pinned {name} source')
+    for name, value in (('installer', INSTALLER_VERSION), ('OS', OS_VERSION)):
+        if not re.fullmatch(VERSION_PATTERN, value): raise ValueError(f'Invalid independently pinned {name} version')
     if not re.fullmatch('[0-9]{1,20}', os.environ['BINARY_RUN_ID']): raise ValueError('Invalid build run ID')
     for name in ('CONFIG_SHA256', 'LAUNCHER_SHA256'):
         if not re.fullmatch('[0-9a-f]{64}', os.environ[name]): raise ValueError('Invalid trusted hash')
-    info = json.loads(subprocess.check_output(['gh', 'api', 'repos/dangerouslaser/couch/actions/runs/'+os.environ['BINARY_RUN_ID']]))
+    info = json.loads(subprocess.check_output(['gh', 'api', 'repos/'+INSTALLER_REPOSITORY+'/actions/runs/'+os.environ['BINARY_RUN_ID']]))
     if info['head_sha'] != SOURCE or info['conclusion'] != 'success' or info['name'] != 'Build installer binaries':
         raise ValueError('Build run source/status differs')
     if subprocess.check_output(['git', '-C', str(frozen), 'rev-parse', 'HEAD'], text=True).strip() != SOURCE:
@@ -37,8 +47,28 @@ def prepare(downloads, frozen, output):
     if not 0 < len(config) <= 65536 or hashlib.sha256(config).hexdigest() != os.environ['CONFIG_SHA256']:
         raise ValueError('Public descriptor hash differs')
     metadata = json.loads(config)
-    if metadata['source_commit'] != PAYLOAD_SOURCE or metadata['version'] != VERSION:
-        raise ValueError('Public descriptor source/version differs')
+    legacy = metadata.get('schema') == 1
+    if legacy:
+        if (INSTALLER_REPOSITORY != 'dangerouslaser/couch'
+                or metadata.get('kind') != 'couch-native-installer-release'
+                or metadata.get('version') != OS_VERSION
+                or metadata.get('source_commit') != PAYLOAD_SOURCE):
+            raise ValueError('Legacy public descriptor OS identity differs')
+        launcher_version = OS_VERSION
+    elif (metadata.get('schema') != 2 or metadata.get('kind') != 'couch-native-installer-release'
+            or metadata.get('installer') != {
+                'version': INSTALLER_VERSION,
+                'source_commit': SOURCE,
+                'release_url': f'https://github.com/{INSTALLER_REPOSITORY}/releases/download/installer-{INSTALLER_VERSION}',
+            }
+            or metadata.get('os') != {
+                'version': OS_VERSION,
+                'source_commit': PAYLOAD_SOURCE,
+                'installation_protocol': 1,
+            }):
+        raise ValueError('Public descriptor installer/OS identity differs')
+    else:
+        launcher_version = INSTALLER_VERSION
     output.mkdir(mode=0o700)
     assets = output/'assets'; assets.mkdir()
     (assets/'installer.json').write_bytes(config)
@@ -48,8 +78,12 @@ def prepare(downloads, frozen, output):
         if receipt_path.stat().st_size > 1024*1024: raise ValueError('Receipt too large')
         receipt = json.loads(receipt_path.read_bytes())
         expected_kind = 'couch-installer-universal-build' if platform == 'macos-universal' else 'couch-installer-native-build'
-        if (receipt.get('schema'), receipt.get('kind'), receipt.get('source_commit'), receipt.get('platform')) != (1, expected_kind, SOURCE, platform):
-            raise ValueError('Build receipt source/platform differs')
+        expected_version = receipt.get('installer_version') if legacy else INSTALLER_VERSION
+        if ((receipt.get('schema'), receipt.get('kind'), receipt.get('source_commit'),
+                receipt.get('installer_version'), receipt.get('platform')) != (
+                    1, expected_kind, SOURCE, expected_version, platform)
+                or legacy and expected_version not in (None, OS_VERSION)):
+            raise ValueError('Build receipt source/version/platform differs')
         if platform == 'macos-universal':
             if receipt['architectures'] != ['x86_64', 'arm64']: raise ValueError('Universal architectures differ')
             if set(receipt['inputs']) != {'macos-x64', 'macos-arm64'}: raise ValueError('Missing native universal inputs')
@@ -57,7 +91,11 @@ def prepare(downloads, frozen, output):
                 native = downloads/f'couch-installer-build-{name}'/'build.json'
                 if digest(native) != item['receipt'] or json.loads(native.read_bytes()) != item['build']:
                     raise ValueError('Universal input receipt differs')
-                if item['build']['source_commit'] != SOURCE: raise ValueError('Mixed source commits')
+                nested_version = item['build'].get('installer_version')
+                if (item['build'].get('source_commit') != SOURCE
+                        or legacy and nested_version not in (None, OS_VERSION)
+                        or not legacy and nested_version != INSTALLER_VERSION):
+                    raise ValueError('Mixed source commits or installer versions')
         extension = '.exe' if platform == 'windows-x64' else ''
         for component in ('host', 'tui'):
             name = f'couch-installer-{component}'
@@ -65,13 +103,20 @@ def prepare(downloads, frozen, output):
             if digest(original) != receipt['binaries'][component]: raise ValueError('Binary hash differs')
             shutil.copyfile(original, assets/f'{name}-{platform}{extension}')
         records[platform] = receipt
-    subprocess.run([sys.executable, str(frozen/'tools/release/installer_launchers.py'), '--assets', str(assets),
-                    '--output', str(output/'launchers'), '--version', VERSION], check=True, timeout=30)
+    generator = frozen/'tools/installer/installer_launchers.py'
+    if legacy and not generator.is_file():
+        generator = frozen/'tools/release/installer_launchers.py'
+    subprocess.run([sys.executable, str(generator), '--assets', str(assets),
+                    '--output', str(output/'launchers'), '--version', launcher_version], check=True, timeout=30)
     launcher = output/'launchers/install.ps1'
     if digest(launcher)['sha256'] != os.environ['LAUNCHER_SHA256']:
         raise ValueError('Generated final launcher differs from independently pinned launcher')
-    (output/'admission.json').write_text(json.dumps({'schema':1, 'source_commit':SOURCE, 'payload_source_commit':PAYLOAD_SOURCE,
-        'binary_run_id':int(os.environ['BINARY_RUN_ID']), 'config':digest(assets/'installer.json'),
+    identities = ({'schema': 1, 'source_commit': SOURCE, 'payload_source_commit': PAYLOAD_SOURCE}
+                  if legacy else {'schema': 2,
+                      'installer': {'version': INSTALLER_VERSION, 'source_commit': SOURCE},
+                      'os': {'version': OS_VERSION, 'source_commit': PAYLOAD_SOURCE, 'installation_protocol': 1}})
+    (output/'admission.json').write_text(json.dumps({**identities,
+        'installer_repository':INSTALLER_REPOSITORY, 'binary_run_id':int(os.environ['BINARY_RUN_ID']), 'config':digest(assets/'installer.json'),
         'payload':metadata['payload'], 'launcher':digest(launcher), 'builds':records}, indent=2)+'\n')
 
 

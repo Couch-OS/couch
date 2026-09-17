@@ -7,7 +7,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
-import mtk_dependencies as runtime
+from installer_pins import load as load_installer_pin
+
+runtime = load_installer_pin('mtk_dependencies')
 
 
 class RuntimeDeliveryTests(unittest.TestCase):

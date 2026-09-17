@@ -231,6 +231,11 @@ Never write `preloader_*` or `lk`.
 
 ## Implementation and validation
 
+Installer builds now have an independent version and can select an existing
+pinned OS payload. See [installer release boundaries](installer-release-boundary.md)
+for the source layout, compatibility contract and release procedure. This does
+not change the published installation commands above.
+
 The [Ratatui terminal](../tools/installer/tui/README.md) and
 [native Rust host](../tools/installer/host/README.md) run the integrated flow.
 Python remains only in the verified, supervised MediaTek transport bridge;

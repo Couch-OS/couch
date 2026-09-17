@@ -16,7 +16,14 @@ from couch_install import (CHUNK, IDENTITY_PARTITIONS, MODEL, REPO, InstallError
 from mtk_session import loader_bytes, read_session, source_pin
 from mtk_usb import ExactUsbBackend
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'release'))
+def pin_directory():
+    """Find pins in source or beside the native worker's copied release helpers."""
+    directory = Path(__file__).resolve().parent
+    source = directory / 'pins'
+    return source if source.is_dir() else directory.parent / 'release'
+
+
+sys.path.insert(0, str(pin_directory()))
 from prepare_official_inputs import BOOTSTRAP_MEMBERS
 from official_runtime import PIN
 

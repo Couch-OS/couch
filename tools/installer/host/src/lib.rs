@@ -58,7 +58,7 @@ pub(crate) const BOOTSTRAP: [(&str, u64, &str); 4] = [
 const BLOCK: u64 = 4096;
 const MAX_IMAGE: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_FILE: u64 = 32 * 1024 * 1024;
-const PIN: &str = include_str!("../../../release/ha100_official_runtime.json");
+const PIN: &str = include_str!("../../pins/ha100_official_runtime.json");
 #[derive(Clone, Deserialize)]
 struct Blob {
     size: u64,

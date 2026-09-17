@@ -4,6 +4,7 @@ on:
     paths:
       - '.gitattributes'
       - 'tools/release/mtk_dependencies*'
+      - 'tools/installer/pins/mtk_dependencies*'
       - 'tools/release/test_mtk_dependencies.py'
       - 'tools/installer/mtk_source_inventory.json'
       - 'tools/installer/mtk_session.py'
@@ -47,7 +48,7 @@ jobs:
           COUCH_RUNTIME_PLATFORM: ${{ matrix.platform }}
         run: |
           import importlib.util, json, os, pathlib
-          path = pathlib.Path('tools/release/mtk_dependencies.py').resolve()
+          path = pathlib.Path('tools/installer/pins/mtk_dependencies.py').resolve()
           spec = importlib.util.spec_from_file_location('mtk_dependencies', path)
           runtime = importlib.util.module_from_spec(spec); spec.loader.exec_module(runtime)
           base = pathlib.Path(os.environ['RUNNER_TEMP']) / 'couch-mtk-runtime'

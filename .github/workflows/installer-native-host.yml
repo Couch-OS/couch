@@ -72,7 +72,7 @@ jobs:
         shell: python
         run: |
           import hashlib, json, os, pathlib, subprocess, urllib.request
-          pin = json.loads(pathlib.Path('tools/release/ha100_official_runtime.json').read_text())
+          pin = json.loads(pathlib.Path('tools/installer/pins/ha100_official_runtime.json').read_text())
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'couch-official-input-check'
           root.mkdir()
           archive = root / 'official.zip'

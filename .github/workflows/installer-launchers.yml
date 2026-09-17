@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'tools/installer/bootstrap-native.*'
+      - 'tools/installer/installer_launchers.py'
+      - 'tools/installer/release_descriptor.py'
       - 'tools/release/installer_launchers.py'
       - 'tools/release/test_installer_launchers.py'
       - '.github/workflows/installer-launchers.yml'
@@ -27,4 +29,6 @@ jobs:
           python-version: '3.12'
       - name: Verify launcher generation and native dispatch
         working-directory: tools/release
-        run: python -m unittest test_installer_launchers -v
+        run: |
+          python -m unittest test_installer_launchers -v
+          python ../installer/test_release_descriptor.py

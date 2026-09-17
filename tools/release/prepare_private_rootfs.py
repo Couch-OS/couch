@@ -9,7 +9,10 @@ import tarfile
 
 from clean_stage import checksum, require
 from prepare_rootfs import normalize
-from private_vendor import verify_bundle, regular
+from installer_pins import load as load_installer_pin
+
+_vendor = load_installer_pin('private_vendor')
+verify_bundle, regular = _vendor.verify_bundle, _vendor.regular
 
 
 def prepare(staging, vendor, output):

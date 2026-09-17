@@ -30,7 +30,7 @@ class PublicPayloadTests(unittest.TestCase):
                     builder.assert_not_called()
 
     def test_ram_subset_is_exact_pinned_inventory_and_excludes_unneeded_modem(self):
-        root = Path(__file__).parent
+        root = Path(__file__).resolve().parents[1] / 'installer/pins'
         names = json.loads((root / 'ha100_ram_runtime.json').read_text())
         pins = json.loads((root / 'ha100_official_runtime.json').read_text())
         self.assertEqual(len(names), 19)

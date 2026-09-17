@@ -1,6 +1,6 @@
 # Desktop installer dependencies
 
-The native host's dependency pin is `tools/release/host_dependencies.json`.
+The native host's dependency pin is `tools/installer/pins/host_dependencies.json`.
 It currently covers Google's official Platform-Tools 37.0.1 ADB archives for
 Linux x86-64, macOS Intel/Apple Silicon (universal binary), and Windows x86-64.
 The versioned Google download URLs, archive sizes/SHA-256 and each retained

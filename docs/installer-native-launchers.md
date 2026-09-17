@@ -1,6 +1,6 @@
 # Native installer launchers
 
-`tools/release/installer_launchers.py` generates an `install.sh` and `install.ps1`
+`tools/installer/installer_launchers.py` generates an `install.sh` and `install.ps1`
 for one exact release. Generation does not publish a release or establish device
 acceptance. The `.24` native launchers and payload are assembled and passed
 desktop download-and-Cancel acceptance; publication and physical installation
@@ -16,19 +16,25 @@ The asset directory must contain these flat, regular files:
 
 The build workflow produces native host and terminal binaries, plus ad-hoc-signed
 universal macOS binaries. Release assembly assigns the flat names above. It must
-use binaries and public payloads from the reviewed source commit and retain their
-build receipts. Linux ARM terminal/host build artifacts are also produced, but
+retain build receipts for the reviewed installer source commit and the separately
+pinned OS source commit. Linux ARM terminal/host build artifacts are also produced, but
 the complete dependency runtime and these launchers currently support Linux x64.
 
-`installer.json` contains only `schema: 1`,
+Legacy `installer.json` contains only `schema: 1`,
 `kind: "couch-native-installer-release"`, `model: "sanytron-ha100"`, the release
 `version`, a forty-digit `source_commit`, and a `payload` object with an exact
 GitHub release URL, byte `size`, `sha256` and `format: "tar.gz"`. It contains no
 device identity, credentials or owner firmware. Native host admission remains
 responsible for the payload and owner-input verification.
 
+New descriptors use schema 2 with separate `installer` and `os` identities and
+an explicit installation protocol. See [installer release
+boundaries](installer-release-boundary.md) for creating a descriptor against an
+existing OS archive. The old `tools/release/installer_launchers.py` command is a
+compatibility entry point for the same generator.
+
 ```sh
-python3 tools/release/installer_launchers.py \
+python3 tools/installer/installer_launchers.py \
   --assets /path/to/reviewed-flat-assets \
   --output /path/to/new-launchers \
   --version v0.1.0-alpha.1

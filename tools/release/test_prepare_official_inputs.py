@@ -6,7 +6,9 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-import prepare_official_inputs as inputs
+from installer_pins import load as load_installer_pin
+
+inputs = load_installer_pin('prepare_official_inputs')
 
 
 class OwnerInputTests(unittest.TestCase):

@@ -6,7 +6,7 @@ if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -or $env:PROCESSOR_ARCHITEW6432 -eq 
 }
 Add-Type -AssemblyName System.Net.Http
 $version = '@VERSION@'
-$base = "https://github.com/dangerouslaser/couch/releases/download/$version"
+$base = '@RELEASE_URL@'
 $installerWork = Join-Path ([IO.Path]::GetTempPath()) ('couch-installer-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($installerWork) | Out-Null
 $handler = [Net.Http.HttpClientHandler]::new()

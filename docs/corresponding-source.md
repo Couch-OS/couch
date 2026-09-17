@@ -49,6 +49,21 @@ rights to excluded vendor material.
 
 ## Collecting a release
 
+Independent installer releases record separate installer and OS source commits
+in schema-2 `installer.json`. Keep the existing OS payload's source archive and
+build receipts, and collect the installer source and locked dependencies from
+the installer commit. Do not relabel the old OS archive with the new installer
+commit. The self-contained
+`tools/installer/source/corresponding_source.py` collector works in the extracted
+installer repository and requires all four workspace manifests/locks, vendored
+dependencies, notices and an audited Rust standard-library source receipt. Its
+archive is explicitly installer-scoped and cannot satisfy the full OS source
+contract. See its [commands and provenance limits](../tools/installer/source/README.md).
+The existing release CLI also exposes this through `--scope installer`; full
+Couch collection remains its default. Keep the OS source in a separate output.
+The smaller `tools/installer/export_source.py` export is an isolation check and
+development input; it does not replace corresponding source or dependency notices.
+
 Use a fresh output directory for each frozen release commit. The collector reads
 Git objects, so an uncommitted change cannot silently become published source.
 If the installer host crate is not present in that commit, Cargo collection fails
