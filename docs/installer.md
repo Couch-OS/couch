@@ -96,13 +96,13 @@ Linux x64 and macOS, from an interactive terminal:
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260916.170/install.sh | sh
+  https://github.com/Couch-OS/couch/releases/download/v0.1.0-alpha.20260916.170/install.sh | sh
 ```
 
 Windows x64, from PowerShell:
 
 ```powershell
-Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260916.170/install.ps1' | Invoke-Expression
+Invoke-RestMethod 'https://github.com/Couch-OS/couch/releases/download/v0.1.0-alpha.20260916.170/install.ps1' | Invoke-Expression
 ```
 
 The release launcher verifies the native host, terminal and release configuration

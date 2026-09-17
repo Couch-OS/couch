@@ -124,6 +124,6 @@ privileged hardware access.
 
 ## Source references
 
-- [`clients/couch-plugin/src/protocol.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-plugin/src/protocol.rs)
-- [`clients/couch-plugin/src/manifest.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-plugin/src/manifest.rs)
-- [`clients/couch-sdk/src/client.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-sdk/src/client.rs)
+- [`clients/couch-plugin/src/protocol.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/protocol.rs)
+- [`clients/couch-plugin/src/manifest.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/manifest.rs)
+- [`clients/couch-sdk/src/client.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-sdk/src/client.rs)

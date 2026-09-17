@@ -335,6 +335,6 @@ plugin host and package manager.
 
 ## Source references
 
-- [`tools/integrations/build-apk.sh`](https://github.com/dangerouslaser/couch/blob/main/tools/integrations/build-apk.sh)
-- [`tools/integrations/build-repository.sh`](https://github.com/dangerouslaser/couch/blob/main/tools/integrations/build-repository.sh)
-- [`docs/integration-packages.md`](https://github.com/dangerouslaser/couch/blob/main/docs/integration-packages.md)
+- [`tools/integrations/build-apk.sh`](https://github.com/Couch-OS/couch/blob/main/tools/integrations/build-apk.sh)
+- [`tools/integrations/build-repository.sh`](https://github.com/Couch-OS/couch/blob/main/tools/integrations/build-repository.sh)
+- [`docs/integration-packages.md`](https://github.com/Couch-OS/couch/blob/main/docs/integration-packages.md)

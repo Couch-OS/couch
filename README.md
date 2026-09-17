@@ -26,7 +26,7 @@ carried by Wi-Fi. Start Android on the HA100, enable USB debugging, connect the
 remote, then run the pinned installer for the current prerelease in a terminal:
 
 ```sh
-curl -fsSL https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260916.170/install.sh | sh
+curl -fsSL https://github.com/Couch-OS/couch/releases/download/v0.1.0-alpha.20260916.170/install.sh | sh
 ```
 
 Windows users run `install.ps1` from the same release in PowerShell. The script
@@ -49,7 +49,7 @@ and [restoring stock Android](docs/installer-android-restore.md).
 
 Questions, install reports and hardware findings are welcome on the
 [Couch Discord server](https://discord.gg/KnZK6SZQhF). Bugs go to the
-[issue tracker](https://github.com/dangerouslaser/couch/issues).
+[issue tracker](https://github.com/Couch-OS/couch/issues).
 
 ## Development
 

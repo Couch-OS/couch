@@ -14,9 +14,10 @@ pub(crate) const PREFIXES: [&str; 2] = [
     "https://github.com/Couch-OS/couch/releases/download/",
 ];
 /// Where new releases are published and what their signed manifests name.
-/// Updaters older than PREFIXES accept only this owner, so it changes to
-/// Couch-OS only after the repository has moved.
-pub(crate) const PREFIX: &str = PREFIXES[0];
+/// The repository has moved, so releases from here on name the organization.
+/// Remotes older than PREFIXES accept only the previous owner; they are served
+/// the last compatible release from the retained dangerouslaser/couch archive.
+pub(crate) const PREFIX: &str = PREFIXES[1];
 
 /// The accepted asset URL for `name` in release `tag`, if `url` is one.
 fn release_url(url: &str, tag: &str, name: &str) -> bool {

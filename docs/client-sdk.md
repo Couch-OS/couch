@@ -65,12 +65,12 @@ Couch revision:
 
 ```toml
 [dependencies]
-couch-plugin = { git = "https://github.com/dangerouslaser/couch.git", rev = "FULL_COMMIT" }
-couch-sdk = { git = "https://github.com/dangerouslaser/couch.git", rev = "FULL_COMMIT" }
+couch-plugin = { git = "https://github.com/Couch-OS/couch.git", rev = "FULL_COMMIT" }
+couch-sdk = { git = "https://github.com/Couch-OS/couch.git", rev = "FULL_COMMIT" }
 
 [dev-dependencies]
-couch-plugin = { git = "https://github.com/dangerouslaser/couch.git", rev = "FULL_COMMIT", features = ["testing"] }
-couch-sdk = { git = "https://github.com/dangerouslaser/couch.git", rev = "FULL_COMMIT", features = ["testing"] }
+couch-plugin = { git = "https://github.com/Couch-OS/couch.git", rev = "FULL_COMMIT", features = ["testing"] }
+couch-sdk = { git = "https://github.com/Couch-OS/couch.git", rev = "FULL_COMMIT", features = ["testing"] }
 ```
 
 Commit `Cargo.lock`. Use `couch_plugin::serve` for the executable and the

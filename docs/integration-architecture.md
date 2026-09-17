@@ -139,3 +139,6 @@ that needs an explicit configuration migration and device validation.
 - [Package format and lifecycle](integration-packages.md)
 - [Developer guide](development/index.md)
 - [Core runtime updates](runtime-updates.md)
+- [Integration separation](integration-separation.md) — moving a built-in
+  integration to an independent repository: readiness, missing capabilities,
+  and retirement constraints.
