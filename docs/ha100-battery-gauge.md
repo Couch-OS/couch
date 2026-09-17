@@ -175,7 +175,7 @@ costs have not been measured in this review.
 
 ## Reporting and standby corrections
 
-The Couch changes incorporate [PR #180](https://github.com/dangerouslaser/couch/pull/180)
+The Couch changes incorporate [PR #180](https://github.com/Couch-OS/couch/pull/180)
 and retain its author’s commit: battery icons, the default-off percentage setting
 on the remote and web UI, and persistent settings across GUI restarts.
 [Battery parsing](../ui/couch-gui/src/battery.rs) additionally rejects malformed

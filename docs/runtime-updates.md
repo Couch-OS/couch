@@ -337,7 +337,7 @@ cargo run --manifest-path daemon/Cargo.toml -p couch-updates -- \
 
 The publisher emits `couch-VERSION-ha100-runtime.tar.gz` and
 `couch-VERSION-ha100-update.json`. Attach both to the matching versioned GitHub
-release in `dangerouslaser/couch`; mark alpha tags as prereleases.
+release in `Couch-OS/couch`; mark alpha tags as prereleases.
 
 A boot payload is signed from the public boot directory and the clean runtime of
 the same version (for the OS baseline it is bound to):
