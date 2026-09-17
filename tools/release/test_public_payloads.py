@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from clean_stage import StageError, checksum
+from installer_pins import PINS
 from prepare_public_userdata import prepare
 
 
@@ -30,7 +31,7 @@ class PublicPayloadTests(unittest.TestCase):
                     builder.assert_not_called()
 
     def test_ram_subset_is_exact_pinned_inventory_and_excludes_unneeded_modem(self):
-        root = Path(__file__).parent
+        root = PINS
         names = json.loads((root / 'ha100_ram_runtime.json').read_text())
         pins = json.loads((root / 'ha100_official_runtime.json').read_text())
         self.assertEqual(len(names), 19)

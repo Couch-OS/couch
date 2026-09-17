@@ -4,6 +4,7 @@
 //! extracts there with scripts and networking disabled; Couch then admits only
 //! one regular-file integration payload into its own versioned store.
 
+pub mod management;
 pub use couch_plugin::Manifest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -80,6 +81,11 @@ struct Selection {
     active: Option<Slot>,
     previous: Option<Slot>,
 }
+/// Hold this lease while changing settings/configuration that package admission reads.
+pub struct ReadLease {
+    _lock: Lock,
+}
+
 #[derive(Debug, Clone)]
 pub struct Store {
     root: PathBuf,
@@ -115,6 +121,12 @@ impl Store {
     pub fn root(&self) -> &Path {
         &self.root
     }
+    pub fn read_lease(&self) -> Result<ReadLease> {
+        self.layout()?;
+        Ok(ReadLease {
+            _lock: Lock::acquire_shared_wait(self.root.join(".lock"), MUTATION_LOCK_WAIT)?,
+        })
+    }
     /// A local sideload remains authenticated: it must be signed by a key in
     /// `keys_dir`. This is intentionally not an `--allow-untrusted` escape.
     pub fn install_sideload(&self, package: &Path) -> Result<InstalledIntegration> {
@@ -130,7 +142,46 @@ impl Store {
         package: &str,
         repository: &str,
     ) -> Result<InstalledIntegration> {
-        if !valid_component(package) || repository.is_empty() || repository.contains('\n') {
+        self.fetch_repository(package, repository, None)
+    }
+    fn trust_keys(&self) -> Result<PathBuf> {
+        if self.keys_dir != Path::new(DEFAULT_KEYS_DIR) {
+            return Ok(self.keys_dir.clone());
+        }
+        // The publisher key travels inside the signed core executable, avoiding
+        // a new OTA payload filename that old updaters would reject. Custom
+        // feeds always supply their own scoped directory.
+        let path = self.root.join(".official-keys");
+        fs::create_dir_all(&path).map_err(|e| io("create official trust directory", e))?;
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|e| io("inspect official trust directory", e))?;
+        if !metadata.is_dir() || metadata.permissions().mode() & 0o022 != 0 {
+            return Err(err("invalid official trust directory"));
+        }
+        // No additional key files are admitted to the built-in trust domain.
+        for entry in fs::read_dir(&path).map_err(|e| io("inspect official keys", e))? {
+            let entry = entry.map_err(|e| io("inspect official key", e))?;
+            if entry.file_name() != "couch-integrations.rsa.pub" {
+                return Err(err("unexpected key in official trust directory"));
+            }
+        }
+        atomic_write(
+            &path.join("couch-integrations.rsa.pub"),
+            include_bytes!("official.rsa.pub"),
+        )?;
+        Ok(path)
+    }
+    fn fetch_repository(
+        &self,
+        package: &str,
+        repository: &str,
+        expected: Option<(&str, &str)>,
+    ) -> Result<InstalledIntegration> {
+        let valid_package = package.split_once('=').map_or_else(
+            || valid_component(package),
+            |(name, version)| valid_component(name) && valid_version(version),
+        );
+        if !valid_package || repository.is_empty() || repository.contains('\n') {
             return Err(err("invalid repository package or URL"));
         }
         self.layout()?;
@@ -144,7 +195,7 @@ impl Store {
         let mut command = Command::new(&self.apk);
         command
             .arg("--keys-dir")
-            .arg(&self.keys_dir)
+            .arg(self.trust_keys()?)
             .arg("--repositories-file")
             .arg(&repositories)
             .arg("--no-cache")
@@ -165,11 +216,18 @@ impl Store {
             let _ = fs::remove_dir_all(&fetch);
             return Err(err("repository fetch did not produce exactly one APK"));
         }
-        let result = self.install(&candidates[0]);
+        let result = self.install_expected(&candidates[0], expected);
         let _ = fs::remove_dir_all(&fetch);
         result
     }
     pub fn install(&self, package: &Path) -> Result<InstalledIntegration> {
+        self.install_expected(package, None)
+    }
+    fn install_expected(
+        &self,
+        package: &Path,
+        expected: Option<(&str, &str)>,
+    ) -> Result<InstalledIntegration> {
         let package = package
             .canonicalize()
             .map_err(|e| io("resolve APK path", e))?;
@@ -186,7 +244,7 @@ impl Store {
         fs::create_dir(&staging).map_err(|e| io("create private staging root", e))?;
         let result = self
             .run_apk(&package, &staging)
-            .and_then(|_| self.admit(&staging));
+            .and_then(|_| self.admit_expected(&staging, expected));
         let _ = fs::remove_dir_all(&staging);
         result
     }
@@ -300,7 +358,7 @@ impl Store {
             .arg("--root")
             .arg(staging)
             .arg("--keys-dir")
-            .arg(&self.keys_dir)
+            .arg(self.trust_keys()?)
             .arg("--repositories-file")
             .arg("/dev/null")
             .arg("--no-network")
@@ -311,7 +369,11 @@ impl Store {
             .arg(package);
         run_bounded(&mut command, Duration::from_secs(60))
     }
-    fn admit(&self, staging: &Path) -> Result<InstalledIntegration> {
+    fn admit_expected(
+        &self,
+        staging: &Path,
+        expected: Option<(&str, &str)>,
+    ) -> Result<InstalledIntegration> {
         let base = staging.join("usr/lib/couch/integrations");
         let ids = directories(&base)?;
         if ids.len() != 1 || !valid_component(&ids[0]) {
@@ -326,6 +388,11 @@ impl Store {
         validate_manifest(&manifest)?;
         if manifest.id != *id || !valid_version(&manifest.version) {
             return Err(err("manifest id does not match package directory"));
+        }
+        if expected.is_some_and(|(id, version)| manifest.id != id || manifest.version != version) {
+            return Err(err(
+                "package manifest differs from the selected repository identity",
+            ));
         }
         let executable = package_root.join(&manifest.executable);
         if !fs::metadata(&executable)
@@ -408,24 +475,21 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             _ => return Err(err("cannot inspect existing integration configuration")),
         };
-        let config: serde_json::Value = serde_json::from_slice(&bytes)
+        let stored: couch_model::StoredConfig = serde_json::from_slice(&bytes)
             .map_err(|_| err("cannot parse existing integration configuration"))?;
-        let Some(connections) = config
-            .get("connections")
-            .and_then(serde_json::Value::as_array)
-        else {
-            return Ok(());
-        };
-        for connection in connections {
-            if connection["provider"]["kind"] != "plugin"
-                || connection["provider"]["id"] != manifest.id
+        let config = stored.into_config().map_err(err)?;
+        config
+            .validate()
+            .map_err(|_| err("existing integration configuration is invalid"))?;
+        for connection in &config.connections {
+            if !matches!(&connection.provider, couch_model::Provider::Plugin { id, .. } if id == &manifest.id)
             {
                 continue;
             }
-            let id = connection["id"]
-                .as_str()
-                .filter(|id| valid_component(id))
-                .ok_or_else(|| err("invalid saved connection identifier"))?;
+            let id = connection.id.as_str();
+            if !valid_component(id) {
+                return Err(err("invalid saved connection identifier"));
+            }
             let path = home
                 .join("connections")
                 .join(id)

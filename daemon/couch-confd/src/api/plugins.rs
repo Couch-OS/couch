@@ -67,13 +67,13 @@ impl Api {
             let _ = store.mutate(None, |cfg| cfg.connections = next.connections);
         }
     }
-    pub(super) fn integration_route(&self, method: &str, path: &[&str], _body: &[u8]) -> Reply {
+    pub(super) fn integration_route(&self, method: &str, path: &[&str], body: &[u8]) -> Reply {
         match (method, path) {
             ("GET", []) => match self.plugins.catalog() {
                 Ok(integrations) => Reply::json(200, &json!({"integrations":integrations})),
                 Err(_) => Reply::error(503, "Cannot read the installed integration catalog"),
             },
-            _ => Reply::error(404, "Unknown integration operation"),
+            _ => self.integration_package_route(method, path, body),
         }
     }
 
@@ -109,7 +109,33 @@ impl Api {
                         Ok(value) => value,
                         Err(reply) => return reply,
                     };
-                    self.plugins.save_settings(connection, &id, value)
+                    if id == "denon" {
+                        // Serialize target edits with migration preflight and
+                        // its commit, including edits to other Denon packages.
+                        let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                        if store
+                            .config()
+                            .migrated_denon(&Id::new(connection))
+                            .is_some()
+                        {
+                            return Reply::error(409, "Restore built-in Denon before changing a migrated receiver's settings");
+                        }
+                        if !store.config().connection(&Id::new(connection)).is_some_and(
+                            |c| matches!(&c.provider, Provider::Plugin { id, .. } if id == "denon"),
+                        ) {
+                            return Reply::error(
+                                409,
+                                "Denon connection changed; refresh before saving settings",
+                            );
+                        }
+                        self.plugins.save_denon_settings(
+                            connection,
+                            value,
+                            crate::plugins::protected_denon_targets(store.config()),
+                        )
+                    } else {
+                        self.plugins.save_settings(connection, &id, value)
+                    }
                 }
                 _ => return Reply::error(405, "Use GET or POST for integration settings"),
             };

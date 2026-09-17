@@ -1,0 +1,3 @@
+[submodule "couch-installer"]
+	path = couch-installer
+	url = https://github.com/Couch-OS/couch-installer.git

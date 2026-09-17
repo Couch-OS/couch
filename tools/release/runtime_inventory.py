@@ -12,6 +12,9 @@ import struct
 import subprocess
 
 from kernel_provenance import boot_kernel, PIN
+from verify_integration_set import DEFAULT as DEFAULT_INTEGRATION_SET
+from verify_integration_set import receipt as integration_receipt
+from verify_integration_set import verify_receipt as verify_integration_receipt
 
 from clean_stage import REPO, archive_name, build, require, secret_path
 
@@ -295,9 +298,16 @@ def main():
     parser.add_argument('--vendor-dir', type=Path)
     parser.add_argument('--boot-image', default='build/couch-board-init-fixed.img')
     parser.add_argument('--recovery-image', default='build/couch-recovery.img')
+    parser.add_argument('--integration-set', type=Path, default=DEFAULT_INTEGRATION_SET,
+                        help='Pinned core/package compatibility set to record')
+    parser.add_argument('--integration-receipt', type=Path,
+                        help='Offline feed-byte verification receipt for a release candidate')
     args = parser.parse_args()
     require(not args.output.exists(), 'Output directory must be new')
     result = audit(vendor=args.vendor_dir, boot=args.boot_image, recovery=args.recovery_image)
+    result['tested_integration_set'] = (verify_integration_receipt(
+        args.integration_set, args.integration_receipt, require_artifacts=True)
+        if args.integration_receipt else integration_receipt(args.integration_set))
     diff = subprocess.check_output(['git', '-C', str(REPO), 'diff', 'HEAD', '--',
         'ui', 'model', 'clients', 'daemon', 'web', 'src', 'stage2', 'initramfs', 'recovery'])
     result['tracked_payload_worktree_clean'] = not diff

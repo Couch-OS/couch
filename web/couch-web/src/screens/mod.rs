@@ -21,6 +21,8 @@ mod activity_sequences;
 mod area_shortcuts;
 pub mod areas;
 mod home_assistant;
+mod integration_migrations;
+pub mod integrations;
 pub mod overview;
 pub mod rooms;
 pub mod scenes;
@@ -50,6 +52,7 @@ pub fn render(app: App, route: Route) -> AnyView {
         Route::Rooms => overview::rooms(app),
         Route::Connections => overview::connections(app),
         Route::Connection(id) => connections::detail(app, id),
+        Route::Integrations => integrations::screen(app),
         Route::Settings => remote::screen(app),
         Route::Updates => updates::screen(app),
         Route::Areas => areas::list(app),

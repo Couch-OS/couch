@@ -55,7 +55,8 @@ firmware, not assumptions.
 - **A 16 MiB image with Wi-Fi exists.** The installer's RAM stage packs the
   stock kernel, WMT loader/launcher with Bionic, firmware, `wpa_supplicant` with
   musl, BusyBox and a static rustls service under the 16 MiB boot limit
-  (`tools/release/prepare_wifi_ramdisk.py`, `tools/installer/wifi-stage`).
+  (`tools/release/prepare_wifi_ramdisk.py`,
+  `couch-installer/tools/installer/wifi-stage`).
 - **On-device GitHub fetching exists.** `daemon/couch-updates` already lists
   GitHub releases over `ureq`/rustls, checks GitHub's asset digest, verifies the
   Ed25519 publisher signature and SHA-256, and stages/activates with rollback.
@@ -259,7 +260,7 @@ What it needs, and where it comes from:
 | credentials | saved `/opt/couch/networks.conf` when a rootfs exists; otherwise the setup hotspot and captive portal from `stage2/portal.sh`, so a phone supplies the SSID/password and presses Install | hostapd, dnsmasq and httpd must move into the ramdisk (they live in the Alpine rootfs today); ~1.5 MB |
 | fetch and verify | `couch-updates`: GitHub releases API, asset digest, Ed25519 publisher key baked into the image, SHA-256, bounded download | exists for runtime bundles; needs an "OS image" asset kind and a streaming write instead of tar extraction |
 | write | fallocate + write + fsync + independent readback of the rootfs file (option A), or the RAM stage's verified partition writer (option B) | the stage's storage policy crate is the model; journal in `expdb` instead of on a host |
-| screen | `fbcon` or the installer's progress renderer (`tools/installer/display`) | exists |
+| screen | `fbcon` or the installer's progress renderer (`couch-installer/tools/installer/display`) | exists |
 | size | stock kernel ~7 MB, BusyBox ~1 MB, supplicant + libs ~2.5 MB, hostapd/dnsmasq ~1.5 MB, static rustls fetcher ~3 to 4 MB, gzip | fits the 16 MiB slot with a few MiB to spare; the RAM stage proves the shape |
 
 What it deliberately cannot do: change the partition map, write `lk`,

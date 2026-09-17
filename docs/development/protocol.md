@@ -6,8 +6,9 @@ Order: 3
 
 An integration has two boundaries. `couch-sdk` defines how Rust code talks to a
 device. `couch-plugin` carries that contract across a subprocess socket with a
-versioned JSON protocol. The Rust crate is currently an in-tree dependency,
-not a crates.io release; protocol version 1 is the installation boundary.
+versioned JSON protocol. The Rust crates are maintained in this repository and
+can be consumed by an independent integration through one full Git commit pin;
+they are not crates.io releases. Protocol version 1 is the installation boundary.
 
 ## Implementing `DeviceClient`
 

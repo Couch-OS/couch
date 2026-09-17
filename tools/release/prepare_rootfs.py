@@ -21,7 +21,8 @@ def normalize(data, epoch, private_files=None):
     """Validate without host extraction and normalize order/times, retaining IDs."""
     private_files = private_files or {}
     if private_files:
-        from private_vendor import ALLOWED
+        from installer_pins import load as load_installer_pin
+        ALLOWED = load_installer_pin('private_vendor').ALLOWED
         require(set(private_files) == {'opt/couch/' + p for p in ALLOWED}, 'Incomplete private vendor allowlist')
         require(all(re.fullmatch('[0-9a-f]{64}', h) for h in private_files.values()), 'Invalid private vendor digest')
     private_dirs = {str(parent) for name in private_files for parent in PurePosixPath(name).parents}

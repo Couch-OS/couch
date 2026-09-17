@@ -34,7 +34,8 @@ impl Cache {
             if raw.len() > 4 * 1024 * 1024 {
                 return None;
             }
-            let mut c: Config = serde_json::from_slice(&raw).ok()?;
+            let stored: couch_model::StoredConfig = serde_json::from_slice(&raw).ok()?;
+            let mut c = stored.into_config().ok()?;
             // couch-confd rewrites an old file on its next start; until then
             // (and for a file it never opened) the same migration runs here.
             c.migrate();
@@ -105,6 +106,27 @@ pub fn current() -> Option<Arc<Snapshot>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disk_envelope_loads_complete_integration_configuration() {
+        let path =
+            std::env::temp_dir().join(format!("couch-snapshot-plugin-{}.json", std::process::id()));
+        let config: Config = serde_json::from_str(
+            r#"{
+            "schema_version":1,"connections":[{"id":"receiver","name":"Receiver",
+            "provider":{"kind":"plugin","id":"denon","label":"Denon"}}]
+        }"#,
+        )
+        .unwrap();
+        fs::write(
+            &path,
+            serde_json::to_vec(&couch_model::StoredConfig::new(&config)).unwrap(),
+        )
+        .unwrap();
+        let cache = Cache::default();
+        assert!(cache.reload(&path));
+        assert_eq!(*cache.get().unwrap().config, config);
+        fs::remove_file(path).unwrap();
+    }
     #[test]
     fn unchanged_and_invalid_files_preserve_snapshot_and_atomic_replacement_updates_it() {
         let path = std::env::temp_dir().join(format!("couch-snapshot-{}.json", std::process::id()));

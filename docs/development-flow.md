@@ -47,18 +47,16 @@ candidate is, so the release list stays readable.
 
 ## Promoting to `main`
 
-1. On `dev`, before the promotion pull request, run
-   `python3 tools/release/bump_release.py v0.1.0-alpha.<date>.<n>` with the tag
-   the promotion will carry, and commit the result. The tag lives once, in
-   `tools/release/current-release.txt`; the script writes it there and rewrites
-   every install command that names it in `README.md` and `docs/installer.md`.
-   The separate `couch-site` build reads this source file from its pinned Couch
-   checkout to render website commands. Do not edit these literals by hand: CI
-   runs `bump_release.py --check` and fails if either disagrees.
+1. On `dev`, prepare the promotion pull request with the runtime tag
+   `v0.1.0-alpha.<date>.<n>` the release will carry. Runtime promotions do not
+   change the published installer commands. Installer builds have their own
+   `VERSION` and `installer-v…` release tags in
+   [Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer); see
+   [installer release boundaries](installer-release-boundary.md).
 2. Open a pull request from `dev` to `main` titled for the batch, listing the
    feature pull requests it carries. Merge it with a merge commit.
 3. Tag the merge commit `v0.1.0-alpha.<date>.<n>` (the `<n>` after the last
-   dev build, and the tag step 1 wrote) and publish the full prerelease:
+   dev build, and the tag selected in step 1) and publish the full prerelease:
    runtime archive and manifest, corresponding source, `SHA256SUMS`, notes that
    name the changes since the previous promotion and what was validated on
    hardware.
@@ -67,6 +65,38 @@ candidate is, so the release list stays readable.
 5. Bring `dev` back in line: `git checkout dev && git merge --ff-only main`
    (the promotion merge is the only new commit on `main`, so this is always a
    fast-forward).
+
+## Bumping the installer pin
+
+The `couch-installer/` submodule pins one commit of
+[Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer).
+Installer changes merge there first, through pull requests to its `dev`. To
+carry a newer installer, check out a commit that is on that repository's `dev`
+or `main`, stage the gitlink and open a feature pull request against Couch's
+`dev`:
+
+```sh
+git -C couch-installer fetch origin
+git -C couch-installer checkout INSTALLER_COMMIT
+git add couch-installer
+```
+
+After pulling a pin change, run `git submodule update --init couch-installer`.
+Each git worktree needs its own init.
+
+## Publishing installer commands
+
+After a separately validated installer release is available, run
+`python3 tools/release/bump_release.py installer-v0.1.0` with its actual tag.
+When moving published launchers to the separate repository, also pass
+`--repository Couch-OS/couch-installer`.
+This updates `README.md`, `docs/installer.md`, and the legacy
+`tools/release/current-release.txt` pointer read by the separate `couch-site`
+build. `tools/release/installer-repository.txt` records the published repository;
+the site must consume it alongside the tag before a repository cutover. Existing
+published commands stay unchanged until that step. The `release-pointers.yml`
+workflow checks their consistency with `bump_release.py --check`. This tool
+updates references; it does not build, tag, upload or publish a release.
 
 ## Why not automate the dev builds
 

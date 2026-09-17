@@ -26,6 +26,8 @@ mod denon;
 mod device_ir;
 mod ha;
 mod hue;
+mod integration_migrations;
+mod integration_packages;
 mod ir;
 mod kodi;
 mod matter;
@@ -63,6 +65,7 @@ pub struct Api {
     assets: Assets,
     auth: Arc<Auth>,
     plugins: crate::plugins::Runtime,
+    integration_packages: couch_integrations::management::Manager,
 }
 
 /// What a `POST` to a collection needs: everything else is defaulted and then
@@ -232,6 +235,13 @@ impl Api {
             store: Mutex::new(store),
             assets,
             auth,
+            integration_packages: couch_integrations::management::Manager::new(
+                couch_integrations::Store::new(
+                    std::env::var_os("COUCH_INTEGRATIONS_DIR")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| home.join("integrations")),
+                ),
+            ),
             plugins: crate::plugins::Runtime::new(home),
         }
     }
@@ -355,6 +365,9 @@ impl Api {
         }
         if rest.first() == Some(&"connections") {
             return self.connection_route(&method, &rest[1..], &body, if_match);
+        }
+        if rest.starts_with(&["integrations", "migrations", "denon"]) {
+            return self.denon_migration_route(&method, &rest[3..], &body);
         }
         if rest.first() == Some(&"integrations") {
             return self.integration_route(&method, &rest[1..], &body);

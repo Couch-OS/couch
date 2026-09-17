@@ -1,9 +1,11 @@
 # Installer release discovery
 
-The Python reference terminal (`python3 tools/installer/couch_tui.py`) can browse published Couch release metadata using
-**r · Browse GitHub releases**. Choose `stable` or `alpha`, optionally enter an
-exact tag, then select a numbered release to inspect its descriptor. Browsing
-does not download or execute installer/OS payloads and never opens USB.
+The Python reference terminal
+(`python3 couch-installer/tools/installer/couch_tui.py`) can browse published
+Couch release metadata using **r · Browse GitHub releases**. Choose `stable` or
+`alpha`, optionally enter an exact tag, then select a numbered release to
+inspect its descriptor. Browsing does not download or execute installer/OS
+payloads and never opens USB.
 
 The [native installation flow](installer.md) uses **Wi-Fi for image transfer**,
 with USB for bootstrap and recovery. This Python metadata browser remains a
@@ -63,4 +65,5 @@ GitHub asset hashes detect changed bytes; hashes from the same hosting account
 are **not an independently verified publisher signature**. Signing, public
 artifact approval and physical installation validation remain separate gates.
 
-Validation: `python3 -m unittest discover -s tools/installer -p 'test_release_discovery.py'`.
+Validation:
+`python3 -m unittest discover -s couch-installer/tools/installer -p 'test_release_discovery.py'`.

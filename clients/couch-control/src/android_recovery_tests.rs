@@ -122,7 +122,13 @@ fn result(rx: mpsc::Receiver<Result<Value>>) -> Result<Value> {
 }
 fn lane() -> (mpsc::Sender<Job>, thread::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
-    let task = thread::spawn(move || run_lane(rx, Arc::new(Counters::default())));
+    let task = thread::spawn(move || {
+        run_lane(
+            rx,
+            Arc::new(Counters::default()),
+            &super::Retirement::default(),
+        )
+    });
     (tx, task)
 }
 

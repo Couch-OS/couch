@@ -3,7 +3,7 @@
 `tools/release/runtime_inventory.py BASE_SPEC NEW_OUTPUT` audits explicit local build artifacts and emits `payload-inventory.json`. When the clean Couch portion passes, it also emits a ready-to-use `staging-input.json` for [offline package assembly](releases.md#assemble-offline-packages). It never contacts the remote, reads personal configuration, executes vendor extraction, or copies a vendor tree into the image.
 
 ```sh
-tools/build-wmt-properties.sh
+tools/build-wmt-properties.sh   # build/couch-wmt-properties.so from src/wmt-properties.c
 tools/build-release.sh   # runtime bundle: couch-gui, couch-confd, couch-system, couch-sonos, couch-coreelec
                          # boot ramdisk /extra: couch-bt-bridge, couch-bt-hid, couch-bluetoothd
 python3 tools/release/runtime_inventory.py build/alpine-staging-input.json build/runtime-payload
@@ -12,6 +12,13 @@ python3 tools/release/prepare_rootfs.py build/runtime-payload/staging-input.json
 ```
 
 `BASE_SPEC` supplies the pinned clean Alpine input and timestamp. Its artifact list is replaced by the explicit runtime list. Run on the checkout holding the ARM build artifacts; on the release host that is the checkout `tools/build-release.sh` just ran in ([releases.md](releases.md#build-host)). The inventory's Git commit describes the audited checkout, **not** an attestation that existing binaries were built from that commit. Tracked payload changes are represented only by a cleanliness flag and diff hash; their contents are not copied into the report.
+
+The inventory also validates and records
+`tools/release/tested-integrations.json`. For an integration rollout candidate,
+generate the offline feed-byte receipt described in
+[integration release rollout](integration-release-rollout.md#produce-the-tested-set-receipt)
+and pass it with `--integration-receipt`. The receipt is provenance only; the
+manifest and integration APK are not copied into `/opt/couch`.
 
 ## Runtime files
 
@@ -125,7 +132,8 @@ branch before claiming the entire historical bundle is dependency-complete.
 Static dependency-name checks do not validate dynamic namespaces, symbol
 versions, firmware behavior or physical Wi-Fi startup.
 
-The normal runtime also requires `build/couch-wmt-properties.so`, built with
-`tools/build-wmt-properties.sh`. It uses the same narrow detected-chip property
-bridge as the RAM installer; only the Android WMT launcher receives LD_PRELOAD.
-A missing radio must not be interpreted as missing saved Wi-Fi credentials.
+The normal runtime also requires `build/couch-wmt-properties.so`, built from
+`src/wmt-properties.c` with `tools/build-wmt-properties.sh`. It uses the same
+narrow detected-chip property bridge as the RAM installer; only the Android WMT
+launcher receives LD_PRELOAD. A missing radio must not be interpreted as missing
+saved Wi-Fi credentials.

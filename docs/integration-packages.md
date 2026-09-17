@@ -1,7 +1,14 @@
 # Integration packages
 
-Couch integrations are signed APKs containing one isolated plugin. `apk` is
-used only in a fresh private staging root with the configured trust keys,
+The integration-capable development runtime provides a paired web
+**Integrations** page for browsing, installing, updating, rolling back and
+removing packages, plus persistent custom repositories with explicit key trust.
+See [integration management](integration-management.md) for the operator flow.
+The released `.170` runtime predates the host; these source capabilities require
+a core update before they are available on a device.
+
+Couch integrations are signed APKs containing one isolated plugin. Extraction
+runs `apk` in a fresh private staging root with the configured trust keys,
 `--no-network`, and `--no-scripts`; Couch never mutates Alpine's package
 database or permits package scripts/triggers.
 
@@ -15,8 +22,16 @@ Each APK installs exactly this payload:
 
 `manifest.json` is the protocol-v1 `couch-plugin::Manifest`. Its ID must match
 the directory and its executable must be a normal relative path below that
-directory. The binary's hello manifest must match before activation. Only
-regular files and directories are admitted. Links, devices, FIFOs, sockets,
+directory. The binary's hello manifest must match before activation.
+
+Every change to the installed payload, including the manifest or rebuilt
+executable, **must bump
+`manifest.version` and the matching APK `pkgver`**. Slots are immutable by
+integration ID and manifest version. Publishing only `-r1` for different bytes
+at the same manifest version is not an integration update and will be refused
+as a conflicting slot; the packaging helper emits `-r0`.
+
+Only regular files and directories are admitted. Links, devices, FIFOs, sockets,
 set-id/world-writable files, excess files/bytes, and paths outside the payload
 are rejected.
 
@@ -63,12 +78,13 @@ needs that public key in its own `/etc/apk/keys`. Publish the resulting
 repository directory over HTTPS; it contains `armv7/APKINDEX.tar.gz` and the
 signed APKs. Keep the private key on the packaging host or mount it only into
 the disposable container for packaging; never copy it to a device. Provision
-only the public key in a dedicated device directory under
-`/opt/couch/integration-keys`. Integration-capable runtimes use
-`/opt/couch/integration-keys/official` by default; custom feeds use
-`/opt/couch/integration-keys/custom/NAME`. The build container's global key
-directory does not authorize placing an integration key in the device's global
-Alpine `/etc/apk/keys`.
+only public keys on devices. The official public key is embedded in
+`couch-confd`, delivered by the signed core runtime, and materialized in the
+package store's private trust directories. No separate key-file copy is needed
+for an official repository. The web page stores a custom key only after its
+fingerprint is reviewed and confirmed. Manual CLI users may instead provision a
+dedicated path such as `/opt/couch/integration-keys/custom/NAME` and select it
+with `--keys-dir`. Neither method adds keys to Alpine's global `/etc/apk/keys`.
 
 On a Docker-capable Linux build host, `tools/integrations/smoke.sh OUTPUT_DIR`
 reads **every** entry in `integrations/catalog.json`, then performs the package
@@ -171,41 +187,70 @@ dedicated trust directory and base URL:
   --repository https://packages.example.invalid/couch
 ```
 
-There is no persistent repository configuration or repository-management UI
-yet. Repeat `--repository` for every repository install.
+The paired web page persists custom repository URLs and keys after explicit
+fingerprint confirmation. The CLI remains a separate per-invocation workflow:
+repeat `--repository` and the custom `--keys-dir` for each manual install; it
+does not automatically select a web-managed repository.
 
 The public official feed bases are:
 
 ```text
-https://dangerouslaser.github.io/couch-integrations/preview
-https://dangerouslaser.github.io/couch-integrations/stable
+https://packages.couch-os.dev/preview
+https://packages.couch-os.dev/stable
 ```
+
+Runtimes up to `.171.dev` still read the official feeds from
+`dangerouslaser.github.io/couch-integrations`, which redirects here until
+that repository moves to the Couch-OS organization.
 
 The installer appends `armv7`. Preview initially contains Denon. Stable serves
 a valid signed empty index and has no installable packages until a
 production-tier integration has validated hardware evidence.
 
-Download the official public key from
-`https://dangerouslaser.github.io/couch-integrations/preview/couch-integrations.rsa.pub`
-and provision it as
-`/opt/couch/integration-keys/official/couch-integrations.rsa.pub`. Verify its PEM
-file SHA-256 through a trusted source:
+The official public key can be inspected at
+`https://packages.couch-os.dev/preview/couch-integrations.rsa.pub`.
+Its PEM file SHA-256 is:
 
 ```text
 80f3a73d86759cda103cb4f9a876cd4caee9d25c235c6d782b4be8a900b2696c
 ```
 
-The official key directory is the runtime default, so the exact Denon preview
-install command is:
+The integration-capable runtime carries that key inside `couch-confd`. For the
+CLI's default trust selection, `Store::trust_keys` materializes it at
+`/opt/couch/integrations/.official-keys/couch-integrations.rsa.pub` (under
+`COUCH_INTEGRATIONS_DIR` when overridden). The historical default selector
+`/opt/couch/integration-keys/official` now resolves to that embedded official
+key; adding files to the historical directory does not extend official trust.
+An explicit custom `--keys-dir` still uses the selected directory unchanged.
+The web manager keeps separate key directories per repository and fingerprint
+under `integrations/management/keys`. Keys do not cross repository trust scopes.
+
+No manual key provisioning is needed for this official preview install:
 
 ```sh
 /opt/couch/runtime/current/couch-confd integrations \
   install-repository couch-integration-denon \
-  --repository https://dangerouslaser.github.io/couch-integrations/preview
+  --repository https://packages.couch-os.dev/preview
 ```
 
 The released `.170` runtime predates the package host and cannot run this
 command. Install an integration-capable runtime first.
+
+## Core rollback and saved configuration
+
+External connections can be configured after the first integration-capable core
+update. `config.json` contains an old-readable projection and a complete modern
+`integration_config` extension in one atomic document; no second core update or
+rollback-slot deletion is required. An old core sees external devices as
+unconfigured and their external commands as disabled, while built-in devices
+remain available. The complete extension survives a rollback without edits.
+
+If the old core saves configuration, its rewrite drops the extension. The next
+upgrade preserves those edits and offers a confirmed recovery export for
+explicit restoration; it does not resurrect deleted devices. Packages and
+private connection settings are retained independently. See
+[core rollback and recovery](runtime-updates.md#integration-configuration-across-core-rollback)
+for the confirmed/pending export distinction and whole-config import procedure.
 
 ## Native-code boundary
 

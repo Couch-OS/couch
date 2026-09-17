@@ -9,13 +9,15 @@ executed by the collector.
 The archive contains:
 
 - Public Couch files exported from an exact Git commit, including independent
-  workspace locks and build recipes. Dirty working files, generated targets,
-  session notes and unrelated experiments are excluded.
+  workspace locks and build recipes, and the installer source at the commit
+  named by its `couch-installer` gitlink. Dirty working files, generated
+  targets, session notes and unrelated experiments are excluded.
 - Complete locked Cargo dependency sources from all five application workspaces
-  and the installer TUI, native host, RAM probe and storage crates. Vendor sources
-  retain upstream license, copyright and notice files. Packages omitting workspace
-  notices receive additional upstream texts at their published Git commits. Offline Cargo metadata
-  resolution verifies every workspace against the generated source replacement.
+  and, at that gitlink commit, the installer TUI, native host, RAM probe and
+  storage crates. Vendor sources retain upstream license, copyright and notice
+  files. Packages omitting workspace notices receive additional upstream texts
+  at their published Git commits. Offline Cargo metadata resolution verifies
+  every workspace against the generated source replacement.
 - The exact aports recipe for each origin represented in the pinned ARM APK
   closure, every local patch/script, and upstream source archives checked against
   APKBUILD SHA512 values. Original Git recipe tar files preserve safe symlink
@@ -49,10 +51,30 @@ rights to excluded vendor material.
 
 ## Collecting a release
 
+Independent installer releases record separate installer and OS source commits
+in schema-2 `installer.json`. Keep the existing OS payload's source archive and
+build receipts, and collect the installer source and locked dependencies from
+the installer commit. Do not relabel the old OS archive with the new installer
+commit. Installer-only corresponding source is collected in
+Couch-OS/couch-installer with the self-contained
+`couch-installer/tools/installer/source/corresponding_source.py` collector. It
+requires all four workspace manifests/locks, vendored dependencies, notices and
+an audited Rust standard-library source receipt. Its archive is explicitly
+installer-scoped and cannot satisfy the full OS source contract. See its
+[commands and provenance limits](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/source/README.md).
+Couch's `tools/release/corresponding_source.py` has no installer scope; it
+collects the full release. Keep the OS source in a separate output. The smaller
+`couch-installer/tools/installer/export_source.py` export is an isolation check
+and development input; it does not replace corresponding source or dependency
+notices.
+
 Use a fresh output directory for each frozen release commit. The collector reads
-Git objects, so an uncommitted change cannot silently become published source.
-If the installer host crate is not present in that commit, Cargo collection fails
-instead of skipping it.
+Git objects, including the installer commit named by the `couch-installer`
+gitlink, so an uncommitted change in either repository cannot silently become
+published source. Initialize the submodule first, with
+`git submodule update --init couch-installer`, so that commit is available
+locally. If the installer host crate is not present at that commit, Cargo
+collection fails instead of skipping it.
 
 ```sh
 python3 tools/release/corresponding_source.py project \

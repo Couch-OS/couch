@@ -467,6 +467,7 @@ dependencies = [
 name = "couch-integrations"
 version = "0.1.0"
 dependencies = [
+ "couch-model",
  "couch-plugin",
  "flate2",
  "libc",
@@ -474,6 +475,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "tar",
+ "ureq",
+ "url",
 ]
 
 [[package]]

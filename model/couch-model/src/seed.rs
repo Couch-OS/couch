@@ -374,6 +374,7 @@ pub(crate) fn seed() -> Config {
         appearance: crate::Appearance::default(),
         remote: crate::RemoteSettings::default(),
         connections: Vec::new(),
+        denon_migrations: Default::default(),
         app_shortcuts: Default::default(),
         areas,
         rooms,
