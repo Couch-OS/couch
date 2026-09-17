@@ -348,5 +348,5 @@ Device validation passed on `3.18.79-couch-normal-gea122a39f434`:
 This confirms the initialization change resolves the tested IR failure. It
 does not isolate which board control electrically enables the emitter or
 validate other appliances, hold/repeat behavior, or power-management scenarios.
-Kernel source is published on `dangerouslaser/couch-kernel` branch
+Kernel source is published on `Couch-OS/couch-kernel` branch
 `couch-irtx-bringup`; the Couch repository retains the source patches and audit.

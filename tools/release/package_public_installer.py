@@ -214,7 +214,7 @@ def prepare(attestation, source_archive, userdata, ramdisk, boot, logo, output, 
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
         descriptor = {'schema': 1, 'kind': 'couch-native-installer-release', 'model': 'sanytron-ha100',
                       'version': version, 'source_commit': build['source_commit'],
-                      'payload': {'url': f'https://github.com/dangerouslaser/couch/releases/download/{version}/{filename}',
+                      'payload': {'url': f'https://github.com/Couch-OS/couch/releases/download/{version}/{filename}',
                                   'size': asset.stat().st_size, 'sha256': digest, 'format': 'tar.gz'}}
         durable_write(output / 'installer.json', encoded(descriptor))
         receipt = {'schema': 1, 'kind': 'couch-public-installer-package', 'source_commit': build['source_commit'],

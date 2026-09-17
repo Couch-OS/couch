@@ -264,6 +264,21 @@ class TestedIntegrationSetTests(unittest.TestCase):
         self.assertFalse(receipt["artifact_bytes_verified"])
         self.assertTrue(all(value is False for value in receipt["rollout"].values()))
 
+    def test_core_and_feed_repositories_may_name_either_couch_owner_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.manifest["core"]["repository"] = "https://github.com/Couch-OS/couch.git"
+            self.manifest["feed"]["repository"] = "https://github.com/Couch-OS/couch-integrations.git"
+            verify.validate_manifest(self.write_manifest(root))
+            for section, url in (("core", "https://github.com/someone/couch.git"),
+                                 ("feed", "https://github.com/couch-os/couch-integrations.git")):
+                with self.subTest(section=section):
+                    original = self.manifest[section]["repository"]
+                    self.manifest[section]["repository"] = url
+                    with self.assertRaisesRegex(ValueError, "identity"):
+                        verify.validate_manifest(self.write_manifest(root))
+                    self.manifest[section]["repository"] = original
+
     def test_rejects_automatic_or_bundled_rollout(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

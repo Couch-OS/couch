@@ -26,7 +26,7 @@ exists today" describes the starting point, the
 [implementation plan](#implementation-plan-branch-bluetooth-rebased-onto-dev-2026-09-14)
 and [staging checklist](#staging-checklist) what was done. Kernel-side tasks are mirrored in the kernel tree at
 `Documentation/couch/bluetooth.md` on the `bluetooth` branch of
-[dangerouslaser/couch-kernel](https://github.com/dangerouslaser/couch-kernel).
+[Couch-OS/couch-kernel](https://github.com/Couch-OS/couch-kernel).
 
 ## Machine identity on first use
 

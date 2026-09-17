@@ -14,8 +14,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = 'tools/release/current-release.txt'
 REPOSITORY_SOURCE = 'tools/release/installer-repository.txt'
-REPOSITORIES = ('dangerouslaser/couch', 'Couch-OS/couch-installer')
-DOWNLOAD_BASE = re.compile(r'https://github\.com/(?:dangerouslaser/couch|Couch-OS/couch-installer)/releases/download/')
+# The Couch repository moves from dangerouslaser to the Couch-OS organization;
+# legacy promotion tags are published from it under either owner.
+COUCH_REPOSITORIES = ('dangerouslaser/couch', 'Couch-OS/couch')
+REPOSITORIES = (*COUCH_REPOSITORIES, 'Couch-OS/couch-installer')
+DOWNLOAD_BASE = re.compile(r'https://github\.com/(?:dangerouslaser/couch|Couch-OS/couch|Couch-OS/couch-installer)/releases/download/')
 # Files whose dated tags are all the published release: the install commands a
 # reader copies. The separately published site reads this source file from its
 # pinned Couch checkout during its own build, so it has no cross-repository
@@ -24,6 +27,9 @@ GOVERNED = ('README.md', 'docs/installer.md')
 # Dated tags here are ordering examples and test fixtures, not install
 # instructions, so a bump has to leave them alone.
 EXEMPT = (SOURCE,
+          # Records which releases the retained dangerouslaser/couch archive
+          # serves; not install instructions.
+          'docs/github-org-transfer.md',
           # Version-rendering and boot-release tests: sample tags, not install
           # instructions, and one of them is whatever number a promotion takes.
           'daemon/couch-updates/src/lib.rs',
@@ -122,7 +128,7 @@ def bump(tag, root=ROOT, repository=None):
     selected_repository = source_repository(root) if repository is None else repository
     if selected_repository not in REPOSITORIES:
         raise ValueError('Unsupported published installer repository')
-    if selected_repository != REPOSITORIES[0] and not tag.startswith('installer-'):
+    if selected_repository not in COUCH_REPOSITORIES and not tag.startswith('installer-'):
         raise ValueError('Separate installer repository requires an installer-v tag')
     changed = []
     for name in (SOURCE,) + GOVERNED:

@@ -74,6 +74,15 @@ class ReleaseLiterals(unittest.TestCase):
         self.write('README.md', self.read('README.md').replace('/Couch-OS/couch-installer/', '/dangerouslaser/couch/'))
         self.assertTrue(any('repository differs' in problem for problem in release.check(self.root, scan=False)))
 
+    def test_couch_commands_may_move_to_the_couch_os_owner(self):
+        release.bump(NEW, self.root, repository='Couch-OS/couch')
+        self.assertEqual(release.source_repository(self.root), 'Couch-OS/couch')
+        self.assertIn('/Couch-OS/couch/releases/download/' + NEW + '/', self.read('README.md'))
+        self.assertEqual(release.check(self.root, scan=False), [])
+        for repository in ('couch-os/couch', 'Couch-OS/other', 'someone/couch'):
+            with self.assertRaises(ValueError):
+                release.bump(NEW, self.root, repository=repository)
+
     def test_bad_repository_or_legacy_tag_in_new_repository_does_not_write(self):
         for tag, repository in ((NEW, 'Couch-OS/couch-installer'), ('installer-v1.0.0', 'someone/unreviewed')):
             with self.assertRaises(ValueError):

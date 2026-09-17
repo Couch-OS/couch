@@ -53,7 +53,7 @@ package-supplied HTML, JavaScript, Slint, and arbitrary layouts.
 The [getting-started tutorial](getting-started.md) walks through those steps.
 Read the [protocol reference](protocol.md) before writing an adapter by hand,
 use the [native component reference](components.md) to design its controls, and
-check the [migration readiness matrix](https://github.com/dangerouslaser/couch/blob/main/docs/integration-architecture.md)
+check the [migration readiness matrix](https://github.com/Couch-OS/couch/blob/main/docs/integration-architecture.md)
 before planning a move from a built-in client.
 
 ## Is a built-in integration ready to move?
@@ -101,8 +101,8 @@ in the site repository; do not represent a local preview as published guidance.
 
 The public documentation is generated from this directory at the exact Couch
 commit pinned by the website build. The implementation lives in
-[`clients/couch-plugin`](https://github.com/dangerouslaser/couch/tree/main/clients/couch-plugin),
+[`clients/couch-plugin`](https://github.com/Couch-OS/couch/tree/main/clients/couch-plugin),
 the reusable client contract in
-[`clients/couch-sdk`](https://github.com/dangerouslaser/couch/tree/main/clients/couch-sdk),
+[`clients/couch-sdk`](https://github.com/Couch-OS/couch/tree/main/clients/couch-sdk),
 and the complete example in
-[`clients/couch-echo`](https://github.com/dangerouslaser/couch/tree/main/clients/couch-echo).
+[`clients/couch-echo`](https://github.com/Couch-OS/couch/tree/main/clients/couch-echo).
