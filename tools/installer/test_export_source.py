@@ -89,7 +89,7 @@ class SourceExportTests(unittest.TestCase):
             self.assertTrue(manifest['repository_scaffold'])
             self.assertFalse((output / '.github/workflows/runtime.yml').exists())
             self.assertFalse((output / '.git').exists())
-            for name in ('README.md', '.gitignore', *export_source.REPOSITORY_WORKFLOWS):
+            for name in ('README.md', '.gitignore', '.gitattributes', *export_source.REPOSITORY_WORKFLOWS):
                 record = next(item for item in manifest['files'] if item['path'] == name)
                 self.assertEqual(record['sha256'], export_source.digest(output / name))
             subprocess.run(['git', 'init', '-q', str(output)], check=True)

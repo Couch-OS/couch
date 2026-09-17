@@ -40,7 +40,7 @@ class IndependentRelease(unittest.TestCase):
             self.assertNotIn(descriptor.DOWNLOAD + self.legacy['version'], script)
 
     def test_separate_installer_repository_pins_launchers_without_moving_os(self):
-        repository = 'dangerouslaser/couch-installer'
+        repository = 'Couch-OS/couch-installer'
         expected = f'https://github.com/{repository}/releases/download/installer-v1.2.3'
         config = descriptor.prepare(self.input, self.root / 'installer.json', 'v1.2.3', 'c' * 40,
                                     installer_repository=repository)
@@ -65,9 +65,9 @@ class IndependentRelease(unittest.TestCase):
 
     def test_unreviewed_installer_origins_refs_and_paths_are_rejected(self):
         config = descriptor.prepare(self.input, self.root / 'installer.json', 'v1.2.3', 'c' * 40)
-        base = 'https://github.com/dangerouslaser/couch-installer/releases/download/installer-v1.2.3'
+        base = 'https://github.com/Couch-OS/couch-installer/releases/download/installer-v1.2.3'
         for url in (base.replace('github.com', 'example.com'), base.replace('https:', 'http:'),
-                    base.replace('dangerouslaser/', 'other/'), base.replace('couch-installer', 'other'),
+                    base.replace('Couch-OS/', 'other/'), base.replace('Couch-OS/', 'dangerouslaser/'), base.replace('couch-installer', 'other'),
                     base.replace('installer-v1.2.3', 'latest'), base.replace('installer-v1.2.3', 'installer-v1.2.4'),
                     base + '/', base + '/installer.json', base + '?ref=latest', base + '#fragment'):
             with self.subTest(url=url):

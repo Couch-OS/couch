@@ -87,16 +87,16 @@ class AdmissionTests(unittest.TestCase):
                                      ['gh', 'api', f'repos/{repository}/actions/runs/123'])
             self.assertNotEqual(prepare.SOURCE, prepare.PAYLOAD_SOURCE)
             invoke(root/'accepted')
-            invoke(root/'separate', repository='dangerouslaser/couch-installer',
-                   config_repository='dangerouslaser/couch-installer')
+            invoke(root/'separate', repository='Couch-OS/couch-installer',
+                   config_repository='Couch-OS/couch-installer')
             separate = json.loads((root/'separate/admission.json').read_text())
-            self.assertEqual(separate['installer_repository'], 'dangerouslaser/couch-installer')
+            self.assertEqual(separate['installer_repository'], 'Couch-OS/couch-installer')
             admission = json.loads((root/'accepted/admission.json').read_text())
             self.assertEqual(admission['installer'], {'version': prepare.INSTALLER_VERSION, 'source_commit': prepare.SOURCE})
             self.assertEqual(admission['os'], {'version': prepare.OS_VERSION, 'source_commit': prepare.PAYLOAD_SOURCE, 'installation_protocol': 1})
             for name, kwargs, message in (
-                ('repository', {'config_repository': 'dangerouslaser/couch-installer'}, 'descriptor installer/OS identity'),
-                ('wrong-input-repository', {'repository': 'dangerouslaser/couch-installer'}, 'descriptor installer/OS identity'),
+                ('repository', {'config_repository': 'Couch-OS/couch-installer'}, 'descriptor installer/OS identity'),
+                ('wrong-input-repository', {'repository': 'Couch-OS/couch-installer'}, 'descriptor installer/OS identity'),
                 ('payload', {'payload_source': prepare.SOURCE}, 'descriptor installer/OS identity'),
                 ('installer', {'installer_source': prepare.PAYLOAD_SOURCE}, 'descriptor installer/OS identity'),
                 ('host', {'run_source': prepare.PAYLOAD_SOURCE}, 'source/status'),

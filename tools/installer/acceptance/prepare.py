@@ -13,7 +13,7 @@ SOURCE = os.environ.get('SOURCE_COMMIT', '57a3e22b4e86d8d6620dbaedbf30847e26b9bb
 PAYLOAD_SOURCE = os.environ.get('PAYLOAD_SOURCE_COMMIT', '271704728c77c13add1763aea7d1f9bd629c63ca')
 INSTALLER_VERSION = os.environ.get('INSTALLER_VERSION', 'v0.1.0')
 INSTALLER_REPOSITORY = os.environ.get('INSTALLER_REPOSITORY', 'dangerouslaser/couch')
-INSTALLER_REPOSITORIES = ('dangerouslaser/couch', 'dangerouslaser/couch-installer')
+INSTALLER_REPOSITORIES = ('dangerouslaser/couch', 'Couch-OS/couch-installer')
 OS_VERSION = os.environ.get('OS_VERSION', 'v0.1.0-alpha.20260910.24')
 # Kept for the frozen fixture helpers which predate separate installer releases.
 VERSION = OS_VERSION

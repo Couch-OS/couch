@@ -17,7 +17,7 @@ on:
         default: dangerouslaser/couch
         options:
           - dangerouslaser/couch
-          - dangerouslaser/couch-installer
+          - Couch-OS/couch-installer
       source_commit:
         description: Independently recorded host source SHA (must match run, receipts and generator)
         required: true

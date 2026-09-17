@@ -42,7 +42,7 @@ export CC_armv7_unknown_linux_musleabihf="$PWD/tools/installer/toolchain/arm-mus
 ```sh
 python3 tools/installer/bump_version.py v0.1.1
 python3 tools/installer/release_descriptor.py \
-  --installer-repository dangerouslaser/couch-installer \
+  --installer-repository Couch-OS/couch-installer \
   --os-config /path/to/reviewed-os/installer.json \
   --source-commit INSTALLER_SOURCE_COMMIT \
   --output /path/to/new-assets/installer.json

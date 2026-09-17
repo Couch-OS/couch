@@ -19,7 +19,7 @@ hash. The admission receipt records both identities and the selected installer r
 patched for the test.
 
 The installer repository input is restricted to `dangerouslaser/couch` and
-`dangerouslaser/couch-installer`. It selects the build-run API, frozen generator
+`Couch-OS/couch-installer`. It selects the build-run API, frozen generator
 checkout and binary artifact download, and must match the schema-2 descriptor's
 exact `installer-v…` release URL. The OS payload remains pinned to
 `dangerouslaser/couch`. Historical schema-1 fixtures use that original repository

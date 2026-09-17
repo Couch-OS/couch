@@ -65,17 +65,17 @@ class ReleaseLiterals(unittest.TestCase):
         self.assertEqual(release.bump('installer-v1.2.4', self.root), [])
 
     def test_repository_cutover_updates_commands_and_retains_the_selected_origin(self):
-        release.bump('installer-v1.2.3', self.root, repository='dangerouslaser/couch-installer')
-        self.assertEqual(release.source_repository(self.root), 'dangerouslaser/couch-installer')
-        self.assertIn('/dangerouslaser/couch-installer/releases/download/installer-v1.2.3/', self.read('README.md'))
+        release.bump('installer-v1.2.3', self.root, repository='Couch-OS/couch-installer')
+        self.assertEqual(release.source_repository(self.root), 'Couch-OS/couch-installer')
+        self.assertIn('/Couch-OS/couch-installer/releases/download/installer-v1.2.3/', self.read('README.md'))
         self.assertEqual(release.check(self.root, scan=False), [])
         release.bump('installer-v1.2.4', self.root)
-        self.assertIn('/dangerouslaser/couch-installer/releases/download/installer-v1.2.4/', self.read('README.md'))
-        self.write('README.md', self.read('README.md').replace('/couch-installer/', '/couch/'))
+        self.assertIn('/Couch-OS/couch-installer/releases/download/installer-v1.2.4/', self.read('README.md'))
+        self.write('README.md', self.read('README.md').replace('/Couch-OS/couch-installer/', '/dangerouslaser/couch/'))
         self.assertTrue(any('repository differs' in problem for problem in release.check(self.root, scan=False)))
 
     def test_bad_repository_or_legacy_tag_in_new_repository_does_not_write(self):
-        for tag, repository in ((NEW, 'dangerouslaser/couch-installer'), ('installer-v1.0.0', 'someone/unreviewed')):
+        for tag, repository in ((NEW, 'Couch-OS/couch-installer'), ('installer-v1.0.0', 'someone/unreviewed')):
             with self.assertRaises(ValueError):
                 release.bump(tag, self.root, repository=repository)
             self.assertEqual(self.read(release.SOURCE), OLD + '\n')

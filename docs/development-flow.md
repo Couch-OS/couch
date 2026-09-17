@@ -70,7 +70,7 @@ candidate is, so the release list stays readable.
 After a separately validated installer release is available, run
 `python3 tools/release/bump_release.py installer-v0.1.0` with its actual tag.
 When moving published launchers to the separate repository, also pass
-`--repository dangerouslaser/couch-installer`.
+`--repository Couch-OS/couch-installer`.
 This updates `README.md`, `docs/installer.md`, and the legacy
 `tools/release/current-release.txt` pointer read by the separate `couch-site`
 build. `tools/release/installer-repository.txt` records the published repository;

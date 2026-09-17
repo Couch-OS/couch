@@ -5,7 +5,7 @@ version in `VERSION`. It consumes pinned Couch OS payloads. Its native host,
 terminal UI, dependency preparation, transport bridge and Linux installation
 service can be built without the application workspaces. The code remains in
 this repository during migration. A repository export can now include the
-standalone README, ignore rules and installer CI workflows.
+standalone README, ignore and line-ending rules, and installer CI workflows.
 
 ## Ownership
 
@@ -34,7 +34,7 @@ An installer-only fix can select the same OS archive and source revision as its
 predecessor. Runtime releases do not require an installer build.
 
 Installer downloads may use exactly `dangerouslaser/couch` or
-`dangerouslaser/couch-installer`; OS payload downloads remain in
+`Couch-OS/couch-installer`; OS payload downloads remain in
 `dangerouslaser/couch`. Select the installer location with the descriptor
 builder's `--installer-repository` option. The host rejects other repositories,
 domains and mutable download locations. Existing published URLs stay valid.
@@ -71,7 +71,7 @@ receipt. Create a new descriptor selecting an already reviewed OS payload:
 
 ```sh
 python3 tools/installer/release_descriptor.py \
-  --installer-repository dangerouslaser/couch-installer \
+  --installer-repository Couch-OS/couch-installer \
   --os-config /path/to/reviewed-os/installer.json \
   --source-commit INSTALLER_SOURCE_COMMIT \
   --output /path/to/new-assets/installer.json
@@ -97,7 +97,7 @@ OS payload's source archive separately; an installer-scoped archive cannot
 satisfy the full Couch OS source contract.
 
 After publication and acceptance, update the public commands using
-`tools/release/bump_release.py installer-v0.1.1 --repository dangerouslaser/couch-installer`.
+`tools/release/bump_release.py installer-v0.1.1 --repository Couch-OS/couch-installer`.
 The historical `tools/release/current-release.txt` path remains the published tag
 pointer for the website, with the repository in
 `tools/release/installer-repository.txt`. Update the site's consumption of both
@@ -122,7 +122,7 @@ The retained `tools/installer` layout permits existing compiler and source
 recipes to work unchanged. The standalone workflow builds desktop artifacts and
 tests the host, TUI, Linux RAM service and storage workspace; it does not publish.
 For Windows acceptance in the new repository, explicitly choose
-`dangerouslaser/couch-installer` as the workflow's `installer_repository` input.
+`Couch-OS/couch-installer` as the workflow's `installer_repository` input.
 Cross-repository artifact reads can use the optional `INSTALLER_ARTIFACT_TOKEN`
 secret; same-repository validation uses the normal workflow token.
 

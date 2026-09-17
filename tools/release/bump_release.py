@@ -13,8 +13,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = 'tools/release/current-release.txt'
 REPOSITORY_SOURCE = 'tools/release/installer-repository.txt'
-REPOSITORIES = ('dangerouslaser/couch', 'dangerouslaser/couch-installer')
-DOWNLOAD_BASE = re.compile(r'https://github\.com/dangerouslaser/(?:couch|couch-installer)/releases/download/')
+REPOSITORIES = ('dangerouslaser/couch', 'Couch-OS/couch-installer')
+DOWNLOAD_BASE = re.compile(r'https://github\.com/(?:dangerouslaser/couch|Couch-OS/couch-installer)/releases/download/')
 # Files whose dated tags are all the published release: the install commands a
 # reader copies. The separately published site reads this source file from its
 # pinned Couch checkout during its own build, so it has no cross-repository

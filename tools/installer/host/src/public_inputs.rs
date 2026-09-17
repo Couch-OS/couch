@@ -188,7 +188,7 @@ pub fn release(path: &Path) -> Result<Release> {
             // Installer releases may move repositories independently of OS payloads.
             // Compare complete URLs so alternate domains, refs and extra paths fail.
             ensure!(
-                ["dangerouslaser/couch", "dangerouslaser/couch-installer"]
+                ["dangerouslaser/couch", "Couch-OS/couch-installer"]
                     .iter()
                     .any(|repository| {
                         independent.installer.release_url
@@ -603,19 +603,20 @@ mod tests {
         let (root, fixture_release, _) = fixture(None, false);
         let path = root.path().join("installer.json");
         let mut value = descriptor(&fixture_release.payload);
-        for repository in ["dangerouslaser/couch", "dangerouslaser/couch-installer"] {
+        for repository in ["dangerouslaser/couch", "Couch-OS/couch-installer"] {
             value["installer"]["release_url"] = json!(format!(
                 "https://github.com/{repository}/releases/download/installer-v1.2.3"
             ));
             fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
             assert!(release(&path).is_ok());
         }
-        let base =
-            "https://github.com/dangerouslaser/couch-installer/releases/download/installer-v1.2.3";
+        let base = "https://github.com/Couch-OS/couch-installer/releases/download/installer-v1.2.3";
         for invalid in [
             base.replace("github.com", "example.com"),
             base.replace("https:", "http:"),
-            base.replace("dangerouslaser/", "other/"),
+            base.replace("Couch-OS/", "other/"),
+            base.replace("Couch-OS/", "dangerouslaser/"),
+            base.replace("Couch-OS/", "couch-os/"),
             base.replace("couch-installer", "other"),
             base.replace("installer-v1.2.3", "latest"),
             base.replace("installer-v1.2.3", "installer-v1.2.4"),
@@ -629,7 +630,9 @@ mod tests {
             assert!(release(&path).is_err());
         }
         value["installer"]["release_url"] = json!(base);
-        value["payload"]["url"] = json!("https://github.com/dangerouslaser/couch-installer/releases/download/v0.1.0/payload.tar.gz");
+        value["payload"]["url"] = json!(
+            "https://github.com/Couch-OS/couch-installer/releases/download/v0.1.0/payload.tar.gz"
+        );
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(release(&path).is_err());
     }

@@ -10,7 +10,7 @@ import re
 
 ROOT = Path(__file__).resolve().parent
 DOWNLOAD = 'https://github.com/dangerouslaser/couch/releases/download/'
-INSTALLER_REPOSITORIES = ('dangerouslaser/couch', 'dangerouslaser/couch-installer')
+INSTALLER_REPOSITORIES = ('dangerouslaser/couch', 'Couch-OS/couch-installer')
 PROTOCOL = 1
 VERSION = r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?'
 
