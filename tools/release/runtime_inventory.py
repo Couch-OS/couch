@@ -10,39 +10,13 @@ import json
 from pathlib import Path
 import struct
 import subprocess
-import sys
 
 from kernel_provenance import boot_kernel, PIN
 from verify_integration_set import DEFAULT as DEFAULT_INTEGRATION_SET
 from verify_integration_set import receipt as integration_receipt
 from verify_integration_set import verify_receipt as verify_integration_receipt
 
-from clean_stage import REPO, StageError, archive_name, build, require, secret_path
-
-sys.path.insert(0, str(REPO / 'tools/installer/image'))
-from neutral_ramdisk import arm_static as neutral_arm_static
-from neutral_ramdisk import cpio_files as neutral_cpio_files
-from neutral_ramdisk import regular as neutral_regular
-from neutral_ramdisk import sha
-
-
-def _stage_error(function, *args):
-    try:
-        return function(*args)
-    except ValueError as error:
-        raise StageError(str(error)) from error
-
-
-def regular(path):
-    return _stage_error(neutral_regular, path)
-
-
-def arm_static(data):
-    return _stage_error(neutral_arm_static, data)
-
-
-def cpio_files(data):
-    return _stage_error(neutral_cpio_files, data)
+from clean_stage import REPO, archive_name, build, require, secret_path
 
 # What the runtime bundle carries. Every name here is published in the signed
 # update and must therefore be a name the OLDEST DEPLOYED UPDATER accepts:
@@ -100,6 +74,26 @@ BOOT_SOURCES = ('initramfs/init', 'initramfs/boot-health.sh', 'recovery/init',
                 'kernel/source_policy.py', 'tools/release/kernel_provenance.py', 'src/fbcon.c', 'src/font.h', 'src/logo.h')
 
 
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def regular(path):
+    require(path.is_file() and not path.is_symlink(), f'Missing regular input: {path.name}')
+    return path.read_bytes()
+
+
+def arm_static(data):
+    require(len(data) >= 52 and data[:6] == b'\x7fELF\x01\x01' and data[18:20] == b'\x28\x00',
+            'Expected little-endian ARM32 ELF')
+    offset = struct.unpack_from('<I', data, 28)[0]
+    stride, count = struct.unpack_from('<HH', data, 42)
+    require(count > 0 and stride >= 32 and offset + stride * count <= len(data),
+            'Invalid executable program headers')
+    require(all(struct.unpack_from('<I', data, offset + i * stride)[0] not in (2, 3)
+                for i in range(count)), 'Runtime executable requires dynamic loader/libraries')
+
+
 def arm_alpine(data):
     require(len(data) >= 52 and data[:6] == b'\x7fELF\x01\x01' and data[18:20] == b'\x28\x00',
             'Expected little-endian ARM32 ELF')
@@ -130,6 +124,32 @@ def embedded_web(root, daemon):
     missing = [f['source'] for f in files if regular(root / f['source']) not in daemon]
     require(not missing, 'Daemon does not embed the current complete web bundle')
     return files
+
+
+def cpio_files(data):
+    """Inspect newc in memory, including private-name rejection; never extract."""
+    offset, entries = 0, {}
+    while True:
+        require(offset + 110 <= len(data) and data[offset:offset+6] == b'070701',
+                'Unsupported or truncated initramfs')
+        try:
+            fields = [int(data[offset+6+i*8:offset+14+i*8], 16) for i in range(13)]
+        except ValueError as error:
+            raise ValueError('Malformed newc header') from error
+        size, length = fields[6], fields[11]
+        begin = offset + 110
+        require(length > 0 and begin + length <= len(data) and data[begin+length-1] == 0,
+                'Invalid initramfs filename')
+        name = archive_name(data[begin:begin+length-1].decode())
+        start = (begin + length + 3) & ~3
+        require(start + size <= len(data), 'Truncated initramfs member')
+        if name == 'TRAILER!!!':
+            require(size == 0 and not any(data[start:]), 'Unexpected trailing initramfs payload')
+            return entries
+        require(name not in entries and not secret_path(name), 'Private or duplicate initramfs member')
+        require(name not in ('extra/props.tar.gz', 'opt/couch/config.json'), 'Private initramfs state')
+        entries[name] = data[start:start+size]
+        offset = (start + size + 3) & ~3
 
 
 def boot_inventory(root, relative, init_source):
