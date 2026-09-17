@@ -213,6 +213,48 @@ directly, as the other clients do; `docs/client-sdk.md` records that no
 migration is in progress and none is required, and Sonos is not registered with
 the `couch-control` broker.
 
+`inputs()` publishes the source picker as the one list the plugin protocol
+carries, and `supports_input` accepts only the ids it produced: `tv`, `line-in`,
+`favorite.<id>` and `playlist.<id>`. The dot is not cosmetic - `couch-model`'s
+id alphabet has no colon, and the dot is legal both there and in a Control API
+path segment, so one id serves the button mapping and the wire. A household id
+that could not be a path segment is refused before a socket opens.
+
+## As a package
+
+`clients/couch-sonos/plugin.json` and `src/bin/couch-plugin-sonos.rs` let the
+same client run as an installed integration package, the way `couch-denon` does.
+The manifest declares the eleven functions, `supports_inputs`, and six
+presentation components: a playback toggle, transport and volume command groups,
+a mute toggle, the volume reading, and the source selector.
+
+Three settings. `host` is the player's IPv4 address and stays required, because
+it is the identity Couch stores. `api_key` is a `secret` field (see below).
+`api_root` replaces `https://<address>:1443/api/v1` outright, for a household
+behind a proxy on another port and for the admission fixture; `api_root_ok` is
+the shipping rule that validates it, and it confines plain HTTP to loopback.
+
+**The API key is a per-connection secret in a package, and the package carries
+none.** The host clears the child's environment before exec, so
+`COUCH_SONOS_API_KEY` cannot reach it; the child runs unprivileged and cannot
+read a root-owned `/opt/couch/sonos-api-key`; and the curated feed's build job
+deliberately has no secrets, so `COUCH_SONOS_BUILT_IN_API_KEY` is never set for a
+packaged build. That leaves the setting as the only working source. It is not
+`required`, so a connection without one falls back to the documented placeholder
+and works on players that allow guest access - the same behaviour the CLI has,
+minus the stderr warning, because a package's stderr goes nowhere. Anyone
+shipping a package to users who need a real key should expect to type it in.
+
+What a package cannot do is the player screen. Couch renders packages from four
+declarative component kinds and a six-field `Status`, so the transport buttons,
+relative volume, mute and the source picker all survive, and album artwork, the
+seek bar and its clocks, the volume meter, shuffle/repeat/crossfade state, the
+queue, group and coordinator awareness, the per-row source detail text and every
+hand-written sentence do not. Status is also read on demand rather than polled.
+The catalog entry in `integrations/catalog.json` lists these as limitations; the
+built-in screens in `ui/couch-gui/src/sonos_player.rs` and `room_sonos.rs` stay
+the way to get them.
+
 ## Commands and the requests they make
 
 | Couch command | Request |
@@ -310,14 +352,15 @@ the group listing, the body limit, redirect refusal, freshness cancellation befo
 a write, volume validation before the network, key sourcing, mDNS parsing of a
 hand-built compressed packet, and status composition.
 
-The SDK contract is checked with `couch_sdk::testing::contract_findings`, whose
-mock host is a scripted line protocol: it cannot speak HTTPS and JSON, and these
-settings carry no port to point at one, so the checker reports exactly one
-finding, `connect failed`, after passing every declaration, canonicality and
-0600 settings round-trip check it makes before connecting. The capability gate,
-the refusal of an undeclared function without a round trip, and the absence of a
-retry after a refused write are proved against the tiny_http fixture instead,
-which is the same accommodation `couch-ha` and `couch-hue` make.
+The SDK contract is checked with `couch_sdk::testing::contract_findings`. Its
+mock host is a scripted line protocol and cannot speak HTTP and JSON, but the
+`api_root` setting can name an origin it *can* speak to, so the checker runs end
+to end against the tiny_http fixture with the mock host kept on as the observer
+that proves a refusal cost no round trip. There are no remaining findings.
+
+`cargo test -p couch-sonos --test admission` runs the five package cases against
+`tests/fake/`, a fake local Control API on loopback HTTP. See
+[Catalog admission](development/admission.md).
 
 Physical acceptance on a four-player household (Arc, Amp, One SL, bonded Sub),
 firmware 97.1-80312, API version 1.54.1, using the placeholder key:

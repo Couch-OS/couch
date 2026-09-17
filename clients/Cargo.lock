@@ -664,6 +664,7 @@ dependencies = [
 name = "couch-sonos"
 version = "0.1.0"
 dependencies = [
+ "couch-plugin",
  "couch-sdk",
  "rustls",
  "serde",

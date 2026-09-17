@@ -505,6 +505,13 @@ fn segment(value: &str) -> Result<&str> {
     }
     Ok(value)
 }
+/// Whether a device-supplied identifier can be a URL path segment here.
+///
+/// The same rule [`segment`] applies, exposed so a caller holding an id can
+/// refuse it before it becomes a request that was never sent.
+pub fn segment_ok(value: &str) -> bool {
+    segment(value).is_ok()
+}
 /// Accept an API root on one origin. Plain HTTP is allowed only for loopback
 /// fixtures; a real player is always HTTPS.
 fn check_base(base: &str) -> Result<()> {
@@ -527,6 +534,16 @@ fn check_base(base: &str) -> Result<()> {
         return Err(Error::Unsupported);
     }
     Ok(())
+}
+/// Whether [`Client::connect_url`] will speak to this API root at all.
+///
+/// The same rule the connection itself applies, exposed so a caller holding a
+/// configured root can refuse it while validating settings rather than at the
+/// point of use. Plain HTTP stays confined to loopback, which is what makes a
+/// local fixture reachable without relaxing anything for a real player: the
+/// rule here is shipping behaviour, not a test-only bypass.
+pub fn api_root_ok(base: &str) -> bool {
+    check_base(base).is_ok()
 }
 /// Where a player's API lives. A real player is always TLS on 1443; the scheme
 /// and port are pinned here so a change to either is one edit and one test.
