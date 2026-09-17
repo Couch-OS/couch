@@ -275,9 +275,13 @@ stable/armv7/APKINDEX.tar.gz
 The feed base URLs are:
 
 ```text
-https://dangerouslaser.github.io/couch-integrations/preview
-https://dangerouslaser.github.io/couch-integrations/stable
+https://packages.couch-os.dev/preview
+https://packages.couch-os.dev/stable
 ```
+
+Runtimes up to `.171.dev` still read the official feeds from
+`dangerouslaser.github.io/couch-integrations`, which redirects here until
+that repository moves to the Couch-OS organization.
 
 The installer adds `armv7` when it fetches the index. `preview` initially
 contains the Denon integration. `stable` serves a valid signed empty index and
@@ -285,7 +289,7 @@ contains no packages until an integration has production-tier hardware
 evidence; preview hosting does not make Denon stable.
 
 The official public key is
-[`couch-integrations.rsa.pub`](https://dangerouslaser.github.io/couch-integrations/preview/couch-integrations.rsa.pub).
+[`couch-integrations.rsa.pub`](https://packages.couch-os.dev/preview/couch-integrations.rsa.pub).
 Its PEM file SHA-256 is:
 
 ```text
@@ -299,7 +303,7 @@ to Alpine's global key store. The complete manual preview install command is:
 ```sh
 /opt/couch/runtime/current/couch-confd integrations \
   install-repository couch-integration-denon \
-  --repository https://dangerouslaser.github.io/couch-integrations/preview
+  --repository https://packages.couch-os.dev/preview
 ```
 
 The production `.170` runtime still predates the package host; publishing the
