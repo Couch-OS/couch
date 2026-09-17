@@ -17,6 +17,10 @@ The builder is Alpine 3.21.7, pinned to its image digest and Linux/amd64 platfor
 
 Preparation resolves the current contents of the versioned branch; it is **not** a promise that another online preparation will return identical versions. Preserve the entire resulting cache as the pinned release input. Optional repeated `--package name=version` arguments replace the default root set. Upstream mirrors may remove older versions; hashes cannot restore missing bytes.
 
+Archive the complete closure directory: `closure.json`, `packages/`, `indexes/`, `keys/`, and auxiliary files including `repositories`, `apk-version.txt`, `package-urls.txt`, and `offline-solve.txt`. A manifest hash, source URL, or builder digest cannot reconstruct missing input bytes. A replacement closure needs a newly reviewed inventory and baseline pin, followed by the applicable OS assembly and hardware validation; it does not inherit the previous closure's approval or hardware results.
+
+The HA100 OS baseline also requires FFmpeg. The helper's default six roots alone do not satisfy `ha100_os_baseline.json`; use the complete reviewed cache whose manifest matches that pin. An explicit replacement root set must include all required runtime packages as well as FFmpeg. Matching the FFmpeg version alone does not establish an identical closure or baseline.
+
 Validation on the dedicated Linux host resolved 26 packages, verified every signature, and passed the offline simulation with Docker networking disabled. A negative fixture omitted `libcrypto3` and correctly failed dependency resolution. Local tests reject tampering, missing/extra files, symlinks, unexpected package URLs, unpinned builders and option injection.
 
 `--architecture x86_64` prepares a separate host-tool closure for [userdata image creation](userdata-image.md); ARM runtime assembly explicitly rejects those tool packages.
