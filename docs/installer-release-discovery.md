@@ -16,7 +16,7 @@ separate.
 ## Release selection
 
 Discovery queries the unauthenticated
-`/repos/dangerouslaser/couch/releases` API, with bounded pagination and response
+`/repos/Couch-OS/couch/releases` API, with bounded pagination and response
 sizes. It never reads the operator's GitHub CLI credentials. Drafts are excluded;
 an unpublished alpha is consequently unavailable to public discovery.
 

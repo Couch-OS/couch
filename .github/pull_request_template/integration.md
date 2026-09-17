@@ -3,6 +3,7 @@
 - Catalog ID:
 - Admission tier: test-only / preview / production
 - Device protocol and transport:
+- Declared protocol version and typed actions (if applicable):
 - Known limitations:
 
 ## Required admission cases
@@ -11,6 +12,7 @@
 - [ ] Failure paths: invalid settings, refusals or malformed replies, capability gate
 - [ ] Timeout/no retry: one ambiguous command attempt, explicit recovery only
 - [ ] Spike: bounded queue or burst behavior, stale work never reaches the device
+- [ ] Typed actions (if applicable): invalid range and step values refused before I/O
 - [ ] `python3 tools/integrations/validate_catalog.py --run-tests`
 
 ## Hardware evidence

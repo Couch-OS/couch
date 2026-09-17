@@ -27,6 +27,21 @@ Your package tests should use a fake implementation of the device protocol and
 exercise real subprocess boundaries. Copy the structure from
 `clients/couch-echo/tests/plugin.rs`.
 
+Before review, run the same catalog and exact-case checks that CI uses for
+curated packages:
+
+```sh
+python3 tools/integrations/validate_catalog.py
+python3 tools/integrations/validate_catalog.py --run-tests
+cargo test --locked --manifest-path clients/Cargo.toml \
+  -p couch-plugin --test protocol
+```
+
+The catalog command names and runs each integration's four admission cases;
+the final command exercises the shared framing and manifest host. Do not call a
+missing cross compiler, an uninstalled ARM target, or unavailable device a
+passing check.
+
 ## Product-flow test
 
 Couch also has an end-to-end host test that builds the daemon and Echo plugin,
@@ -43,6 +58,17 @@ python3 tools/tests/integrations-e2e.py
 The test mocks only APK extraction on the host. Native signature and repository
 checks belong in the Alpine packaging-tool tests.
 
+## Typed-action coverage when protocol v2 ships
+
+Protocol v2 is unreleased, so it is not an admission target for the published
+v1 preview. When adding a v2 package, retain all v1 cases and add fake-device
+coverage that proves: absent, reading, and `minimum` dB status remain distinct;
+the declared action accepts its endpoints and one valid step; out-of-range and
+off-step values are rejected before I/O; and a timed-out dB change is sent once
+only. Exercise the same path through the plugin host and HTTP endpoint. Update
+the catalog validator and its policy before allowing a v2 manifest into a
+curated feed.
+
 ## Compatibility rules
 
 Treat these values as one compatibility set:
@@ -50,6 +76,8 @@ Treat these values as one compatibility set:
 - manifest `protocol_version`;
 - the host protocol version;
 - manifest ID, version, executable, capabilities, and presentation;
+- manifest actions and minimum core protocol version, when a future protocol
+  version uses them;
 - the binary's hello manifest;
 - the `DeviceClient` capability declaration.
 
@@ -68,6 +96,7 @@ compatible active package.
 - Ambiguous command failures are never retried.
 - A dead child is reaped and only a later explicit request starts another.
 - Input identifiers are bounded and validated before persistence.
+- Typed values are within their declared range and step before device I/O.
 - Standard output contains only framed protocol messages.
 
 ## Real-device validation
@@ -133,6 +162,6 @@ an entry can be marked production.
 
 ## Source references
 
-- [`clients/couch-plugin/tests/protocol.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-plugin/tests/protocol.rs)
-- [`clients/couch-echo/tests/plugin.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-echo/tests/plugin.rs)
-- [`tools/tests/integrations-e2e.py`](https://github.com/dangerouslaser/couch/blob/main/tools/tests/integrations-e2e.py)
+- [`clients/couch-plugin/tests/protocol.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/tests/protocol.rs)
+- [`clients/couch-echo/tests/plugin.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-echo/tests/plugin.rs)
+- [`tools/tests/integrations-e2e.py`](https://github.com/Couch-OS/couch/blob/main/tools/tests/integrations-e2e.py)

@@ -28,6 +28,17 @@ class CatalogPolicyTests(unittest.TestCase):
         self.assertEqual(ids, sorted(ids))
         self.assertTrue({"denon", "echo"}.issubset(ids))
 
+    def test_v2_catalog_contains_v1_and_v2_packages_but_old_core_refuses_v2(self):
+        loaded = self.validate_copy()
+        protocols = {json.loads((validate_catalog.ROOT / entry["manifest"]).read_text())["protocol_version"]
+                     for entry in loaded["integrations"]}
+        self.assertEqual(protocols, {1, 2})
+        with self.assertRaisesRegex(validate_catalog.InvalidCatalog, "manifest protocol is incompatible"):
+            self.validate_copy(lambda catalog: catalog.update(protocol_version=1))
+        for invalid in (True, 0, 3, "2"):
+            with self.subTest(invalid=invalid), self.assertRaises(validate_catalog.InvalidCatalog):
+                self.validate_copy(lambda catalog: catalog.update(protocol_version=invalid))
+
     def test_production_requires_hardware_evidence(self):
         def mutate(value):
             value["integrations"][0]["tier"] = "production"

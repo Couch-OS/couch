@@ -1,8 +1,8 @@
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "id": "denon",
   "label": "Denon AVR",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "executable": "bin/couch-plugin-denon",
   "capabilities": [
     {
@@ -67,6 +67,15 @@
       ]
     },
     {
+      "kind": "status_text",
+      "label": "Volume",
+      "field": "volume_db"
+    },
+    {
+      "kind": "volume_db_control",
+      "label": "Set volume"
+    },
+    {
       "kind": "toggle",
       "label": "Mute",
       "state": "muted",
@@ -76,6 +85,15 @@
     {
       "kind": "input_selector",
       "label": "Source"
+    }
+  ],
+  "min_core_protocol_version": 2,
+  "actions": [
+    {
+      "action": "set_volume_db",
+      "min_tenths": -800,
+      "max_tenths": 180,
+      "step_tenths": 5
     }
   ]
 }

@@ -26,7 +26,7 @@ carried by Wi-Fi. Start Android on the HA100, enable USB debugging, connect the
 remote, then run the pinned installer for the current prerelease in a terminal:
 
 ```sh
-curl -fsSL https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260916.170/install.sh | sh
+curl -fsSL https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.0/install.sh | sh
 ```
 
 Windows users run `install.ps1` from the same release in PowerShell. The script
@@ -49,7 +49,7 @@ and [restoring stock Android](docs/installer-android-restore.md).
 
 Questions, install reports and hardware findings are welcome on the
 [Couch Discord server](https://discord.gg/KnZK6SZQhF). Bugs go to the
-[issue tracker](https://github.com/dangerouslaser/couch/issues).
+[issue tracker](https://github.com/Couch-OS/couch/issues).
 
 ## Development
 
@@ -59,5 +59,7 @@ See the [repository guide](AGENTS.md), [web UI guide](docs/webui.md) and
 
 To write an independently installable integration, start with the
 [integration developer guide](docs/development/index.md) and
-[catalog admission requirements](docs/development/admission.md). These Markdown
-pages are also the source for the website's developer documentation.
+[catalog admission requirements](docs/development/admission.md). The
+[migration readiness matrix](docs/integration-architecture.md) maps the
+existing built-in clients to the current package boundary. These Markdown pages
+are also the source for the website's developer documentation.

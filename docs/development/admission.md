@@ -50,6 +50,12 @@ dependencies on `couch-plugin` and `couch-sdk` must all name the same Couch
 commit. Vendoring protocol types or copying the harness is not equivalent: it
 allows the source under test to redefine the contract it is supposed to meet.
 
+An independent repository is ready for feed review only when its lock file,
+normal dependencies, development dependencies, manifest, and test output all
+identify the same full Couch revision. The feed then records a separate full
+commit for that repository and rebuilds the reviewed source; a branch name,
+tag, or an APK supplied by a contributor is not a substitute.
+
 ## Hardware evidence
 
 Moving an entry to `production` requires at least one evidence record with:
@@ -91,6 +97,12 @@ expensive layers are skipped for unrelated changes and required when the
 integration, daemon, model, catalog, or packaging paths change. This describes
 the workflow behavior only; branch protection is not claimed to be configured.
 
+Protocol v2 remains unreleased. A future v2 admission must additionally prove
+that declared typed actions reject malformed, out-of-range, and off-step
+values before device I/O, retain no-retry behavior on an ambiguous write, and
+match the manifest's minimum core protocol version. Until the catalog schema
+and validator accept that protocol version, it cannot enter a curated feed.
+
 ## Require admission before merging
 
 Once this workflow is merged into each target branch and has completed a run,
@@ -131,6 +143,6 @@ physical-device evidence.
 
 ## Source references
 
-- [`integrations/catalog.json`](https://github.com/dangerouslaser/couch/blob/main/integrations/catalog.json)
-- [`tools/integrations/validate_catalog.py`](https://github.com/dangerouslaser/couch/blob/main/tools/integrations/validate_catalog.py)
-- [`clients/couch-plugin/tests/protocol.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-plugin/tests/protocol.rs)
+- [`integrations/catalog.json`](https://github.com/Couch-OS/couch/blob/main/integrations/catalog.json)
+- [`tools/integrations/validate_catalog.py`](https://github.com/Couch-OS/couch/blob/main/tools/integrations/validate_catalog.py)
+- [`clients/couch-plugin/tests/protocol.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/tests/protocol.rs)

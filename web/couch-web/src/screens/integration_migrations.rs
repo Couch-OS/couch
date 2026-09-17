@@ -9,6 +9,10 @@ struct MigrationList {
     revision: u64,
     connections: Vec<MigrationConnection>,
     package_available: bool,
+    #[serde(default)]
+    supports_volume_db: bool,
+    #[serde(default)]
+    supports_absolute_volume: bool,
 }
 #[derive(Clone, Deserialize)]
 struct MigrationConnection {
@@ -84,7 +88,7 @@ pub(super) fn section(app: App, busy: RwSignal<bool>) -> AnyView {
         <section class="card integration-migration">
             <h2>"Denon migration pilot"</h2>
             <p>"Try the package with an existing named Denon connection. Your devices, activities and button assignments stay attached. You can restore built-in control here."</p>
-            <p class="notice">"Preview limitation: the package keeps volume up/down, power, mute and input commands, but does not show volume in dB or support the built-in absolute-volume API. Keep built-in control if you need either feature."</p>
+            {move || (!(list.get().supports_volume_db && list.get().supports_absolute_volume)).then(|| view! {<p class="notice">"Preview limitation: this package does not provide full dB reading and absolute-volume support. Keep built-in control if you need either feature."</p>})}
             <p role="alert">{move || error.get()}</p>
             <p role="status" aria-live="polite">{move || result.get()}</p>
             {move || (!list.get().package_available).then(|| view! { <p class="dim">"Install the Denon package before switching a connection."</p> })}
@@ -105,7 +109,7 @@ pub(super) fn section(app: App, busy: RwSignal<bool>) -> AnyView {
                 let restore = connection.state == "migrated";
                 view! { <div class="notice" role="alert">
                     <strong>{format!("{} for {}?", if restore { "Restore built-in control" } else { "Use the preview package" }, connection.name)}</strong>
-                    <p>{if restore { "The package connection will stop before built-in control resumes. The installed package remains available." } else { "The current connection will stop before the package takes over. The volume limitations above apply. Existing settings are retained for restoration." }}</p>
+                    <p>{if restore { "The package connection will stop before built-in control resumes. The installed package remains available." } else { "The current connection will stop before the package takes over. Review any limitations above. Existing settings are retained for restoration." }}</p>
                     <button class="primary" disabled=move || busy.get() on:click=move |_| confirm()>{if restore { "Confirm restore" } else { "Confirm switch" }}</button>
                     <button class="ghost" disabled=move || busy.get() on:click=move |_| pending.set(None)>"Cancel"</button>
                 </div> }

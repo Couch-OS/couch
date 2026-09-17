@@ -45,7 +45,9 @@ struct Options {
 
 fn main() {
     let early: Vec<String> = std::env::args().skip(1).collect();
-    if early == ["--supports-integration-protocol=1"] {
+    if early == ["--supports-integration-protocol=1"]
+        || early == ["--supports-integration-protocol=2"]
+    {
         return;
     }
     if early.first().is_some_and(|arg| arg == "integrations") {

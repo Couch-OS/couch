@@ -107,7 +107,7 @@ try {
   assert(catalogReads >= 2, 'a transient catalog lock reloads after the resumed operation completes');
   await page.getByRole('heading', {name: 'Denon AVR', exact: true}).waitFor();
   await page.getByText('Saved connection settings are retained.').waitFor();
-  await page.getByText(/Preview limitation:.*volume in dB/).waitFor();
+  await page.getByText('Preview limitation: this package does not provide full dB reading and absolute-volume support. Keep built-in control if you need either feature.', {exact: true}).waitFor();
   await page.getByRole('button', {name: 'Switch to Denon package', exact: true}).click();
   assert.equal(calls.filter(c => c.method === 'POST' && c.path.includes('/migrations/')).length, 0, 'reviewing migration must not change a connection');
   await page.getByRole('button', {name: 'Cancel', exact: true}).click();

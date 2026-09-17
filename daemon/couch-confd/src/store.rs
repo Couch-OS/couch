@@ -752,6 +752,7 @@ mod integration_storage_tests {
                 capabilities: vec![],
                 supports_inputs: false,
                 presentation: vec![],
+                actions: vec![],
             },
         });
         config.rooms[0].devices[0].integration = Integration::Connection {

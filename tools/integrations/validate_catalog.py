@@ -134,8 +134,10 @@ def validate(path: Path = DEFAULT_CATALOG) -> dict:
     if not isinstance(catalog, dict):
         raise InvalidCatalog("catalog must be an object")
     _exact_keys(catalog, {"schema", "protocol_version", "integrations"}, "catalog")
-    if catalog["schema"] != 1 or catalog["protocol_version"] != 1:
-        raise InvalidCatalog("catalog supports schema 1 and integration protocol 1")
+    # This is the catalog's maximum core protocol. Each package selects one
+    # supported generation; a newer core must still admit older packages.
+    if catalog["schema"] != 1 or type(catalog["protocol_version"]) is not int or catalog["protocol_version"] not in (1, 2):
+        raise InvalidCatalog("catalog supports schema 1 and integration protocols 1 or 2")
     entries = catalog["integrations"]
     if not isinstance(entries, list) or not entries:
         raise InvalidCatalog("catalog.integrations must be a nonempty list")
@@ -184,6 +186,11 @@ def validate(path: Path = DEFAULT_CATALOG) -> dict:
             raise InvalidCatalog(f"{context}: manifest or Cargo.toml cannot be parsed: {error}") from error
         if manifest.get("id") != integration_id:
             raise InvalidCatalog(f"{context}: manifest ID does not match catalog ID")
+        protocol = manifest.get("protocol_version")
+        minimum = manifest.get("min_core_protocol_version", 1)
+        if (type(protocol) is not int or type(minimum) is not int
+                or not 1 <= protocol <= catalog["protocol_version"] or minimum != protocol):
+            raise InvalidCatalog(f"{context}: manifest protocol is incompatible with catalog core")
         if cargo.get("package", {}).get("name") != entry["cargo_package"]:
             raise InvalidCatalog(f"{context}: Cargo package name does not match catalog")
         if Path(str(manifest.get("executable", ""))).name != entry["binary"]:

@@ -14,7 +14,7 @@ mod server;
 pub mod testing;
 
 pub use couch_sdk::couch_model::{PluginComponent as Component, PluginStatusField as StatusField};
-pub use couch_sdk::{Selectable, Status};
+pub use couch_sdk::{PluginActionSchema, Selectable, Status, TypedAction, VolumeDb};
 pub use host::{
     local_request, read_frame_timeout, write_frame_timeout, Endpoint, Host, HostPolicy,
     LocalRequest, QUEUE_CAPACITY, QUEUE_TTL, REQUEST_TIMEOUT, STARTUP_TIMEOUT,

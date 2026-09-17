@@ -48,6 +48,7 @@ mod tests {
                             capabilities: vec![],
                             supports_inputs: true,
                             presentation: vec![],
+                            actions: vec![],
                         },
                     )
                     .unwrap();
@@ -140,6 +141,7 @@ mod tests {
                 capabilities: vec![],
                 supports_inputs: true,
                 presentation: vec![],
+                actions: vec![],
             },
         }
     }
@@ -342,6 +344,56 @@ mod tests {
                 .is_err());
             assert_eq!(fixture.api.with(|store| store.config().clone()), before);
         }
+    }
+
+    #[test]
+    fn typed_http_refuses_malformed_and_out_of_range_before_device_io() {
+        let fixture = Fixture::new("typed-action", false);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        fixture
+            .api
+            .store
+            .lock()
+            .unwrap()
+            .mutate(None, |config| {
+                config.connections[0].provider = Provider::Denon {
+                    host: "127.0.0.1".into(),
+                    port: listener.local_addr().unwrap().port(),
+                };
+            })
+            .unwrap();
+        fixture.install_package_fixture();
+        let revision = fixture.api.with(|store| store.revision());
+        assert_eq!(fixture.action("migrate", revision).status, 200);
+        for value in [
+            json!({"action":"set_volume_db","tenths":-34.5}),
+            json!({"action":"set_volume_db","tenths":"-345"}),
+            json!({"action":"set_volume_db","tenths":-345,"arbitrary":"code"}),
+            json!({"action":"set_volume_db"}),
+            json!({"action":"other","tenths":-345}),
+            json!({"action":"set_volume_db","tenths":-805}),
+            json!({"action":"set_volume_db","tenths":-344}),
+            json!({"action":"set_volume_db","tenths":185}),
+        ] {
+            let reply = fixture.api.plugin_route(
+                "POST",
+                "receiver",
+                &["typed-action"],
+                &serde_json::to_vec(&value).unwrap(),
+            );
+            assert_eq!(reply.status, 400, "{value}");
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let list = fixture.api.denon_migration_route("GET", &[], &[]);
+        assert_eq!(list.status, 200);
+        let value: serde_json::Value = serde_json::from_slice(&list.body).unwrap();
+        assert_eq!(value["package_protocol_version"], 2);
+        assert_eq!(value["supports_volume_db"], true);
+        assert_eq!(value["supports_absolute_volume"], true);
     }
 
     #[test]
@@ -558,7 +610,22 @@ enum Action {
 impl Api {
     pub(super) fn denon_migration_route(&self, method: &str, path: &[&str], body: &[u8]) -> Reply {
         if method == "GET" && path.is_empty() {
-            let available = self.plugins.manifest("denon").is_ok();
+            let manifest = self.plugins.manifest("denon").ok();
+            let available = manifest.is_some();
+            let package_protocol_version = manifest.as_ref().map(|m| m.protocol_version);
+            let supports_volume_db = manifest.as_ref().is_some_and(|m| {
+                m.protocol_version >= 2
+                    && m.presentation.iter().any(|component| {
+                        matches!(
+                            component,
+                            couch_model::PluginComponent::StatusText {
+                                field: couch_model::PluginStatusField::VolumeDb,
+                                ..
+                            } | couch_model::PluginComponent::VolumeDbControl { .. }
+                        )
+                    })
+            });
+            let supports_absolute_volume = manifest.as_ref().is_some_and(|m| !m.actions.is_empty());
             return self.with(|store| {
                 let config = store.config();
                 let connections: Vec<_> = config.connections.iter().filter_map(|c| {
@@ -567,7 +634,7 @@ impl Api {
                         else { return None };
                     Some(json!({"id":c.id,"name":c.name,"state":state}))
                 }).collect();
-                Reply::json(200, &json!({"revision":config.revision,"connections":connections,"package_available":available}))
+                Reply::json(200, &json!({"revision":config.revision,"connections":connections,"package_available":available,"package_protocol_version":package_protocol_version,"supports_volume_db":supports_volume_db,"supports_absolute_volume":supports_absolute_volume}))
             });
         }
         let ("POST", [id]) = (method, path) else {
@@ -637,6 +704,7 @@ impl Api {
                                     .collect(),
                                 supports_inputs: manifest.supports_inputs,
                                 presentation: manifest.presentation.clone(),
+                                actions: manifest.actions.clone(),
                             },
                         )?;
                         if let Err(error) =
