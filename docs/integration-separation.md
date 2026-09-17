@@ -155,9 +155,9 @@ tests/
 (`5e0cc20adad6ea54032002a8adf0888e80499bca`, matching
 `tools/release/tested-integrations.json`'s `sdk_commit`/`tooling_commit`) —
 exactly the rule stated in `docs/integration-architecture.md`: "An
-independent source repository must pin `couch-plugin` and `couch-sdk` to one
-full Couch commit and call the shared admission harness. It must not carry a
-private copy of the protocol."
+independent source repository pins `couch-plugin` and `couch-sdk` to the same
+full Couch commit and runs the shared admission harness. It must not carry a
+private protocol copy."
 
 What's duplicated today, with only one repository to compare against:
 
@@ -209,8 +209,9 @@ Denon is again the only implemented case
 - **One atomic config document survives core rollback.** `config.json`
   carries a legacy-readable projection plus the modern extension in one
   write; an old core sees the connection as unconfigured rather than seeing a
-  malformed file (`docs/integration-architecture.md` "Rollout and
-  compatibility"; `docs/runtime-updates.md#integration-configuration-across-core-rollback`).
+  malformed file (`docs/integration-architecture.md` "Compatibility and
+  independent source";
+  `docs/runtime-updates.md#integration-configuration-across-core-rollback`).
 
 ## Retirement criteria
 
