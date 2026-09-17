@@ -53,7 +53,7 @@ package-supplied HTML, JavaScript, Slint, and arbitrary layouts.
 The [getting-started tutorial](getting-started.md) walks through those steps.
 Read the [protocol reference](protocol.md) before writing an adapter by hand,
 use the [native component reference](components.md) to design its controls, and
-check the [migration readiness matrix](https://github.com/dangerouslaser/couch/blob/main/docs/integration-architecture.md)
+check the [migration readiness matrix](https://github.com/Couch-OS/couch/blob/main/docs/integration-architecture.md)
 before planning a move from a built-in client.
 
 ## Is a built-in integration ready to move?
