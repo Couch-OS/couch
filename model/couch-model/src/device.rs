@@ -412,6 +412,8 @@ pub enum Integration {
         supports_inputs: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         presentation: Vec<PluginComponent>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        actions: Vec<crate::PluginActionSchema>,
     },
     HomeAssistant {
         entity_id: String,

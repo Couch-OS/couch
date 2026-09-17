@@ -11,13 +11,18 @@ pub struct StoredConfig {
     rollback: Config,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     integration_config: Option<Config>,
+    /// Protocol-v1 cores read integration_config and ignore this extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integration_config_v2: Option<Config>,
 }
 
 impl StoredConfig {
     pub fn new(config: &Config) -> Self {
         let rollback = projection(config);
+        let v1 = v1_projection(config);
         Self {
-            integration_config: (rollback != *config).then(|| config.clone()),
+            integration_config: (rollback != v1).then_some(v1.clone()),
+            integration_config_v2: (v1 != *config).then(|| config.clone()),
             rollback,
         }
     }
@@ -25,20 +30,101 @@ impl StoredConfig {
     /// Reject inconsistent envelopes rather than silently ignoring edits to the
     /// outer document. Ordinary legacy files and ordinary API exports also load.
     pub fn into_config(self) -> Result<Config, &'static str> {
-        match self.integration_config {
-            Some(config) if projection(&config) == self.rollback => Ok(config),
-            Some(_) => Err("Integration configuration does not match its rollback projection"),
-            None => Ok(self.rollback),
+        let v1 = match self.integration_config {
+            Some(config) if projection(&config) == self.rollback => config,
+            Some(_) => {
+                return Err("Integration configuration does not match its rollback projection")
+            }
+            None => self.rollback,
+        };
+        match self.integration_config_v2 {
+            Some(config) if v1_projection(&config) == v1 => Ok(config),
+            Some(_) => Err("Protocol-v2 configuration does not match its protocol-v1 projection"),
+            None => Ok(v1),
         }
     }
 
     pub fn has_integrations(&self) -> bool {
-        self.integration_config.is_some()
+        self.integration_config.is_some() || self.integration_config_v2.is_some()
     }
 }
 
-fn projection(config: &Config) -> Config {
+/// Strip only v2 display/action metadata and newly valid spaced input bindings.
+/// A v1 core keeps package identity/settings/migration receipts, and its live
+/// manifest gate rejects a v2-only package. A save by that core is authoritative
+/// on re-upgrade: omitted v2 bindings must not be resurrected.
+fn v1_projection(config: &Config) -> Config {
     let mut result = config.clone();
+    fn components(
+        presentation: &mut Vec<crate::PluginComponent>,
+        actions: &mut Vec<crate::PluginActionSchema>,
+    ) {
+        actions.clear();
+        presentation.retain(|component| {
+            !matches!(
+                component,
+                crate::PluginComponent::VolumeDbControl { .. }
+                    | crate::PluginComponent::StatusText {
+                        field: crate::PluginStatusField::VolumeDb,
+                        ..
+                    }
+            )
+        });
+    }
+    for connection in &mut result.connections {
+        if let Provider::Plugin {
+            presentation,
+            actions,
+            ..
+        } = &mut connection.provider
+        {
+            components(presentation, actions);
+        }
+    }
+    for room in &mut result.rooms {
+        for device in &mut room.devices {
+            if let Integration::Plugin {
+                presentation,
+                actions,
+                ..
+            } = &mut device.integration
+            {
+                components(presentation, actions);
+            }
+        }
+    }
+    let compatible = |action: &crate::Action| {
+        !action
+            .command
+            .strip_prefix("input:")
+            .is_some_and(|id| id.contains(' '))
+    };
+    for activity in &mut result.activities {
+        for binding in &mut activity.buttons {
+            if binding
+                .action
+                .as_ref()
+                .is_some_and(|action| !compatible(action))
+            {
+                binding.action = None;
+            }
+        }
+        activity.steps.retain(compatible);
+        for steps in [&mut activity.setup.on, &mut activity.setup.off] {
+            steps.retain(|step| !matches!(step, crate::SequenceStep::Command { action } if !compatible(action)));
+        }
+        for page in &mut activity.setup.pages {
+            page.widgets.retain(|widget| compatible(&widget.action));
+        }
+    }
+    for scene in &mut result.scenes {
+        scene.steps.retain(compatible);
+    }
+    result
+}
+
+fn projection(config: &Config) -> Config {
+    let mut result = v1_projection(config);
     let mut disabled = Vec::new();
     for connection in &mut result.connections {
         if let Some(original) = config.migrated_denon(&connection.id) {
@@ -111,6 +197,7 @@ mod tests {
                 capabilities: vec![],
                 supports_inputs: false,
                 presentation: vec![],
+                actions: vec![],
             },
         });
         config.rooms[0].devices[0].integration = Integration::Connection {
@@ -118,6 +205,164 @@ mod tests {
             resource_id: "zone1".into(),
         };
         config
+    }
+
+    #[test]
+    fn v2_cache_and_spaced_inputs_are_preserved_while_both_old_readers_stay_safe() {
+        let mut config = plugin_config();
+        if let Provider::Plugin {
+            supports_inputs,
+            presentation,
+            actions,
+            ..
+        } = &mut config.connections.last_mut().unwrap().provider
+        {
+            *supports_inputs = true;
+            *presentation = vec![
+                crate::PluginComponent::VolumeDbControl {
+                    label: "Volume".into(),
+                },
+                crate::PluginComponent::StatusText {
+                    label: "Volume".into(),
+                    field: crate::PluginStatusField::VolumeDb,
+                },
+            ];
+            *actions = vec![crate::PluginActionSchema::SetVolumeDb {
+                min_tenths: -800,
+                max_tenths: 180,
+                step_tenths: 5,
+            }];
+        }
+        let device = config.rooms[0].devices[0].id.clone();
+        let spaced = crate::Action::new(device.clone(), "input:HD RADIO");
+        let old = crate::Action::new(device.clone(), "input:SAT/CBL");
+        config.activities[0].steps = vec![spaced.clone(), old.clone()];
+        config.activities[0].buttons = vec![crate::buttons::Binding {
+            button: crate::buttons::Button::Power,
+            gesture: Default::default(),
+            action: Some(spaced.clone()),
+        }];
+        config.activities[0].setup.devices = vec![device];
+        config.activities[0].setup.on = vec![crate::SequenceStep::Command {
+            action: spaced.clone(),
+        }];
+        config.activities[0].setup.off = vec![crate::SequenceStep::Command {
+            action: old.clone(),
+        }];
+        config.activities[0].setup.pages = vec![crate::ActivityPage {
+            title: "Receiver".into(),
+            widgets: vec![crate::ActivityWidget {
+                label: "Source".into(),
+                icon: None,
+                action: spaced.clone(),
+            }],
+        }];
+        config.scenes[0].steps = vec![spaced];
+        config.validate().unwrap();
+        let bytes = serde_json::to_vec(&StoredConfig::new(&config)).unwrap();
+        assert!(serde_json::from_slice::<LegacyConfig>(&bytes).is_ok());
+        // Mirrors the v1 component enum, rather than reusing today's richer
+        // enum (which would conceal precisely the compatibility regression).
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum OldComponent {
+            CommandGroup,
+            StatusText,
+            Toggle,
+            InputSelector,
+        }
+        #[derive(Deserialize)]
+        struct OldProvider {
+            #[serde(default)]
+            presentation: Vec<OldComponent>,
+        }
+        #[derive(Deserialize)]
+        struct OldConnection {
+            provider: OldProvider,
+        }
+        #[derive(Deserialize)]
+        struct OldConfig {
+            connections: Vec<OldConnection>,
+        }
+        #[derive(Deserialize)]
+        struct OldEnvelope {
+            integration_config: OldConfig,
+        }
+        let old_reader: OldEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert!(old_reader
+            .integration_config
+            .connections
+            .last()
+            .unwrap()
+            .provider
+            .presentation
+            .is_empty());
+        assert!(
+            serde_json::from_slice::<OldConfig>(&serde_json::to_vec(&config).unwrap()).is_err()
+        );
+        let current: StoredConfig = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(current.into_config().unwrap(), config);
+        let v1 = v1_projection(&config);
+        v1.validate().unwrap();
+        assert_eq!(v1.activities[0].steps, vec![old.clone()]);
+        assert_eq!(v1.activities[0].buttons.len(), 1);
+        assert_eq!(
+            v1.activities[0].buttons[0].button,
+            crate::buttons::Button::Power
+        );
+        assert_eq!(v1.activities[0].buttons[0].action, None);
+        assert_eq!(serde_json::to_value(&v1.activities[0].buttons[0]).unwrap()["action"],serde_json::Value::Null,
+            "retain the explicit disabled binding; removing it would restore the default Power action");
+        assert!(v1.activities[0].setup.on.is_empty());
+        assert_eq!(
+            v1.activities[0].setup.off,
+            vec![crate::SequenceStep::Command { action: old }]
+        );
+        assert!(v1.activities[0].setup.pages[0].widgets.is_empty());
+        assert!(v1.scenes[0].steps.is_empty());
+        let mut old_save: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        old_save
+            .as_object_mut()
+            .unwrap()
+            .remove("integration_config_v2");
+        assert_eq!(
+            serde_json::from_value::<StoredConfig>(old_save)
+                .unwrap()
+                .into_config()
+                .unwrap(),
+            v1,
+            "a v1 save cannot resurrect dropped v2 bindings"
+        );
+        let mut mismatched: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        mismatched["integration_config_v2"]["revision"] = serde_json::json!(42);
+        assert!(serde_json::from_value::<StoredConfig>(mismatched)
+            .unwrap()
+            .into_config()
+            .is_err());
+    }
+
+    #[test]
+    fn native_spaced_inputs_also_need_the_v2_envelope() {
+        let mut config = Config::seed();
+        config.rooms[0].devices[0].integration = Integration::Denon {
+            host: "avr.invalid".into(),
+            port: 23,
+        };
+        config.activities[0].steps = vec![crate::Action::new(
+            config.rooms[0].devices[0].id.clone(),
+            "input:HD RADIO",
+        )];
+        config.activities[0].buttons.clear();
+        let bytes = serde_json::to_vec(&StoredConfig::new(&config)).unwrap();
+        let legacy: Config = serde_json::from_slice(&bytes).unwrap();
+        assert!(legacy.activities[0].steps.is_empty());
+        assert_eq!(
+            serde_json::from_slice::<StoredConfig>(&bytes)
+                .unwrap()
+                .into_config()
+                .unwrap(),
+            config
+        );
     }
 
     #[test]
@@ -150,6 +395,7 @@ mod tests {
             capabilities: vec![],
             supports_inputs: false,
             presentation: vec![],
+            actions: vec![],
         };
         let bytes = serde_json::to_vec(&StoredConfig::new(&config)).unwrap();
         assert!(serde_json::from_slice::<LegacyConfig>(&bytes).is_ok());

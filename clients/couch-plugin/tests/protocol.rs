@@ -429,3 +429,149 @@ printf '%s' "$body"
 "#
     )
 }
+
+fn v2_manifest(mut manifest: Manifest) -> Manifest {
+    manifest.protocol_version = 2;
+    manifest.min_core_protocol_version = 2;
+    manifest.actions = vec![couch_plugin::PluginActionSchema::SetVolumeDb {
+        min_tenths: -800,
+        max_tenths: 180,
+        step_tenths: 5,
+    }];
+    manifest
+}
+
+#[test]
+fn v2_is_explicit_and_headless_actions_do_not_depend_on_presentation() {
+    use couch_plugin::{Component, PluginActionSchema, StatusField, TypedAction};
+    let package = Package::new();
+    let v1 = &package.manifest;
+    let wire = serde_json::to_value(v1).unwrap();
+    assert!(wire.get("actions").is_none());
+    assert!(wire.get("min_core_protocol_version").is_none());
+    assert_eq!(
+        v1.validate_action(TypedAction::SetVolumeDb { tenths: -345 }),
+        Err(Error::Unsupported)
+    );
+    let mut manifest = v2_manifest(v1.clone());
+    assert!(manifest.presentation.is_empty());
+    assert_eq!(manifest.validate(), Ok(()));
+    assert_eq!(
+        manifest.validate_action(TypedAction::SetVolumeDb { tenths: -345 }),
+        Ok(())
+    );
+    for tenths in [-805, -344, 185] {
+        assert_eq!(
+            manifest.validate_action(TypedAction::SetVolumeDb { tenths }),
+            Err(Error::Invalid)
+        );
+    }
+    manifest.presentation = vec![Component::VolumeDbControl {
+        label: "Volume".into(),
+    }];
+    assert_eq!(manifest.validate(), Ok(()));
+    manifest.actions.clear();
+    assert_eq!(manifest.validate(), Err(Error::Invalid));
+    manifest.presentation = vec![Component::StatusText {
+        label: "Volume".into(),
+        field: StatusField::VolumeDb,
+    }];
+    assert_eq!(
+        manifest.validate(),
+        Ok(()),
+        "a readout does not authorize writes"
+    );
+    assert_eq!(
+        manifest.validate_action(TypedAction::SetVolumeDb { tenths: -345 }),
+        Err(Error::Unsupported)
+    );
+    manifest.protocol_version = 1;
+    manifest.min_core_protocol_version = 1;
+    assert_eq!(
+        manifest.validate(),
+        Err(Error::Invalid),
+        "no v2 controls in v1"
+    );
+    for (version, minimum) in [(0, 0), (1, 2), (2, 1), (2, 3), (3, 3)] {
+        let mut manifest = v2_manifest(v1.clone());
+        manifest.protocol_version = version;
+        manifest.min_core_protocol_version = minimum;
+        assert_eq!(manifest.validate(), Err(Error::Incompatible));
+    }
+    for actions in [
+        vec![PluginActionSchema::SetVolumeDb {
+            min_tenths: -800,
+            max_tenths: 180,
+            step_tenths: 0,
+        }],
+        vec![
+            PluginActionSchema::SetVolumeDb {
+                min_tenths: -800,
+                max_tenths: 180,
+                step_tenths: 5
+            };
+            2
+        ],
+    ] {
+        manifest = v2_manifest(v1.clone());
+        manifest.actions = actions;
+        assert_eq!(manifest.validate(), Err(Error::Invalid));
+    }
+}
+
+#[test]
+fn typed_action_refusals_do_not_consume_a_child_request_and_bad_measurements_retire_it() {
+    use couch_plugin::TypedAction;
+    for use_v2 in [false, true] {
+        let mut p = Package::new();
+        if use_v2 {
+            p.manifest = v2_manifest(p.manifest.clone());
+        }
+        p.script(&format!(
+            "{}{}exec /bin/sleep 10",
+            p.hello(),
+            print_frame(&json!({"id":2,"body":{"type":"status","status":{"on":true}}}))
+        ));
+        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            host.action(TypedAction::SetVolumeDb { tenths: -805 }),
+            Err(if use_v2 {
+                Error::Invalid
+            } else {
+                Error::Unsupported
+            })
+        );
+        assert_eq!(host.status().unwrap().on, Some(true));
+    }
+    for reading in [
+        json!({"kind":"reading","tenths":301}),
+        json!({"kind":"minimum","tenths":0}),
+        json!({"kind":"reading","tenths":-34.5}),
+        json!({"kind":"reading"}),
+    ] {
+        let mut p = Package::new();
+        p.manifest = v2_manifest(p.manifest.clone());
+        p.script(&format!(
+            "{}{}exec /bin/sleep 10",
+            p.hello(),
+            print_frame(&json!({"id":2,"body":{"type":"status","status":{"volume_db":reading}}}))
+        ));
+        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        assert_eq!(host.status(), Err(Error::Protocol));
+        assert!(!host.is_alive());
+    }
+    let p = Package::new();
+    p.script(&format!(
+        "{}{}exec /bin/sleep 10",
+        p.hello(),
+        print_frame(
+            &json!({"id":2,"body":{"type":"status","status":{"volume_db":{"kind":"minimum"}}}})
+        )
+    ));
+    let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        host.status(),
+        Err(Error::Protocol),
+        "v1 cannot smuggle a v2 reading"
+    );
+}

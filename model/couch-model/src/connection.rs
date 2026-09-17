@@ -25,7 +25,7 @@ pub struct PluginCapability {
 /// not package-supplied UI code; both browser and panel render them with their
 /// own built-in components.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PluginComponent {
     CommandGroup {
         title: String,
@@ -41,6 +41,9 @@ pub enum PluginComponent {
         on: String,
         off: String,
     },
+    VolumeDbControl {
+        label: String,
+    },
     InputSelector {
         label: String,
     },
@@ -53,6 +56,7 @@ pub enum PluginStatusField {
     Playing,
     Muted,
     Volume,
+    VolumeDb,
     Input,
     Title,
 }
@@ -104,6 +108,8 @@ pub enum Provider {
         supports_inputs: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         presentation: Vec<PluginComponent>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        actions: Vec<crate::PluginActionSchema>,
     },
     Ir,
 }
@@ -210,6 +216,7 @@ impl Config {
                 capabilities,
                 supports_inputs,
                 presentation,
+                actions,
                 ..
             } => Integration::Plugin {
                 id: id.clone(),
@@ -218,6 +225,7 @@ impl Config {
                 capabilities: capabilities.clone(),
                 supports_inputs: *supports_inputs,
                 presentation: presentation.clone(),
+                actions: actions.clone(),
             },
             Provider::Ir => Integration::Ir {
                 codeset: resource_id.clone(),
@@ -241,6 +249,7 @@ mod tests {
                 label: "Volume up".into(),
             }],
             supports_inputs: true,
+            actions: vec![],
             presentation: vec![PluginComponent::CommandGroup {
                 title: "Volume".into(),
                 commands: vec!["volume-up".into()],
@@ -270,6 +279,7 @@ mod tests {
                     label: "Volume up".into(),
                 }],
                 supports_inputs: true,
+                actions: vec![],
                 presentation: vec![PluginComponent::CommandGroup {
                     title: "Volume".into(),
                     commands: vec!["volume-up".into()],
@@ -298,6 +308,7 @@ mod tests {
                 ],
                 supports_inputs: false,
                 presentation,
+                actions: vec![],
             },
         };
         for presentation in [

@@ -133,6 +133,7 @@ fn plugin_target(config: &Config, id: &str) -> Option<pages::PluginTarget> {
         Integration::Plugin {
             connection_id,
             capabilities,
+            actions,
             supports_inputs,
             presentation,
             ..
@@ -148,6 +149,7 @@ fn plugin_target(config: &Config, id: &str) -> Option<pages::PluginTarget> {
                 connection: connection_id.to_string(),
                 label,
                 capabilities,
+                actions,
                 supports_inputs,
                 presentation,
             })
@@ -1243,6 +1245,7 @@ mod tests {
                     label: "Power on".into(),
                 }],
                 supports_inputs: false,
+                actions: vec![],
                 presentation: vec![couch_model::PluginComponent::StatusText {
                     label: "Now playing".into(),
                     field: couch_model::PluginStatusField::Title,

@@ -1,6 +1,5 @@
 use crate::{
     protocol::Envelope, read_frame, write_frame, Error, Manifest, Request, Response, Result,
-    PROTOCOL_VERSION,
 };
 use std::{
     io::{Read, Write},
@@ -196,7 +195,7 @@ impl Host {
             alive: true,
         };
         match host.request(Request::Hello {
-            protocol_version: PROTOCOL_VERSION,
+            protocol_version: manifest.protocol_version,
         })? {
             Response::Hello { manifest: actual } if actual == *manifest => Ok(host),
             _ => Err(Error::Incompatible),
@@ -232,6 +231,12 @@ impl Host {
             _ => Err(Error::Protocol),
         }
     }
+    pub fn action(&mut self, action: couch_sdk::TypedAction) -> Result<()> {
+        match self.request(Request::Action { action })? {
+            Response::Ok => Ok(()),
+            _ => Err(Error::Protocol),
+        }
+    }
     pub fn status(&mut self) -> Result<couch_sdk::Status> {
         match self.request(Request::Status)? {
             Response::Status { status } => Ok(status),
@@ -254,6 +259,7 @@ impl Host {
             }
             Request::Inputs if !self.manifest.supports_inputs => return Err(Error::Unsupported),
             Request::Configure { settings } => self.manifest.validate_settings(settings)?,
+            Request::Action { action } => self.manifest.validate_action(*action)?,
             _ => (),
         }
         self.next_id = self.next_id.checked_add(1).ok_or(Error::Protocol)?;
@@ -274,6 +280,11 @@ impl Host {
                 return Err(Error::Protocol);
             }
             validate_response(&request, &response.body)?;
+            if self.manifest.protocol_version == 1
+                && matches!(&response.body, Response::Status { status } if status.volume_db.is_some())
+            {
+                return Err(Error::Protocol);
+            }
             Ok(response.body)
         })();
         // Protocol/transport failures retire the stream: never consume a late
@@ -309,9 +320,13 @@ fn validate_response(request: &Request, response: &Response) -> Result<()> {
     match (request, response) {
         (_, Response::Error { .. }) => Ok(()),
         (Request::Hello { .. }, Response::Hello { manifest }) => manifest.validate(),
-        (Request::Configure { .. } | Request::Command { .. }, Response::Ok) => Ok(()),
+        (
+            Request::Configure { .. } | Request::Command { .. } | Request::Action { .. },
+            Response::Ok,
+        ) => Ok(()),
         (Request::Status, Response::Status { status })
             if status.volume.is_none_or(|v| v <= 100)
+                && status.volume_db.is_none_or(|v| v.is_valid())
                 && [&status.input, &status.title].iter().all(|s| {
                     s.as_ref()
                         .is_none_or(|v| v.len() <= 4096 && !v.chars().any(char::is_control))
@@ -322,9 +337,7 @@ fn validate_response(request: &Request, response: &Response) -> Result<()> {
         (Request::Inputs, Response::Inputs { inputs })
             if inputs.len() <= 128
                 && inputs.iter().all(|i| {
-                    !i.id.is_empty()
-                        && i.id.len() <= 128
-                        && !i.id.chars().any(char::is_control)
+                    couch_sdk::couch_model::commands::valid_input_id(&i.id)
                         && i.name.len() <= 256
                         && !i.name.chars().any(char::is_control)
                 }) =>

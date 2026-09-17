@@ -68,6 +68,9 @@ jobs:
       - name: Run shared host protocol tests
         if: needs.changes.outputs.integration == 'true'
         run: cargo test --locked --manifest-path clients/Cargo.toml -p couch-plugin --test protocol
+      - name: Verify Denon protocol parity
+        if: needs.changes.outputs.integration == 'true'
+        run: cargo test --locked --manifest-path clients/Cargo.toml -p couch-denon --test parity
       - name: Run every required package case
         if: needs.changes.outputs.integration == 'true'
         run: |
@@ -136,6 +139,7 @@ jobs:
         run: |
           python3 -m http.server 18093 --bind 127.0.0.1 --directory web/couch-web/dist > "$RUNNER_TEMP/couch-web.log" 2>&1 &
           COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/integrations.mjs
+          COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/plugin-components.mjs
       # The same bundle and the same browser, for the other screen whose copy
       # is asserted rather than its behaviour: every endpoint is mocked, so no
       # update service and no remote are involved.
@@ -150,6 +154,8 @@ jobs:
           path: |
             build/webui-review/integrations-mobile.png
             build/webui-review/integrations-desktop.png
+            build/webui-review/plugin-components-mobile.png
+            build/webui-review/plugin-components-desktop.png
             build/webui-review/updates-installed-mobile.png
             build/webui-review/updates-installed-desktop.png
             ${{ runner.temp }}/couch-web.log

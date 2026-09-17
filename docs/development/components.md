@@ -19,6 +19,7 @@ It is deliberately small and may evolve before public release.
 | `status_text` | `label`, `field` | A read-only value from device status. |
 | `toggle` | `label`, `state`, `on`, `off` | A boolean state with explicit on and off commands. |
 | `input_selector` | `label` | The input list returned by the integration. |
+| `volume_db_control` | `label` | An explicit dB control backed by declared `set_volume_db` action. **Protocol v2, unreleased.** |
 
 An integration may declare up to 16 components. A command group contains 1 to
 32 distinct declared capabilities. Labels and titles are plain text, at most
@@ -66,6 +67,25 @@ Use the field your device truly reports. For example, a receiver that reports
 decibels should not expose that number as Couch's percentage volume field.
 Omit a component when the state is unavailable or ambiguous.
 
+## Design a native component, not a custom screen
+
+Start with the device fact and the command contract, then choose a component.
+A presentation entry must name only status and commands already represented in
+the manifest; it cannot create a new capability. Use one component for one
+clear control or readout, keep labels device-neutral, and make the component
+useful in both the browser and remote panel without assuming a particular
+screen size, icon, or layout. Keep dynamic device data in `status` or `inputs`,
+not in labels or HTML-like strings.
+
+`volume_db_control` is reserved for protocol v2. Its `label` is presentation
+only; the manifest must also declare exactly the bounded `set_volume_db` action
+that it exposes. Pair it with `status_text` using the `volume_db` field when a
+receiver reports that state. When status is absent, never invent a reading or
+initialize the target to zero. Show the `minimum` dB state distinctly. Entering
+or changing a target stays a local draft; Couch sends it only after the user
+selects **Set volume**. This component is not available to protocol-v1 packages
+or to the published `.171.dev` protocol-v1 host.
+
 ## Validation rules
 
 Couch rejects the manifest before activation when:
@@ -74,6 +94,7 @@ Couch rejects the manifest before activation when:
 - a toggle uses a nonboolean state;
 - its `on` and `off` command IDs are the same or undeclared;
 - an input selector is present while `supports_inputs` is false;
+- a dB control has no matching declared typed dB action;
 - text or component-count limits are exceeded.
 
 If `presentation` is omitted, Couch can still expose the package's basic

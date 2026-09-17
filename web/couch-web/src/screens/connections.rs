@@ -7,7 +7,8 @@
 //! and the second (address, pairing, credentials) is only offered there.
 use crate::{api, route::Route, ui, App};
 use couch_model::{
-    Connection, Id, Integration, PluginCapability, PluginComponent, PluginStatusField, Provider,
+    Connection, Id, Integration, PluginActionSchema, PluginCapability, PluginComponent,
+    PluginStatusField, Provider, TypedAction, VolumeDb,
 };
 use leptos::prelude::*;
 use serde::Deserialize;
@@ -26,6 +27,8 @@ struct PluginManifest {
     label: String,
     #[serde(default)]
     capabilities: Vec<PluginCapability>,
+    #[serde(default)]
+    actions: Vec<PluginActionSchema>,
     #[serde(default)]
     settings: Vec<PluginSetting>,
     #[serde(default)]
@@ -341,6 +344,7 @@ fn create_plugin(app: App, manifest: PluginManifest) -> AnyView {
         id: manifest.id,
         label: manifest.label,
         capabilities: manifest.capabilities,
+        actions: manifest.actions,
         supports_inputs: manifest.supports_inputs,
         presentation: manifest.presentation,
     };
@@ -356,6 +360,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
         id: package_id,
         label,
         capabilities,
+        actions,
         supports_inputs,
         presentation,
     } = &connection.provider
@@ -366,6 +371,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
     let cached_label = label.clone();
     let missing_label = cached_label.clone();
     let cached_capabilities = capabilities.clone();
+    let cached_actions = actions.clone();
     let cached_inputs = *supports_inputs;
     let cached_presentation = presentation.clone();
     let connection_id = connection.id.to_string();
@@ -450,6 +456,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
         id: String::new(),
         label: cached_label,
         capabilities: cached_capabilities,
+        actions: cached_actions,
         settings: Vec::new(),
         supports_inputs: cached_inputs,
         presentation: cached_presentation,
@@ -563,14 +570,32 @@ fn plugin_controls(
         live_busy.set(true);
         leptos::task::spawn_local(async move {
             match api::ha(
-                if method == "action" { "POST" } else { "GET" },
+                if matches!(method, "action" | "typed-action") {
+                    "POST"
+                } else {
+                    "GET"
+                },
                 &format!("{}/{method}", base.get_value()),
                 body,
             )
             .await
             {
-                Ok(value) => result.set(if method == "action" {
-                    "Command sent.".into()
+                Ok(value) => result.set(if matches!(method, "action" | "typed-action") {
+                    // A command is sent once. A failed readback must never retry
+                    // the command or pretend its requested value was observed.
+                    match api::ha("GET", &format!("{}/status", base.get_value()), None).await {
+                        Ok(value) => {
+                            status.set(value);
+                            "Command sent. Status refreshed.".into()
+                        }
+                        Err(error) => {
+                            status.set(Value::Null);
+                            if error.unauthorized {
+                                app.paired.set(Some(false));
+                            }
+                            format!("Command sent. Status unavailable: {}", error.message)
+                        }
+                    }
                 } else if method == "inputs" {
                     let choices = value
                         .as_array()
@@ -620,6 +645,7 @@ fn plugin_controls(
             let source=installed.get().unwrap_or_else(||cached.clone());
             let components=if source.presentation.is_empty(){vec![PluginComponent::CommandGroup{title:"Commands".into(),commands:source.capabilities.iter().map(|capability|capability.id.clone()).collect()}]}else{source.presentation.clone()};
             components.into_iter().map(|component|match component {
+                PluginComponent::VolumeDbControl{label} => plugin_volume_control(label, source.actions.clone(), status, move ||live_busy.get()||settings_busy.get()||installed.get().is_none(), move |action|call("typed-action",Some(json!(action)))),
                 PluginComponent::CommandGroup{title,commands}=>{
                     let capabilities=source.capabilities.clone();
                     view!{<section class="integration-component"><h3>{title}</h3><div class="actions">{commands.into_iter().filter_map(|command|capabilities.iter().find(|capability|capability.id==command).map(|capability|(command,capability.label.clone()))).map(|(command,label)|view!{<button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("action",Some(json!({"command":command})))>{label}</button>}).collect_view()}</div></section>}.into_any()
@@ -641,6 +667,71 @@ fn plugin_status_bool(status: &Value, field: PluginStatusField) -> Option<bool> 
     }
 }
 
+fn db_number(tenths: i16) -> String {
+    format!(
+        "{}{:.1}",
+        if tenths < 0 { "-" } else { "" },
+        f32::from(tenths).abs() / 10.0
+    )
+}
+
+fn parse_db_target(text: &str, schema: PluginActionSchema) -> Option<TypedAction> {
+    let text = text.trim();
+    let (negative, digits) = text
+        .strip_prefix('-')
+        .map(|s| (true, s))
+        .unwrap_or((false, text));
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || fraction.len() > 1
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let tenths =
+        whole
+            .parse::<i32>()
+            .ok()?
+            .checked_mul(10)?
+            .checked_add(if fraction.is_empty() {
+                0
+            } else {
+                fraction.parse::<i32>().ok()?
+            })?;
+    let tenths = i16::try_from(if negative { -tenths } else { tenths }).ok()?;
+    let action = TypedAction::SetVolumeDb { tenths };
+    schema.accepts(action).then_some(action)
+}
+
+fn plugin_volume_control(
+    label: String,
+    actions: Vec<PluginActionSchema>,
+    status: RwSignal<Value>,
+    disabled: impl Fn() -> bool + Copy + Send + Sync + 'static,
+    send: impl Fn(TypedAction) + Copy + Send + Sync + 'static,
+) -> AnyView {
+    let draft = RwSignal::new(String::new());
+    let Some(
+        schema @ PluginActionSchema::SetVolumeDb {
+            min_tenths,
+            max_tenths,
+            step_tenths,
+        },
+    ) = actions.into_iter().find(|s| s.is_valid())
+    else {
+        return view!{<section class="integration-component"><h3>{label}</h3><p>"Volume control unavailable."</p></section>}.into_any();
+    };
+    view!{<section class="integration-component"><h3>{label}</h3>
+        <p>"Current volume: "<strong>{move ||plugin_status_text(&status.get(),PluginStatusField::VolumeDb)}</strong></p>
+        <form on:submit=move |event|{event.prevent_default();if !disabled(){if let Some(action)=parse_db_target(&draft.get_untracked(),schema){send(action);}}}>
+            <label class="field">"Target volume (dB)"<input type="number" min=db_number(min_tenths) max=db_number(max_tenths) step=db_number(step_tenths as i16) required=true placeholder="Choose a target" disabled=disabled prop:value=move ||draft.get() on:input=move |event|draft.set(event_target_value(&event))/></label>
+            <p class="dim">{format!("{} to {} dB, in {} dB steps. Changes apply when you select Set volume.",db_number(min_tenths),db_number(max_tenths),db_number(step_tenths as i16))}</p>
+            <button class="primary" type="submit" disabled=move ||disabled()||parse_db_target(&draft.get(),schema).is_none()>"Set volume"</button>
+        </form>
+    </section>}.into_any()
+}
+
 fn plugin_status_text(status: &Value, field: PluginStatusField) -> String {
     match field {
         PluginStatusField::On | PluginStatusField::Playing | PluginStatusField::Muted => {
@@ -652,8 +743,97 @@ fn plugin_status_text(status: &Value, field: PluginStatusField) -> String {
             .as_u64()
             .map(|value| format!("{value}%"))
             .unwrap_or_else(|| "—".into()),
+        PluginStatusField::VolumeDb => {
+            match serde_json::from_value::<VolumeDb>(status["volume_db"].clone())
+                .ok()
+                .filter(|v| v.is_valid())
+            {
+                Some(VolumeDb::Reading { tenths }) => format!("{} dB", db_number(tenths)),
+                Some(VolumeDb::Minimum) => "Minimum".into(),
+                None => "Unavailable".into(),
+            }
+        }
         PluginStatusField::Input => status["input"].as_str().unwrap_or("—").into(),
         PluginStatusField::Title => status["title"].as_str().unwrap_or("—").into(),
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+
+    #[test]
+    fn db_targets_are_exact_tenths_and_obey_declared_bounds() {
+        let schema = PluginActionSchema::SetVolumeDb {
+            min_tenths: -800,
+            max_tenths: 180,
+            step_tenths: 5,
+        };
+        for (text, tenths) in [
+            ("-80", -800),
+            ("-34.5", -345),
+            ("-0.5", -5),
+            ("0", 0),
+            ("18.0", 180),
+        ] {
+            assert_eq!(
+                parse_db_target(text, schema),
+                Some(TypedAction::SetVolumeDb { tenths })
+            );
+            assert_eq!(
+                parse_db_target(&db_number(tenths), schema),
+                Some(TypedAction::SetVolumeDb { tenths })
+            );
+        }
+        for text in [
+            "",
+            "NaN",
+            "Infinity",
+            "1e1",
+            "-80.5",
+            "18.5",
+            "-34.4",
+            "-34.50",
+            "--1",
+            "999999999999999999999",
+            "2147483647",
+            "0.01",
+        ] {
+            assert_eq!(parse_db_target(text, schema), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn db_status_never_confuses_minimum_missing_or_percentage() {
+        assert_eq!(
+            plugin_status_text(
+                &json!({"volume_db":{"kind":"minimum"}}),
+                PluginStatusField::VolumeDb
+            ),
+            "Minimum"
+        );
+        assert_eq!(
+            plugin_status_text(
+                &json!({"volume_db":{"kind":"reading","tenths":-345}}),
+                PluginStatusField::VolumeDb
+            ),
+            "-34.5 dB"
+        );
+        for status in [
+            json!({"volume":50}),
+            json!({}),
+            json!({"volume_db":{"kind":"reading","tenths":301}}),
+            json!({"volume_db":{"kind":"minimum","tenths":0}}),
+        ] {
+            assert_eq!(
+                plugin_status_text(&status, PluginStatusField::VolumeDb),
+                "Unavailable"
+            );
+        }
+        assert_eq!(
+            plugin_status_text(&json!({"volume":50}), PluginStatusField::Volume),
+            "50%"
+        );
     }
 }
 

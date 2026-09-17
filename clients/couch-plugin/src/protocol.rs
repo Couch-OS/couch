@@ -3,7 +3,7 @@ use couch_sdk::{Selectable, Status};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_FRAME: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +72,7 @@ pub enum Request {
     Hello { protocol_version: u32 },
     Configure { settings: serde_json::Value },
     Command { function: String },
+    Action { action: couch_sdk::TypedAction },
     Status,
     Inputs,
 }

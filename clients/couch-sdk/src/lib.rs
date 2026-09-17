@@ -101,3 +101,5 @@ pub use status::{Selectable, Status};
 /// Re-exported so a client crate needs one dependency, not two, to speak the
 /// command vocabulary.
 pub use couch_model;
+
+pub use couch_model::{PluginActionSchema, TypedAction, VolumeDb};

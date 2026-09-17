@@ -6,19 +6,27 @@ package manager, user interfaces and official feed key. An integration feed
 supplies versioned APKs. Do not copy an APK into a core runtime or installer OS
 image to make the two releases appear atomic.
 
-The initial pilot is the core contract tested at Couch commit
+The initial receiver pilot used the core contract at
 `b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb` with Denon `0.1.1` from the
-official preview feed. The machine-readable identity is
-`tools/release/tested-integrations.json`. It pins:
+official preview feed. The renewed host compatibility set tests the exact same
+signed APK against core `f274804c5219db00446f1b9e5ce46391adcfd37c` under
+ARM emulation with a simulated receiver. The machine-readable identity is
+`tools/release/tested-integrations.json`. Its schema 2 separates:
 
-- protocol version 1 and the core files whose native host/adapter behavior was
-  tested;
+- the core's supported protocol versions `[1, 2]`, the package's protocol
+  version `1`, and the core files whose host behavior was tested;
 - the immutable preview feed release snapshot, official public key and Denon
   APK bytes;
 - the independent Denon source commit and its Couch SDK/tooling commits;
-- preview evidence: signed package lifecycle, read-only receiver status and
-  input enumeration. It does not claim full command parity or a validated
-  receiver model/firmware pair.
+- the original core identity for the prior read-only receiver observations;
+- a hash-pinned host compatibility receipt, executable test harness and report
+  covering signed package lifecycle, v1 handshake, simulated status/inputs/
+  commands, one shared HTTP/panel connection, and refusal of v2-only actions.
+
+The renewed evidence is host compatibility, not a new hardware certification.
+It does not validate Denon `0.2.0` on a receiver, full command parity, or a
+receiver model/firmware pair. The published `0.1.1` feed bytes stay unchanged;
+the new core and v2 package still require their own release review.
 
 The core's tested commit contains the SDK/tooling commit used to build the
 package. A later release candidate may use a descendant Couch commit only while
@@ -72,7 +80,9 @@ python3 tools/release/verify_integration_set.py \
 This is an offline verifier: it does not download, sign, publish, install or
 contact a device. It verifies the embedded core key, source ancestry, unchanged
 contract paths, catalog preview status, artifact hashes, provenance fields and
-the package's exact signed-index entry. The receipt names the candidate Couch
+the package's exact signed-index entry. For schema 2 it also verifies the
+executed harness/report hashes and reads the protocol, manifest and executable
+identity directly from the pinned APK. The receipt names the candidate Couch
 commit and has `artifact_bytes_verified: true`. Generate it after the candidate
 commit is frozen; a receipt from another commit is refused.
 

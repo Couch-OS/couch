@@ -157,6 +157,7 @@ impl Config {
                 capabilities,
                 supports_inputs,
                 presentation,
+                actions,
                 ..
             } = &c.provider
             {
@@ -182,9 +183,11 @@ impl Config {
                     }
                     capability_ids.push(&capability.id);
                 }
-                if presentation.len() > 16
+                if actions.len() > 1
+                    || actions.iter().any(|action| !action.is_valid())
+                    || presentation.len() > 16
                     || presentation.iter().any(|component| {
-                        !valid_plugin_component(component, capabilities, *supports_inputs)
+                        !valid_plugin_component(component, capabilities, *supports_inputs, actions)
                     })
                 {
                     problems.push(Problem {
@@ -441,6 +444,7 @@ fn valid_plugin_component(
     component: &crate::PluginComponent,
     capabilities: &[crate::PluginCapability],
     supports_inputs: bool,
+    actions: &[crate::PluginActionSchema],
 ) -> bool {
     let declared = |command: &str| {
         capabilities
@@ -471,6 +475,9 @@ fn valid_plugin_component(
                 && on != off
                 && declared(on)
                 && declared(off)
+        }
+        crate::PluginComponent::VolumeDbControl { label } => {
+            valid_plugin_label(label) && actions.len() == 1 && actions[0].is_valid()
         }
         crate::PluginComponent::InputSelector { label } => {
             valid_plugin_label(label) && supports_inputs

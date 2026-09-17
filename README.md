@@ -59,5 +59,7 @@ See the [repository guide](AGENTS.md), [web UI guide](docs/webui.md) and
 
 To write an independently installable integration, start with the
 [integration developer guide](docs/development/index.md) and
-[catalog admission requirements](docs/development/admission.md). These Markdown
-pages are also the source for the website's developer documentation.
+[catalog admission requirements](docs/development/admission.md). The
+[migration readiness matrix](docs/integration-architecture.md) maps the
+existing built-in clients to the current package boundary. These Markdown pages
+are also the source for the website's developer documentation.

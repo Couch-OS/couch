@@ -1,5 +1,5 @@
 Title: SDK and protocol
-Description: The DeviceClient contract and protocol-v1 framed JSON messages.
+Description: The DeviceClient contract, protocol-v1 framing, and unreleased typed dB controls.
 Order: 3
 
 # SDK and protocol
@@ -8,7 +8,9 @@ An integration has two boundaries. `couch-sdk` defines how Rust code talks to a
 device. `couch-plugin` carries that contract across a subprocess socket with a
 versioned JSON protocol. The Rust crates are maintained in this repository and
 can be consumed by an independent integration through one full Git commit pin;
-they are not crates.io releases. Protocol version 1 is the installation boundary.
+they are not crates.io releases. Protocol version 1 is the installed preview
+boundary. Protocol version 2 is specified in the current source but has not
+shipped in a Couch release.
 
 ## Implementing `DeviceClient`
 
@@ -23,6 +25,9 @@ opens the transport once, and performs commands without internal retry.
 | `status` | Return supported fields or `Unsupported`. |
 | `inputs` | Return selectable inputs, or an empty list. |
 | `supports_input` | Validate a dynamic input ID before it can be sent. |
+| `actions` | Declare typed actions when the selected protocol supports them. |
+| `validate_action` | Refuse an invalid typed value before device I/O. |
+| `action` / `execute_action` | Perform one already-authorized typed action. |
 
 Do not retry a command after a lost reply. The device may have completed it,
 and repeating a power or input operation can produce the wrong state. Couch
@@ -121,6 +126,59 @@ Protocol v1 carries commands, status, and inputs. It has no request for apps,
 pairing, general discovery, or subscription to events. Adding a command outside
 the shared Couch vocabulary requires a core update. Packages cannot request
 privileged hardware access.
+
+## Protocol v2: unreleased typed dB control
+
+Protocol v2 is **unreleased**. Do not publish a v2 package or describe it as
+available on the `v0.1.0-alpha.20260916.171.dev` prerelease until a Couch
+release carrying protocol 2 exists. Its purpose is to represent a receiver's
+real dB value without changing the meaning of the existing percentage
+`volume` field.
+
+When implemented, status may omit `volume_db`, report a reading in tenths of a
+dB, or report the distinct minimum-volume state:
+
+```json
+{"volume_db":{"kind":"reading","tenths":-345}}
+{"volume_db":{"kind":"minimum"}}
+```
+
+`tenths` is an integer measurement, not a floating-point approximation or a
+percentage. The shared measurement range is -1000 through 300 tenths of a dB.
+
+A v2 manifest declares its exact bounded action separately from presentation.
+Denon's planned action range is shown here as a contract example, not a claim
+that a package is available:
+
+```json
+{
+  "protocol_version": 2,
+  "min_core_protocol_version": 2,
+  "actions": [
+    {
+      "action": "set_volume_db",
+      "min_tenths": -800,
+      "max_tenths": 180,
+      "step_tenths": 5
+    }
+  ]
+}
+```
+
+The action request carries a typed value rather than placing a value in a
+function string:
+
+```json
+{"method":"action","action":{"action":"set_volume_db","tenths":-345}}
+```
+
+The host rejects a value outside the declared inclusive range or off its
+declared step before the adapter contacts a device. The direct HTTP API uses
+the same typed action object as its request body. `min_core_protocol_version`
+must equal the manifest protocol version. A v2 package cannot downgrade to a
+v1 host: the hello exchange selects the manifest's version and requires the
+same manifest in response. Existing v1 manifests retain their byte shape and
+default to a minimum core protocol version of 1.
 
 ## Source references
 
