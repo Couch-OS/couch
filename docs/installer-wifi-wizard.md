@@ -2,18 +2,20 @@
 
 The released-source [native installer flow](installer.md) owns current user
 onboarding and orchestration. This guide preserves the guarded Python reference
-workflow through `tools/installer/ratatui_backend.py` for development and
-regression work; its private-trial commands are not public launch commands.
-Network scanning and hidden-network behavior below also inform the native flow.
+workflow through `couch-installer/tools/installer/ratatui_backend.py` for
+development and regression work; its private-trial commands are not public
+launch commands. Network scanning and hidden-network behavior below also inform
+the native flow.
 
 ## Entry point and prerequisites
 
-Build `tools/installer/tui` with `cargo build --release --locked`, then invoke:
+Build `couch-installer/tools/installer/tui` with
+`cargo build --release --locked`, then invoke:
 
 ```sh
-sudo tools/installer/tui/target/release/couch-installer-tui \
+sudo couch-installer/tools/installer/tui/target/release/couch-installer-tui \
   --python /path/to/python3 \
-  --backend tools/installer/ratatui_backend.py \
+  --backend couch-installer/tools/installer/ratatui_backend.py \
   --config /private/package/trial.json
 ```
 
@@ -73,14 +75,15 @@ silently retries a transaction.
 
 ## Private RAM-stage build
 
-The probe remains read-only by default. `cargo build --release --locked
---features private-install` in `tools/installer/linux_stage/probe` explicitly
-adds the USB-bound installation service. The builder's `--installer` switch must
-match the binary capability marker and requires a verified filesystem-tool
-closure through `--filesystem-cache`. Optional `--display` and `--wmt-properties`
-inputs supply separately built ARM binaries. See the maintained RAM-stage
-[build notes](../tools/installer/wifi-stage/README.md) and
-[protocol](../tools/installer/linux_stage/PROTOCOL.md).
+The probe remains read-only by default.
+`cargo build --release --locked --features private-install` in
+`couch-installer/tools/installer/linux_stage/probe` explicitly adds the
+USB-bound installation service. The builder's `--installer` switch must match
+the binary capability marker and requires a verified filesystem-tool closure
+through `--filesystem-cache`. Optional `--display` and `--wmt-properties` inputs
+supply separately built ARM binaries. See the maintained RAM-stage
+[build notes](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/wifi-stage/README.md) and
+[protocol](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/linux_stage/PROTOCOL.md).
 
 No build command accesses hardware. Physical fresh installation, reinstall,
 rollback, interrupted-operation recovery and target filesystem expansion remain

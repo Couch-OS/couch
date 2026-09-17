@@ -276,9 +276,13 @@ stable/armv7/APKINDEX.tar.gz
 The feed base URLs are:
 
 ```text
-https://dangerouslaser.github.io/couch-integrations/preview
-https://dangerouslaser.github.io/couch-integrations/stable
+https://packages.couch-os.dev/preview
+https://packages.couch-os.dev/stable
 ```
+
+Runtimes up to `.171.dev` still read the official feeds from
+`dangerouslaser.github.io/couch-integrations`, which redirects here until
+that repository moves to the Couch-OS organization.
 
 The installer adds `armv7` when it fetches the index. `preview` initially
 contains the Denon integration. `stable` serves a valid signed empty index and
@@ -286,7 +290,7 @@ contains no packages until an integration has production-tier hardware
 evidence; preview hosting does not make Denon stable.
 
 The official public key is
-[`couch-integrations.rsa.pub`](https://dangerouslaser.github.io/couch-integrations/preview/couch-integrations.rsa.pub).
+[`couch-integrations.rsa.pub`](https://packages.couch-os.dev/preview/couch-integrations.rsa.pub).
 Its PEM file SHA-256 is:
 
 ```text
@@ -300,7 +304,7 @@ to Alpine's global key store. The complete manual preview install command is:
 ```sh
 /opt/couch/runtime/current/couch-confd integrations \
   install-repository couch-integration-denon \
-  --repository https://dangerouslaser.github.io/couch-integrations/preview
+  --repository https://packages.couch-os.dev/preview
 ```
 
 The `.170` runtime predates the package host; publishing the feed alone does
@@ -332,6 +336,6 @@ plugin host and package manager.
 
 ## Source references
 
-- [`tools/integrations/build-apk.sh`](https://github.com/dangerouslaser/couch/blob/main/tools/integrations/build-apk.sh)
-- [`tools/integrations/build-repository.sh`](https://github.com/dangerouslaser/couch/blob/main/tools/integrations/build-repository.sh)
-- [`docs/integration-packages.md`](https://github.com/dangerouslaser/couch/blob/main/docs/integration-packages.md)
+- [`tools/integrations/build-apk.sh`](https://github.com/Couch-OS/couch/blob/main/tools/integrations/build-apk.sh)
+- [`tools/integrations/build-repository.sh`](https://github.com/Couch-OS/couch/blob/main/tools/integrations/build-repository.sh)
+- [`docs/integration-packages.md`](https://github.com/Couch-OS/couch/blob/main/docs/integration-packages.md)

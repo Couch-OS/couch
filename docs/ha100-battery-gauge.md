@@ -175,7 +175,7 @@ costs have not been measured in this review.
 
 ## Reporting and standby corrections
 
-The Couch changes incorporate [PR #180](https://github.com/dangerouslaser/couch/pull/180)
+The Couch changes incorporate [PR #180](https://github.com/Couch-OS/couch/pull/180)
 and retain its author’s commit: battery icons, the default-off percentage setting
 on the remote and web UI, and persistent settings across GUI restarts.
 [Battery parsing](../ui/couch-gui/src/battery.rs) additionally rejects malformed
@@ -269,10 +269,10 @@ changes do not establish a percentage error bound or calibrated runtime. Model
 correction and real excess consumption need to be distinguished by the
 measurements above.
 
-[kernel]: https://github.com/dangerouslaser/couch-kernel/tree/08fd6f4d2efa7ff9ab4812dad931d95bc4735c7b
+[kernel]: https://github.com/Couch-OS/couch-kernel/tree/08fd6f4d2efa7ff9ab4812dad931d95bc4735c7b
 [charging-guide]: https://hub.sanytron.com/support/astrion/charging
 [power-supply]: https://docs.kernel.org/power/power_supply_class.html
 [datasheet-library]: https://hub.sanytron.com/support/datasheets
 [datasheet]: https://drive.google.com/file/d/1H4W41LSZb488SfHwW4lbxWRVGYaCHsDN/view
-[kernel-fix]: https://github.com/dangerouslaser/couch-kernel/pull/4
-[gauge-abi]: https://github.com/dangerouslaser/couch-kernel/blob/254b66cf66ebfa6e4de362a8995db9b32675a58a/Documentation/ABI/testing/sysfs-class-power-couch-gauge
+[kernel-fix]: https://github.com/Couch-OS/couch-kernel/pull/4
+[gauge-abi]: https://github.com/Couch-OS/couch-kernel/blob/254b66cf66ebfa6e4de362a8995db9b32675a58a/Documentation/ABI/testing/sysfs-class-power-couch-gauge

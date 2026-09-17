@@ -10,7 +10,8 @@ Release builders produce these neutral artifacts without contacting a device:
 - `tools/release/prepare_public_boot.py`: the pinned source-built zImage and clean
   normal/recovery gzip/newc ramdisks. No Android header, owner DTB, or stock kernel.
 - `tools/release/prepare_public_ramdisk.py`: Alpine tools, source-built BusyBox,
-  installer probe/display, WMT property bridge and scripts. No proprietary files,
+  installer probe/display, WMT property bridge and scripts, through the neutral
+  RAM builder in the `couch-installer` submodule. No proprietary files,
   device identifiers, or Wi-Fi credentials.
 - `tools/release/prepare_public_logo.py`: the canonical Couch480x800 BGRA
   frame (`logo.bgra`), without a logo partition header or charging images.
@@ -26,7 +27,8 @@ against the release manifest before calling `host::assembly` and persist outputs
 through its private session journal; assembly performs no device writes itself.
 
 `assembly::owner_ramdisk` verifies all 33 extracted owner files, then inserts the
-19-file WMT subset pinned in `tools/release/ha100_ram_runtime.json`. The release
+19-file WMT subset pinned in
+`couch-installer/tools/installer/pins/ha100_ram_runtime.json`. The release
 builder checks this subset against its ELF dependency audit. Inserting all 33
 files would exceed the 16 MiB boot partition: modem firmware and unused libraries
 belong only in userdata. CPIO decoding has bounded size/entry counts, rejects

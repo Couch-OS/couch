@@ -162,6 +162,6 @@ an entry can be marked production.
 
 ## Source references
 
-- [`clients/couch-plugin/tests/protocol.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-plugin/tests/protocol.rs)
-- [`clients/couch-echo/tests/plugin.rs`](https://github.com/dangerouslaser/couch/blob/main/clients/couch-echo/tests/plugin.rs)
-- [`tools/tests/integrations-e2e.py`](https://github.com/dangerouslaser/couch/blob/main/tools/tests/integrations-e2e.py)
+- [`clients/couch-plugin/tests/protocol.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/tests/protocol.rs)
+- [`clients/couch-echo/tests/plugin.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-echo/tests/plugin.rs)
+- [`tools/tests/integrations-e2e.py`](https://github.com/Couch-OS/couch/blob/main/tools/tests/integrations-e2e.py)

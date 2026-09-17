@@ -94,11 +94,12 @@ WMT loaders, firmware/modules, the bionic linker/libraries and required linker
 and SELinux property configuration. It is feasible to assemble these files on
 the owner's machine instead of redistributing Couch's copy of them.
 
-`tools/release/official_runtime.py` now implements the offline step:
+`couch-installer/tools/installer/pins/official_runtime.py` now implements the
+offline step:
 
 ```sh
 # Run on Linux with Python brotli and debugfs available.
-python3 tools/release/official_runtime.py /path/to/official-fw.zip \
+python3 couch-installer/tools/installer/pins/official_runtime.py /path/to/official-fw.zip \
   /path/to/new-private-vendor-directory
 ```
 
@@ -126,11 +127,13 @@ separate work. None of these observations enable a public install gate.
 
 ## Owner-side input preparation and first capture
 
-`tools/release/prepare_official_inputs.py` prepares the pinned official bootstrap
-members and the existing runtime-file allowlist into a new private directory:
+`couch-installer/tools/installer/pins/prepare_official_inputs.py` prepares the
+pinned official bootstrap members and the existing runtime-file allowlist into a
+new private directory:
 
 ```sh
-python3 tools/release/prepare_official_inputs.py official-fw.zip /private/owner-inputs
+python3 couch-installer/tools/installer/pins/prepare_official_inputs.py \
+  official-fw.zip /private/owner-inputs
 ```
 
 Only preloader (for EMI, never flashing), stock boot, odmdtbo and scatter are
@@ -142,18 +145,21 @@ backed up from the owner's remote**. The OTA contains no original recovery;
 that must be read from the actual device. `--bootstrap-only` skips runtime
 extraction for an enrollment-only check.
 
-`tools/installer/enroll_android.py` adds a read-only first-capture entry point.
-It requires `--identity PRIVATE_IDENTITY_JSON` containing the recorded Android
-`device_id`, `wifi_mac` and `bluetooth_mac` values, an explicitly authorized ADB serial and USB bus/port, the owner-side inputs, and a reviewed
-mtkclient checkout/download-agent pin. It first binds canonical Android CID to
-the selected physical USB device. After a manual restart into preloader, the
-existing read-only adapter checks both GPT copies and fixed CID encoding.
-Enrollment then requires official boot/odmdtbo prefixes and the official static
-partition offsets before capturing calibration, boot, recovery and odmdtbo.
-The identity record is validated before USB access and copied into the private
-enrollment directory; its hash is bound into the baseline and completed journal.
-These are owner-recorded values, not decoded calibration fields. Every original
-is independently reread, and usable baseline publication waits for USB cleanup. It exposes no partition writer and sends no reboot request.
+`couch-installer/tools/installer/enroll_android.py` adds a read-only
+first-capture entry point. It requires `--identity PRIVATE_IDENTITY_JSON`
+containing the recorded Android `device_id`, `wifi_mac` and `bluetooth_mac`
+values, an explicitly authorized ADB serial and USB bus/port, the owner-side
+inputs, and a reviewed mtkclient checkout/download-agent pin. It first binds
+canonical Android CID to the selected physical USB device. After a manual
+restart into preloader, the existing read-only adapter checks both GPT copies
+and fixed CID encoding. Enrollment then requires official boot/odmdtbo prefixes
+and the official static partition offsets before capturing calibration, boot,
+recovery and odmdtbo. The identity record is validated before USB access and
+copied into the private enrollment directory; its hash is bound into the
+baseline and completed journal. These are owner-recorded values, not decoded
+calibration fields. Every original is independently reread, and usable baseline
+publication waits for USB cleanup. It exposes no partition writer and sends no
+reboot request.
 
 The resulting baseline is labeled `first-stock-android-enrollment`, with
 `prior_baseline: false` and opaque, undecoded identity preservation. It is not
@@ -167,9 +173,10 @@ verified dependency delivery and public payload admission. Windows driver
 binding and complete physical fresh-device acceptance remain separate from
 passing host fixtures. See the [current installer status](installer.md).
 
-The native `tools/installer/host` workspace provides the same owner-side input
-preparation without Python, debugfs or subprocesses. It reconstructs the pinned
-filesystems with bounded Rust Brotli streams and reads the 33 allowlisted files
-through a read-only Rust ext4 parser. See its [usage and platform validation](../tools/installer/host/README.md).
+The native `couch-installer/tools/installer/host` workspace provides the same
+owner-side input preparation without Python, debugfs or subprocesses. It
+reconstructs the pinned filesystems with bounded Rust Brotli streams and reads
+the 33 allowlisted files through a read-only Rust ext4 parser. See its
+[usage and platform validation](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/host/README.md).
 This moves input preparation into the native backend; USB/write orchestration
 and stage-side personalization remain separate work.

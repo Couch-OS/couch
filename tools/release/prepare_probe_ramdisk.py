@@ -10,6 +10,7 @@ import struct
 from clean_stage import require
 from kernel_provenance import PIN, verify
 from prepare_boot_candidates import kernel
+from installer_pins import installer_path
 from runtime_inventory import arm_static, cpio_files, regular
 from pack import repack
 
@@ -57,7 +58,7 @@ def prepare(template, manifest, busybox, service, output, root=REPO):
     bb, probe = regular(busybox), regular(service)
     arm_static(bb)
     arm_static(probe)
-    init = regular(root / 'tools/installer/probe/init')
+    init = regular(installer_path('probe', 'init', root=root))
     raw = ramdisk(init, bb, probe)
     entries = cpio_files(raw)
     require({name for name, value in entries.items() if value} ==

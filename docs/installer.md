@@ -96,13 +96,13 @@ Linux x64 and macOS, from an interactive terminal:
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260916.170/install.sh | sh
+  https://github.com/Couch-OS/couch/releases/download/v0.1.0-alpha.20260916.170/install.sh | sh
 ```
 
 Windows x64, from PowerShell:
 
 ```powershell
-Invoke-RestMethod 'https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260916.170/install.ps1' | Invoke-Expression
+Invoke-RestMethod 'https://github.com/Couch-OS/couch/releases/download/v0.1.0-alpha.20260916.170/install.ps1' | Invoke-Expression
 ```
 
 The release launcher verifies the native host, terminal and release configuration
@@ -231,8 +231,14 @@ Never write `preloader_*` or `lk`.
 
 ## Implementation and validation
 
-The [Ratatui terminal](../tools/installer/tui/README.md) and
-[native Rust host](../tools/installer/host/README.md) run the integrated flow.
+Installer builds now have an independent version and can select an existing
+pinned OS payload. See [installer release boundaries](installer-release-boundary.md)
+for the source layout, compatibility contract and release procedure. This does
+not change the published installation commands above.
+
+The [Ratatui terminal](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/tui/README.md)
+and [native Rust host](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/host/README.md)
+run the integrated flow.
 Python remains only in the verified, supervised MediaTek transport bridge;
 Rust owns orchestration and the Linux stage's storage writer and verifier.
 
@@ -244,7 +250,7 @@ must be recorded separately. These host tests do not certify those device flows.
 - [Owner-side official inputs](installer-public-inputs.md)
 - [Restore stock Android](installer-android-restore.md)
 - [Wi-Fi stage and transaction](installer-linux-usb-stage.md)
-- [Wire protocol](../tools/installer/linux_stage/PROTOCOL.md)
+- [Wire protocol](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/linux_stage/PROTOCOL.md)
 - [Storage policy and direct readback](installer-storage-policy.md)
 - [Saved enrollment](installer-saved-enrollment.md)
 - [Native launcher packaging](installer-native-launchers.md)
@@ -256,7 +262,7 @@ Worker startup failures report an allowlisted exception category, numeric USB er
 
 On Linux, a newly enumerated preloader node may appear before udev applies its existing permissions. The adapter allows up to one second for access to that exact selected device, retrying only libusb access-denied errors before any handshake. Persistent access denial stops installation: check that the installer user's effective groups include the group granted by the device's udev rule. Do not run the installer as root or broaden access to unrelated USB devices.
 
-If the installer stops with "original boot/overlay pair is not HA100 Android firmware", the saved originals did not pass the structural check (an Android boot image with a gzip cpio ramdisk carrying `init.rc`, and a MediaTek dtbo overlay). The message names the failing check. `tools/installer/support/originals_check.py SESSION_DIR` reads the session's journal and the first bytes of the saved originals and prints the installer release that ran, the ramdisk compression, the ramdisk root entries and the overlay magic, without sending or writing anything; attach its output to a report. Releases before .115 stopped instead with "differs from reviewed HA100 Android firmware", a firmware allowlist that no longer exists; the fix for that message is the current release command.
+If the installer stops with "original boot/overlay pair is not HA100 Android firmware", the saved originals did not pass the structural check (an Android boot image with a gzip cpio ramdisk carrying `init.rc`, and a MediaTek dtbo overlay). The message names the failing check. `couch-installer/tools/installer/support/originals_check.py SESSION_DIR` reads the session's journal and the first bytes of the saved originals and prints the installer release that ran, the ramdisk compression, the ramdisk root entries and the overlay magic, without sending or writing anything; attach its output to a report. Releases before .115 stopped instead with "differs from reviewed HA100 Android firmware", a firmware allowlist that no longer exists; the fix for that message is the current release command.
 
 On Windows, the worker resolves the preloader and the installer stage to their COM ports by vendor, product and physical port chain (`serial.tools.list_ports`), accepts exactly one match, and reports the same USB-style timeouts and disconnects as the libusb path so every protocol step above the transport is unchanged. If Windows recorded WinUSB for every preloader instance, the worker claims it through libusb instead.
 

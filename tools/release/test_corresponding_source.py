@@ -1,11 +1,13 @@
 import gzip
 import hashlib
 import io
+import json
 from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 import corresponding_source as source
 
 
@@ -219,20 +221,63 @@ class Sources(unittest.TestCase):
                 source.assemble(root, Path(directory) / 'bad.tar.gz')
             self.assertFalse((Path(directory) / 'bad.tar.gz').exists())
 
+    def fixture_repository(self, root, installer_files=None, submodule=True):
+        def git(repo, *args):
+            return subprocess.check_output(['git', '-c', 'protocol.file.allow=always', '-C', str(repo), *args],
+                                           stderr=subprocess.DEVNULL)
+        def init(repo):
+            repo.mkdir(); git(repo, 'init', '-q')
+            git(repo, 'config', 'user.name', 'Fixture'); git(repo, 'config', 'user.email', 'fixture@example.invalid')
+        installer = root / 'installer'; init(installer)
+        for name, data in (installer_files or {'COPYING': 'installer license\n', 'tools/installer/probe/init': 'tracked\n'}).items():
+            path = installer / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(data)
+        git(installer, 'add', '.'); git(installer, 'commit', '-q', '-m', 'installer')
+        repo = root / 'repo'; init(repo)
+        (repo / 'src').mkdir(); (repo / 'src/main.c').write_text('original\n'); (repo / 'COPYING').write_text('fixture license')
+        (repo / 'scratchpad').mkdir(); (repo / 'scratchpad/private').write_text('excluded')
+        if submodule:
+            git(repo, 'submodule', 'add', '-q', str(installer), source.SUBMODULE)
+        git(repo, 'add', '.'); git(repo, 'commit', '-q', '-m', 'fixture')
+        return repo, git(repo, 'rev-parse', 'HEAD').decode().strip(), git(installer, 'rev-parse', 'HEAD').decode().strip()
+
     def test_project_exports_exact_git_objects_not_dirty_files(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); repo = root / 'repo'; repo.mkdir()
-            def git(*args): return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.DEVNULL)
-            git('init'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid')
-            (repo / 'src').mkdir(); (repo / 'src/main.c').write_text('original\n'); (repo / 'COPYING').write_text('fixture license')
-            (repo / 'scratchpad').mkdir(); (repo / 'scratchpad/private').write_text('excluded')
-            git('add', '.'); git('commit', '-m', 'fixture'); commit = git('rev-parse', 'HEAD').decode().strip()
+            root = Path(directory); repo, commit, installer = self.fixture_repository(root)
             (repo / 'src/main.c').write_text('dirty secret must not copy')
+            (repo / 'couch-installer/tools/installer/probe/init').write_text('dirty installer bytes must not copy')
             output = root / 'output'; result = source.project(repo, commit, output)
             self.assertEqual((output / 'couch/src/main.c').read_text(), 'original\n')
+            self.assertEqual((output / 'couch/couch-installer/tools/installer/probe/init').read_text(), 'tracked\n')
+            self.assertIn('.gitmodules', result['files'])
+            self.assertEqual(result['installer_submodule'], {'path': 'couch-installer', 'commit': installer})
             self.assertFalse((output / 'couch/scratchpad').exists()); self.assertEqual(result['commit'], commit)
             (output / 'couch/src/main.c').write_text('tampered')
             with self.assertRaises(ValueError): source.project(repo, commit, output)
+
+    def test_installer_source_is_required_and_taken_only_from_its_gitlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'missing'; root.mkdir()
+            repo, commit, _ = self.fixture_repository(root, submodule=False)
+            with self.assertRaisesRegex(ValueError, 'lacks the couch-installer submodule'):
+                source.project(repo, commit, root / 'output')
+            root = Path(directory) / 'uninitialized'; root.mkdir()
+            repo, commit, _ = self.fixture_repository(root)
+            subprocess.run(['git', '-C', str(repo), 'submodule', 'deinit', '-q', '-f', 'couch-installer'], check=True)
+            with self.assertRaisesRegex(ValueError, 'git submodule update --init'):
+                source.project(repo, commit, root / 'output')
+            root = Path(directory) / 'private'; root.mkdir()
+            repo, commit, _ = self.fixture_repository(root, {'COPYING': 'license\n', 'tools/installer/stage.img': 'image'})
+            with self.assertRaisesRegex(ValueError, 'Binary/private input'):
+                source.project(repo, commit, root / 'output')
+
+    def test_installer_manifests_match_the_pinned_installer_collector(self):
+        collector = Path(__file__).resolve().parents[2] / source.SUBMODULE / 'tools/installer/source/corresponding_source.py'
+        if not collector.is_file():
+            self.skipTest('couch-installer submodule is not initialized')
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('_pinned_installer_source', collector)
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        self.assertEqual(source.INSTALLER_MANIFESTS, tuple(f'{source.SUBMODULE}/{name}' for name in module.MANIFESTS))
 
 
 if __name__ == '__main__': unittest.main()

@@ -1,10 +1,11 @@
 # Installer Python and MTK runtime
 
-`tools/release/mtk_dependencies.py` prepares the owner-local runtime required by
-the installer's supervised MTK transport. It pins Python 3.12.14 from the Astral
-20260901 release, seven dependency wheels, and reviewed MTK source revision
-`60e07f3b343a4469389f15967626d63e049968d4`. Linux x86-64, macOS ARM64/Intel and
-Windows x86-64 have separate Python/native-library pins.
+`couch-installer/tools/installer/pins/mtk_dependencies.py` prepares the
+owner-local runtime required by the installer's supervised MTK transport. It
+pins Python 3.12.14 from the Astral 20260901 release, seven dependency wheels,
+and reviewed MTK source revision `60e07f3b343a4469389f15967626d63e049968d4`.
+Linux x86-64, macOS ARM64/Intel and Windows x86-64 have separate
+Python/native-library pins.
 
 The bundle contains PyUSB, pyserial, colorama, both Crypto/Cryptodome namespaces,
 libusb-package and its importlib-resources dependency. It retains their included
@@ -16,9 +17,9 @@ The approved DA remains a separate owner-local input.
 ## Preparing and checking a bundle
 
 ```sh
-python3 tools/release/mtk_dependencies.py prepare \
+python3 couch-installer/tools/installer/pins/mtk_dependencies.py prepare \
   --platform macos-aarch64 --cache /private/cache/mtk --output /private/runtime/mtk
-python3 tools/release/mtk_dependencies.py smoke \
+python3 couch-installer/tools/installer/pins/mtk_dependencies.py smoke \
   --root /private/runtime/mtk --receipt-sha256 PRINTED_RECEIPT_SHA256
 ```
 
@@ -49,10 +50,10 @@ cached bytecode.
 The smoke check runs the exact Python `--version`, loads the bundled native
 libusb, imports the required MTK modules and constructs `Mtk(preinit=False)`.
 USB discovery is replaced with a rejecting stub; no device is opened, rebooted
-or flashed. CI runs this check on all four native platforms. It does not prove
-physical USB operation or platform driver setup. The integrated native host
-now supplies the platform deadline/lock supervision, including the Windows
-worker job and verified libusb path.
+or flashed. Installer CI in Couch-OS/couch-installer runs this check on all four
+native platforms. It does not prove physical USB operation or platform driver
+setup. The integrated native host now supplies the platform deadline/lock
+supervision, including the Windows worker job and verified libusb path.
 
 The runtime remains an owner-local download, not a Python/wheel/libusb bundle
 redistributed in the public Couch assets. The native host binds and reverifies

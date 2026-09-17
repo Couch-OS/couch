@@ -26,7 +26,7 @@ exists today" describes the starting point, the
 [implementation plan](#implementation-plan-branch-bluetooth-rebased-onto-dev-2026-09-14)
 and [staging checklist](#staging-checklist) what was done. Kernel-side tasks are mirrored in the kernel tree at
 `Documentation/couch/bluetooth.md` on the `bluetooth` branch of
-[dangerouslaser/couch-kernel](https://github.com/dangerouslaser/couch-kernel).
+[Couch-OS/couch-kernel](https://github.com/Couch-OS/couch-kernel).
 
 ## Status: experimental
 
@@ -65,7 +65,7 @@ switches activity. Simultaneous connections are not a goal.
 | Linux Bluetooth core | **off**: `# CONFIG_BT is not set` | `kernel/couch-ha100.config` line 987 |
 | HCI device for BlueZ | **none**: `/dev/stpbt` is a character device, not an `hci_dev` | kernel source |
 | firmware | the CONSYS ROM patch is already linked into `/` for Wi-Fi by `stage2/hardware-init.sh`; the same WMT patch load covers Bluetooth | stage2 |
-| Bluetooth MAC | recorded by the installer as `bluetooth_mac` in the identity backup; stock loads it from NVRAM, our kernel has no NVRAM path | `tools/installer` |
+| Bluetooth MAC | recorded by the installer as `bluetooth_mac` in the identity backup; stock loads it from NVRAM, our kernel has no NVRAM path | `couch-installer/tools/installer` |
 | userland stack | **none**: no BlueZ in the Alpine image, no Bluetooth code in the daemon, GUI or stage2 | repository grep |
 | validation | "built in, never exercised" on both from-source and stock | `kernel/README.md` matrix |
 

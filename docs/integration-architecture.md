@@ -164,3 +164,13 @@ coverage before it can change this matrix.
 Read the [developer protocol reference](development/protocol.md),
 [component rules](development/components.md), and
 [admission policy](development/admission.md) before proposing a new boundary.
+
+## Further reading
+
+- [Web package management and repository trust](integration-management.md)
+- [Package format and lifecycle](integration-packages.md)
+- [Developer guide](development/index.md)
+- [Core runtime updates](runtime-updates.md)
+- [Integration separation](integration-separation.md) — moving a built-in
+  integration to an independent repository: readiness, missing capabilities,
+  and retirement constraints.

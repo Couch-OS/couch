@@ -12,6 +12,8 @@ import re
 import stat
 import tarfile
 
+from installer_pins import installer_path
+
 ROOT = Path(__file__).resolve().parents[2]
 FILES = ('userdata.ext4', 'installer.cpio.gz', 'boot.cpio.gz', 'recovery.cpio.gz', 'zImage', 'logo.bgra')
 MAX_TOTAL = 2 * 1024**3
@@ -149,7 +151,7 @@ def prepare(attestation, source_archive, userdata, ramdisk, boot, logo, output, 
                     'Private or unsupported builder receipt')
             receipts[kind] = receipt
         u, r, b, l = (receipts[kind] for kind in ('userdata', 'ramdisk', 'boot', 'logo'))
-        official = json.loads((ROOT / 'tools/release/ha100_official_runtime.json').read_text())
+        official = json.loads(installer_path('pins', 'ha100_official_runtime.json', root=ROOT).read_text())
         kernel = json.loads((ROOT / 'kernel/release-pin.json').read_text())
         require(u['kind'] == 'couch-owner-neutral-userdata' and u.get('installable') is False
                 and u.get('private_only') is False and u['image']['path'] == 'userdata.ext4'
@@ -210,7 +212,7 @@ def prepare(attestation, source_archive, userdata, ramdisk, boot, logo, output, 
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
         descriptor = {'schema': 1, 'kind': 'couch-native-installer-release', 'model': 'sanytron-ha100',
                       'version': version, 'source_commit': build['source_commit'],
-                      'payload': {'url': f'https://github.com/dangerouslaser/couch/releases/download/{version}/{filename}',
+                      'payload': {'url': f'https://github.com/Couch-OS/couch/releases/download/{version}/{filename}',
                                   'size': asset.stat().st_size, 'sha256': digest, 'format': 'tar.gz'}}
         durable_write(output / 'installer.json', encoded(descriptor))
         receipt = {'schema': 1, 'kind': 'couch-public-installer-package', 'source_commit': build['source_commit'],
