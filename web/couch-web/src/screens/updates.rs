@@ -110,6 +110,28 @@ pub fn notification(app: App) -> AnyView {
         <div class="banner" role="status"><span>{text}</span><button class="link" on:click=move |_|app.go(Route::Updates)>{label}</button></div>
     })}} }.into_any()
 }
+/// One short sentence about the kernel and boot image on the partition: how it
+/// stands against the installed software, and nothing else. The remote's own
+/// Kernel row (`ui/couch-gui`) says the same three things. Neither UI knows
+/// whether a newer kernel has been published until a check offers one, so
+/// neither says anything about that here; the card below is where an offer,
+/// or the absence of one, is reported.
+fn boot_state(status: &Status) -> &'static str {
+    if status.boot_pending {
+        // A two-step update whose second step never ran, or a release whose
+        // signed boot payload is not the one on the partition. Either way the
+        // kernel that belongs with this software is not installed yet.
+        "The kernel that belongs with this software is not installed yet."
+    } else if status.boot_release == status.installed {
+        "This kernel matches the installed software."
+    } else if status.boot_behind {
+        "This kernel is older than the installed software."
+    } else {
+        // Nothing comparable: a development tree, or a label that does not
+        // parse as a version. Saying nothing beats guessing.
+        ""
+    }
+}
 pub fn screen(app: App) -> AnyView {
     let value = RwSignal::new(Status::default());
     let error = RwSignal::new(String::new());
@@ -132,26 +154,35 @@ pub fn screen(app: App) -> AnyView {
         <section class="card"><h2>"What is installed"</h2>
         <p>"Software "{move ||value.get().installed}</p>
         {move ||{let v=value.get(); (!v.boot_release.is_empty()).then(||{
-            // Plain words for the row the remote also shows: which release the
-            // kernel came from, and whether it kept up with the software.
-            let state = if v.boot_pending { " — older than the software, and its update is still to install".to_string() }
-                else if v.boot_release == v.installed { " — up to date".to_string() }
-                else if v.boot_behind { " — from an earlier build; no newer kernel is published for this one".to_string() }
-                else { String::new() };
-            let commit = if v.boot_kernel.is_empty() { String::new() } else { format!(" · kernel source {}", v.boot_kernel) };
-            view!{<p>"Kernel and boot image "{v.boot_release}{state}{commit}</p>}
+            // The version on its own line, its state on the next, and the
+            // kernel commit as a labelled detail rather than a clause in a
+            // sentence about versions.
+            let state = boot_state(&v);
+            let source = v.boot_kernel.clone();
+            view!{
+                <p>"Kernel and boot image "{v.boot_release.clone()}</p>
+                {(!state.is_empty()).then(||view!{<p class="dim">{state}</p>})}
+                {(!source.is_empty()).then(||view!{<p class="dim">"Kernel source "<span class="mono">{source.clone()}</span></p>})}
+            }
         })}}
-        {move ||value.get().boot_previous.then(||view!{
-            <p class="dim">"The boot image this replaced is saved on the remote as /opt/couch/boot/previous.img. Writing it back verifies it against its record first, and does not restart: use Power afterwards. A kernel that boots but never brings the GUI up puts the remote into recovery on its own; one that dies earlier needs the physical route, holding Back while powering on."</p>
-            <label><input type="checkbox" prop:checked=move ||undo.get() on:change=move |e|undo.set(event_target_checked(&e))/>"Write the saved previous boot image back to the boot partition"</label>
-            <button class="ghost" disabled=move ||!undo.get() on:click=move |_|{undo.set(false);request(app,value,error,"POST","/api/updates/boot-rollback",serde_json::json!({"confirm":true}));}>"Restore previous boot image"</button>
-        })}
-        <p class="dim">"Couch software and its matching kernel and boot image download and verify together. Install the update with one restart. Your connections, Wi-Fi and settings are kept. Alpine upgrades use the OS installer."</p>
+        <p class="dim">"Couch downloads and verifies an update before it installs anything. A build with a new kernel installs the software and the kernel in one restart. Your connections, Wi-Fi and settings are kept. Upgrading the Alpine system underneath Couch is a separate job for the Couch installer on a computer."</p>
         <label class="field">"Release channel"<select aria-label="Release channel" prop:value=move ||value.get().channel on:change=move |e|request(app,value,error,"PUT","/api/updates/settings",serde_json::json!({"channel":event_target_value(&e),"automatic_checks":value.get_untracked().automatic_checks}))><option value="stable">"Stable"</option><option value="alpha">"Alpha · testing builds"</option><option value="dev">"Dev · every build from the dev branch"</option></select></label>
         <label><input type="checkbox" prop:checked=move ||value.get().automatic_checks on:change=move |e|request(app,value,error,"PUT","/api/updates/settings",serde_json::json!({"channel":value.get_untracked().channel,"automatic_checks":event_target_checked(&e)}))/>"Check for updates when I open the web UI"</label>
         <p class="dim">"Checks run at most once every six hours. Updates are installed only when you choose."</p>
         <button class="ghost" disabled=move ||matches!(value.get().phase.as_str(),"checking"|"downloading"|"verifying"|"ready") on:click=move |_|request(app,value,error,"POST","/api/updates/check",serde_json::json!({"automatic":false}))>"Check now"</button>
         </section>
+        // A card of its own rather than a paragraph in the status panel: the
+        // heading says what the control is for, and the recovery procedure
+        // stays in the documentation where it can be kept complete.
+        {move ||value.get().boot_previous.then(||view!{
+            <section class="card"><h2>"Saved boot image"</h2>
+            <p class="dim">"Couch saved the boot image that the current one replaced."</p>
+            <p class="dim">"Restoring puts it back without restarting the remote. Use Power afterwards to run it."</p>
+            <p class="dim">"If the remote stops starting up, see the device recovery guide in the Couch documentation."</p>
+            <label><input type="checkbox" prop:checked=move ||undo.get() on:change=move |e|undo.set(event_target_checked(&e))/>"Put the saved boot image back"</label>
+            <button class="ghost" disabled=move ||!undo.get() on:click=move |_|{undo.set(false);request(app,value,error,"POST","/api/updates/boot-rollback",serde_json::json!({"confirm":true}));}>"Restore boot image"</button>
+            </section>
+        })}
         <section class="card"><h2>{move ||{let v=value.get(); match (&v.available,v.boot_pending) {
             (Some(_),_) if v.kind=="boot" => "Finish update: kernel and boot image".to_string(),
             (Some(version),_) if v.kind=="combined" => format!("Couch software and kernel {version}"),
@@ -173,4 +204,50 @@ pub fn screen(app: App) -> AnyView {
         <p role="alert">{move ||error.get()}</p>
         </section>
     }.into_any()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(installed: &str, boot_release: &str) -> Status {
+        Status {
+            installed: installed.into(),
+            boot_release: boot_release.into(),
+            ..Status::default()
+        }
+    }
+
+    #[test]
+    fn the_kernel_line_says_only_how_it_stands_against_the_installed_software() {
+        let installed = "v0.1.0-alpha.20260916.173";
+        let mut s = status(installed, installed);
+        assert_eq!(
+            boot_state(&s),
+            "This kernel matches the installed software."
+        );
+        // Behind the software. The screen has no way to know whether a newer
+        // kernel exists, so the line must not claim one way or the other.
+        s.boot_release = "v0.1.0-alpha.20260916.170".into();
+        s.boot_behind = true;
+        assert_eq!(
+            boot_state(&s),
+            "This kernel is older than the installed software."
+        );
+        assert!(!boot_state(&s).contains("published"));
+        // The second half of a two-step update is still outstanding.
+        s.boot_pending = true;
+        assert_eq!(
+            boot_state(&s),
+            "The kernel that belongs with this software is not installed yet."
+        );
+    }
+
+    #[test]
+    fn an_incomparable_kernel_label_claims_nothing() {
+        // A development tree: `boot_behind` is false because neither label
+        // parses as a version, and the versions differ.
+        let s = status("development", "v0.1.0-alpha.20260916.170");
+        assert_eq!(boot_state(&s), "");
+    }
 }
