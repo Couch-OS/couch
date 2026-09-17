@@ -6,11 +6,18 @@ use std::{
     io::Cursor,
     os::unix::fs::{symlink, PermissionsExt},
     path::PathBuf,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    },
     time::{Duration, Instant},
 };
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+// A concurrent fork can inherit another test's write-open script descriptor.
+// Linux then rejects execve with ETXTBSY even after the writer thread closed it.
+// Serialize only fixture writes and launches; requests/deadlines stay concurrent.
+static SCRIPT_PUBLICATION: Mutex<()> = Mutex::new(());
 struct Package {
     root: PathBuf,
     manifest: Manifest,
@@ -27,9 +34,14 @@ impl Package {
         Self { root, manifest }
     }
     fn script(&self, text: &str) {
+        let _publication = SCRIPT_PUBLICATION.lock().unwrap();
         let path = self.root.join("bin/plugin");
         std::fs::write(&path, format!("#!/bin/sh\n{text}\n")).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fn spawn(&self) -> Result<Host, Error> {
+        let _publication = SCRIPT_PUBLICATION.lock().unwrap();
+        Host::spawn(&self.root, &self.manifest, Duration::from_secs(5))
     }
     fn hello(&self) -> String {
         print_frame(&json!({"id":1,"body":{"type":"hello","manifest":self.manifest}}))
@@ -207,16 +219,10 @@ fn executable_must_be_contained_and_not_writable_by_other_users() {
         std::fs::Permissions::from_mode(0o777),
     )
     .unwrap();
-    assert!(matches!(
-        Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)),
-        Err(Error::Invalid)
-    ));
+    assert!(matches!(p.spawn(), Err(Error::Invalid)));
     symlink("/bin/sh", p.root.join("bin/outside")).unwrap();
     p.manifest.executable = "bin/outside".into();
-    assert!(matches!(
-        Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)),
-        Err(Error::Invalid)
-    ));
+    assert!(matches!(p.spawn(), Err(Error::Invalid)));
     for path in ["/bin/sh", "../plugin", "bin/../plugin", ""] {
         p.manifest.executable = path.into();
         assert_eq!(p.manifest.validate(), Err(Error::Invalid));
@@ -232,20 +238,14 @@ fn incompatible_handshake_and_wrong_identity_never_activate() {
         "{}exec /bin/sleep 10",
         print_frame(&json!({"id":1,"body":{"type":"error","code":"incompatible"}}),)
     ));
-    assert!(matches!(
-        Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)),
-        Err(Error::Incompatible)
-    ));
+    assert!(matches!(p.spawn(), Err(Error::Incompatible)));
     let mut other = p.manifest.clone();
     other.version = "2.0.0".into();
     p.script(&format!(
         "{}exec /bin/sleep 10",
         print_frame(&json!({"id":1,"body":{"type":"hello","manifest":other}}),)
     ));
-    assert!(matches!(
-        Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)),
-        Err(Error::Incompatible)
-    ));
+    assert!(matches!(p.spawn(), Err(Error::Incompatible)));
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn wrong_ids_malformed_and_oversized_replies_retire_and_reap_child() {
     ] {
         let p = Package::new();
         p.script(&format!("{}{}exec /bin/sleep 10", p.hello(), payload));
-        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        let mut host = p.spawn().unwrap();
         let pid = host.pid();
         assert_eq!(host.request(Request::Status), Err(Error::Protocol));
         assert!(!host.is_alive());
@@ -276,7 +276,7 @@ fn timeout_is_absolute_including_partial_frames_and_kills_descendants() {
     // Each byte arrives inside a per-read timeout. Only an absolute deadline
     // prevents an indefinitely dribbling child from occupying its endpoint.
     p.script(&format!("{}printf '\\000'; /bin/sleep 0.06; printf '\\000'; /bin/sleep 0.06; printf '\\000'; /bin/sleep 0.06; printf '\\100'; exec /bin/sleep 10",p.hello()));
-    let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+    let mut host = p.spawn().unwrap();
     host.set_timeout(Duration::from_millis(100)).unwrap();
     let pid = host.pid();
     let start = Instant::now();
@@ -293,7 +293,7 @@ fn unsupported_commands_never_reach_child_and_drop_reaps_it() {
         p.hello(),
         print_frame(&json!({"id":2,"body":{"type":"status","status":{"on":true}}}))
     ));
-    let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+    let mut host = p.spawn().unwrap();
     let pid = host.pid();
     assert_eq!(host.command("play-pause"), Err(Error::Unsupported));
     assert_eq!(
@@ -315,9 +315,11 @@ fn final_endpoint_drop_synchronously_reaps_its_process() {
         print_frame(&json!({"id":2,"body":{"type":"ok"}})),
         dynamic_status(3, "$$"),
     ));
-    let endpoint =
+    let endpoint = {
+        let _publication = SCRIPT_PUBLICATION.lock().unwrap();
         couch_plugin::Endpoint::start(&p.root, p.manifest.clone(), json!({"host":"example"}))
-            .unwrap();
+            .unwrap()
+    };
     let response = endpoint.request(Request::Status).unwrap();
     let Response::Status { status } = response else {
         panic!("expected status")
@@ -365,7 +367,7 @@ fn child_environment_is_cleared_and_linux_root_is_dropped() {
         p.hello(),
         dynamic_status(2, "$uid:${USER-unset}")
     ));
-    let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+    let mut host = p.spawn().unwrap();
     let uid = unsafe { libc::geteuid() };
     let expected = if cfg!(target_os = "linux") && uid == 0 {
         65534
@@ -398,7 +400,7 @@ fn root_spawn_installs_only_the_declared_supplementary_groups() {
         p.hello(),
         dynamic_status(2, "$groups")
     ));
-    let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+    let mut host = p.spawn().unwrap();
     let mut actual: Vec<u32> = host
         .status()
         .unwrap()
@@ -532,7 +534,7 @@ fn typed_action_refusals_do_not_consume_a_child_request_and_bad_measurements_ret
             p.hello(),
             print_frame(&json!({"id":2,"body":{"type":"status","status":{"on":true}}}))
         ));
-        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        let mut host = p.spawn().unwrap();
         assert_eq!(
             host.action(TypedAction::SetVolumeDb { tenths: -805 }),
             Err(if use_v2 {
@@ -556,7 +558,7 @@ fn typed_action_refusals_do_not_consume_a_child_request_and_bad_measurements_ret
             p.hello(),
             print_frame(&json!({"id":2,"body":{"type":"status","status":{"volume_db":reading}}}))
         ));
-        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        let mut host = p.spawn().unwrap();
         assert_eq!(host.status(), Err(Error::Protocol));
         assert!(!host.is_alive());
     }
@@ -568,7 +570,7 @@ fn typed_action_refusals_do_not_consume_a_child_request_and_bad_measurements_ret
             &json!({"id":2,"body":{"type":"status","status":{"volume_db":{"kind":"minimum"}}}})
         )
     ));
-    let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+    let mut host = p.spawn().unwrap();
     assert_eq!(
         host.status(),
         Err(Error::Protocol),

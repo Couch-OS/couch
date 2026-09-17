@@ -17,17 +17,31 @@ struct Package {
 }
 impl Package {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "couch-echo-plugin-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(root.join("bin")).unwrap();
-        std::fs::copy(
-            env!("CARGO_BIN_EXE_couch-plugin-echo"),
-            root.join("bin/couch-plugin-echo"),
-        )
-        .unwrap();
+        let binary = PathBuf::from(env!("CARGO_BIN_EXE_couch-plugin-echo"));
+        #[cfg(target_os = "linux")]
+        let parent = binary.parent().unwrap().to_path_buf();
+        #[cfg(not(target_os = "linux"))]
+        let parent = std::env::temp_dir();
+        let root = loop {
+            let candidate = parent.join(format!(
+                ".couch-echo-plugin-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create echo package: {error}"),
+            }
+        };
+        std::fs::create_dir(root.join("bin")).unwrap();
+        // A concurrent fork can inherit a copy destination's writable descriptor
+        // and cause Linux execve to fail with ETXTBSY. Link the immutable Cargo
+        // artifact on its own filesystem, just like the shared admission fixture.
+        #[cfg(target_os = "linux")]
+        std::fs::hard_link(&binary, root.join("bin/couch-plugin-echo")).unwrap();
+        #[cfg(not(target_os = "linux"))]
+        std::fs::copy(&binary, root.join("bin/couch-plugin-echo")).unwrap();
         let manifest = serde_json::from_str(include_str!("../plugin.json")).unwrap();
         Self { root, manifest }
     }
