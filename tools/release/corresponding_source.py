@@ -7,7 +7,6 @@ source byte is present and verified. This is provenance tooling, not a license g
 import argparse
 import gzip
 import hashlib
-import importlib.util
 import io
 import json
 from pathlib import Path, PurePosixPath
@@ -19,21 +18,20 @@ import tomllib
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
-_INSTALLER_PATH = Path(__file__).resolve().parents[1] / 'installer/source/corresponding_source.py'
-_INSTALLER_SPEC = importlib.util.spec_from_file_location('_couch_installer_corresponding_source', _INSTALLER_PATH)
-INSTALLER_SOURCE = importlib.util.module_from_spec(_INSTALLER_SPEC)
-_INSTALLER_SPEC.loader.exec_module(INSTALLER_SOURCE)
-
 MAX_DOWNLOAD = 1024 * 1024 * 1024
 SOURCE_TOP = {'assets', 'clients', 'daemon', 'gui', 'initramfs', 'kernel', 'model',
               'recovery', 'src', 'stage2', 'third_party', 'tools', 'ui', 'web', 'docs', '.github'}
-ROOT_FILES = {'COPYING', 'LICENSE', 'README.md', 'AGENTS.md', '.gitignore', 'local.env.example'}
+ROOT_FILES = {'COPYING', 'LICENSE', 'README.md', 'AGENTS.md', '.gitignore', '.gitmodules', 'local.env.example'}
+# The installer is the only reviewed submodule. Its source is collected from the
+# exact gitlink commit, never from whatever the submodule checkout contains.
+SUBMODULE = 'couch-installer'
 EXCLUDE_PARTS = {'target', 'dist', 'build', '.git', 'scratchpad', 'node_modules', '__pycache__'}
 FORBIDDEN_SUFFIXES = {'.img', '.apk', '.so', '.a', '.o', '.pem', '.key', '.elf', '.bin'}
-INSTALLER_MANIFESTS = INSTALLER_SOURCE.MANIFESTS
+INSTALLER_MANIFESTS = tuple(f'{SUBMODULE}/tools/installer/{workspace}/Cargo.toml'
+                            for workspace in ('tui', 'host', 'linux_stage/probe', 'linux_stage/storage'))
 MANIFESTS = ('model/Cargo.toml', 'clients/Cargo.toml', 'daemon/Cargo.toml',
              'ui/Cargo.toml', 'web/Cargo.toml', *INSTALLER_MANIFESTS)
-SCOPES = ('full', 'installer')
+SCOPES = ('full',)
 
 
 def sha(path, algorithm='sha256'):
@@ -94,11 +92,11 @@ def commit_id(repo, revision):
     return value
 
 
-def source_allowed(name):
+def source_allowed(name, top_level=True):
     path = checked_path(name)
     if any(part in EXCLUDE_PARTS for part in path.parts):
         return False
-    if name not in ROOT_FILES and path.parts[0] not in SOURCE_TOP:
+    if top_level and name not in ROOT_FILES and path.parts[0] not in SOURCE_TOP:
         return False
     if path.suffix.lower() in FORBIDDEN_SUFFIXES:
         raise ValueError(f'Binary/private input in source tree: {name}')
@@ -107,32 +105,69 @@ def source_allowed(name):
     return True
 
 
+def tree_entries(repo, commit):
+    for entry in filter(None, git(repo, 'ls-tree', '-rz', '--full-tree', commit).split(b'\0')):
+        header, raw_name = entry.split(b'\t', 1)
+        mode, kind, oid = header.decode().split()
+        yield mode, kind, oid, raw_name.decode('utf-8')
+
+
+def export_blob(repo, mode, kind, oid, name, output, files):
+    if kind != 'blob' or mode not in ('100644', '100755'):
+        raise ValueError('Source symlinks/submodules require explicit review')
+    data = git(repo, 'cat-file', 'blob', oid)
+    if data.startswith((b'\x7fELF', b'MZ')):
+        raise ValueError(f'Executable binary in public source: {name}')
+    path = output / 'couch' / name
+    write(path, data)
+    path.chmod(0o755 if mode == '100755' else 0o644)
+    files[name] = hashlib.sha256(data).hexdigest()
+
+
+def submodule_repository(repo, commit):
+    """Return the installer submodule's own repository holding the gitlink commit."""
+    path = Path(repo) / SUBMODULE
+    try:
+        top = git(path, 'rev-parse', '--show-toplevel').decode().strip()
+    except (OSError, subprocess.CalledProcessError):
+        top = ''
+    # An uninitialized submodule directory would otherwise resolve to the superproject.
+    if not top or Path(top).resolve() != path.resolve():
+        raise ValueError(f'Initialize the installer: git submodule update --init {SUBMODULE}')
+    try:
+        git(path, 'cat-file', '-e', commit + '^{commit}')
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f'Installer commit {commit} is absent; run git submodule update --init {SUBMODULE}') from error
+    return path
+
+
 def project(repo, revision, output, scope='full'):
     if scope not in SCOPES:
         raise ValueError('Unknown corresponding-source scope')
-    if scope == 'installer':
-        return INSTALLER_SOURCE.project(repo, revision, output)
     commit = commit_id(repo, revision)
-    entries = git(repo, 'ls-tree', '-rz', '--full-tree', commit).split(b'\0')
-    files, excluded = {}, []
-    for entry in filter(None, entries):
-        header, raw_name = entry.split(b'\t', 1)
-        mode, kind, oid = header.decode().split()
-        name = raw_name.decode('utf-8')
+    files, excluded, installer = {}, [], None
+    for mode, kind, oid, name in tree_entries(repo, commit):
+        if mode == '160000':
+            if name != SUBMODULE or kind != 'commit':
+                raise ValueError(f'Unreviewed submodule in public source: {name}')
+            installer = oid
+            continue
         if not source_allowed(name):
             excluded.append(name)
             continue
-        if kind != 'blob' or mode not in ('100644', '100755'):
-            raise ValueError('Source symlinks/submodules require explicit review')
-        data = git(repo, 'cat-file', 'blob', oid)
-        if data.startswith((b'\x7fELF', b'MZ')):
-            raise ValueError(f'Executable binary in public source: {name}')
-        path = output / 'couch' / name
-        write(path, data)
-        path.chmod(0o755 if mode == '100755' else 0o644)
-        files[name] = hashlib.sha256(data).hexdigest()
+        export_blob(repo, mode, kind, oid, name, output, files)
+    if installer is None:
+        raise ValueError(f'Source commit lacks the {SUBMODULE} submodule')
+    store = submodule_repository(repo, installer)
+    for mode, kind, oid, name in tree_entries(store, installer):
+        name = f'{SUBMODULE}/{name}'
+        if not source_allowed(name, top_level=False):
+            excluded.append(name)
+            continue
+        export_blob(store, mode, kind, oid, name, output, files)
     manifest = {'schema': 1, 'kind': 'couch-project-source', 'scope': scope, 'complete': True,
-                'commit': commit, 'source_date_epoch': int(git(repo, 'show', '-s', '--format=%ct', commit)), 'files': files, 'excluded_generated_or_unrelated': excluded}
+                'commit': commit, 'installer_submodule': {'path': SUBMODULE, 'commit': installer},
+                'source_date_epoch': int(git(repo, 'show', '-s', '--format=%ct', commit)), 'files': files, 'excluded_generated_or_unrelated': excluded}
     report(output / 'project.json', manifest)
     return manifest
 
@@ -152,8 +187,6 @@ def tree_hashes(root):
 def cargo_sources(output, offline=False, scope='full'):
     if scope not in SCOPES:
         raise ValueError('Unknown corresponding-source scope')
-    if scope == 'installer':
-        return INSTALLER_SOURCE.cargo_sources(output, offline)
     root = output / 'couch'
     manifests = MANIFESTS
     project_receipt = output / 'project.json'
@@ -257,8 +290,6 @@ def cargo_notices(output, cache, offline=False, overrides=None, supplements=None
     """Retain omitted workspace-root notices at each published crate's Git commit."""
     if scope not in SCOPES:
         raise ValueError('Unknown corresponding-source scope')
-    if scope == 'installer':
-        return INSTALLER_SOURCE.cargo_notices(output, cache, offline, overrides, supplements)
     inventory = json.loads((output / 'cargo.json').read_text())
     if inventory.get('scope', 'full') != scope:
         raise ValueError('Cargo source scope differs from notice scope')
@@ -518,8 +549,6 @@ def external_sources(directory, receipt_file, output, scope='full'):
     """Import audited kernel/BusyBox inputs; receipts must name actual source bytes."""
     if scope not in SCOPES:
         raise ValueError('Unknown corresponding-source scope')
-    if scope == 'installer':
-        return INSTALLER_SOURCE.external_rust_sources(directory, receipt_file, output)
     receipt = json.loads(receipt_file.read_text())
     name = receipt.get('component')
     if receipt.get('schema') != 1 or receipt.get('kind') != 'couch-external-source' or name not in ('kernel', 'busybox', 'rust-stdlib', 'bluez'):
@@ -546,8 +575,6 @@ def external_sources(directory, receipt_file, output, scope='full'):
 def assemble(output, archive_path, scope='full'):
     if scope not in SCOPES:
         raise ValueError('Unknown corresponding-source scope')
-    if scope == 'installer':
-        return INSTALLER_SOURCE.assemble(output, archive_path)
     included, components = {}, {}
     selected = [('project', 'couch'), ('cargo', 'cargo-vendor'),
                 ('cargo-notices', 'cargo-notices'), ('alpine', 'alpine'),
@@ -590,14 +617,16 @@ def assemble(output, archive_path, scope='full'):
     notices.extend(['', '## Patched BlueZ', '',
                     f"- couch-bluetoothd: BlueZ {components['bluez'].get('bluez_version', '')} bluetoothd with Couch's patches; GPL-2.0-or-later (parts LGPL-2.1-or-later, BSD-2-Clause); source external/bluez/ (upstream tarball, Alpine recipe, patches, build script)."])
     notices.extend(['', '## Building', '',
-                    'Use the matching Couch source recipes in couch/tools and couch/kernel. Each external component includes its configuration, build recipe and toolchain receipt.',
+                    'Use the matching Couch source recipes in couch/tools and couch/kernel. The installer RAM stage and its pins are in couch/couch-installer at the recorded installer commit. Each external component includes its configuration, build recipe and toolchain receipt.',
                     'To use vendored Rust dependencies, run Cargo from couch/ and pass --config ../cargo-config/vendor.toml --locked --offline with the chosen workspace manifest. Keep the archive directory layout intact.',
                     'This source archive contains no Android/vendor payload, calibration, user configuration or binary image. Vendor extraction remains an owner-local step.', ''])
     write(output / 'NOTICES.md', ('\n'.join(notices)).encode())
     included['NOTICES.md'] = sha(output / 'NOTICES.md')
     manifest = {'schema': 1, 'kind': 'couch-corresponding-source-archive',
                 'collection_scope': scope, 'complete': True,
-                'project_commit': components['project']['commit'], 'files': included,
+                'project_commit': components['project']['commit'],
+                'installer_commit': components['project'].get('installer_submodule', {}).get('commit'),
+                'files': included,
                 'scope': 'Couch/runtime/installer, locked Cargo dependencies, Alpine closure, compiled normal kernel, BusyBox, Rust standard library, patched BlueZ bluetoothd; excludes owner-local Android vendor inputs and stock recovery kernel'}
     report(output / 'SOURCE-MANIFEST.json', manifest)
     names = sorted([*included, 'SOURCE-MANIFEST.json'])
@@ -628,10 +657,6 @@ def assemble(output, archive_path, scope='full'):
 
 def verify_archive(path):
     """Verify every published tar member without extracting anything."""
-    try:
-        return INSTALLER_SOURCE.verify_archive(path)
-    except ValueError:
-        pass
     hashes, manifest = {}, None
     with gzip.open(path, 'rb') as compressed, tarfile.open(fileobj=compressed, mode='r|') as archive:
         for count, entry in enumerate(archive):
@@ -653,8 +678,7 @@ def verify_archive(path):
                 for block in iter(lambda: stream.read(1024 * 1024), b''):
                     digest.update(block)
                 hashes[name] = digest.hexdigest()
-    kinds = {'couch-corresponding-source-archive': 'full',
-             'couch-installer-corresponding-source-archive': 'installer'}
+    kinds = {'couch-corresponding-source-archive': 'full'}
     scope = kinds.get(manifest.get('kind')) if manifest else None
     if (not manifest or scope is None or manifest.get('schema') != 1
             or manifest.get('complete') is not True or hashes != manifest.get('files')

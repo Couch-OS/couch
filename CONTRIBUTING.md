@@ -25,6 +25,7 @@ its own**:
 | `daemon/` | `couch-confd`: the REST API and the web UI it serves |
 | `ui/` | `couch-gui`: the Slint GUI that runs on the remote's panel |
 | `web/` | `couch-web`: the browser configuration UI (wasm) |
+| `couch-installer/` | git submodule of [Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer): the desktop installer and its RAM installation service, with their own workspaces and lockfiles. Change it there, then bump the pin |
 
 Outside Rust: `initramfs/init`, `recovery/init` and `stage2/` are boot, rescue
 and runtime setup; `kernel/` is the kernel build; `src/` and `gui/` are C
@@ -45,8 +46,13 @@ configuration. Run commands inside the workspace you changed.
   [docs/client-sdk.md](docs/client-sdk.md).
 - `rustup target add wasm32-unknown-unknown` plus [Trunk](https://trunkrs.dev)
   only if you touch `web/`.
+- The `couch-installer` submodule for `tools/release` tests and image assembly.
+  Clone with `git clone --recurse-submodules`, or run
+  `git submodule update --init couch-installer` after cloning or pulling. Every
+  git worktree needs its own init. See
+  [bumping the installer pin](docs/development-flow.md#bumping-the-installer-pin).
 - Nothing else. Building and testing needs no device, no credential and no
-  network beyond crates.io.
+  network beyond crates.io and the submodule fetch.
 
 ## Building and testing
 

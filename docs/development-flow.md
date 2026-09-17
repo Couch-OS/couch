@@ -50,7 +50,8 @@ candidate is, so the release list stays readable.
 1. On `dev`, prepare the promotion pull request with the runtime tag
    `v0.1.0-alpha.<date>.<n>` the release will carry. Runtime promotions do not
    change the published installer commands. Installer builds have their own
-   `tools/installer/VERSION` and `installer-v…` release tags; see
+   `VERSION` and `installer-v…` release tags in
+   [Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer); see
    [installer release boundaries](installer-release-boundary.md).
 2. Open a pull request from `dev` to `main` titled for the batch, listing the
    feature pull requests it carries. Merge it with a merge commit.
@@ -65,6 +66,24 @@ candidate is, so the release list stays readable.
    (the promotion merge is the only new commit on `main`, so this is always a
    fast-forward).
 
+## Bumping the installer pin
+
+The `couch-installer/` submodule pins one commit of
+[Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer).
+Installer changes merge there first, through pull requests to its `dev`. To
+carry a newer installer, check out a commit that is on that repository's `dev`
+or `main`, stage the gitlink and open a feature pull request against Couch's
+`dev`:
+
+```sh
+git -C couch-installer fetch origin
+git -C couch-installer checkout INSTALLER_COMMIT
+git add couch-installer
+```
+
+After pulling a pin change, run `git submodule update --init couch-installer`.
+Each git worktree needs its own init.
+
 ## Publishing installer commands
 
 After a separately validated installer release is available, run
@@ -75,9 +94,9 @@ This updates `README.md`, `docs/installer.md`, and the legacy
 `tools/release/current-release.txt` pointer read by the separate `couch-site`
 build. `tools/release/installer-repository.txt` records the published repository;
 the site must consume it alongside the tag before a repository cutover. Existing
-published commands stay unchanged until that step. CI checks
-their consistency with `bump_release.py --check`. This tool updates references;
-it does not build, tag, upload or publish a release.
+published commands stay unchanged until that step. The `release-pointers.yml`
+workflow checks their consistency with `bump_release.py --check`. This tool
+updates references; it does not build, tag, upload or publish a release.
 
 ## Why not automate the dev builds
 

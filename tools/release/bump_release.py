@@ -2,7 +2,8 @@
 """Update published installer commands after an installer release is available.
 
 The legacy source path remains the website's published installer pointer. Runtime
-promotions do not call this tool; installer build versions live in installer/VERSION.
+promotions do not call this tool; installer build versions live in the couch-installer
+submodule's tools/installer/VERSION.
 """
 import argparse
 from pathlib import Path
@@ -22,8 +23,7 @@ DOWNLOAD_BASE = re.compile(r'https://github\.com/(?:dangerouslaser/couch|Couch-O
 GOVERNED = ('README.md', 'docs/installer.md')
 # Dated tags here are ordering examples and test fixtures, not install
 # instructions, so a bump has to leave them alone.
-EXEMPT = (SOURCE, 'tools/installer/couch_tui.py', 'tools/installer/release_discovery.py',
-          'tools/installer/test_release_discovery.py',
+EXEMPT = (SOURCE,
           # Version-rendering and boot-release tests: sample tags, not install
           # instructions, and one of them is whatever number a promotion takes.
           'daemon/couch-updates/src/lib.rs',

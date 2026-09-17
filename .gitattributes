@@ -1,5 +1,0 @@
-# These reviewed inventories are authenticated byte-for-byte on every host.
-/tools/installer/mtk_source_inventory.json text eol=lf
-/tools/installer/pins/mtk_dependencies.json text eol=lf
-
-/tools/installer/host/tests/fixtures/ha100-scatter.txt text eol=lf

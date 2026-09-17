@@ -23,11 +23,15 @@ connections. Keep recovery access independent of the application processes.
   configuration CRUD despite integration routes already living in `api/`.
   Extract configuration routes while retaining one authentication/body-limit
   boundary and existing validation/persistence errors.
-- `tools/installer/` contains the simulation engine, private hardware workflow,
-  packaging and terminal presentation. Migrate host orchestration to Rust after
-  the current restore/fresh-install acceptance checkpoint, retaining the Python
-  MediaTek adapter. Keep the remote writer independent and carry receipt,
-  device-binding, write-order and cancellation regressions into the new host.
+- The installer is a separate repository,
+  [Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer),
+  consumed as the `couch-installer/` submodule; change it there and bump the
+  pin. `couch-installer/tools/installer/` contains the simulation engine,
+  private hardware workflow, packaging and terminal presentation. Migrate host
+  orchestration to Rust after the current restore/fresh-install acceptance
+  checkpoint, retaining the Python MediaTek adapter. Keep the remote writer
+  independent and carry receipt, device-binding, write-order and cancellation
+  regressions into the new host.
 - `gui/`, `spike/` and Android-era deployment tools coexist with the Slint UI
   and release tools. Establish which are supported diagnostics versus historical
   prototypes before archiving anything. Do not delete recovery tools simply

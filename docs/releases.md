@@ -49,6 +49,10 @@ Releases are built and packaged on one dedicated Linux host, so the binaries the
 inventory hashes are the ones the same checkout just produced and nothing is
 copied between machines. The host needs:
 
+- the `couch-installer` submodule, initialized in the release checkout with
+  `git submodule update --init couch-installer` (each git worktree needs its own
+  init), for the public RAM image, the installer pins and corresponding-source
+  collection;
 - Rust stable with the `armv7-unknown-linux-musleabihf` and
   `wasm32-unknown-unknown` targets;
 - `trunk` for the browser bundle (`cargo install --locked trunk`);
