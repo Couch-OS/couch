@@ -1,9 +1,11 @@
 import json
+import re
+import shlex
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from package_closure import IMAGE, PREFIX, inventory, prepare, verify
+from package_closure import DEFAULT_PACKAGES, IMAGE, PREFIX, inventory, prepare, verify
 
 
 class PackageClosureTests(unittest.TestCase):
@@ -11,6 +13,20 @@ class PackageClosureTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+
+    def test_default_roots_cover_maintained_provisioning_and_required_media_decoder(self):
+        repo = Path(__file__).resolve().parents[2]
+        provisioning = (repo / 'tools/provision-alpine.sh').read_text()
+        assignments = re.findall(r'^PKGS="([^"\n]+)"$', provisioning, re.MULTILINE)
+        self.assertEqual(len(assignments), 1, 'Review package extraction if provisioning syntax changes')
+        required = set(shlex.split(assignments[0]))
+        self.assertTrue(required, 'Provisioning package requirements must not disappear')
+        # os_baseline.seed requires an installed ARM usr/bin/ffmpeg before it can
+        # create the capability marker; the networking/Bluetooth roots omit it.
+        required.add('ffmpeg')
+        self.assertFalse(required - set(DEFAULT_PACKAGES),
+                         'Default offline closure omits runtime requirements: ' +
+                         ', '.join(sorted(required - set(DEFAULT_PACKAGES))))
 
     def fixture(self):
         for name in ('packages', 'indexes', 'keys'):

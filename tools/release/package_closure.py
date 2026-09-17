@@ -9,8 +9,10 @@ import re
 import subprocess
 from urllib.parse import urlsplit
 
-# Runtime Wi-Fi, enrollment-gated SSH, clock zones and optional recovery portal.
-DEFAULT_PACKAGES = ('wpa_supplicant', 'openssh', 'iw', 'tzdata', 'hostapd', 'dnsmasq')
+# Provisioning roots cover Wi-Fi, SSH, recovery and the Bluetooth service/tools.
+# The current OS baseline additionally requires the installed FFmpeg decoder.
+DEFAULT_PACKAGES = ('wpa_supplicant', 'openssh', 'iw', 'tzdata', 'hostapd', 'dnsmasq',
+                    'dbus', 'bluez', 'bluez-deprecated', 'ffmpeg')
 IMAGE = 'alpine@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d'
 PREFIX = 'https://dl-cdn.alpinelinux.org/alpine/v3.21/'
 

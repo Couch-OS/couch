@@ -2,7 +2,7 @@
 
 `tools/release/package_closure.py` prepares a **noninstallable** ARMv7 package cache on Linux. Run it on a dedicated Linux build host; it does not contact the remote or install anything into a device/rootfs. Docker runs as the invoking user, with no capabilities, a read-only filesystem and only a new output directory mounted writable. No home directory, keys, device backups, configuration, or Docker socket is mounted.
 
-The default runtime roots match `tools/provision-alpine.sh`: `wpa_supplicant`, `openssh`, `iw`, `tzdata`, `hostapd`, and `dnsmasq`. The last two retain the optional recovery portal; they are not required to launch the normal on-device Wi-Fi setup. BusyBox/IP/DHCP and shared libraries resolve transitively. This is not a general Alpine development environment.
+The default runtime roots include every package in `tools/provision-alpine.sh` plus the FFmpeg decoder required by the HA100 OS baseline: `wpa_supplicant`, `openssh`, `iw`, `tzdata`, `hostapd`, `dnsmasq`, `dbus`, `bluez`, `bluez-deprecated`, and `ffmpeg`. `hostapd` and `dnsmasq` retain the optional recovery portal. The Bluetooth service needs `dbus-daemon` and `bluetoothd`, plus the deprecated `hciconfig` and `hcitool` utilities used to initialize the controller address. BusyBox/IP/DHCP and shared libraries resolve transitively. This is not a general Alpine development environment.
 
 ```sh
 # In the checkout on the dedicated Linux build host; output must not exist.
@@ -19,9 +19,9 @@ Preparation resolves the current contents of the versioned branch; it is **not**
 
 Archive the complete closure directory: `closure.json`, `packages/`, `indexes/`, `keys/`, and auxiliary files including `repositories`, `apk-version.txt`, `package-urls.txt`, and `offline-solve.txt`. A manifest hash, source URL, or builder digest cannot reconstruct missing input bytes. A replacement closure needs a newly reviewed inventory and baseline pin, followed by the applicable OS assembly and hardware validation; it does not inherit the previous closure's approval or hardware results.
 
-The HA100 OS baseline also requires FFmpeg. The helper's default six roots alone do not satisfy `ha100_os_baseline.json`; use the complete reviewed cache whose manifest matches that pin. An explicit replacement root set must include all required runtime packages as well as FFmpeg. Matching the FFmpeg version alone does not establish an identical closure or baseline.
+The defaults describe required runtime capabilities; preparing them does not reproduce or approve the closure pinned in `ha100_os_baseline.json`. Use the complete reviewed cache whose manifest matches that pin. An explicit replacement root set must retain all required runtime packages, including Bluetooth and FFmpeg. Matching root names or the FFmpeg version alone does not establish an identical closure or baseline.
 
-Validation on the dedicated Linux host resolved 26 packages, verified every signature, and passed the offline simulation with Docker networking disabled. A negative fixture omitted `libcrypto3` and correctly failed dependency resolution. Local tests reject tampering, missing/extra files, symlinks, unexpected package URLs, unpinned builders and option injection.
+Historical validation of an earlier networking-only closure on the dedicated Linux host resolved 26 packages, verified every signature, and passed the offline simulation with Docker networking disabled; this does not validate the expanded runtime defaults. A negative fixture omitted `libcrypto3` and correctly failed dependency resolution. Local tests reject tampering, missing/extra files, symlinks, unexpected package URLs, unpinned builders and option injection.
 
 `--architecture x86_64` prepares a separate host-tool closure for [userdata image creation](userdata-image.md); ARM runtime assembly explicitly rejects those tool packages.
 
