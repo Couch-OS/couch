@@ -41,6 +41,22 @@ HOST_CHECKS = (
     "fake_receiver_inputs", "fake_receiver_command", "shared_transport_ownership",
     "v2_action_refused_for_v1",
 )
+# The admission harness is scaffolding a published package never links: its
+# module is compiled out of every shipped build, so it cannot alter the wire
+# protocol, the manifest format or host behavior of an APK already in the feed.
+# It does decide what "passed admission" means, so it is tracked by digest
+# instead of being frozen: changing one is a recorded one-line manifest edit
+# after a rerun of the admission suite, not a repeat of hardware validation.
+# Only a path named here may be exempted, and only while the gate below still
+# compiles it out, so no manifest edit alone can launder contract code out of
+# the freeze. Each entry maps the harness file to the source that declares it
+# and the declaration that keeps it out of shipped builds.
+HARNESS_PATHS = {
+    "clients/couch-plugin/src/testing.rs": (
+        "clients/couch-plugin/src/lib.rs",
+        r'#\[cfg\(feature\s*=\s*"testing"\)\]\s*pub mod testing;',
+    ),
+}
 
 
 def require(value, message):
@@ -125,6 +141,28 @@ def validate_protocol(core, schema):
     main = (REPO / "daemon/couch-confd/src/main.rs").read_text()
     require(all(f'"--supports-integration-protocol={version}"' in main for version in supported),
             "Core host support probe is absent")
+
+
+def validate_harness(core, schema):
+    """Digest-track the compiled-out admission harness; never exempt contract code."""
+    harness = core.get("harness_paths", {}) if schema == 2 else {}
+    require(isinstance(harness, dict), "Core harness paths must be a path to SHA-256 object")
+    for item, pinned in harness.items():
+        require(isinstance(item, str) and item and not item.startswith("/")
+                and ".." not in PurePosixPath(item).parts, "Invalid core harness path")
+        require(item in HARNESS_PATHS,
+                f"Only a recorded compiled-out harness may leave the contract freeze: {item}")
+        require(any(item == path or item.startswith(path + "/") for path in core["contract_paths"]),
+                f"Harness path is not inside a frozen contract path: {item}")
+        require(isinstance(pinned, str) and HEX64.fullmatch(pinned),
+                f"Invalid harness SHA-256 for {item}")
+        declaring, gate = HARNESS_PATHS[item]
+        require(re.search(gate, (REPO / declaring).read_text()),
+                f"Harness is no longer compiled out of shipped builds: {item}")
+        actual = digest(regular(REPO / item, 1024 * 1024))
+        require(actual == pinned,
+                f"Admission harness changed: rerun the admission suite and record {item} = {actual}")
+    return harness
 
 
 def validate_host_compatibility(manifest, path):
@@ -245,8 +283,11 @@ def validate_manifest(path=DEFAULT):
     require(manifest["kind"] == "couch-tested-integration-set"
             and isinstance(manifest["name"], str) and manifest["name"], "Unsupported tested-set identity")
     core = manifest["core"]
+    # harness_paths is optional: absent means the freeze covers every contract byte.
+    declared_harness = ("harness_paths",) if isinstance(core, dict) and "harness_paths" in core else ()
     exact(core, ("repository", "tested_commit", "compatibility_floor", "contract_paths",
-                 "protocol_version" if schema == 1 else "supported_protocol_versions"), "core")
+                 "protocol_version" if schema == 1 else "supported_protocol_versions",
+                 *(declared_harness if schema == 2 else ())), "core")
     require(core["repository"] in github_repositories("couch")
             and HEX40.fullmatch(core["tested_commit"])
             and (schema == 2 or type(core["protocol_version"]) is int and core["protocol_version"] == 1),
@@ -261,7 +302,10 @@ def validate_manifest(path=DEFAULT):
     if schema == 2:
         require(len(set(core["contract_paths"])) == len(core["contract_paths"])
                 and set(CONTRACT_PATHS) <= set(core["contract_paths"]), "Schema 2 omits required contract paths")
-    changed = git("diff", "--name-only", core["tested_commit"], head, "--", *core["contract_paths"]).stdout.splitlines()
+    harness = validate_harness(core, schema)
+    changed = [path for path in git("diff", "--name-only", core["tested_commit"], head,
+                                    "--", *core["contract_paths"]).stdout.splitlines()
+               if path not in harness]
     require(not changed, "Integration contract changed after its tested commit: " + ", ".join(changed))
 
     validate_protocol(core, schema)
@@ -412,6 +456,7 @@ def receipt(manifest_path=DEFAULT, key_path=None, index_path=None, packages=None
             integration_protocol_versions={item["id"]: item["protocol_version"] for item in manifest["integrations"]},
             hardware_evidence_core_commits={item["id"]: item["hardware_evidence_core_commit"] for item in manifest["integrations"]},
             host_compatibility_sha256=manifest["host_compatibility"]["sha256"],
+            core_harness_paths=manifest["core"].get("harness_paths", {}),
         )
     return result
 
