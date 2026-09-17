@@ -23,8 +23,11 @@ Echo TV is synthetic and test-only. Denon is a preview: its fake-receiver tests
 exercise the protocol implementation. Read-only status and input enumeration
 also passed against a physical receiver from the HA100 package host, but exact
 model/firmware evidence and physical command validation are still outstanding.
-Its complete hardware-validation status therefore remains `not-tested`. Neither
-tier should be read as a published package.
+Its complete hardware-validation status therefore remains `not-tested`. Sonos is
+a preview whose cases run against a fake local Control API: the client behind it
+has been used against real players, but no packaged build has ever run on one,
+so its hardware validation is `not-tested` too. No tier here should be read as a
+published package.
 
 ## Required tests
 
@@ -49,6 +52,60 @@ full-revision Git dependency on `couch-plugin`. Their normal and development
 dependencies on `couch-plugin` and `couch-sdk` must all name the same Couch
 commit. Vendoring protocol types or copying the harness is not equivalent: it
 allows the source under test to redefine the contract it is supposed to meet.
+
+The curated feed requires a fifth `#[test]` in the same file,
+`concurrent_package_startup_is_offline_and_race_free`, and checks that it names
+`testing::Package::new` itself. It needs no device: several threads each build a
+package and an endpoint against an address nothing answers, proving that the
+package slot, the executable copy and the child's socket do not collide and that
+startup contacts nothing. Write it per integration rather than calling a shared
+function, or the feed's textual check will not see it.
+
+## The fake device is yours
+
+The harness starts the fake device, hands the packaged adapter the settings that
+address it, and compares the device's own request log with what the case
+declared. It never builds or parses a request, so it does not need to understand
+the wire format, and an integration supplies its own device by implementing two
+methods:
+
+```rust
+pub trait FakeDevice {
+    /// Settings that point a configured adapter at this device.
+    fn settings(&self) -> serde_json::Value;
+    /// Every request it has seen, oldest first, in your own spelling.
+    fn requests(&self) -> Vec<String>;
+}
+```
+
+A case names a `Fixture`, which is how it starts one - `failure` starts three,
+each with a fresh log:
+
+```rust
+testing::spike(
+    adapter(),
+    Spike {
+        device: Fixture::new(|| FakeSonos::start(Plan::new().otherwise(Answer::Silence))),
+        command: "play-pause",
+        initial_requests: &["GET /api/v1/players/local/info"],
+    },
+);
+```
+
+`couch-sonos` is the worked example: `clients/couch-sonos/tests/fake/mod.rs`
+serves the Control API's JSON over loopback HTTP/1.1 and logs `METHOD /path`,
+and `tests/admission.rs` supplies nothing else.
+
+A fixture must be reachable through ordinary settings. The pinned-certificate
+integrations take their trust material as settings already, and `couch-sonos`
+accepts an explicit `api_root`, whose validator confines plain HTTP to loopback.
+That rule is shipping behaviour. **An integration that needs a test-only trust
+bypass in shipping code to produce these cases is not admissible**; change the
+configuration surface instead, and say so in review.
+
+`MockHost` remains the default for line protocols. `ConformanceCase`,
+`FailureCase`, `TimeoutCase` and `SpikeCase` keep their fields and convert into
+the transport-agnostic cases, so `couch-denon` and `couch-echo` are unchanged.
 
 ## Hardware evidence
 

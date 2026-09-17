@@ -48,6 +48,35 @@
         "evidence": [],
         "notes": "There is no Echo TV hardware; all peers are local test fixtures."
       }
+    },
+    {
+      "id": "sonos",
+      "manifest": "clients/couch-sonos/plugin.json",
+      "crate": "clients/couch-sonos",
+      "cargo_package": "couch-sonos",
+      "binary": "couch-plugin-sonos",
+      "tier": "preview",
+      "synthetic": false,
+      "limitations": [
+        "The package has never run on a physical player: the admission cases speak to a fake local Control API over loopback HTTP, and no packaged build has been installed on a device.",
+        "A packaged Sonos is a remote, not the built-in player screen. The four declarative component kinds carry transport commands, relative volume, mute and a source picker; they cannot carry album artwork, a seek bar or position clocks, a volume meter, shuffle, repeat or crossfade state, the queue, or any group and coordinator awareness.",
+        "Playback is refused on a group member as in the built-in client, but the package cannot say which coordinator to open: the protocol carries nine fixed error codes and no message of its own.",
+        "Status is read on demand rather than polled, so a change made from the Sonos app does not appear until the next command or an explicit refresh.",
+        "The source picker loses its second line, because Selectable carries an id and a name only, and the current source is never highlighted because a player does not report which favourite it is playing.",
+        "No now-playing text is reported: filling the status title would cost an extra household read on every status request, and one free-form field cannot hold track, artist and album separately.",
+        "The developer API key is a per-connection secret setting. A packaged build carries none, because the feed's build job has no secrets and the host clears the child's environment, so a connection without a key falls back to the documented placeholder and works only on players that allow guest access."
+      ],
+      "tests": {
+        "conformance": {"target": "admission", "case": "conformance"},
+        "failure": {"target": "admission", "case": "failure"},
+        "timeout_no_retry": {"target": "admission", "case": "timeout_no_retry"},
+        "spike": {"target": "admission", "case": "spike"}
+      },
+      "hardware_validation": {
+        "status": "not-tested",
+        "evidence": [],
+        "notes": "The couch-sonos client has been exercised against real players on the LAN, but this package adapter, its manifest and its plugin binary have not: every admission case runs against a fake Control API on loopback. Packaged hardware validation remains outstanding, so the entry stays preview and not-tested."
+      }
     }
   ]
 }

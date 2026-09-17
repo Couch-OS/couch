@@ -26,12 +26,12 @@ pub(crate) fn info() -> String {
     .to_string()
 }
 /// The stock fixture with extra capabilities, for the source picker's gates.
-fn info_with(capabilities: &[&str]) -> String {
+pub(crate) fn info_with(capabilities: &[&str]) -> String {
     let mut value: serde_json::Value = serde_json::from_str(&info()).unwrap();
     value["device"]["capabilities"] = serde_json::json!(capabilities);
     value.to_string()
 }
-fn favorites() -> String {
+pub(crate) fn favorites() -> String {
     serde_json::json!({
         "version": "RINCON_TEST:14",
         "items": [
@@ -44,7 +44,7 @@ fn favorites() -> String {
     })
     .to_string()
 }
-fn playlists() -> String {
+pub(crate) fn playlists() -> String {
     serde_json::json!({
         "version": "RINCON_TEST:6",
         "playlists": [
