@@ -218,11 +218,14 @@ impl DeviceClient for Client {
     /// spelled with a dot.
     ///
     /// The row's `detail` text ("Sonos playlist · 12 tracks") is dropped:
-    /// [`Selectable`] carries an id and a name and nothing else.
+    /// [`Selectable`] carries an id and a name and nothing else. A household id
+    /// that cannot be an `input:` function is dropped too, rather than offered
+    /// as a row the gate would refuse.
     fn inputs(&mut self) -> couch_sdk::Result<Vec<Selectable>> {
         Ok(Client::sources(self)?
             .into_iter()
             .map(|source| Selectable::new(input_id(&source.id), source.name))
+            .filter(|input| offerable(&input.id))
             .collect())
     }
 
@@ -249,6 +252,15 @@ fn input_id(source: &SourceId) -> String {
         SourceId::Favorite(id) => format!("favorite.{id}"),
         SourceId::Playlist(id) => format!("playlist.{id}"),
     }
+}
+
+/// Whether a picker row can be pressed at all: the id has to parse as the
+/// `input:` function the panel will send, unchanged, and has to be one this
+/// client accepts. Both halves, because either alone lets a row onto the screen
+/// that does nothing.
+fn offerable(id: &str) -> bool {
+    Function::parse(&format!("input:{id}")).is_some_and(|f| f == Function::Input(id.to_owned()))
+        && source_id(id).is_some()
 }
 
 /// [`input_id`] backwards. `None` for anything the picker could not have
@@ -400,12 +412,21 @@ mod tests {
         }
     }
 
-    /// Two reads, one flat list, and the detail text that cannot travel.
+    /// Two reads, one flat list, and the detail text that cannot travel. The
+    /// stock favourites gain one whose household id no `input:` function can
+    /// carry, which the picker must drop rather than offer as a dead row.
     #[test]
     fn the_source_picker_becomes_the_one_list_the_plugin_protocol_carries() {
+        let mut items: serde_json::Value = serde_json::from_str(&favorites()).unwrap();
+        items["items"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!(
+                {"id": "a:b", "name": "Unaddressable", "description": "", "service": {"name": "x"}}
+            ));
         let (base, thread) = server(vec![
             (200, info_with(&["PLAYBACK", "HT_PLAYBACK", "LINE_IN"])),
-            (200, favorites()),
+            (200, items.to_string()),
             (200, playlists()),
         ]);
         let mut client = Client::connect_url(&base, KEY).unwrap();
@@ -425,7 +446,9 @@ mod tests {
                 ("playlist.1", "All Songs"),
                 ("playlist.0", "One"),
                 ("playlist.2", "Unknown size"),
-            ]
+            ],
+            "the favourite whose household id cannot be an input function is \
+             dropped rather than offered as a row that would be refused"
         );
         thread.join().unwrap();
     }

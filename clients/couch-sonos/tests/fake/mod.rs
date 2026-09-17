@@ -195,12 +195,18 @@ fn serve(
 ) {
     let _ = socket.set_read_timeout(Some(Duration::from_millis(25)));
     let mut buffer: Vec<u8> = Vec::new();
-    let head = loop {
+    // `end` is the byte offset of the blank line, kept rather than recomputed
+    // from the decoded head: a lossy decode can change the length, and the body
+    // offset below has to be exact.
+    let (end, head) = loop {
         if stop.load(Ordering::SeqCst) {
             return;
         }
         if let Some(at) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
-            break String::from_utf8_lossy(&buffer[..at]).into_owned();
+            let Ok(head) = std::str::from_utf8(&buffer[..at]) else {
+                return;
+            };
+            break (at, head.to_owned());
         }
         if buffer.len() > 16 * 1024 {
             return;
@@ -222,7 +228,7 @@ fn serve(
         .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
         .and_then(|(_, value)| value.trim().parse().ok())
         .unwrap_or(0);
-    let wanted = head.len() + 4 + length;
+    let wanted = end + 4 + length;
     while buffer.len() < wanted {
         if stop.load(Ordering::SeqCst) {
             return;
