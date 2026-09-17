@@ -1,8 +1,9 @@
 # Offline Rust installer storage policy
 
-`tools/installer/linux_stage/storage` is an independent library workspace. It is
-**not linked into the RAM probe** and contains **no production block writer**.
-Its tests use temporary regular files on Linux; nothing here authorizes flashing.
+`couch-installer/tools/installer/linux_stage/storage` is an independent library
+workspace. It is **not linked into the RAM probe** and contains **no production
+block writer**. Its tests use temporary regular files on Linux; nothing here
+authorizes flashing.
 
 ## API and transaction phases
 

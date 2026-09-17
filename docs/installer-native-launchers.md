@@ -1,11 +1,12 @@
 # Native installer launchers
 
-`tools/installer/installer_launchers.py` generates an `install.sh` and `install.ps1`
-for one exact release. Generation does not publish a release or establish device
-acceptance. The `.24` native launchers and payload are assembled and passed
-desktop download-and-Cancel acceptance; publication and physical installation
-status are tracked in the [installer guide](installer.md). The older Python
-bootstrap is not the native release entry point.
+`couch-installer/tools/installer/installer_launchers.py` generates an
+`install.sh` and `install.ps1` for one exact release. Generation does not
+publish a release or establish device acceptance. The `.24` native launchers and
+payload are assembled and passed desktop download-and-Cancel acceptance;
+publication and physical installation status are tracked in the
+[installer guide](installer.md). The older Python bootstrap is not the native
+release entry point.
 
 The asset directory must contain these flat, regular files:
 
@@ -28,13 +29,12 @@ device identity, credentials or owner firmware. Native host admission remains
 responsible for the payload and owner-input verification.
 
 New descriptors use schema 2 with separate `installer` and `os` identities and
-an explicit installation protocol. See [installer release
-boundaries](installer-release-boundary.md) for creating a descriptor against an
-existing OS archive. The old `tools/release/installer_launchers.py` command is a
-compatibility entry point for the same generator.
+an explicit installation protocol. See
+[installer release boundaries](installer-release-boundary.md) for creating a
+descriptor against an existing OS archive.
 
 ```sh
-python3 tools/installer/installer_launchers.py \
+python3 couch-installer/tools/installer/installer_launchers.py \
   --assets /path/to/reviewed-flat-assets \
   --output /path/to/new-launchers \
   --version v0.1.0-alpha.1
@@ -62,13 +62,14 @@ Actual installation and Windows USB-driver acceptance remain separate checks.
 
 ## Downloadable build receipts
 
-The installer binary workflow uploads `couch-installer-build-PLATFORM/build.json`
-alongside each host/TUI artifact. Each receipt records the exact checked-out Git
-commit, platform and Rust target, `rustc -vV`, `cargo -vV`, selected toolchain name,
-compiler/Cargo hashes, target sysroot file hashes, and host/TUI SHA-256 and size.
-It contains explicit build fields, not an environment dump or private host paths.
-Keep these receipts with release inputs so mutable `stable` runners do not erase
-which compiler and standard-library inputs produced an artifact.
+The installer binary workflow in Couch-OS/couch-installer uploads
+`couch-installer-build-PLATFORM/build.json` alongside each host/TUI artifact.
+Each receipt records the exact checked-out Git commit, platform and Rust target,
+`rustc -vV`, `cargo -vV`, selected toolchain name, compiler/Cargo hashes, target
+sysroot file hashes, and host/TUI SHA-256 and size. It contains explicit build
+fields, not an environment dump or private host paths. Keep these receipts with
+release inputs so mutable `stable` runners do not erase which compiler and
+standard-library inputs produced an artifact.
 
 The macOS universal receipt embeds both native receipts, binds their original
 JSON and binary hashes, and records the combined, signed host/TUI hashes. The

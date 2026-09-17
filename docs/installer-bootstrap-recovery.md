@@ -1,12 +1,13 @@
 # Recovering a failed native bootstrap
 
-`tools/installer/recover_native_bootstrap.py` admits a narrow recovery case:
-a native Couch reinstall saved all nine current originals, verified its temporary
-boot write, then failed before leaving the bootstrap phase. Its command-line
-entry point is **offline only** and never discovers or opens a USB device.
+`couch-installer/tools/installer/recover_native_bootstrap.py` admits a narrow
+recovery case: a native Couch reinstall saved all nine current originals,
+verified its temporary boot write, then failed before leaving the bootstrap
+phase. Its command-line entry point is **offline only** and never discovers or
+opens a USB device.
 
 ```sh
-python3 tools/installer/recover_native_bootstrap.py \
+python3 couch-installer/tools/installer/recover_native_bootstrap.py \
   --session /private/retained/native-session \
   --expected-temporary-boot-sha256 RECORDED_VERIFIED_TEMPORARY_BOOT_SHA256
 ```
