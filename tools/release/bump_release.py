@@ -33,10 +33,9 @@ EXEMPT = (SOURCE,
           # Version-rendering and boot-release tests: sample tags, not install
           # instructions, and one of them is whatever number a promotion takes.
           'daemon/couch-updates/src/lib.rs',
-          # Updates-screen copy tests: the rendered boot release is a fixture
-          # in a unit test and in the mocked browser test's endpoint data.
-          'web/couch-web/src/screens/updates.rs',
-          'web/tests/updates.mjs',
+          # Updates-screen copy and its browser test show a mocked installed
+          # version; neither is an install instruction.
+          'web/couch-web/src/screens/updates.rs', 'web/tests/updates.mjs',
           # Historical decoder vocabulary used to validate first-upgrade rollback.
           'model/couch-model/src/storage.rs')
 # v0.1.0-alpha.<date>.<n>. The leading v is optional because the site's JSON-LD
