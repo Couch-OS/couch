@@ -25,9 +25,9 @@ pub fn owner_ramdisk(neutral_gzip: &[u8], prepared: &Path) -> Result<Vec<u8>> {
     );
     let mut entries = parse(&bytes)?;
     let pin: serde_json::Value =
-        serde_json::from_str(include_str!("../../../release/ha100_official_runtime.json"))?;
+        serde_json::from_str(include_str!("../../pins/ha100_official_runtime.json"))?;
     let ram_files: Vec<String> =
-        serde_json::from_str(include_str!("../../../release/ha100_ram_runtime.json"))?;
+        serde_json::from_str(include_str!("../../pins/ha100_ram_runtime.json"))?;
     ensure!(ram_files.len() == 19, "invalid compiled RAM subset");
     for record in pin["files"]
         .as_array()

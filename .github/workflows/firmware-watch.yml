@@ -40,7 +40,7 @@ jobs:
         shell: python
         run: |
           import json, os, pathlib, sys, urllib.request, urllib.parse, http.cookiejar
-          pin = json.loads(pathlib.Path('tools/release/ha100_firmware_restore.json').read_text())
+          pin = json.loads(pathlib.Path('tools/installer/pins/ha100_firmware_restore.json').read_text())
           file_id = pin['source']['drive_file_id']
           out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'firmware-ota.zip'
           jar = http.cookiejar.CookieJar()

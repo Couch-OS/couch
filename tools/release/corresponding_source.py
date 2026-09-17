@@ -7,6 +7,7 @@ source byte is present and verified. This is provenance tooling, not a license g
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import io
 import json
 from pathlib import Path, PurePosixPath
@@ -18,16 +19,21 @@ import tomllib
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
+_INSTALLER_PATH = Path(__file__).resolve().parents[1] / 'installer/source/corresponding_source.py'
+_INSTALLER_SPEC = importlib.util.spec_from_file_location('_couch_installer_corresponding_source', _INSTALLER_PATH)
+INSTALLER_SOURCE = importlib.util.module_from_spec(_INSTALLER_SPEC)
+_INSTALLER_SPEC.loader.exec_module(INSTALLER_SOURCE)
+
 MAX_DOWNLOAD = 1024 * 1024 * 1024
 SOURCE_TOP = {'assets', 'clients', 'daemon', 'gui', 'initramfs', 'kernel', 'model',
               'recovery', 'src', 'stage2', 'third_party', 'tools', 'ui', 'web', 'docs', '.github'}
-ROOT_FILES = {'COPYING', 'README.md', 'AGENTS.md', '.gitignore', 'local.env.example'}
+ROOT_FILES = {'COPYING', 'LICENSE', 'README.md', 'AGENTS.md', '.gitignore', 'local.env.example'}
 EXCLUDE_PARTS = {'target', 'dist', 'build', '.git', 'scratchpad', 'node_modules', '__pycache__'}
 FORBIDDEN_SUFFIXES = {'.img', '.apk', '.so', '.a', '.o', '.pem', '.key', '.elf', '.bin'}
+INSTALLER_MANIFESTS = INSTALLER_SOURCE.MANIFESTS
 MANIFESTS = ('model/Cargo.toml', 'clients/Cargo.toml', 'daemon/Cargo.toml',
-             'ui/Cargo.toml', 'web/Cargo.toml', 'tools/installer/tui/Cargo.toml',
-             'tools/installer/host/Cargo.toml', 'tools/installer/linux_stage/probe/Cargo.toml',
-             'tools/installer/linux_stage/storage/Cargo.toml')
+             'ui/Cargo.toml', 'web/Cargo.toml', *INSTALLER_MANIFESTS)
+SCOPES = ('full', 'installer')
 
 
 def sha(path, algorithm='sha256'):
@@ -101,7 +107,11 @@ def source_allowed(name):
     return True
 
 
-def project(repo, revision, output):
+def project(repo, revision, output, scope='full'):
+    if scope not in SCOPES:
+        raise ValueError('Unknown corresponding-source scope')
+    if scope == 'installer':
+        return INSTALLER_SOURCE.project(repo, revision, output)
     commit = commit_id(repo, revision)
     entries = git(repo, 'ls-tree', '-rz', '--full-tree', commit).split(b'\0')
     files, excluded = {}, []
@@ -121,7 +131,7 @@ def project(repo, revision, output):
         write(path, data)
         path.chmod(0o755 if mode == '100755' else 0o644)
         files[name] = hashlib.sha256(data).hexdigest()
-    manifest = {'schema': 1, 'kind': 'couch-project-source', 'complete': True,
+    manifest = {'schema': 1, 'kind': 'couch-project-source', 'scope': scope, 'complete': True,
                 'commit': commit, 'source_date_epoch': int(git(repo, 'show', '-s', '--format=%ct', commit)), 'files': files, 'excluded_generated_or_unrelated': excluded}
     report(output / 'project.json', manifest)
     return manifest
@@ -139,15 +149,25 @@ def tree_hashes(root):
     return values
 
 
-def cargo_sources(output, offline=False):
+def cargo_sources(output, offline=False, scope='full'):
+    if scope not in SCOPES:
+        raise ValueError('Unknown corresponding-source scope')
+    if scope == 'installer':
+        return INSTALLER_SOURCE.cargo_sources(output, offline)
     root = output / 'couch'
-    absent = [name for name in MANIFESTS if not (root / name).is_file()]
+    manifests = MANIFESTS
+    project_receipt = output / 'project.json'
+    if project_receipt.is_file():
+        project_scope = json.loads(project_receipt.read_text()).get('scope', 'full')
+        if project_scope != scope:
+            raise ValueError('Project source scope differs from Cargo scope')
+    absent = [name for name in manifests if not (root / name).is_file()]
     if absent:
         raise ValueError('Missing release Cargo manifests: ' + ', '.join(absent))
-    command = ['cargo', 'vendor', '--locked', '--versioned-dirs', '--manifest-path', str(root / MANIFESTS[0])]
+    command = ['cargo', 'vendor', '--locked', '--versioned-dirs', '--manifest-path', str(root / manifests[0])]
     if offline:
         command.append('--offline')
-    for name in MANIFESTS[1:]:
+    for name in manifests[1:]:
         command.extend(['--sync', str(root / name)])
     command.append(str(output / 'cargo-vendor'))
     config = subprocess.check_output(command, cwd=root)
@@ -167,7 +187,7 @@ def cargo_sources(output, offline=False):
     # Verify each registry package in every lock is actually included. Git sources
     # remain checked by cargo vendor; they retain their Cargo checksum manifests.
     present = {(p['name'], p['version']) for p in packages}
-    for name in MANIFESTS:
+    for name in manifests:
         lock = root / str(PurePosixPath(name).parent / 'Cargo.lock')
         if not lock.exists():
             # Linux-stage crates may share their nearest workspace lock.
@@ -177,12 +197,12 @@ def cargo_sources(output, offline=False):
         for p in parsed['package']:
             if p.get('source') and (p['name'], p['version']) not in present:
                 raise ValueError('A locked Cargo source is absent')
-    for name in MANIFESTS:
+    for name in manifests:
         subprocess.run(['cargo', 'metadata', '--format-version=1', '--locked', '--offline',
                         '--all-features', '--config', str(output / 'cargo-config/vendor.toml'),
                         '--manifest-path', str(root / name)], cwd=root, stdout=subprocess.DEVNULL, check=True)
-    result = {'schema': 1, 'kind': 'couch-cargo-sources', 'complete': True,
-              'manifests': list(MANIFESTS), 'packages': packages,
+    result = {'schema': 1, 'kind': 'couch-cargo-sources', 'scope': scope, 'complete': True,
+              'manifests': list(manifests), 'packages': packages,
               'files': tree_hashes(output / 'cargo-vendor'), 'config_sha256': sha(output / 'cargo-config/vendor.toml')}
     report(output / 'cargo.json', result)
     return result
@@ -233,9 +253,15 @@ def license_supplement(output, directory, manifest_path):
             'attribution': 'Retained unchanged in published crate sources; no holder or year inferred.'}
 
 
-def cargo_notices(output, cache, offline=False, overrides=None, supplements=None):
+def cargo_notices(output, cache, offline=False, overrides=None, supplements=None, scope='full'):
     """Retain omitted workspace-root notices at each published crate's Git commit."""
+    if scope not in SCOPES:
+        raise ValueError('Unknown corresponding-source scope')
+    if scope == 'installer':
+        return INSTALLER_SOURCE.cargo_notices(output, cache, offline, overrides, supplements)
     inventory = json.loads((output / 'cargo.json').read_text())
+    if inventory.get('scope', 'full') != scope:
+        raise ValueError('Cargo source scope differs from notice scope')
     collected, errors = [], []
     for package in inventory['packages']:
         if package['notice_files']:
@@ -312,7 +338,7 @@ def cargo_notices(output, cache, offline=False, overrides=None, supplements=None
             print('Collected Cargo notices: ' + package['directory'], flush=True)
         except (KeyError, ValueError, OSError, subprocess.SubprocessError) as error:
             errors.append({'package': package['directory'], 'error': str(error)})
-    result = {'schema': 1, 'kind': 'couch-cargo-notices', 'complete': not errors,
+    result = {'schema': 1, 'kind': 'couch-cargo-notices', 'scope': scope, 'complete': not errors,
               'packages': collected, 'errors': errors, 'files': tree_hashes(output / 'cargo-notices')}
     report(output / 'cargo-notices.json', result)
     if errors:
@@ -488,8 +514,12 @@ def alpine_sources(closure_dir, metadata_file, aports, cache, output, offline=Fa
     return result
 
 
-def external_sources(directory, receipt_file, output):
+def external_sources(directory, receipt_file, output, scope='full'):
     """Import audited kernel/BusyBox inputs; receipts must name actual source bytes."""
+    if scope not in SCOPES:
+        raise ValueError('Unknown corresponding-source scope')
+    if scope == 'installer':
+        return INSTALLER_SOURCE.external_rust_sources(directory, receipt_file, output)
     receipt = json.loads(receipt_file.read_text())
     name = receipt.get('component')
     if receipt.get('schema') != 1 or receipt.get('kind') != 'couch-external-source' or name not in ('kernel', 'busybox', 'rust-stdlib', 'bluez'):
@@ -513,17 +543,26 @@ def external_sources(directory, receipt_file, output):
     return result
 
 
-def assemble(output, archive_path):
+def assemble(output, archive_path, scope='full'):
+    if scope not in SCOPES:
+        raise ValueError('Unknown corresponding-source scope')
+    if scope == 'installer':
+        return INSTALLER_SOURCE.assemble(output, archive_path)
     included, components = {}, {}
-    for name, directory in [('project', 'couch'), ('cargo', 'cargo-vendor'), ('cargo-notices', 'cargo-notices'), ('alpine', 'alpine'),
-                            ('kernel', 'external/kernel'), ('busybox', 'external/busybox'), ('rust-stdlib', 'external/rust-stdlib'),
-                            ('bluez', 'external/bluez')]:
+    selected = [('project', 'couch'), ('cargo', 'cargo-vendor'),
+                ('cargo-notices', 'cargo-notices'), ('alpine', 'alpine'),
+                ('kernel', 'external/kernel'), ('busybox', 'external/busybox'),
+                ('rust-stdlib', 'external/rust-stdlib'), ('bluez', 'external/bluez')]
+    for name, directory in selected:
         receipt = output / (name + '.json')
         if not receipt.is_file():
             raise ValueError('Missing source component: ' + name)
         value = json.loads(receipt.read_text())
         if value.get('complete') is not True or value.get('errors'):
             raise ValueError('Incomplete source component: ' + name)
+        component_scope = value.get('scope', 'full')
+        if component_scope != scope:
+            raise ValueError(f'Source component scope differs: {name}')
         if tree_hashes(output / directory) != value['files']:
             raise ValueError('Source files changed after collection: ' + name)
         components[name] = value
@@ -544,7 +583,8 @@ def assemble(output, archive_path):
                'Declared license expressions below are metadata, not a replacement for those texts.', '', '## Rust dependencies', '']
     for p in components['cargo']['packages']:
         notices.append(f"- {p['name']} {p['version']}: {p.get('license') or 'see license-file'}; source cargo-vendor/{p['directory']}; notices: {', '.join(p['notice_files']) or 'see source headers and package metadata'}")
-    notices.extend(['', 'Additional upstream notices are retained under cargo-notices/ at recorded publication commits. Explicit reviewed supplements contain standard license terms and unchanged published metadata, not invented upstream attribution; see cargo-notices.json for each provenance and explanation.', '', '## Alpine runtime packages', ''])
+    notices.extend(['', 'Additional upstream notices are retained under cargo-notices/ at recorded publication commits. Explicit reviewed supplements contain standard license terms and unchanged published metadata, not invented upstream attribution; see cargo-notices.json for each provenance and explanation.'])
+    notices.extend(['', '## Alpine runtime packages', ''])
     for p in components['alpine']['packages']:
         notices.append(f"- {p['pkgname']} {p['pkgver']}: {p['license']}; origin {p['origin']} at {p['commit']} (alpine/{p['origin']}-{p['commit']}/).")
     notices.extend(['', '## Patched BlueZ', '',
@@ -555,7 +595,8 @@ def assemble(output, archive_path):
                     'This source archive contains no Android/vendor payload, calibration, user configuration or binary image. Vendor extraction remains an owner-local step.', ''])
     write(output / 'NOTICES.md', ('\n'.join(notices)).encode())
     included['NOTICES.md'] = sha(output / 'NOTICES.md')
-    manifest = {'schema': 1, 'kind': 'couch-corresponding-source-archive', 'complete': True,
+    manifest = {'schema': 1, 'kind': 'couch-corresponding-source-archive',
+                'collection_scope': scope, 'complete': True,
                 'project_commit': components['project']['commit'], 'files': included,
                 'scope': 'Couch/runtime/installer, locked Cargo dependencies, Alpine closure, compiled normal kernel, BusyBox, Rust standard library, patched BlueZ bluetoothd; excludes owner-local Android vendor inputs and stock recovery kernel'}
     report(output / 'SOURCE-MANIFEST.json', manifest)
@@ -579,13 +620,18 @@ def assemble(output, archive_path):
         temporary.replace(archive_path)
     finally:
         temporary.unlink(missing_ok=True)
-    result = {'archive': archive_path.name, 'sha256': sha(archive_path), 'project_commit': manifest['project_commit'], 'complete': True}
+    result = {'archive': archive_path.name, 'sha256': sha(archive_path),
+              'project_commit': manifest['project_commit'], 'scope': scope, 'complete': True}
     report(archive_path.with_name(archive_path.name + '.json'), result)
     return result
 
 
 def verify_archive(path):
     """Verify every published tar member without extracting anything."""
+    try:
+        return INSTALLER_SOURCE.verify_archive(path)
+    except ValueError:
+        pass
     hashes, manifest = {}, None
     with gzip.open(path, 'rb') as compressed, tarfile.open(fileobj=compressed, mode='r|') as archive:
         for count, entry in enumerate(archive):
@@ -607,28 +653,34 @@ def verify_archive(path):
                 for block in iter(lambda: stream.read(1024 * 1024), b''):
                     digest.update(block)
                 hashes[name] = digest.hexdigest()
-    if not manifest or manifest.get('kind') != 'couch-corresponding-source-archive' or manifest.get('schema') != 1 or manifest.get('complete') is not True or hashes != manifest.get('files'):
+    kinds = {'couch-corresponding-source-archive': 'full',
+             'couch-installer-corresponding-source-archive': 'installer'}
+    scope = kinds.get(manifest.get('kind')) if manifest else None
+    if (not manifest or scope is None or manifest.get('schema') != 1
+            or manifest.get('complete') is not True or hashes != manifest.get('files')
+            or manifest.get('collection_scope', 'full') != scope):
         raise ValueError('Source archive differs from its complete manifest')
-    return {'archive': Path(path).name, 'sha256': sha(path), 'project_commit': manifest['project_commit'], 'verified_files': len(hashes)}
+    return {'archive': Path(path).name, 'sha256': sha(path), 'project_commit': manifest['project_commit'],
+            'scope': scope, 'verified_files': len(hashes)}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    p = sub.add_parser('project'); p.add_argument('--repo', type=Path, required=True); p.add_argument('--commit', required=True); p.add_argument('--output', type=Path, required=True)
-    p = sub.add_parser('cargo'); p.add_argument('--output', type=Path, required=True); p.add_argument('--offline', action='store_true')
+    p = sub.add_parser('project'); p.add_argument('--repo', type=Path, required=True); p.add_argument('--commit', required=True); p.add_argument('--output', type=Path, required=True); p.add_argument('--scope', choices=SCOPES, default='full')
+    p = sub.add_parser('cargo'); p.add_argument('--output', type=Path, required=True); p.add_argument('--offline', action='store_true'); p.add_argument('--scope', choices=SCOPES, default='full')
     p = sub.add_parser('alpine'); p.add_argument('--closure', type=Path, required=True); p.add_argument('--metadata', type=Path, required=True); p.add_argument('--aports', type=Path, required=True); p.add_argument('--cache', type=Path, required=True); p.add_argument('--output', type=Path, required=True); p.add_argument('--offline', action='store_true'); p.add_argument('--source-overrides', type=Path)
-    p = sub.add_parser('external'); p.add_argument('--directory', type=Path, required=True); p.add_argument('--receipt', type=Path, required=True); p.add_argument('--output', type=Path, required=True)
-    p = sub.add_parser('assemble'); p.add_argument('--output', type=Path, required=True); p.add_argument('--archive', type=Path, required=True)
+    p = sub.add_parser('external'); p.add_argument('--directory', type=Path, required=True); p.add_argument('--receipt', type=Path, required=True); p.add_argument('--output', type=Path, required=True); p.add_argument('--scope', choices=SCOPES, default='full')
+    p = sub.add_parser('assemble'); p.add_argument('--output', type=Path, required=True); p.add_argument('--archive', type=Path, required=True); p.add_argument('--scope', choices=SCOPES, default='full')
     p = sub.add_parser('verify-archive'); p.add_argument('--archive', type=Path, required=True)
-    p = sub.add_parser('cargo-notices'); p.add_argument('--output', type=Path, required=True); p.add_argument('--cache', type=Path, required=True); p.add_argument('--offline', action='store_true'); p.add_argument('--repository-overrides', type=Path); p.add_argument('--supplements', type=Path)
+    p = sub.add_parser('cargo-notices'); p.add_argument('--output', type=Path, required=True); p.add_argument('--cache', type=Path, required=True); p.add_argument('--offline', action='store_true'); p.add_argument('--repository-overrides', type=Path); p.add_argument('--supplements', type=Path); p.add_argument('--scope', choices=SCOPES, default='full')
     args = parser.parse_args()
-    if args.command == 'project': project(args.repo, args.commit, args.output)
-    elif args.command == 'cargo-notices': cargo_notices(args.output, args.cache, args.offline, json.loads(args.repository_overrides.read_text()) if args.repository_overrides else None, args.supplements)
-    elif args.command == 'cargo': cargo_sources(args.output, args.offline)
-    elif args.command == 'external': external_sources(args.directory, args.receipt, args.output)
+    if args.command == 'project': project(args.repo, args.commit, args.output, args.scope)
+    elif args.command == 'cargo-notices': cargo_notices(args.output, args.cache, args.offline, json.loads(args.repository_overrides.read_text()) if args.repository_overrides else None, args.supplements, args.scope)
+    elif args.command == 'cargo': cargo_sources(args.output, args.offline, args.scope)
+    elif args.command == 'external': external_sources(args.directory, args.receipt, args.output, args.scope)
     elif args.command == 'verify-archive': print(json.dumps(verify_archive(args.archive)))
-    elif args.command == 'assemble': print(json.dumps(assemble(args.output, args.archive)))
+    elif args.command == 'assemble': print(json.dumps(assemble(args.output, args.archive, args.scope)))
     elif args.command == 'alpine': alpine_sources(args.closure, args.metadata, args.aports, args.cache, args.output, args.offline, json.loads(args.source_overrides.read_text()) if args.source_overrides else None)
 
 

@@ -4,8 +4,7 @@ on:
     paths:
       - 'tools/installer/host/**'
       - 'tools/installer/mtk_source_inventory.json'
-      - 'tools/release/mtk_dependencies.json'
-      - 'tools/release/host_dependencies.json'
+      - 'tools/installer/pins/**'
       - '.github/workflows/installer-native-dependencies.yml'
   workflow_dispatch:
 permissions:

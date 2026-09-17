@@ -16,7 +16,7 @@ def prepare(staging, tools, geometry, output):
             'Expected clean, noninstallable packaged staging')
     data = (staging / 'rootfs-staging.tar.gz').read_bytes()
     require(checksum(data) == manifest['archive_sha256'], 'Staging archive changed')
-    pin = json.loads((Path(__file__).parent / 'ha100_official_runtime.json').read_text())
+    pin = json.loads((Path(__file__).resolve().parents[1] / 'installer/pins/ha100_official_runtime.json').read_text())
     names = {'opt/couch/' + entry['path'] for entry in pin['files']}
     hashes = {entry['sha256'] for entry in pin['files']}
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:

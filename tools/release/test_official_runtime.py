@@ -5,7 +5,16 @@ import tempfile
 import unittest
 import zipfile
 
-from official_runtime import checked_member, extract, reconstruct, sha, transfer_ranges
+from installer_pins import load as load_installer_pin
+
+_runtime = load_installer_pin('official_runtime')
+checked_member, extract, reconstruct, sha, transfer_ranges = (
+    _runtime.checked_member,
+    _runtime.extract,
+    _runtime.reconstruct,
+    _runtime.sha,
+    _runtime.transfer_ranges,
+)
 
 try:
     import brotli

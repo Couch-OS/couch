@@ -173,7 +173,7 @@ class WifiRamdiskTests(unittest.TestCase):
         self.assertIn('>/dev/null 2>&1', scripts)
 
     def test_vendor_manifest_cannot_self_authorize_changed_payload(self):
-        pin = json.loads((wifi.REPO / 'tools/release/ha100_official_runtime.json').read_text())
+        pin = json.loads((wifi.REPO / 'tools/installer/pins/ha100_official_runtime.json').read_text())
         records = [dict(record) for record in pin['files']]
         records[0]['sha256'] = '0' * 64
         manifest = {'source_images': pin['images'], 'files': records}

@@ -1,9 +1,23 @@
 name: Frozen Windows launcher acceptance
 on:
   pull_request:
-    paths: ['tools/installer/acceptance/**', '.github/workflows/installer-windows-launcher-acceptance.yml']
+    paths:
+      - 'tools/installer/acceptance/**'
+      - 'tools/installer/installer_launchers.py'
+      - 'tools/installer/release_descriptor.py'
+      - 'tools/installer/bootstrap-native.*'
+      - 'tools/installer/binary_receipt.py'
+      - '.github/workflows/installer-windows-launcher-acceptance.yml'
   workflow_dispatch:
     inputs:
+      installer_repository:
+        description: Independently reviewed installer source and binary repository
+        type: choice
+        required: true
+        default: dangerouslaser/couch
+        options:
+          - dangerouslaser/couch
+          - dangerouslaser/couch-installer
       source_commit:
         description: Independently recorded host source SHA (must match run, receipts and generator)
         required: true
@@ -12,6 +26,14 @@ on:
         description: Independently recorded OS payload source SHA (must match config)
         required: true
         default: 271704728c77c13add1763aea7d1f9bd629c63ca
+      installer_version:
+        description: Independently recorded installer version (must match receipts and config)
+        required: true
+        default: v0.1.0
+      os_version:
+        description: Independently recorded OS version (must match config)
+        required: true
+        default: v0.1.0-alpha.20260910.24
       binary_run_id:
         description: Successful frozen Build installer binaries run ID
         required: true
@@ -39,7 +61,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          sparse-checkout: tools/installer/acceptance
+          sparse-checkout: |
+            tools/installer/acceptance
+            tools/installer/installer_launchers.py
+            tools/installer/release_descriptor.py
+            tools/installer/test_release_descriptor.py
+            tools/installer/bootstrap-native.sh.in
+            tools/installer/bootstrap-native.ps1.in
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -48,6 +77,8 @@ jobs:
         run: |
           python -m unittest discover -s tools/installer/acceptance -p 'test_*.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'Fixture tests failed' }
+          python tools/installer/test_release_descriptor.py
+          if ($LASTEXITCODE -ne 0) { throw 'Descriptor tests failed' }
           foreach ($path in Get-ChildItem tools/installer/acceptance/*.ps1) {
             $tokens = $null; $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($path.FullName,[ref]$tokens,[ref]$errors) | Out-Null
@@ -59,9 +90,11 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 10
     env:
-      GH_TOKEN: ${{ github.token }}
       SOURCE_COMMIT: ${{ inputs.source_commit }}
       PAYLOAD_SOURCE_COMMIT: ${{ inputs.payload_source_commit }}
+      INSTALLER_VERSION: ${{ inputs.installer_version }}
+      INSTALLER_REPOSITORY: ${{ inputs.installer_repository }}
+      OS_VERSION: ${{ inputs.os_version }}
       BINARY_RUN_ID: ${{ inputs.binary_run_id }}
       CONFIG_BASE64: ${{ inputs.config_base64 }}
       CONFIG_SHA256: ${{ inputs.config_sha256 }}
@@ -73,23 +106,31 @@ jobs:
           sparse-checkout: tools/installer/acceptance
       - uses: actions/checkout@v6
         with:
+          repository: ${{ inputs.installer_repository }}
+          token: ${{ secrets.INSTALLER_ARTIFACT_TOKEN || github.token }}
+          persist-credentials: false
           ref: ${{ inputs.source_commit }}
           path: frozen
           sparse-checkout: |
-            tools/release/installer_launchers.py
+            tools/installer/installer_launchers.py
+            tools/installer/release_descriptor.py
             tools/installer/bootstrap-native.sh.in
             tools/installer/bootstrap-native.ps1.in
+            tools/release/installer_launchers.py
           sparse-checkout-cone-mode: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.INSTALLER_ARTIFACT_TOKEN || github.token }}
+          repository: ${{ inputs.installer_repository }}
           run-id: ${{ inputs.binary_run_id }}
           pattern: couch-installer-*
           path: downloaded
       - name: Verify source receipts, binaries and final launcher pins
+        env:
+          GH_TOKEN: ${{ secrets.INSTALLER_ARTIFACT_TOKEN || github.token }}
         shell: pwsh
         run: |
           python acceptance/tools/installer/acceptance/prepare.py downloaded frozen candidate

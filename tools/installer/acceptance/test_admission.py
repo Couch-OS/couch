@@ -34,7 +34,8 @@ class AdmissionTests(unittest.TestCase):
             records = {}
             for platform in ('linux-x64', 'macos-x64', 'macos-arm64', 'macos-universal', 'windows-x64'):
                 record = {'schema': 1, 'kind': 'couch-installer-native-build',
-                          'source_commit': prepare.SOURCE, 'platform': platform, 'binaries': {}}
+                          'source_commit': prepare.SOURCE, 'installer_version': prepare.INSTALLER_VERSION,
+                          'platform': platform, 'binaries': {}}
                 for component in ('host', 'tui'):
                     name = f'couch-installer-{component}'
                     artifact = downloads/f'{name}-{platform}'/(name+('.exe' if platform == 'windows-x64' else ''))
@@ -50,27 +51,54 @@ class AdmissionTests(unittest.TestCase):
                 receipt.write_text(json.dumps(record))
                 records[platform] = record
             launcher = b'fixture launcher'
-            metadata = {'source_commit': prepare.PAYLOAD_SOURCE, 'version': prepare.VERSION,
+            metadata = {'schema': 2, 'kind': 'couch-native-installer-release', 'model': 'sanytron-ha100',
+                        'installer': {'version': prepare.INSTALLER_VERSION, 'source_commit': prepare.SOURCE,
+                                      'release_url': 'https://github.com/dangerouslaser/couch/releases/download/installer-' + prepare.INSTALLER_VERSION},
+                        'os': {'version': prepare.OS_VERSION, 'source_commit': prepare.PAYLOAD_SOURCE,
+                               'installation_protocol': 1},
                         'payload': {'url': 'https://example.invalid/payload', 'size': 1, 'sha256': 'a'*64}}
-            def invoke(output, config_source=prepare.PAYLOAD_SOURCE, run_source=prepare.SOURCE,
-                       generator_source=prepare.SOURCE, launcher_hash=None):
-                config = json.dumps(dict(metadata, source_commit=config_source)).encode()
+            def invoke(output, installer_source=prepare.SOURCE, payload_source=prepare.PAYLOAD_SOURCE,
+                       run_source=prepare.SOURCE,
+                       generator_source=prepare.SOURCE, launcher_hash=None, legacy=False,
+                       repository='dangerouslaser/couch', config_repository='dangerouslaser/couch'):
+                if legacy:
+                    config_data = {'schema': 1, 'kind': 'couch-native-installer-release',
+                                   'model': 'sanytron-ha100', 'version': prepare.OS_VERSION,
+                                   'source_commit': payload_source, 'payload': metadata['payload']}
+                else:
+                    config_data = json.loads(json.dumps(metadata))
+                    config_data['installer']['source_commit'] = installer_source
+                    config_data['installer']['release_url'] = f'https://github.com/{config_repository}/releases/download/installer-{prepare.INSTALLER_VERSION}'
+                    config_data['os']['source_commit'] = payload_source
+                config = json.dumps(config_data).encode()
                 env = {'BINARY_RUN_ID': '123', 'CONFIG_BASE64': base64.b64encode(config).decode(),
                        'CONFIG_SHA256': hashlib.sha256(config).hexdigest(),
                        'LAUNCHER_SHA256': launcher_hash or hashlib.sha256(launcher).hexdigest()}
                 def generate(*args, **kwargs):
+                    expected = root/'frozen'/('tools/release/installer_launchers.py' if legacy
+                                              else 'tools/installer/installer_launchers.py')
+                    self.assertEqual(Path(args[0][1]), expected)
                     (output/'launchers').mkdir()
                     (output/'launchers/install.ps1').write_bytes(launcher)
                 run = json.dumps({'head_sha': run_source, 'conclusion': 'success', 'name': 'Build installer binaries'})
-                with patch.dict(os.environ, env), patch.object(prepare.subprocess, 'check_output', side_effect=[run, generator_source+'\n']), patch.object(prepare.subprocess, 'run', side_effect=generate):
+                with patch.dict(os.environ, env), patch.object(prepare, 'INSTALLER_REPOSITORY', repository), patch.object(prepare.subprocess, 'check_output', side_effect=[run, generator_source+'\n']) as external, patch.object(prepare.subprocess, 'run', side_effect=generate):
                     prepare.prepare(downloads, root/'frozen', output)
+                    self.assertEqual(external.call_args_list[0].args[0],
+                                     ['gh', 'api', f'repos/{repository}/actions/runs/123'])
             self.assertNotEqual(prepare.SOURCE, prepare.PAYLOAD_SOURCE)
             invoke(root/'accepted')
+            invoke(root/'separate', repository='dangerouslaser/couch-installer',
+                   config_repository='dangerouslaser/couch-installer')
+            separate = json.loads((root/'separate/admission.json').read_text())
+            self.assertEqual(separate['installer_repository'], 'dangerouslaser/couch-installer')
             admission = json.loads((root/'accepted/admission.json').read_text())
-            self.assertEqual(admission['source_commit'], prepare.SOURCE)
-            self.assertEqual(admission['payload_source_commit'], prepare.PAYLOAD_SOURCE)
+            self.assertEqual(admission['installer'], {'version': prepare.INSTALLER_VERSION, 'source_commit': prepare.SOURCE})
+            self.assertEqual(admission['os'], {'version': prepare.OS_VERSION, 'source_commit': prepare.PAYLOAD_SOURCE, 'installation_protocol': 1})
             for name, kwargs, message in (
-                ('payload', {'config_source': prepare.SOURCE}, 'descriptor source'),
+                ('repository', {'config_repository': 'dangerouslaser/couch-installer'}, 'descriptor installer/OS identity'),
+                ('wrong-input-repository', {'repository': 'dangerouslaser/couch-installer'}, 'descriptor installer/OS identity'),
+                ('payload', {'payload_source': prepare.SOURCE}, 'descriptor installer/OS identity'),
+                ('installer', {'installer_source': prepare.PAYLOAD_SOURCE}, 'descriptor installer/OS identity'),
                 ('host', {'run_source': prepare.PAYLOAD_SOURCE}, 'source/status'),
                 ('generator', {'generator_source': prepare.PAYLOAD_SOURCE}, 'Launcher source'),
                 ('launcher', {'launcher_hash': '0'*64}, 'pinned launcher'),
@@ -79,10 +107,43 @@ class AdmissionTests(unittest.TestCase):
                     invoke(root/name, **kwargs)
             receipt = downloads/'couch-installer-build-linux-x64/build.json'
             record = json.loads(receipt.read_text())
+            record.pop('installer_version')
+            receipt.write_text(json.dumps(record))
+            with self.assertRaisesRegex(ValueError, 'receipt source'):
+                invoke(root/'versionless-schema-two')
+            record['installer_version'] = prepare.INSTALLER_VERSION
             record['source_commit'] = prepare.PAYLOAD_SOURCE
             receipt.write_text(json.dumps(record))
             with self.assertRaisesRegex(ValueError, 'receipt source'):
                 invoke(root/'receipt')
+
+            # Historical schema-1 runs predate independent installer versions.
+            record['source_commit'] = prepare.SOURCE
+            record.pop('installer_version')
+            receipt.write_text(json.dumps(record))
+            for platform in ('macos-x64', 'macos-arm64', 'windows-x64'):
+                path = downloads/f'couch-installer-build-{platform}'/'build.json'
+                old = json.loads(path.read_text()); old.pop('installer_version')
+                path.write_text(json.dumps(old))
+            universal_path = downloads/'couch-installer-build-macos-universal/build.json'
+            universal = json.loads(universal_path.read_text()); universal.pop('installer_version')
+            for name, item in universal['inputs'].items():
+                native = downloads/f'couch-installer-build-{name}'/'build.json'
+                item['receipt'] = prepare.digest(native)
+                item['build'] = json.loads(native.read_text())
+            universal_path.write_text(json.dumps(universal))
+            invoke(root/'legacy', legacy=True)
+            legacy = json.loads((root/'legacy/admission.json').read_text())
+            self.assertEqual(legacy['schema'], 1)
+            self.assertEqual(legacy['source_commit'], prepare.SOURCE)
+            self.assertEqual(legacy['payload_source_commit'], prepare.PAYLOAD_SOURCE)
+
+    def test_unknown_repository_rejected_before_external_access(self):
+        for repository in ('other/couch-installer', 'dangerouslaser/other', '../other', 'https://example.com'):
+            with self.subTest(repository=repository), patch.object(prepare, 'INSTALLER_REPOSITORY', repository), patch.object(prepare.subprocess, 'check_output') as external:
+                with self.assertRaisesRegex(ValueError, 'installer repository'):
+                    prepare.prepare(Path('.'), Path('.'), Path('unused'))
+                external.assert_not_called()
 
     def test_invalid_payload_pin_rejected_before_external_access(self):
         with patch.object(prepare, 'PAYLOAD_SOURCE', '../untrusted'), patch.object(prepare.subprocess, 'check_output') as external:
@@ -108,14 +169,16 @@ class AdmissionTests(unittest.TestCase):
         import subprocess
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); (root/'assets').mkdir(); (root/'launchers').mkdir()
-            for name in ('couch-installer-host-windows-x64.exe', 'couch-installer-tui-windows-x64.exe', 'installer.json'):
+            for name in ('couch-installer-host-windows-x64.exe', 'couch-installer-tui-windows-x64.exe'):
                 (root/'assets'/name).write_bytes(b'fixture')
+            (root/'assets/installer.json').write_text(json.dumps({
+                'schema': 1, 'version': 'v0.1.0-alpha.20260910.24'}))
             script = '''$ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Net.Http
 $client=[Net.Http.HttpClient]::new()
 foreach ($name in @('couch-installer-host-windows-x64.exe','couch-installer-tui-windows-x64.exe','installer.json')) {
  $bytes=$client.GetByteArrayAsync("https://github.com/dangerouslaser/couch/releases/download/v0.1.0-alpha.20260910.24/$name").GetAwaiter().GetResult()
- if ([Text.Encoding]::UTF8.GetString($bytes) -ne 'fixture') { throw 'Fixture bytes differ' }
+ if ($name -ne 'installer.json' -and [Text.Encoding]::UTF8.GetString($bytes) -ne 'fixture') { throw 'Fixture bytes differ' }
 }
 $client.Dispose()
 [Console]::WriteLine('Reinstall existing Couch / Cancel')

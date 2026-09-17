@@ -2,9 +2,9 @@ name: Build installer binaries
 on:
   push:
     branches: [main]
-    paths: ['tools/installer/tui/**', 'tools/installer/host/**', 'tools/installer/binary_receipt.py', 'tools/installer/test_binary_receipt.py', '.github/workflows/installer-binaries.yml']
+    paths: ['tools/installer/**', '.github/workflows/installer-binaries.yml']
   pull_request:
-    paths: ['tools/installer/tui/**', 'tools/installer/host/**', 'tools/installer/binary_receipt.py', 'tools/installer/test_binary_receipt.py', '.github/workflows/installer-binaries.yml']
+    paths: ['tools/installer/**', '.github/workflows/installer-binaries.yml']
   workflow_dispatch:
 concurrency:
   group: installer-binaries-${{ github.event.pull_request.number || github.ref }}
@@ -12,6 +12,34 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  isolated-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Export the standalone installer source closure
+        run: |
+          python3 tools/installer/test_export_source.py
+          python3 tools/installer/export_source.py "$GITHUB_WORKSPACE" "$RUNNER_TEMP/couch-installer-source"
+          test ! -e "$RUNNER_TEMP/couch-installer-source/.git"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ${{ runner.temp }}/couch-installer-source/tools/installer/host
+            ${{ runner.temp }}/couch-installer-source/tools/installer/tui
+            ${{ runner.temp }}/couch-installer-source/tools/installer/linux_stage/probe
+            ${{ runner.temp }}/couch-installer-source/tools/installer/linux_stage/storage
+      - name: Test host, terminal UI and RAM stage from exported source only
+        working-directory: ${{ runner.temp }}/couch-installer-source
+        run: |
+          python3 -m unittest discover -s tools/installer -p 'test_*.py'
+          python3 tools/installer/bump_version.py --check
+          cargo test --locked --manifest-path tools/installer/host/Cargo.toml
+          cargo test --locked --manifest-path tools/installer/tui/Cargo.toml
+          cargo test --locked --manifest-path tools/installer/linux_stage/probe/Cargo.toml --features private-install
+          cargo test --locked --manifest-path tools/installer/linux_stage/storage/Cargo.toml
+
   native:
     strategy:
       fail-fast: false

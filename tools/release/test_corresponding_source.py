@@ -1,15 +1,72 @@
 import gzip
 import hashlib
 import io
+import json
 from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 import corresponding_source as source
 
 
 class Sources(unittest.TestCase):
+    def test_installer_project_exports_exact_scoped_git_objects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); repo = root / 'repo'; repo.mkdir()
+            def git(*args): return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.DEVNULL)
+            git('init'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid')
+            files = {
+                    'COPYING': 'license\n', 'README.md': 'build the installer\n', '.gitignore': 'target\n',
+                    '.github/workflows/installer-binaries.yml': 'name: installer\n',
+                    '.github/workflows/installer-windows-launcher-acceptance.yml': 'name: acceptance\n',
+                    'tools/installer/worker.py': 'print("tracked")\n',
+                    'model/Cargo.toml': '[package]\nname="excluded"\nversion="0.1.0"\n'}
+            for index, manifest in enumerate(source.INSTALLER_MANIFESTS):
+                files[manifest] = f'[package]\nname="installer-{index}"\nversion="0.1.0"\n'
+            for name, data in files.items():
+                path = repo / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(data)
+            git('add', '.'); git('commit', '-m', 'fixture'); commit = git('rev-parse', 'HEAD').decode().strip()
+            (repo / 'tools/installer/worker.py').write_text('dirty bytes must not escape\n')
+            output = root / 'output'; result = source.project(repo, commit, output, 'installer')
+            self.assertEqual(result['scope'], 'installer')
+            self.assertEqual((output / 'couch/tools/installer/worker.py').read_text(), 'print("tracked")\n')
+            self.assertTrue((output / 'couch/.github/workflows/installer-binaries.yml').is_file())
+            self.assertFalse((output / 'couch/model').exists())
+            self.assertEqual(set(result['files']), {
+                'COPYING', 'README.md', '.gitignore',
+                '.github/workflows/installer-binaries.yml',
+                '.github/workflows/installer-windows-launcher-acceptance.yml',
+                *source.INSTALLER_MANIFESTS, 'tools/installer/worker.py'})
+
+    def test_installer_cargo_requires_and_records_all_four_locked_workspaces(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory); root = output / 'couch'
+            (output / 'project.json').write_text(json.dumps({
+                'schema': 1, 'kind': 'couch-project-source', 'scope': 'installer',
+                'complete': True}))
+            for name in source.INSTALLER_MANIFESTS[:-1]:
+                parent = root / Path(name).parent; parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text('[package]\nname="fixture"\nversion="0.1.0"\n')
+                (parent / 'Cargo.lock').write_text('version = 3\n[[package]]\nname="fixture"\nversion="0.1.0"\n')
+            with self.assertRaisesRegex(ValueError, 'storage/Cargo.toml'):
+                source.cargo_sources(output, scope='installer')
+            name = source.INSTALLER_MANIFESTS[-1]
+            parent = root / Path(name).parent; parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text('[package]\nname="fixture"\nversion="0.1.0"\n')
+            with self.assertRaisesRegex(ValueError, 'storage/Cargo.lock'):
+                source.cargo_sources(output, scope='installer')
+            (parent / 'Cargo.lock').write_text('version = 3\n[[package]]\nname="fixture"\nversion="0.1.0"\n')
+            vendor = output / 'cargo-vendor/fixture-1.0'; vendor.mkdir(parents=True)
+            (vendor / 'Cargo.toml').write_text('[package]\nname="fixture"\nversion="1.0"\nlicense="MIT"\n')
+            with patch.object(source.INSTALLER_SOURCE.subprocess, 'check_output', return_value=b'[source.crates-io]\n'), \
+                    patch.object(source.INSTALLER_SOURCE.subprocess, 'run') as metadata:
+                result = source.cargo_sources(output, scope='installer')
+            self.assertEqual(result['scope'], 'installer')
+            self.assertEqual(result['manifests'], list(source.INSTALLER_MANIFESTS))
+            self.assertEqual(metadata.call_count, 4)
+
     def test_source_license_headers_allow_case_and_whitespace_without_accepting_spdx_only(self):
         self.assertTrue(source.complete_mit_grant(b'Permission is hereby granted, free of charge\nThe Software is provided "as is"'))
         self.assertTrue(source.complete_mit_grant(b'PERMISSION IS HEREBY GRANTED, FREE OF CHARGE\nTHE SOFTWARE IS PROVIDED'))
@@ -142,6 +199,26 @@ class Sources(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'source, configuration'):
                 source.external_sources(Path(directory), receipt, Path(directory) / 'output')
 
+    def test_installer_external_scope_accepts_only_audited_rust_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); component = root / 'component'; component.mkdir()
+            names = ('rust-src.tar.xz', 'configuration.json', 'build.sh', 'toolchain.json')
+            for name in names:
+                (component / name).write_text(name)
+            receipt = {'schema': 1, 'kind': 'couch-external-source', 'component': 'rust-stdlib',
+                       'source_archive': names[0], 'configuration': names[1],
+                       'build_recipe': names[2], 'toolchain_receipt': names[3],
+                       'binary_sha256': 'a' * 64, 'rust_release': '1.90.0',
+                       'rust_commit': 'b' * 40,
+                       'files': {name: source.sha(component / name) for name in names}}
+            path = component / 'receipt.json'; path.write_text(json.dumps(receipt))
+            result = source.external_sources(component, path, root / 'output', 'installer')
+            self.assertEqual(result['scope'], 'installer')
+            self.assertTrue((root / 'output/external/rust-stdlib/rust-src.tar.xz').is_file())
+            receipt['component'] = 'kernel'; path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, 'only a Rust'):
+                source.external_sources(component, path, root / 'other', 'installer')
+
     def test_bluez_component_carries_every_recipe_input_and_refuses_drift(self):
         import json
         import collect_external_sources as collect
@@ -218,6 +295,65 @@ class Sources(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'changed after collection'):
                 source.assemble(root, Path(directory) / 'bad.tar.gz')
             self.assertFalse((Path(directory) / 'bad.tar.gz').exists())
+
+    def test_installer_archive_is_distinct_and_cannot_satisfy_full_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'collection'; root.mkdir()
+            config = root / 'cargo-config/vendor.toml'; config.parent.mkdir(); config.write_text('fixture')
+            for name, subdir in [('project', 'couch'), ('cargo', 'cargo-vendor'),
+                                 ('cargo-notices', 'cargo-notices')]:
+                path = root / subdir / 'source.txt'; path.parent.mkdir(parents=True); path.write_text(name)
+                kinds = {'project': 'couch-project-source', 'cargo': 'couch-cargo-sources',
+                         'cargo-notices': 'couch-cargo-notices'}
+                value = {'schema': 1, 'kind': kinds[name], 'scope': 'installer', 'complete': True,
+                         'files': {'source.txt': source.sha(path)}}
+                if name == 'project':
+                    value.update(commit='a' * 40, source_date_epoch=100)
+                    for manifest in source.INSTALLER_MANIFESTS:
+                        manifest_path = root / 'couch' / manifest
+                        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                        manifest_path.write_text('[package]\nname="fixture"\nversion="0.1.0"\n')
+                        value['files'][manifest] = source.sha(manifest_path)
+                        lock = str(Path(manifest).parent / 'Cargo.lock')
+                        lock_path = root / 'couch' / lock; lock_path.write_text('version = 3\n')
+                        value['files'][lock] = source.sha(lock_path)
+                if name == 'cargo':
+                    value.update(packages=[], manifests=list(source.INSTALLER_MANIFESTS),
+                                 locks=[str(Path(item).parent / 'Cargo.lock')
+                                        for item in source.INSTALLER_MANIFESTS],
+                                 config_sha256=source.sha(config))
+                if name == 'cargo-notices': value.update(packages=[], errors=[])
+                (root / (name + '.json')).write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, 'rust-stdlib'):
+                source.assemble(root, Path(directory) / 'missing-rust.tar.gz', 'installer')
+            rust_directory = root / 'external/rust-stdlib'; rust_directory.mkdir(parents=True)
+            rust_files = {}
+            for filename in ('rust-src.tar.xz', 'configuration.json', 'build.sh', 'toolchain.json'):
+                path = rust_directory / filename; path.write_text(filename)
+                rust_files[filename] = source.sha(path)
+            (root / 'rust-stdlib.json').write_text(json.dumps({
+                'schema': 1, 'kind': 'couch-external-source', 'scope': 'installer',
+                'component': 'rust-stdlib', 'complete': True,
+                'source_archive': 'rust-src.tar.xz', 'configuration': 'configuration.json',
+                'build_recipe': 'build.sh', 'toolchain_receipt': 'toolchain.json',
+                'binary_sha256': 'b' * 64, 'rust_release': '1.90.0',
+                'rust_commit': 'c' * 40, 'files': rust_files}))
+            archive = Path(directory) / 'installer-source.tar.gz'
+            result = source.assemble(root, archive, 'installer')
+            self.assertEqual(result['scope'], 'installer')
+            verified = source.verify_archive(archive)
+            self.assertEqual(verified['scope'], 'installer')
+            with tarfile.open(archive) as packaged:
+                manifest = json.load(packaged.extractfile('couch-installer-source/SOURCE-MANIFEST.json'))
+                self.assertEqual(manifest['kind'], 'couch-installer-corresponding-source-archive')
+                self.assertEqual(manifest['scope'], 'installer')
+                self.assertFalse(manifest['os_source_covered'])
+                self.assertTrue(manifest['rust_source_component_included'])
+                self.assertFalse(manifest['native_platform_toolchains_verified'])
+                self.assertNotIn('alpine.json', manifest['files'])
+            with self.assertRaisesRegex(ValueError, 'scope differs'):
+                source.assemble(root, Path(directory) / 'false-full.tar.gz', 'full')
+            self.assertFalse((Path(directory) / 'false-full.tar.gz').exists())
 
     def test_project_exports_exact_git_objects_not_dirty_files(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -86,7 +86,7 @@ impl VendorTransfer {
 }
 pub fn prepare(prepared: &Path) -> Result<VendorTransfer> {
     let mut inventory: Inventory =
-        serde_json::from_str(include_str!("../../../release/ha100_official_runtime.json"))?;
+        serde_json::from_str(include_str!("../../pins/ha100_official_runtime.json"))?;
     inventory.files.sort_by(|a, b| a.path.cmp(&b.path));
     ensure!(
         inventory.files.len() == 33

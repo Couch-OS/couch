@@ -56,7 +56,7 @@ userdata and any network/vendor personalization for a restore.
 
 ## Firmware pin and the vendor OTA
 
-The restore never redistributes firmware. `tools/release/ha100_firmware_restore.json`
+The restore never redistributes firmware. `tools/installer/pins/ha100_firmware_restore.json`
 pins the vendor Android OTA (Google Drive file id and CDN URL), its archive hash
 and size, the `boot`/`odmdtbo` member hashes, and the `make_f2fs`/`fsck.f2fs`
 hashes. The installer always fetches the OTA **from the vendor source at install

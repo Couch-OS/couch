@@ -20,7 +20,7 @@ class PublicInstallerTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.fixture_root = self.root / 'source'
         for directory in ('userdata', 'ramdisk', 'boot', 'logo', 'source/kernel',
-                          'source/tools/release', 'source/assets/boot'):
+                          'source/tools/installer/pins', 'source/assets/boot'):
             (self.root / directory).mkdir(parents=True)
         (self.fixture_root / 'assets/boot/couch.png').write_bytes(b'canonical PNG fixture')
         payloads = {name: ('public fixture ' + name).encode() for name in package.FILES}
@@ -32,7 +32,7 @@ class PublicInstallerTests(unittest.TestCase):
             (self.root / directory / name).write_bytes(data)
         self.save(self.fixture_root / 'kernel/release-pin.json',
                   {'source_commit': 'b'*40, 'zimage_sha256': self.files['zImage']['sha256']})
-        self.save(self.fixture_root / 'tools/release/ha100_official_runtime.json', {'sha256': 'c'*64})
+        self.save(self.fixture_root / 'tools/installer/pins/ha100_official_runtime.json', {'sha256': 'c'*64})
         self.receipts = {
             'userdata': dict(schema=1, kind='couch-owner-neutral-userdata', installable=False,
                              private_only=False, image=dict(path='userdata.ext4', format='raw-ext4', **self.files['userdata.ext4']),

@@ -54,6 +54,32 @@ class ReleaseLiterals(unittest.TestCase):
         self.assertTrue(problems[1].startswith('docs/installer.md:3: ' + OLD + ' is not the published ' + NEW),
                         problems[1])
 
+    def test_independent_installer_tag_replaces_legacy_commands(self):
+        tag = 'installer-v1.2.3-alpha.1'
+        release.bump(tag, self.root)
+        self.assertEqual(self.read('README.md'), README % tag)
+        self.assertEqual(release.check(self.root, scan=False), [])
+        release.bump('installer-v1.2.4', self.root)
+        self.assertEqual(self.read('README.md'), README % 'installer-v1.2.4')
+        self.assertEqual(release.check(self.root, scan=False), [])
+        self.assertEqual(release.bump('installer-v1.2.4', self.root), [])
+
+    def test_repository_cutover_updates_commands_and_retains_the_selected_origin(self):
+        release.bump('installer-v1.2.3', self.root, repository='dangerouslaser/couch-installer')
+        self.assertEqual(release.source_repository(self.root), 'dangerouslaser/couch-installer')
+        self.assertIn('/dangerouslaser/couch-installer/releases/download/installer-v1.2.3/', self.read('README.md'))
+        self.assertEqual(release.check(self.root, scan=False), [])
+        release.bump('installer-v1.2.4', self.root)
+        self.assertIn('/dangerouslaser/couch-installer/releases/download/installer-v1.2.4/', self.read('README.md'))
+        self.write('README.md', self.read('README.md').replace('/couch-installer/', '/couch/'))
+        self.assertTrue(any('repository differs' in problem for problem in release.check(self.root, scan=False)))
+
+    def test_bad_repository_or_legacy_tag_in_new_repository_does_not_write(self):
+        for tag, repository in ((NEW, 'dangerouslaser/couch-installer'), ('installer-v1.0.0', 'someone/unreviewed')):
+            with self.assertRaises(ValueError):
+                release.bump(tag, self.root, repository=repository)
+            self.assertEqual(self.read(release.SOURCE), OLD + '\n')
+
     def test_a_new_tracked_file_carrying_the_tag_is_reported(self):
         self.assertEqual(release.strays(self.root, OLD), [])  # No work tree, no file list.
         try:

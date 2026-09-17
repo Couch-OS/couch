@@ -6,7 +6,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 import zipfile
 
-from host_dependencies import download, prepare, smoke
+from installer_pins import load as load_installer_pin
+
+dependencies = load_installer_pin('host_dependencies')
+download, prepare, smoke = dependencies.download, dependencies.prepare, dependencies.smoke
 
 
 class DependenciesTest(unittest.TestCase):
@@ -92,8 +95,8 @@ class DependenciesTest(unittest.TestCase):
         response.read1.return_value = b'x'
         opener = MagicMock()
         opener.open.return_value = response
-        with patch('host_dependencies.urllib.request.build_opener', return_value=opener), \
-                patch('host_dependencies.time.monotonic', side_effect=[0, 1, 181]):
+        with patch.object(dependencies.urllib.request, 'build_opener', return_value=opener), \
+                patch.object(dependencies.time, 'monotonic', side_effect=[0, 1, 181]):
             with self.assertRaisesRegex(ValueError, 'deadline exceeded'):
                 download({'url': 'https://dl.google.com/android/repository/fixture', 'size': 100},
                          self.root / 'download')

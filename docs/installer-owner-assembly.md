@@ -26,7 +26,7 @@ against the release manifest before calling `host::assembly` and persist outputs
 through its private session journal; assembly performs no device writes itself.
 
 `assembly::owner_ramdisk` verifies all 33 extracted owner files, then inserts the
-19-file WMT subset pinned in `tools/release/ha100_ram_runtime.json`. The release
+19-file WMT subset pinned in `tools/installer/pins/ha100_ram_runtime.json`. The release
 builder checks this subset against its ELF dependency audit. Inserting all 33
 files would exceed the 16 MiB boot partition: modem firmware and unused libraries
 belong only in userdata. CPIO decoding has bounded size/entry counts, rejects

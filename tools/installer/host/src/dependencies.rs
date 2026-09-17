@@ -15,8 +15,8 @@ use std::{
     time::Duration,
 };
 
-const MTK_PINS: &[u8] = include_bytes!("../../../release/mtk_dependencies.json");
-const ADB_PINS: &[u8] = include_bytes!("../../../release/host_dependencies.json");
+const MTK_PINS: &[u8] = include_bytes!("../../pins/mtk_dependencies.json");
+const ADB_PINS: &[u8] = include_bytes!("../../pins/host_dependencies.json");
 const SOURCE_INVENTORY: &[u8] = include_bytes!("../../mtk_source_inventory.json");
 const MAX_FILE: u64 = 256 * 1024 * 1024;
 const MAX_TOTAL: u64 = 2 * 1024 * 1024 * 1024;

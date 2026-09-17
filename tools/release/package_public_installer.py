@@ -149,7 +149,7 @@ def prepare(attestation, source_archive, userdata, ramdisk, boot, logo, output, 
                     'Private or unsupported builder receipt')
             receipts[kind] = receipt
         u, r, b, l = (receipts[kind] for kind in ('userdata', 'ramdisk', 'boot', 'logo'))
-        official = json.loads((ROOT / 'tools/release/ha100_official_runtime.json').read_text())
+        official = json.loads((ROOT / 'tools/installer/pins/ha100_official_runtime.json').read_text())
         kernel = json.loads((ROOT / 'kernel/release-pin.json').read_text())
         require(u['kind'] == 'couch-owner-neutral-userdata' and u.get('installable') is False
                 and u.get('private_only') is False and u['image']['path'] == 'userdata.ext4'

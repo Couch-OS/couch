@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const PIN: &str = include_str!("../../../release/ha100_firmware_restore.json");
+const PIN: &str = include_str!("../../pins/ha100_firmware_restore.json");
 /// Images taken verbatim from the retained Android originals, in no particular order.
 const ORIGINALS: [&str; 4] = ["recovery", "logo", "odmdtbo", "boot"];
 /// Android sparse image magic (little-endian 0xed26ff3a); never a raw restore image.

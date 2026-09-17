@@ -21,9 +21,8 @@ struct Record {
     sha256: String,
 }
 fn inventory() -> io::Result<Inventory> {
-    let mut value: Inventory = serde_json::from_str(include_str!(
-        "../../../../../release/ha100_official_runtime.json"
-    ))?;
+    let mut value: Inventory =
+        serde_json::from_str(include_str!("../../../../pins/ha100_official_runtime.json"))?;
     value.files.sort_by(|a, b| a.path.cmp(&b.path));
     ensure(
         value.files.len() == 33

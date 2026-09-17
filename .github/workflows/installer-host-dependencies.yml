@@ -2,6 +2,7 @@ name: Installer host dependencies
 on:
   pull_request:
     paths:
+      - 'tools/installer/pins/host_dependencies.*'
       - 'tools/release/host_dependencies.*'
       - 'tools/release/test_host_dependencies.py'
       - '.github/workflows/installer-host-dependencies.yml'

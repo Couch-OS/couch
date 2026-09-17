@@ -5,7 +5,9 @@ on:
       - 'tools/release/package_public_installer.py'
       - 'tools/release/test_package_public_installer.py'
       - 'tools/release/prepare_public_*.py'
-      - 'tools/release/ha100_official_runtime.json'
+      - 'tools/installer/pins/ha100_official_runtime.json'
+      - 'tools/installer/image/**'
+      - 'tools/installer/test_neutral_ramdisk.py'
       - 'kernel/release-pin.json'
       - '.github/workflows/public-installer-package.yml'
   workflow_dispatch:
@@ -25,3 +27,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python -m unittest discover -s tools/release -p test_package_public_installer.py
+      - run: python tools/installer/test_neutral_ramdisk.py

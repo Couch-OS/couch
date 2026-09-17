@@ -22,7 +22,10 @@ from pathlib import Path
 import re
 import zipfile
 
-from private_vendor import file_sha, require
+from installer_pins import load as load_installer_pin
+
+_vendor = load_installer_pin('private_vendor')
+file_sha, require = _vendor.file_sha, _vendor.require
 
 PIN = Path(__file__).with_name('ha100_factory_firmware.json')
 _SHA = re.compile(r'[0-9a-f]{64}')

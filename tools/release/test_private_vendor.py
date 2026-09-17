@@ -7,7 +7,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-import private_vendor as vendor
+from installer_pins import load as load_installer_pin
+
+vendor = load_installer_pin('private_vendor')
 from clean_stage import GENERATED, checksum, StageError
 from prepare_private_rootfs import prepare
 from prepare_rootfs import normalize

@@ -16,6 +16,11 @@ TARGETS = {
     "windows-x64": "x86_64-pc-windows-msvc",
 }
 
+VERSION = re.compile(
+    r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$"
+)
+
 
 def command(*args):
     return subprocess.check_output(args, text=True, timeout=60).strip()
@@ -46,7 +51,23 @@ def source_commit():
     return source
 
 
-def native(platform, source, root):
+def validate_installer_version(version):
+    if not isinstance(version, str) or len(version) > 128 or not VERSION.fullmatch(version):
+        raise ValueError("invalid installer VERSION")
+    return version
+
+
+def read_installer_version(root):
+    path = Path(root) / "VERSION"
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 129:
+        raise ValueError("installer VERSION must be a small regular file")
+    version = path.read_text(encoding="utf-8").strip()
+    return validate_installer_version(version)
+
+
+def native(platform, source, root, installer_version=None):
+    installer_version = (read_installer_version(root) if installer_version is None
+                         else validate_installer_version(installer_version))
     target = TARGETS[platform]
     suffix = ".exe" if platform == "windows-x64" else ""
     compiler = Path(command("rustup", "which", "rustc"))
@@ -57,6 +78,7 @@ def native(platform, source, root):
         raise ValueError("unexpected target sysroot inventory")
     return {
         "schema": 1, "kind": "couch-installer-native-build", "source_commit": source,
+        "installer_version": installer_version,
         "platform": platform, "target": target,
         "toolchain": {
             "rustc_verbose": command("rustc", "-vV"),
@@ -73,7 +95,8 @@ def native(platform, source, root):
     }
 
 
-def universal(source, inputs, output):
+def universal(source, inputs, output, installer_version):
+    installer_version = validate_installer_version(installer_version)
     receipts = {}
     for platform in ("macos-x64", "macos-arm64"):
         path = inputs / f"couch-installer-build-{platform}" / "build.json"
@@ -82,7 +105,9 @@ def universal(source, inputs, output):
         raw = path.read_bytes()
         receipt = json.loads(raw)
         if (receipt.get("schema") != 1 or receipt.get("kind") != "couch-installer-native-build"
-                or receipt.get("source_commit") != source or receipt.get("platform") != platform
+                or receipt.get("source_commit") != source
+                or receipt.get("installer_version") != installer_version
+                or receipt.get("platform") != platform
                 or receipt.get("target") != TARGETS[platform]
                 or set(receipt.get("binaries", {})) != {"host", "tui"}):
             raise ValueError("native receipt source/platform differs")
@@ -96,6 +121,7 @@ def universal(source, inputs, output):
         }
     return {
         "schema": 1, "kind": "couch-installer-universal-build", "source_commit": source,
+        "installer_version": installer_version,
         "platform": "macos-universal", "architectures": ["x86_64", "arm64"],
         "inputs": receipts,
         "binaries": {component: file_receipt(output / f"couch-installer-{component}")
@@ -112,11 +138,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     source = source_commit()
+    installer_version = read_installer_version(args.root)
     if args.platform == "macos-universal":
-        receipt = universal(source, args.inputs, args.universal_output)
+        receipt = universal(source, args.inputs, args.universal_output, installer_version)
         receipt["xcode_version"] = command("xcodebuild", "-version")
     else:
-        receipt = native(args.platform, source, args.root)
+        receipt = native(args.platform, source, args.root, installer_version)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as file:
         json.dump(receipt, file, indent=2, sort_keys=True)

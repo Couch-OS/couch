@@ -158,11 +158,11 @@ impl Ui {
         self.state.log_path = path.into();
         self.state()
     }
-    /// Name the installer release on screen. Display text only; bounded so a
+    /// Name the installer and selected OS releases on screen. Display text only; bounded so a
     /// malformed configuration cannot flood the channel.
     pub fn set_version(&mut self, version: &str) -> Result<()> {
         ensure!(
-            !version.is_empty() && version.len() <= 128,
+            !version.is_empty() && version.len() <= 272,
             "invalid installer version"
         );
         self.state.version = version.into();
@@ -353,6 +353,19 @@ mod tests {
             ),
             output,
         )
+    }
+    #[test]
+    fn version_display_preserves_two_maximum_length_release_identities() {
+        let (mut ui, output) = fixture(b"");
+        let label = format!(
+            "{} · OS {}",
+            "v1.0.0-".to_owned() + &"a".repeat(121),
+            "v2.0.0-".to_owned() + &"b".repeat(121)
+        );
+        ui.set_version(&label).unwrap();
+        let state: serde_json::Value = serde_json::from_slice(&output.0.borrow()).unwrap();
+        assert_eq!(state["version"], label);
+        assert!(ui.set_version(&"x".repeat(273)).is_err());
     }
     #[test]
     fn transfer_rate_tracks_elapsed_bytes_and_resets_between_operations() {

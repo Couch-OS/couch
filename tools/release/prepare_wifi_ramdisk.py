@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 import re
 import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 
@@ -16,8 +17,13 @@ from clean_stage import require
 from kernel_provenance import PIN, verify
 from prepare_boot_candidates import kernel
 from prepare_probe_ramdisk import LIMIT, REPO
-from private_vendor import verify_bundle
-from runtime_inventory import arm_static, regular, cpio_files
+from installer_pins import load as load_installer_pin
+sys.path.insert(0, str(REPO / 'tools/installer/image'))
+import neutral_ramdisk
+cpio_files = neutral_ramdisk.cpio_files
+
+verify_bundle = load_installer_pin('private_vendor').verify_bundle
+from runtime_inventory import regular
 from audit_vendor_elf import audit
 from pack import repack
 
@@ -27,80 +33,13 @@ FIRMWARE = {'WMT_SOC.cfg', 'WIFI_RAM_CODE_6580', 'ROMv2_lm_patch_1_0_hdr.bin',
 PACKAGES = ('wpa_supplicant', 'musl', 'libcrypto3', 'libssl3', 'dbus-libs', 'libnl3', 'pcsc-lite-libs')
 
 
-def sha(data):
-    return hashlib.sha256(data).hexdigest()
-
-
-def alpine_files(cache, filesystem=False):
-    provenance = regular(cache / 'closure.json')
-    manifest = json.loads(provenance)
-    require(manifest['architecture'] == 'armv7' and manifest['kind'] == 'couch-offline-package-closure',
-            'Expected inventoried ARMv7 APK closure')
-    files, links = {}, {}
-    packages = ('e2fsprogs', 'e2fsprogs-extra', 'e2fsprogs-libs', 'libblkid', 'libcom_err',
-                'libeconf', 'libgcc', 'libuuid', 'musl') if filesystem else PACKAGES
-    binaries = {'sbin/e2fsck', 'usr/sbin/resize2fs', 'usr/sbin/debugfs'} if filesystem else {'sbin/wpa_supplicant'}
-    for package in packages:
-        candidates = [name for name in manifest['files'] if re.fullmatch(
-            'packages/' + re.escape(package) + r'-[0-9][^/]*\.apk', name)]
-        require(len(candidates) == 1, f'Ambiguous/missing package: {package}')
-        name = candidates[0]
-        data = regular(cache / name)
-        require(sha(data) == manifest['files'][name], 'APK cache hash mismatch')
-        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
-            for item in archive:
-                name = item.name.removeprefix('./')
-                if not (name in binaries or
-                        re.fullmatch(r'(usr/)?lib/[^/]+\.so(?:\.[0-9]+)*', name)):
-                    continue
-                require(name not in files and name not in links, 'Duplicate runtime path')
-                if item.isfile():
-                    require(0 < item.size <= 16 * 1024**2, 'Unexpected library size')
-                    files[name] = archive.extractfile(item).read()
-                elif item.issym():
-                    target = item.linkname
-                    require('/' not in target and target not in ('.', '..'), 'Unsafe APK library link')
-                    links[name] = (PurePosixPath(name).parent / target).as_posix()
-                else:
-                    raise ValueError('Unsupported APK runtime member')
-    # Materialize library aliases inside cpio; never follow host filesystem links.
-    for name, target in links.items():
-        seen = {name}
-        while target in links:
-            require(target not in seen, 'Cyclic APK library link')
-            seen.add(target)
-            target = links[target]
-        require(target in files, 'Missing APK library target')
-        files[name] = files[target]
-    require(binaries <= files.keys() and 'lib/ld-musl-armhf.so.1' in files,
-            'Missing supplicant or ARM musl loader')
-    # Verify DT_NEEDED for every selected ELF without executing target code.
-    dependencies = {}
-    with tempfile.TemporaryDirectory(prefix='couch-wifi-elf-') as temporary:
-        path = Path(temporary) / 'elf'
-        for name, data in files.items():
-            require(data[:6] == b'\x7fELF\x01\x01' and data[18:20] == b'\x28\0', 'Non-ARM runtime ELF')
-            path.write_bytes(data)
-            result = subprocess.run(['readelf', '-d', str(path)], capture_output=True, text=True,
-                                    check=True, timeout=20)
-            needed = set(re.findall(r'Shared library: \[([^]]+)\]', result.stdout))
-            dependencies[name] = needed
-    selected, pending = set(), [*binaries, 'lib/ld-musl-armhf.so.1']
-    while pending:
-        name = pending.pop()
-        if name in selected:
-            continue
-        selected.add(name)
-        for needed in dependencies[name]:
-            matches = [path for path in files if PurePosixPath(path).name == needed]
-            require(len(matches) == 1, f'Missing/ambiguous Alpine dependency: {needed}')
-            pending.extend(matches)
-    return {name: files[name] for name in selected}, sha(provenance)
+sha = neutral_ramdisk.sha
+alpine_files = neutral_ramdisk.alpine_files
 
 
 def vendor_files(bundle):
     manifest = verify_bundle(bundle)
-    pin = json.loads(regular(REPO / 'tools/release/ha100_official_runtime.json'))
+    pin = json.loads(regular(REPO / 'tools/installer/pins/ha100_official_runtime.json'))
     require(manifest.get('source_images') == pin['images'], 'Vendor source is not pinned official runtime')
     pinned_files = {record['path']: (record['size'], record['sha256']) for record in pin['files']}
     observed_files = {record['path']: (record['size'], record['sha256']) for record in manifest['files']}
@@ -115,87 +54,15 @@ def vendor_files(bundle):
                 (path.startswith('vendor/firmware/') and PurePosixPath(path).name in FIRMWARE) or path.endswith('property_contexts') or
                 path == 'system/etc/ld.config.txt'):
             selected[path] = regular(bundle / path)
-    require(set(selected) == set(json.loads(regular(REPO / "tools/release/ha100_ram_runtime.json"))),
+    require(set(selected) == set(json.loads(regular(REPO / "tools/installer/pins/ha100_ram_runtime.json"))),
             "Audited WMT closure differs from native compiled RAM subset")
     require('vendor/bin/wmt_loader' in selected and 'vendor/bin/wmt_launcher' in selected,
             'Missing WMT executables')
     return selected
 
 
-def ramdisk(files, include_recovery=True):
-    records = {}
-    def add(name, mode, data=b'', major=0, minor=0):
-        require(name not in records, 'Duplicate cpio entry')
-        records[name] = (mode, data, major, minor)
-    directories = {'.', 'dev', 'proc', 'sys', 'tmp', 'run', 'etc', 'system/etc', 'dev/__properties__'}
-    for name in files:
-        directories.update(str(parent) for parent in PurePosixPath(name).parents)
-    for name in sorted(directories):
-        add(name, 0o040755)
-    shared = {}
-    for name, data in sorted(files.items()):
-        digest = sha(data)
-        if data.startswith(b'\x7fELF') and digest in shared:
-            add(name, 0o120777, ('/' + shared[digest]).encode())
-        else:
-            add(name, 0o100755, data)
-            shared[digest] = name
-    for name, target in (('system/vendor', '/vendor'), ('system/etc/firmware', '/vendor/firmware'),
-                         ('etc/firmware', '/vendor/firmware')):
-        add(name, 0o120777, target.encode())
-    for name, major, minor in (('null', 1, 3), ('zero', 1, 5), ('urandom', 1, 9), ('console', 5, 1)):
-        add('dev/' + name, 0o020600, major=major, minor=minor)
-    if include_recovery:
-        add('dev/mmcblk0p9', 0o060400, major=179, minor=9)
-    add('TRAILER!!!', 0)
-    output = bytearray()
-    for inode, (name, (mode, content, major, minor)) in enumerate(records.items(), 1):
-        encoded = name.encode() + b'\0'
-        fields = (inode, mode, 0, 0, 1, 0, len(content), 0, 0, major, minor, len(encoded), 0)
-        output.extend(('070701' + ''.join(f'{value:08x}' for value in fields)).encode())
-        output.extend(encoded); output.extend(b'\0' * (-len(output) % 4))
-        output.extend(content); output.extend(b'\0' * (-len(output) % 4))
-    output.extend(b'\0' * (-len(output) % 512))
-    return bytes(output)
-
-
-def neutral_files(busybox, service, apk_cache, installer=False, debug=False, display=None, wmt_properties=None, filesystem_cache=None):
-    files, apk_hash = alpine_files(apk_cache)
-    fs_hash = None
-    if filesystem_cache is not None:
-        require(installer and not debug, 'Filesystem tools are installer-only')
-        fs_files, fs_hash = alpine_files(filesystem_cache, filesystem=True)
-        for name, data in fs_files.items():
-            require(name not in files or files[name] == data, 'Conflicting RAM runtime libraries')
-            files[name] = data
-    if installer:
-        require(filesystem_cache is not None, 'Installer requires offline filesystem expansion tools')
-    require(not (installer and debug), 'Installer and debug stages must be separate')
-    bb, binary = regular(busybox), regular(service)
-    arm_static(bb); arm_static(binary)
-    capability = (b'COUCH_PRIVATE_WIFI_INSTALLER_V1' if installer else
-                  b'COUCH_PRIVATE_WIFI_DEBUG_STAGE_V1' if debug else
-                  b'COUCH_READONLY_RAM_PROBE_V1')
-    require(capability in binary, 'Service binary capabilities differ from requested stage mode')
-    files.update({'bin/busybox': bb, 'bin/couch-installer-probe': binary})
-    if wmt_properties is not None:
-        bridge = regular(wmt_properties)
-        require(bridge[:6] == b'\x7fELF\x01\x01' and bridge[18:20] == b'\x28\0',
-                'Expected ARM WMT property bridge')
-        files['lib/couch-wmt-properties.so'] = bridge
-    if installer:
-        files['etc/couch-installer-mode'] = b'private-install\n'
-    if debug:
-        files['etc/couch-wifi-debug-mode'] = b'precredential-only\n'
-    if display is not None:
-        pixels = regular(display)
-        arm_static(pixels)
-        files['bin/couch-installer-display'] = pixels
-    for source, target in (('init', 'init'), ('wifi-init', 'bin/couch-wifi-init'), ('dhcp', 'bin/couch-dhcp')):
-        files[target] = regular(REPO / 'tools/installer/wifi-stage' / source)
-    if debug:
-        files['bin/couch-wifi-debug-supervisor'] = regular(REPO / 'tools/installer/wifi-stage' / 'debug-supervisor')
-    return files, apk_hash, fs_hash
+ramdisk = neutral_ramdisk.ramdisk
+neutral_files = neutral_ramdisk.neutral_files
 
 
 def prepare(template, kernel_manifest, busybox, service, vendor_bundle, apk_cache, output, installer=False, debug=False, display=None, wmt_properties=None, filesystem_cache=None):

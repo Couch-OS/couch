@@ -437,7 +437,7 @@ pub fn run(ui: &mut Ui, config: Option<&Path>, local_payload: Option<&Path>) -> 
     // reported after the menu, where it always was.
     let release = config.map(public_inputs::release).transpose()?;
     if let Some(release) = &release {
-        ui.set_version(&release.version)?;
+        ui.set_version(&format!("{} · OS {}", release.version, release.os.version))?;
     }
     let mode = ui.choose(
         "Install Couch",
@@ -605,7 +605,7 @@ fn install(
     } else {
         Some(vendor_transfer::prepare(&prepared)?)
     };
-    session.transition(Phase::InputsVerified,&json!({"event":"inputs_verified","release":release.version,"payload_sha256":release.payload.sha256,"stage_sha256":stage_hash}))?;
+    session.transition(Phase::InputsVerified,&json!({"event":"inputs_verified","release":release.os.version,"installer_version":release.version,"installer_source_commit":release.source_commit,"os_source_commit":release.os.source_commit,"installation_protocol":release.os.installation_protocol,"payload_sha256":release.payload.sha256,"stage_sha256":stage_hash}))?;
     let (saved, serial, expected_cid, identity) = if reinstall {
         let state_root = session
             .path()

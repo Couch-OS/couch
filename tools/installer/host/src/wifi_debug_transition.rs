@@ -285,22 +285,22 @@ pub fn materialize(session: &SessionGuard) -> Result<PathBuf> {
         (
             release.as_path(),
             "prepare_official_inputs.py",
-            include_bytes!("../../../release/prepare_official_inputs.py").as_slice(),
+            include_bytes!("../../pins/prepare_official_inputs.py").as_slice(),
         ),
         (
             release.as_path(),
             "official_runtime.py",
-            include_bytes!("../../../release/official_runtime.py").as_slice(),
+            include_bytes!("../../pins/official_runtime.py").as_slice(),
         ),
         (
             release.as_path(),
             "private_vendor.py",
-            include_bytes!("../../../release/private_vendor.py").as_slice(),
+            include_bytes!("../../pins/private_vendor.py").as_slice(),
         ),
         (
             release.as_path(),
             "ha100_official_runtime.json",
-            include_bytes!("../../../release/ha100_official_runtime.json").as_slice(),
+            include_bytes!("../../pins/ha100_official_runtime.json").as_slice(),
         ),
     ] {
         let mut file = create(&root.join(name))?;

@@ -14,11 +14,14 @@ import json
 from pathlib import Path
 import zipfile
 
-import official_runtime
-from prepare_official_inputs import BOOTSTRAP_MEMBERS
-from private_vendor import file_sha, require
+from installer_pins import load as load_installer_pin
 
-PIN = Path(__file__).with_name('ha100_firmware_restore.json')
+official_runtime = load_installer_pin('official_runtime')
+BOOTSTRAP_MEMBERS = load_installer_pin('prepare_official_inputs').BOOTSTRAP_MEMBERS
+file_sha = load_installer_pin('private_vendor').file_sha
+require = load_installer_pin('private_vendor').require
+
+PIN = Path(__file__).resolve().parents[1] / 'installer/pins/ha100_firmware_restore.json'
 OFFICIAL = official_runtime.PIN
 
 
