@@ -1,7 +1,7 @@
 # Kernel build and provenance
 
 The HA100 kernel source is maintained in the separate public
-[`dangerouslaser/couch-kernel`](https://github.com/dangerouslaser/couch-kernel)
+[`Couch-OS/couch-kernel`](https://github.com/Couch-OS/couch-kernel)
 repository. The release source, configuration, compiler, container, and zImage
 hashes are the source of truth in [`release-pin.json`](release-pin.json).
 `docs/kernel-release-candidate.md` records the acceptance scope for that pin.
