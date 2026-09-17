@@ -1,11 +1,12 @@
 # Known-device stock identity recapture
 
-`tools/installer/capture_stock_identity.py` captures a fresh private identity
-baseline after stock Android has run. Android can legitimately update `nvdata`;
-comparing every calibration byte to the older Couch snapshot would then reject
-the same physical device. This command preserves the prior baseline and verifies
-CID, storage capacity and the complete reviewed partition layout before reading
-fresh identity bytes. It never writes flash. DA exit is an explicit option.
+`couch-installer/tools/installer/capture_stock_identity.py` captures a fresh
+private identity baseline after stock Android has run. Android can legitimately
+update `nvdata`; comparing every calibration byte to the older Couch snapshot
+would then reject the same physical device. This command preserves the prior
+baseline and verifies CID, storage capacity and the complete reviewed partition
+layout before reading fresh identity bytes. It never writes flash. DA exit is an
+explicit option.
 
 This is **not public enrollment of an unknown remote**. It requires a retained,
 trusted complete baseline for this unit, its explicitly confirmed CID SHA-256,
@@ -17,7 +18,7 @@ files need not remain present. Matching GPT/MT6580 alone does not identify HA100
 Example (all paths and hashes must be supplied from private reviewed artifacts):
 
 ```sh
-python3 tools/installer/capture_stock_identity.py \
+python3 couch-installer/tools/installer/capture_stock_identity.py \
   --baseline /private/retained-baseline.json \
   --confirm-cid-sha256 "$TRUSTED_CID_SHA256" \
   --stock-manifest /private/stock/manifest.json \
@@ -55,9 +56,10 @@ for subsequent private installation, retaining both old and fresh originals.
 ## Finalize original recovery in the same session
 
 After the operator has physically verified stock Android startup,
-`tools/installer/finalize_stock_recovery.py` combines fresh identity capture with
-restoration of the original Android recovery. It requires all capture source,
-profile and target pins plus `--allow-private-flash --stock-boot-confirmed`,
+`couch-installer/tools/installer/finalize_stock_recovery.py` combines fresh
+identity capture with restoration of the original Android recovery. It requires
+all capture source, profile and target pins plus
+`--allow-private-flash --stock-boot-confirmed`,
 `--recovery /private/original-recovery.img` and `--recovery-sha256 HASH`.
 Use `--check-only` first. `--boot-after-capture` remains explicit and only runs
 after every verification succeeds. No resume or retry mode exists.
@@ -78,11 +80,12 @@ never treat a partial journal as permission to retry automatically.
 
 ## Bootstrap stock Android into the private Linux RAM stage
 
-`tools/installer/bootstrap_linux_stage.py` implements a separate development-only
-bootstrap exception: back up the current stock boot and recovery plus all five
-identity partitions, then write **only boot** with the reviewed RAM-stage image.
-It does not back up or modify userdata and does not alter public installation
-policy. Original recovery remains available as the retained recovery path.
+`couch-installer/tools/installer/bootstrap_linux_stage.py` implements a separate
+development-only bootstrap exception: back up the current stock boot and
+recovery plus all five identity partitions, then write **only boot** with the
+reviewed RAM-stage image. It does not back up or modify userdata and does not
+alter public installation policy. Original recovery remains available as the
+retained recovery path.
 
 Inputs include the trusted old baseline/CID, pinned stock manifest, pinned raw
 original recovery file, and loader/board-data inputs from finalization. Explicit

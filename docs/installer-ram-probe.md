@@ -7,13 +7,14 @@ artifacts on a Linux build host and keep boot templates and outputs outside Git.
 
 ## Isolated runtime
 
-`tools/installer/probe/init` mounts only proc, sysfs, a RAM log directory and
-FunctionFS. It does not run normal Couch init, stage2, boot-health logic, WiFi,
-partition mounts or persistent markers. The cpio contains exactly three programs:
-init, static ARM BusyBox and the actual static ARM probe service. Its sole block
-node is `/dev/mmcblk0p9`, mode `0400`, for the service's read-only recovery hash.
-This node permission is not a security sandbox: the root service must retain its
-reviewed fixed-operation protocol and open storage read-only.
+`couch-installer/tools/installer/probe/init` mounts only proc, sysfs, a RAM log
+directory and FunctionFS. It does not run normal Couch init, stage2, boot-health
+logic, WiFi, partition mounts or persistent markers. The cpio contains exactly
+three programs: init, static ARM BusyBox and the actual static ARM probe
+service. Its sole block node is `/dev/mmcblk0p9`, mode `0400`, for the service's
+read-only recovery hash. This node permission is not a security sandbox: the
+root service must retain its reviewed fixed-operation protocol and open storage
+read-only.
 
 Legacy `android_usb` is configured for `ffs,acm`, with FunctionFS alias `couch`.
 The service runs as `/bin/couch-installer-probe /dev/ffs-couch` and signals
@@ -58,7 +59,7 @@ Host regression checks:
 
 ```sh
 python3 -m unittest discover -s tools/release -p 'test_prepare_probe_ramdisk.py'
-sh -n tools/installer/probe/init
+sh -n couch-installer/tools/installer/probe/init
 ```
 
 Measure RAM bulk transfer separately from device-local recovery hashing. Neither
@@ -66,15 +67,16 @@ test validates a future write protocol, image installation or power-loss recover
 
 ## Recovery-shell RAM upload
 
-`tools/installer/serial_ram_upload.py` transfers a regular file of at most 64 MiB
-to a generated `/tmp/couch-upload-…` path in an already running recovery serial
-shell. This is separate from the probe’s output-only ACM diagnostics. The helper
-requires `/tmp` to be tmpfs, uses exclusive/no-clobber creation, handles short
-serial writes without duplicating data, and checks the received length and SHA-256.
-It does not execute the uploaded file, boot an image or write a partition.
+`couch-installer/tools/installer/serial_ram_upload.py` transfers a regular file
+of at most 64 MiB to a generated `/tmp/couch-upload-…` path in an already
+running recovery serial shell. This is separate from the probe’s output-only ACM
+diagnostics. The helper requires `/tmp` to be tmpfs, uses exclusive/no-clobber
+creation, handles short serial writes without duplicating data, and checks the
+received length and SHA-256. It does not execute the uploaded file, boot an
+image or write a partition.
 
 ```sh
-python3 tools/installer/serial_ram_upload.py \
+python3 couch-installer/tools/installer/serial_ram_upload.py \
   --port /dev/ttyACM0 --source /private/probe-payload --timeout 120
 ```
 

@@ -6,7 +6,9 @@ host and immutable launcher generator. It neither discovers owner files nor
 publishes assets. Only these seven flat regular archive members are permitted:
 
 - `userdata.ext4`: compact vendor-free filesystem from `prepare_public_userdata.py`.
-- `installer.cpio.gz`: neutral installer RAM stage from `prepare_public_ramdisk.py`.
+- `installer.cpio.gz`: neutral installer RAM stage from
+  `prepare_public_ramdisk.py`, which needs the `couch-installer` submodule
+  initialized.
 - `boot.cpio.gz`, `recovery.cpio.gz`, `zImage`: neutral boot inputs from `prepare_public_boot.py`.
 - `logo.bgra`: Couch's own frame from `prepare_public_logo.py`.
 - `manifest.json`: version, exact Couch source commit and six file size/SHA-256 pins.
@@ -54,9 +56,12 @@ workflow](integration-release-rollout.md#bind-the-fresh-rootfs-before-image-asse
 `--source-archive` is the exact Couch Git archive used as build input:
 `git archive --format=tar.gz COMMIT`. Its fixed-size global PAX commit comment must
 match `source_commit`; the packager validates the 512-byte header and bounds the
-metadata length before reading it. This is distinct from the complete
-corresponding-source bundle, which also contains Cargo, Alpine, kernel, BusyBox
-and compiler sources and is separately assembled and verified before publication.
+metadata length before reading it. `git archive` excludes submodule content:
+`couch-installer/` is an empty directory in the archive. The commit's gitlink,
+shown by `git ls-tree COMMIT couch-installer`, identifies the exact installer
+revision. This is distinct from the complete corresponding-source bundle, which
+also contains Cargo, Alpine, kernel, BusyBox and compiler sources and is
+separately assembled and verified before publication.
 
 The component kernel source commit remains separate from the Couch source commit.
 The boot receipt must match the reviewed kernel source and zImage pin. The logo
@@ -91,11 +96,12 @@ couch-installer-host verify-public NEW_PUBLIC_ASSETS/installer.json \
 ```
 
 This performs no downloads or device access. Place the actual release host/TUI
-platform binaries alongside `installer.json`, then run `installer_launchers.py`
-to bind their hashes. Source/notices publication and signing remain separate
-release steps. Each desktop artifact needs its actual compiler/standard-library
-source receipt; the old ARM candidate's Rust receipt cannot stand in for every
-new host platform. Owner OTA headers/DTB, vendor firmware/libraries, DA, original
+platform binaries alongside `installer.json`, then run
+`couch-installer/tools/installer/installer_launchers.py` to bind their hashes.
+Source/notices publication and signing remain separate release steps. Each
+desktop artifact needs its actual compiler/standard-library source receipt; the
+old ARM candidate's Rust receipt cannot stand in for every new host platform.
+Owner OTA headers/DTB, vendor firmware/libraries, DA, original
 partitions and calibration never enter this public payload.
 
 Validation: `python3 -m unittest discover -s tools/release -p

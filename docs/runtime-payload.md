@@ -3,7 +3,7 @@
 `tools/release/runtime_inventory.py BASE_SPEC NEW_OUTPUT` audits explicit local build artifacts and emits `payload-inventory.json`. When the clean Couch portion passes, it also emits a ready-to-use `staging-input.json` for [offline package assembly](releases.md#assemble-offline-packages). It never contacts the remote, reads personal configuration, executes vendor extraction, or copies a vendor tree into the image.
 
 ```sh
-tools/build-wmt-properties.sh
+tools/build-wmt-properties.sh   # build/couch-wmt-properties.so from src/wmt-properties.c
 tools/build-release.sh   # runtime bundle: couch-gui, couch-confd, couch-system, couch-sonos, couch-coreelec
                          # boot ramdisk /extra: couch-bt-bridge, couch-bt-hid, couch-bluetoothd
 python3 tools/release/runtime_inventory.py build/alpine-staging-input.json build/runtime-payload
@@ -132,7 +132,8 @@ branch before claiming the entire historical bundle is dependency-complete.
 Static dependency-name checks do not validate dynamic namespaces, symbol
 versions, firmware behavior or physical Wi-Fi startup.
 
-The normal runtime also requires `build/couch-wmt-properties.so`, built with
-`tools/build-wmt-properties.sh`. It uses the same narrow detected-chip property
-bridge as the RAM installer; only the Android WMT launcher receives LD_PRELOAD.
-A missing radio must not be interpreted as missing saved Wi-Fi credentials.
+The normal runtime also requires `build/couch-wmt-properties.so`, built from
+`src/wmt-properties.c` with `tools/build-wmt-properties.sh`. It uses the same
+narrow detected-chip property bridge as the RAM installer; only the Android WMT
+launcher receives LD_PRELOAD. A missing radio must not be interpreted as missing
+saved Wi-Fi credentials.

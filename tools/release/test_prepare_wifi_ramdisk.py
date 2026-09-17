@@ -9,12 +9,13 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
+from installer_pins import INSTALLER
 import prepare_wifi_ramdisk as wifi
 
 
 class WifiRamdiskTests(unittest.TestCase):
     def test_only_precredential_supplicant_failure_exposes_bounded_log(self):
-        script = (wifi.REPO / 'tools/installer/wifi-stage/wifi-init').read_text().split('step detect\n')[0]
+        script = (INSTALLER / 'wifi-stage/wifi-init').read_text().split('step detect\n')[0]
         for starting in (0, 1):
             with self.subTest(starting=starting), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -50,7 +51,7 @@ class WifiRamdiskTests(unittest.TestCase):
                 self.assertLessEqual(len(remainder.encode()), 1024 + 4096)
 
     def test_startup_creates_private_control_directory_before_supplicant(self):
-        source = (wifi.REPO / 'tools/installer/wifi-stage/wifi-init').read_text()
+        source = (INSTALLER / 'wifi-stage/wifi-init').read_text()
         startup = source.split('$BB ifconfig wlan0 up || fail interface-up\n', 1)[1]
         startup = startup.split('start_supplicant >/tmp/couch-wpa-startup.log 2>&1 &\n', 1)[0]
         with tempfile.TemporaryDirectory() as temporary:
@@ -89,7 +90,7 @@ class WifiRamdiskTests(unittest.TestCase):
                 loader = root / 'loader'
                 loader.write_text('#!/bin/sh\nexit 255\n')
                 loader.chmod(0o700)
-                script = (wifi.REPO / 'tools/installer/wifi-stage/wifi-init').read_text()
+                script = (INSTALLER / 'wifi-stage/wifi-init').read_text()
                 script = script.split('step transport\n')[0]
                 script = script.replace('/tmp/', str(root / 'tmp') + '/')
                 script = script.replace('/dev/', str(root / 'dev') + '/')
@@ -114,7 +115,7 @@ class WifiRamdiskTests(unittest.TestCase):
             busybox = root / 'busybox'
             busybox.write_text('#!/bin/sh\ncase "$1" in mknod|awk) exit 0;; *) exit 7;; esac\n')
             busybox.chmod(0o700)
-            script = (wifi.REPO / 'tools/installer/wifi-stage/wifi-init').read_text()
+            script = (INSTALLER / 'wifi-stage/wifi-init').read_text()
             script = script.replace('/tmp/', str(root / 'tmp') + '/')
             script = script.replace('/dev/', str(root / 'dev') + '/')
             script = script.replace('BB=/bin/busybox', 'BB=' + str(busybox))
@@ -146,8 +147,8 @@ class WifiRamdiskTests(unittest.TestCase):
         self.assertFalse(any(name.startswith('dev/mmcblk') for name in wifi.cpio_files(raw)))
 
     def test_debug_supervisor_is_fixed_precredential_loop(self):
-        source = (wifi.REPO / 'tools/installer/wifi-stage/debug-supervisor').read_text()
-        init = (wifi.REPO / 'tools/installer/wifi-stage/wifi-init').read_text()
+        source = (INSTALLER / 'wifi-stage/debug-supervisor').read_text()
+        init = (INSTALLER / 'wifi-stage/wifi-init').read_text()
         self.assertIn('/tmp/couch-wifi-debug.retry', source)
         self.assertIn('/bin/couch-wifi-init', source)
         self.assertIn('MAX_GENERATIONS=8', source)
@@ -165,7 +166,7 @@ class WifiRamdiskTests(unittest.TestCase):
         self.assertIn('WIFI_RAM_CODE_6580', wifi.FIRMWARE)
 
     def test_bootstrap_does_not_reuse_persistent_stage2_or_credentials(self):
-        base = wifi.REPO / 'tools/installer/wifi-stage'
+        base = INSTALLER / 'wifi-stage'
         scripts = '\n'.join((base / name).read_text() for name in ('init', 'wifi-init', 'dhcp'))
         for forbidden in ('mmcblk0p23', 'stage2.sh', 'props.tar', 'COUCH_WIFI_PSK=', 'mdev -s\n'):
             self.assertNotIn(forbidden, scripts)
@@ -173,7 +174,7 @@ class WifiRamdiskTests(unittest.TestCase):
         self.assertIn('>/dev/null 2>&1', scripts)
 
     def test_vendor_manifest_cannot_self_authorize_changed_payload(self):
-        pin = json.loads((wifi.REPO / 'tools/release/ha100_official_runtime.json').read_text())
+        pin = json.loads((INSTALLER / 'pins/ha100_official_runtime.json').read_text())
         records = [dict(record) for record in pin['files']]
         records[0]['sha256'] = '0' * 64
         manifest = {'source_images': pin['images'], 'files': records}

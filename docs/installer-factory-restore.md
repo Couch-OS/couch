@@ -48,10 +48,10 @@ The broad write set is unlocked only for a manifest whose `purpose` is
 1. **Pinned factory firmware.** `tools/release/ha100_factory_firmware.json` pins
    the vendor archive (`RS30_HAOS_HA100_V1.0.4_20260702`, fetched from the Drive
    source), its SP Flash `binpackage` member hashes, and the full-partition
-   `restore_images` hashes. `firmware_restore.py --check <factory.zip>` confirms
-   a local archive reproduces every pinned value; the firmware-watch workflow
-   runs this daily and opens a review PR on drift. No firmware bytes are stored
-   in the repo.
+   `restore_images` hashes.
+   `tools/release/factory_firmware_pin.py --check <factory.zip>` confirms a
+   local archive reproduces every pinned value. No workflow watches this pin for
+   drift. No firmware bytes are stored in the repo.
 2. **Full-partition bundle.** `tools/release/factory_bundle.py` turns the
    extracted `binpackage` into the installer's strict full-partition format:
    expand the Android-sparse images (`system, vendor, cache`), pad every image to

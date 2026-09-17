@@ -6,7 +6,7 @@ import unittest
 
 class WmtPropertiesTests(unittest.TestCase):
     def test_only_detected_ha100_transport_satisfies_launcher_properties(self):
-        source = Path(__file__).resolve().parents[1]/'installer/wifi-stage/wmt-properties.c'
+        source = Path(__file__).resolve().parents[2]/'src/wmt-properties.c'
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fixture = root/'fixture.c'

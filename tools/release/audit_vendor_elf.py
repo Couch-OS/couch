@@ -6,7 +6,10 @@ from pathlib import Path
 import re
 import subprocess
 
-from private_vendor import regular, require, verify_bundle
+from installer_pins import load as load_installer_pin
+
+_vendor = load_installer_pin('private_vendor')
+regular, require, verify_bundle = _vendor.regular, _vendor.require, _vendor.verify_bundle
 
 
 def closure(records, roots, virtual):

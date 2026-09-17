@@ -12,7 +12,9 @@ on:
       - 'tools/release/*host-report.json'
       - 'tools/tests/denon-v1-host-compatibility.py'
       - 'tools/release/prepare_public_*.py'
-      - 'tools/release/ha100_official_runtime.json'
+      - 'tools/release/installer_pins.py'
+      - '.gitmodules'
+      - 'couch-installer'
       - 'kernel/release-pin.json'
       - '.github/workflows/public-installer-package.yml'
   workflow_dispatch:
@@ -36,4 +38,6 @@ jobs:
         with:
           # Fresh OS admission verifies the tested core's ancestry and contract.
           fetch-depth: 0
+      # The package fixture supplies its own installer pins; the neutral RAM
+      # builder is tested in Couch-OS/couch-installer.
       - run: python -m unittest discover -s tools/release -p test_package_public_installer.py

@@ -7,7 +7,8 @@ below pass host and fixture tests only; a physical stock-to-Android restore, its
 first boot, and re-enrollment remain separate acceptance records. Read the
 [installer guide](installer.md), the [Wi-Fi stage](installer-linux-usb-stage.md),
 the [stock baseline notes](installer-stock-baseline.md) and the
-[wire protocol](../tools/installer/linux_stage/PROTOCOL.md) first.
+[wire protocol](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/linux_stage/PROTOCOL.md)
+first.
 
 ## What it does
 
@@ -41,8 +42,8 @@ originals (the official OTA contains no Android userdata or recovery, and the
 device's installed overlay can differ from the OTA by one byte — the keypad
 debounce change — so the device's own overlay is what a strict stock baseline
 restores). The host re-hashes each against the imported enrollment record before
-any write; `tools/installer/host/src/android_restore.rs` performs this and refuses
-a non-Android enrollment.
+any write; `couch-installer/tools/installer/host/src/android_restore.rs`
+performs this and refuses a non-Android enrollment.
 
 `userdata` is a **full-partition raw F2FS image** written with no expansion and no
 network personalization (contrast the compact ext4 userdata a normal Couch install
@@ -56,7 +57,8 @@ userdata and any network/vendor personalization for a restore.
 
 ## Firmware pin and the vendor OTA
 
-The restore never redistributes firmware. `tools/release/ha100_firmware_restore.json`
+The restore never redistributes firmware.
+`couch-installer/tools/installer/pins/ha100_firmware_restore.json`
 pins the vendor Android OTA (Google Drive file id and CDN URL), its archive hash
 and size, the `boot`/`odmdtbo` member hashes, and the `make_f2fs`/`fsck.f2fs`
 hashes. The installer always fetches the OTA **from the vendor source at install
@@ -64,11 +66,13 @@ time** (the same `public_inputs::official` download used today, which already
 points at `ha100_official_runtime.json`) and trusts only these repo-pinned hashes;
 it derives `boot`, `odmdtbo` and the formatter from the verified archive.
 
-`tools/release/firmware_restore.py` cross-checks the restore pin against the
-official runtime pin and can `--check`/`--derive` the values from a supplied OTA.
+`couch-installer/tools/installer/pins/firmware_restore.py` cross-checks the
+restore pin against the official runtime pin and can `--check`/`--derive` the
+values from a supplied OTA.
 
 ### Keeping the pin current
 
+In [Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer),
 `.github/workflows/firmware-watch.yml` runs daily (and on manual dispatch). It
 downloads the Drive file without credentials — handling Drive's large-file
 confirm-token interstitial and failing **soft** on a quota error rather than
@@ -103,7 +107,7 @@ device, and is not part of the installer:
 
 1. Prepare owner inputs from the pinned OTA, which reconstructs the system image
    that carries `make_f2fs`/`fsck.f2fs`:
-   `python3 tools/release/prepare_official_inputs.py official-fw.zip /private/owner-inputs`
+   `python3 couch-installer/tools/installer/pins/prepare_official_inputs.py official-fw.zip /private/owner-inputs`
    (or the native `couch-installer-host prepare-official …`).
 2. Under QEMU ARM in a non-root, network-disabled, read-only-root container (see
    `scratchpad/session-notes/installer-stock-baseline-session-history-2026-09-10.md`),
@@ -158,17 +162,19 @@ a substitute for current identity. Before any future Couch install on this devic
 1. Confirm stock Android boots, and that its screen, Wi-Fi and reported identity
    work.
 2. Re-enroll from Android: enable USB debugging and run the installer's fresh
-   enrollment (or `tools/installer/capture_stock_identity.py` /
-   `tools/installer/enroll_android.py`) to capture a fresh post-Android baseline,
-   retaining the Device ID / MAC values from Android settings.
+   enrollment (or `couch-installer/tools/installer/capture_stock_identity.py` /
+   `couch-installer/tools/installer/enroll_android.py`) to capture a fresh
+   post-Android baseline, retaining the Device ID / MAC values from Android
+   settings.
 
 ## What is and is not validated
 
 Host/unit tests cover: the firmware restore pin and its change detection
-(`tools/release/test_firmware_restore.py`), structural F2FS checks, receipt and
-originals verification, the Couch-as-Android refusal, and the restore plan rules
-(full-partition images, no network/vendor) in `couch-installer-host`. The stage's
-`restore` flag parse/enforcement is exercised in the Linux probe build.
+(the `firmware_restore.py` tests in Couch-OS/couch-installer), structural F2FS
+checks, receipt and originals verification, the Couch-as-Android refusal, and
+the restore plan rules (full-partition images, no network/vendor) in
+`couch-installer-host`. The stage's `restore` flag parse/enforcement is
+exercised in the Linux probe build.
 
 Not validated here: any physical restore, first stock-Android boot, the QEMU
 `make_f2fs` image on real hardware, and re-enrollment. The stage probe cannot be

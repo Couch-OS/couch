@@ -7,6 +7,7 @@ import tarfile
 from pathlib import Path
 
 from clean_stage import checksum, require
+from installer_pins import installer_path
 from prepare_ext4 import prepare as build_ext4
 from fresh_os import validate_binding
 
@@ -20,7 +21,7 @@ def prepare(staging, tools, geometry, output, fresh_core=None):
     require(fresh_core is not None, 'Public userdata requires --fresh-core from fresh_os.py')
     binding = json.loads(fresh_core.read_text())
     validate_binding(binding, manifest['source_commit'], checksum(data))
-    pin = json.loads((Path(__file__).parent / 'ha100_official_runtime.json').read_text())
+    pin = json.loads(installer_path('pins', 'ha100_official_runtime.json').read_text())
     names = {'opt/couch/' + entry['path'] for entry in pin['files']}
     hashes = {entry['sha256'] for entry in pin['files']}
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:

@@ -33,7 +33,8 @@ entered SSID; passwords are masked and excluded from logs.
 The stage checks CID, GPT, partition mappings and retained calibration before
 storage access. It rejects mounted partitions, swap and holders. Write targets
 are a fixed allowlist; the protocol accepts no arbitrary shell commands or
-block offsets. See [the protocol](../tools/installer/linux_stage/PROTOCOL.md).
+block offsets. See
+[the protocol](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/linux_stage/PROTOCOL.md).
 
 All selected original backups complete before final OS writes. Original boot
 comes from the verified bootstrap capture, not the temporary installer image.
@@ -70,8 +71,9 @@ device's saved Android originals and a fresh full-partition F2FS userdata raw,
 with no compact-prefix expansion and no network/vendor personalization (the stage
 rejects either under `restore`). This is the Wi-Fi alternative to the slow USB
 download-agent stock restore. See [Restore stock Android](installer-android-restore.md)
-and the [wire protocol](../tools/installer/linux_stage/PROTOCOL.md). Nothing in the
-restore path is hardware validated.
+and the
+[wire protocol](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/linux_stage/PROTOCOL.md).
+Nothing in the restore path is hardware validated.
 
 ## Recovery and validation
 

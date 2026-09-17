@@ -1,6 +1,7 @@
 # Installer terminal and bootstrap
 
-The current installer interface is the [native Ratatui terminal](../tools/installer/tui/README.md).
+The current installer interface is the
+[native Ratatui terminal](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/tui/README.md).
 See the [Wi-Fi installer workflow](installer-wifi-wizard.md) for network selection,
 backups, reinstall and recovery. Native frontend binaries are built for Linux,
 macOS and Windows. The complete native host and public payload are now assembled;
@@ -11,8 +12,9 @@ entry point. Its default public gate keeps hardware writes disabled.
 
 ## Python reference flow
 
-`tools/installer/couch_tui.py` displays an ASCII `couch.` wordmark and numbered
-menu. It supports Linux with Python 3.10+, without a terminal UI dependency.
+`couch-installer/tools/installer/couch_tui.py` displays an ASCII `couch.`
+wordmark and numbered menu. It supports Linux with Python 3.10+, without a
+terminal UI dependency.
 
 1. Review the exact target, release, backup destination, protected identity
    partitions, and ordered write/readback plan.
@@ -28,8 +30,8 @@ an explicit `--simulation` option; an unavailable physical adapter never silentl
 switches to simulation.
 
 ```sh
-python3 tools/installer/make_demo.py /tmp/couch-terminal-demo
-python3 tools/installer/couch_tui.py --simulation \
+python3 couch-installer/tools/installer/make_demo.py /tmp/couch-terminal-demo
+python3 couch-installer/tools/installer/couch_tui.py --simulation \
   --manifest /tmp/couch-terminal-demo/release/manifest.json \
   --device-dir /tmp/couch-terminal-demo/device \
   --identity /tmp/couch-terminal-demo/identity.json \
@@ -39,7 +41,8 @@ python3 tools/installer/couch_tui.py --simulation \
 Use a new empty directory for each demo. The synthetic target confirmation is
 `SIMULATED-HA100-001`; these files cannot boot a remote. `--resume` delegates
 existing journal verification to the core. For the current private Wi-Fi interface,
-see the [Ratatui terminal guide](../tools/installer/tui/README.md).
+see the
+[Ratatui terminal guide](https://github.com/Couch-OS/couch-installer/blob/dev/tools/installer/tui/README.md).
 
 `CoreAdapter.plan/apply/observe` is the integration boundary. The terminal only
 presents the adapter's plan and streams its output; it does not implement USB
@@ -53,7 +56,7 @@ On Linux, a developer can run:
 
 ```sh
 chmod 600 /private/path/trial.json
-python3 tools/installer/couch_tui.py --private-trial /private/path/trial.json
+python3 couch-installer/tools/installer/couch_tui.py --private-trial /private/path/trial.json
 ```
 
 The private JSON file requires absolute paths for `manifest`, `baseline`,
@@ -87,10 +90,11 @@ not successful normal startup; retain originals until physical boot is checked.
 The native release uses the [release-specific launchers](installer-native-launchers.md).
 The following contract describes only the older Python reference bootstrap.
 
-`tools/installer/bootstrap.sh` is suitable for a future curl-piped entry point,
-but is **not an available public installation command today**. Its approved
-version and SHA-256 pins are intentionally empty: it stops before downloading
-anything. Publishing requires a separately reviewed installer release and pins.
+`couch-installer/tools/installer/bootstrap.sh` is suitable for a future
+curl-piped entry point, but is **not an available public installation command
+today**. Its approved version and SHA-256 pins are intentionally empty: it stops
+before downloading anything. Publishing requires a separately reviewed installer
+release and pins.
 
 For a future approved release, it accepts Linux x86_64 only, checks Python/curl,
 opens `/dev/tty` for interaction despite piped stdin, and downloads a specific
@@ -112,7 +116,7 @@ planning/testing should use the existing noninteractive core CLI.
 
 ## Validation
 
-`python3 -m unittest discover -s tools/installer -p test_tui.py -v`
+`python3 -m unittest discover -s couch-installer/tools/installer -p test_tui.py -v`
 
 Tests exercise cancellation, real policy-engine simulation, no physical fallback,
 missing terminals, unpublished-release refusal, checksum failure and unsafe
@@ -120,14 +124,15 @@ archive members. They never connect to USB or flash hardware.
 
 ## Host binary builds
 
-`.github/workflows/installer-binaries.yml` builds Linux x64/ARM64, Windows x64,
-and macOS Intel/Apple Silicon executables, including a universal macOS binary.
-The workflow builds both the native host and terminal. The `.24` release combines
-verified host/terminal binaries with a verified public payload and owner-local
-dependency preparation. Physical driver and installation acceptance remain
-separate requirements; see the [installer guide](installer.md). Windows uses
-private anonymous pipes; Unix uses an inherited local socket. Native subprocess
-output is redirected away from both transports.
+`.github/workflows/installer-binaries.yml` in Couch-OS/couch-installer builds
+Linux x64/ARM64, Windows x64, and macOS Intel/Apple Silicon executables,
+including a universal macOS binary. The workflow builds both the native host and
+terminal. The `.24` release combines verified host/terminal binaries with a
+verified public payload and owner-local dependency preparation. Physical driver
+and installation acceptance remain separate requirements; see the
+[installer guide](installer.md). Windows uses private anonymous pipes; Unix uses
+an inherited local socket. Native subprocess output is redirected away from both
+transports.
 
 ### Native progress measurements
 
