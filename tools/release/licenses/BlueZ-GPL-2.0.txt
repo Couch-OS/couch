@@ -29,7 +29,7 @@ corresponding source with the release: the unmodified BlueZ 5.79 tarball, the
 Alpine recipe and its patches, the Couch patch and the build script
 (third_party/bluez/build.sh), which records the exact build container and
 package versions. The same patch and script are in the Couch repository,
-https://github.com/dangerouslaser/couch, under third_party/bluez at the
+https://github.com/Couch-OS/couch, under third_party/bluez at the
 release's commit.
 
 BSD 2-Clause licence (src/shared/ecc.c)
