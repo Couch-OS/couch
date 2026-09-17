@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from installer_pins import INSTALLER
 import prepare_probe_ramdisk as probe
 import test_kernel_provenance as fixtures
 from test_runtime_inventory import elf
@@ -55,7 +56,7 @@ class ProbeRamdiskTests(unittest.TestCase):
                 rd_size = struct.unpack_from('<I', image, 16)[0]
                 start = page + ((size+page-1)//page)*page
                 entries = probe.cpio_files(gzip.decompress(image[start:start+rd_size]))
-                self.assertEqual(entries['init'], (probe.REPO/'tools/installer/probe/init').read_bytes())
+                self.assertEqual(entries['init'], (INSTALLER/'probe/init').read_bytes())
                 self.assertNotIn('extra/boot-health.sh', entries)
                 with self.assertRaises(ValueError):
                     probe.prepare(paths['template'], paths['manifest'], paths['busybox'], paths['service'], root/'out')

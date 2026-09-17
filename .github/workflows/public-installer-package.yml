@@ -5,9 +5,9 @@ on:
       - 'tools/release/package_public_installer.py'
       - 'tools/release/test_package_public_installer.py'
       - 'tools/release/prepare_public_*.py'
-      - 'tools/installer/pins/ha100_official_runtime.json'
-      - 'tools/installer/image/**'
-      - 'tools/installer/test_neutral_ramdisk.py'
+      - 'tools/release/installer_pins.py'
+      - '.gitmodules'
+      - 'couch-installer'
       - 'kernel/release-pin.json'
       - '.github/workflows/public-installer-package.yml'
   workflow_dispatch:
@@ -26,5 +26,6 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      # The package fixture supplies its own installer pins; the neutral RAM
+      # builder is tested in Couch-OS/couch-installer.
       - run: python -m unittest discover -s tools/release -p test_package_public_installer.py
-      - run: python tools/installer/test_neutral_ramdisk.py

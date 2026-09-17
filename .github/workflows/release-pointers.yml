@@ -1,0 +1,42 @@
+name: Release pointers and installer pin
+on:
+  pull_request:
+    paths:
+      # The published release tag is copied into README.md and
+      # docs/installer.md by tools/release/bump_release.py, so a hand edit to
+      # either has to reach the literal check.
+      - 'README.md'
+      - 'docs/installer.md'
+      - 'tools/release/current-release.txt'
+      - 'tools/release/installer-repository.txt'
+      - 'tools/release/bump_release.py'
+      - '.gitmodules'
+      - 'couch-installer'
+      - '.github/workflows/release-pointers.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-pointers-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  pointers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+      - name: Check the published release literals
+        run: python3 tools/release/bump_release.py --check
+      # Couch builds and publishes source for exactly the pinned installer
+      # commit, so it must be reviewed history that can never be force-pushed.
+      - name: Require the installer pin on a protected couch-installer branch
+        run: |
+          test "$(git config -f .gitmodules submodule.couch-installer.path)" = couch-installer
+          test "$(git config -f .gitmodules submodule.couch-installer.url)" = https://github.com/Couch-OS/couch-installer.git
+          pin=$(git rev-parse HEAD:couch-installer)
+          git -C couch-installer fetch --quiet origin dev main
+          git -C couch-installer merge-base --is-ancestor "$pin" origin/dev \
+            || git -C couch-installer merge-base --is-ancestor "$pin" origin/main

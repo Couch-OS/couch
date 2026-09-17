@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Compatibility entry point for the installer-owned neutral RAM builder."""
-import sys
-from pathlib import Path
+"""Build the neutral installer RAM image with the pinned installer's builder."""
+from installer_pins import load_neutral_ramdisk
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'installer/image'))
-from neutral_ramdisk import main, prepare
+_builder = load_neutral_ramdisk()
+main, prepare = _builder.main, _builder.prepare
 
 
 if __name__ == '__main__':

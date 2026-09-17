@@ -17,9 +17,9 @@ from clean_stage import require
 from kernel_provenance import PIN, verify
 from prepare_boot_candidates import kernel
 from prepare_probe_ramdisk import LIMIT, REPO
+from installer_pins import installer_path, load_neutral_ramdisk
 from installer_pins import load as load_installer_pin
-sys.path.insert(0, str(REPO / 'tools/installer/image'))
-import neutral_ramdisk
+neutral_ramdisk = load_neutral_ramdisk()
 cpio_files = neutral_ramdisk.cpio_files
 
 verify_bundle = load_installer_pin('private_vendor').verify_bundle
@@ -39,7 +39,7 @@ alpine_files = neutral_ramdisk.alpine_files
 
 def vendor_files(bundle):
     manifest = verify_bundle(bundle)
-    pin = json.loads(regular(REPO / 'tools/installer/pins/ha100_official_runtime.json'))
+    pin = json.loads(regular(installer_path('pins', 'ha100_official_runtime.json')))
     require(manifest.get('source_images') == pin['images'], 'Vendor source is not pinned official runtime')
     pinned_files = {record['path']: (record['size'], record['sha256']) for record in pin['files']}
     observed_files = {record['path']: (record['size'], record['sha256']) for record in manifest['files']}
@@ -54,7 +54,7 @@ def vendor_files(bundle):
                 (path.startswith('vendor/firmware/') and PurePosixPath(path).name in FIRMWARE) or path.endswith('property_contexts') or
                 path == 'system/etc/ld.config.txt'):
             selected[path] = regular(bundle / path)
-    require(set(selected) == set(json.loads(regular(REPO / "tools/installer/pins/ha100_ram_runtime.json"))),
+    require(set(selected) == set(json.loads(regular(installer_path('pins', 'ha100_ram_runtime.json')))),
             "Audited WMT closure differs from native compiled RAM subset")
     require('vendor/bin/wmt_loader' in selected and 'vendor/bin/wmt_launcher' in selected,
             'Missing WMT executables')
