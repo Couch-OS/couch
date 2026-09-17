@@ -4,6 +4,7 @@ import tarfile
 import unittest
 from clean_stage import checksum, StageError
 from os_baseline import seed, MARKER, PIN
+from package_closure import DEFAULT_PACKAGES
 from prepare_rootfs import normalize
 import test_prepare_rootfs
 
@@ -27,6 +28,16 @@ class OsBaselineTests(unittest.TestCase):
         self.assertEqual(pin['runtime_boot_sha256'], checksum((PIN.parents[2] / 'stage2/runtime-boot.sh').read_bytes()))
         self.assertEqual(pin['model'], 'sanytron-ha100')
         self.assertRegex(pin['id'], r'^[a-z0-9-]{1,96}$')
+
+    def test_reviewed_package_manifest_matches_pin_and_runtime_requirements(self):
+        pin = json.loads(PIN.read_text())
+        data = PIN.with_name('ha100_os_packages.json').read_bytes()
+        self.assertEqual(checksum(data), pin['package_closure_sha256'])
+        manifest = json.loads(data)
+        self.assertEqual(manifest['architecture'], 'armv7')
+        roots = {request.split('=', 1)[0] for request in manifest['requested']}
+        self.assertFalse(set(DEFAULT_PACKAGES) - roots,
+                         'Reviewed package baseline must cover current runtime requirements')
 
     def test_only_matching_package_and_boot_inputs_seed_normalized_marker(self):
         data, marker = seed(self.fixture(), 'a'*64, pin=self.pin())
