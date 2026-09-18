@@ -630,6 +630,8 @@ impl Controller {
     }
     fn show_volume(&mut self, app: &App, volume: u8) {
         if let Some(t) = &self.target {
+            // The card is shared: a power result may have left its caption.
+            app.set_volume_caption("Volume".into());
             app.set_volume_target(t.name.as_str().into());
         }
         app.set_volume(i32::from(volume));
