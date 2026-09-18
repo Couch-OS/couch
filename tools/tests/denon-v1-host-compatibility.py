@@ -20,7 +20,6 @@ import time
 import urllib.error
 import urllib.request
 
-CORE = "f274804c5219db00446f1b9e5ce46391adcfd37c"
 EXPECTED = {
     "apk": "61e135854816bd4f996e46d918386937913860e583ccdb3bda7eac739252b270",
     "key": "80f3a73d86759cda103cb4f9a876cd4caee9d25c235c6d782b4be8a900b2696c",
@@ -120,7 +119,10 @@ class Handler(socketserver.BaseRequestHandler):
 
 
 def run(args):
-    assert args.core_commit == CORE
+    # The core under test is an input: a renewal reruns this file unchanged, so
+    # the harness digest the receipt records stays the reviewed one.
+    core = args.core_commit
+    assert len(core) == 40 and set(core) <= set("0123456789abcdef"), core
     for key in ("apk", "key", "provenance"):
         assert digest(getattr(args, key)) == EXPECTED[key], "wrong public " + key
     core_bytes = args.confd.read_bytes()
@@ -223,7 +225,7 @@ def run(args):
                     assert settings_path.read_bytes() == settings_before
                     assert avr.requests == expected
                     checks["signed_package_lifecycle"] = "passed"
-                    report = {"schema":1,"kind":"couch-integration-host-test-report","core_commit":CORE,
+                    report = {"schema":1,"kind":"couch-integration-host-test-report","core_commit":core,
                         "checks":checks,"signature_checks":{"trusted_apk":"passed","untrusted_key":"rejected","tampered_apk":"rejected"},
                         "lifecycle":["signed_install","same_version_readmission","removal_preserves_config_and_settings","signed_reinstall_preserves_settings"],
                         "wire_requests":expected,"http_panel_device_connections":1,"maximum_simultaneous_device_connections":1,
@@ -237,13 +239,13 @@ def run(args):
                             process.wait()
                     avr.shutdown()
     args.out.mkdir(parents=True,exist_ok=True)
-    report_path = args.out / "denon-0.1.1-core-f274804-host-report.json"
+    report_path = args.out / f"denon-0.1.1-core-{core[:7]}-host-report.json"
     report_path.write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
     receipt = {"schema":1,"kind":"couch-integration-host-compatibility","evidence_level":"host-protocol-compatibility",
-        "core":{"source_commit":CORE,"supported_protocol_versions":[1,2],"target":"armv7-unknown-linux-musleabihf","binary_sha256":digest(args.confd)},
+        "core":{"source_commit":core,"supported_protocol_versions":[1,2],"target":"armv7-unknown-linux-musleabihf","binary_sha256":digest(args.confd)},
         "integrations":[{"id":"denon","version":"0.1.1","protocol_version":1,"apk_sha256":EXPECTED["apk"],"manifest_sha256":EXPECTED["manifest"],"binary_sha256":EXPECTED["plugin"],"provenance_sha256":EXPECTED["provenance"]}],
         "checks":checks,"hardware_validation":False,"harness_sha256":digest(__file__),"report_sha256":digest(report_path)}
-    receipt_path = args.out / "denon-0.1.1-core-f274804-host-compatibility.json"
+    receipt_path = args.out / f"denon-0.1.1-core-{core[:7]}-host-compatibility.json"
     receipt_path.write_text(json.dumps(receipt,indent=2,sort_keys=True)+"\n")
     print(json.dumps(receipt,indent=2,sort_keys=True))
 
