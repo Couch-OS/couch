@@ -407,6 +407,7 @@ export component App inherits Window {
 
     // --- volume overlay -------------------------------------------------------
     in-out property <bool> volume-shown: false;
+    in-out property <string> volume-caption: "Volume";
     in-out property <int> volume: 0;
     in-out property <string> volume-target: "";
     // A reading with no 0..100 scale (a dB figure) or a "Muted" word replaces
@@ -746,28 +747,35 @@ export component App inherits Window {
         detail: root.bt-pair-detail;
     }
 
-    // A transient message near the bottom, above everything. The host sets the
-    // text and clears it on a timer.
-    if root.toast != "": Rectangle {
-        x: 24px;
-        width: parent.width - 48px;
-        height: 56px;
-        y: parent.height - self.height - 40px;
+    // A transient message: the host sets the text and clears it on a timer. It
+    // is the feedback card's plain sibling - same surface, inset, radius and
+    // slide - so a sentence and a reading look like one system. The text is
+    // kept while the bar slides away, or it would empty before it left.
+    toast-bar := Rectangle {
+        property <float> reveal: root.toast != "" ? 1 : 0;
+        property <string> text: "";
+        animate reveal { duration: 200ms; easing: ease-out; }
+        x: Theme.overlay-inset;
+        width: parent.width - 2 * Theme.overlay-inset;
+        height: 72px;
+        y: parent.height - Theme.overlay-inset - self.height + (1 - self.reveal) * (self.height + Theme.overlay-inset + 4px);
+        visible: self.reveal > 0;
         background: Theme.surface-raised;
         border-width: 1px;
         border-color: Theme.border-raised;
         border-radius: Theme.r-overlay;
         Text {
-            width: parent.width - 32px;
-            x: 16px;
+            x: 18px;
+            width: parent.width - 36px;
             y: (parent.height - self.height) / 2;
-            text: root.toast;
-            font-size: 19px;
+            text: toast-bar.text;
+            font-size: 22px;
+            font-weight: 600;
             color: Theme.text;
-            horizontal-alignment: center;
             overflow: elide;
         }
     }
+    changed toast => { if (root.toast != "") { toast-bar.text = root.toast; } }
 
     VolumeOverlay {
         visible: root.feedback-enabled;
@@ -807,6 +815,7 @@ export component App inherits Window {
         width: parent.width - 2 * Theme.overlay-inset;
         y: parent.height - self.height - Theme.overlay-inset;
         target: root.volume-target;
+        caption: root.volume-caption;
         value: root.volume;
         value-text: root.volume-text;
         meter: root.volume-meter;

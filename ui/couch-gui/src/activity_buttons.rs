@@ -40,8 +40,18 @@ pub(crate) struct VolumeReading {
 #[derive(Default, Debug, PartialEq)]
 pub(crate) struct Outcome {
     pub volume: Option<VolumeReading>,
-    /// A sentence for a toast: what a power toggle decided.
-    pub notice: Option<String>,
+    /// What a power toggle decided, for the feedback card.
+    pub notice: Option<Notice>,
+    /// A held key's level was not read back, to keep the hold fast: read it
+    /// once the device's lane goes quiet.
+    pub settle: bool,
+}
+/// A line for the shared feedback card: "Power" over the device, "Off" beside.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Notice {
+    pub caption: String,
+    pub target: String,
+    pub value: String,
 }
 /// A room row's Power key. Not a catalogue function: receivers and most TVs
 /// offer power-on and power-off, not a toggle, so the press is resolved against
@@ -89,7 +99,7 @@ pub(crate) fn row_bindings(config: &Config, device: &couch_model::Device) -> Vec
 pub(crate) enum Feedback {
     Error(String),
     Volume(VolumeReading),
-    Notice(String),
+    Notice(Notice),
 }
 fn volume_reading(target: &str, level: Option<i64>, muted: bool) -> Option<VolumeReading> {
     Some(VolumeReading {
@@ -210,7 +220,13 @@ impl Controller {
         self.activity_running = app.get_activity_running();
         let config = connections::config();
         let context = if app.get_player_shown() || app.get_tv_shown() {
-            app.get_active_activity().to_string()
+            // A device's own screen (`device:<id>`) has no activity bindings to
+            // read; the keys mean there what they mean on its row.
+            let active = app.get_active_activity().to_string();
+            match active.strip_prefix("device:") {
+                Some(id) => format!("{ROW}{id}"),
+                None => active,
+            }
         } else if app.get_light_shown() && !app.get_chooser_shown() {
             // The highlighted row of the open room, when it is a device these
             // keys mean something to.
@@ -375,10 +391,13 @@ fn connection_worker(
     // shared with the room list, which is still holding them open.
     let matter = connections::matter();
     let mut generation = current.load(Ordering::SeqCst);
+    // A packaged device whose level is owed a read once its keys stop.
+    let mut settle: Option<(String, String)> = None;
     loop {
         let request = rx.recv_timeout(Duration::from_millis(100));
         let now = current.load(Ordering::SeqCst);
         if now != generation {
+            settle = None;
             denon.clear();
             tv.clear();
             streaming.clear();
@@ -387,12 +406,31 @@ fn connection_worker(
         }
         let r = match request {
             Ok(r) => r,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // The lane has been quiet for a poll: a held volume key is
+                // over. One read for the card, at the level it ended on.
+                if let Some((connection, target)) = settle.take() {
+                    if let Some(reading) = plugin_level(&connection, &target) {
+                        let _ = reply.try_send((generation, Feedback::Volume(reading)));
+                    }
+                }
+                continue;
+            }
             Err(_) => return,
         };
         if r.generation != generation || r.at.elapsed() > Duration::from_millis(750) {
             continue;
         }
+        let settles = r
+            .config
+            .devices()
+            .find(|(_, d)| d.id == r.action.device)
+            .and_then(|(_, d)| match d.network_integration(&r.config)? {
+                Integration::Plugin { connection_id, .. } => {
+                    Some((connection_id.to_string(), d.name.clone()))
+                }
+                _ => None,
+            });
         match execute_with_input(
             &r.config,
             &r.action,
@@ -422,6 +460,7 @@ fn connection_worker(
             }) => {
                 let _ = reply.try_send((r.generation, Feedback::Notice(notice)));
             }
+            Ok(Outcome { settle: true, .. }) => settle = settles,
             Ok(_) => {}
         }
     }
@@ -546,7 +585,7 @@ pub(crate) fn execute_with_input(
             }
             couch_model::Transport::Bluetooth => send_bluetooth(device, &command),
             couch_model::Transport::Ip => send_network(
-                config, device, &command, denon, tv, streaming, sonos, matter, current,
+                config, device, &command, denon, tv, streaming, sonos, matter, repeat, current,
             ),
         };
         match result {
@@ -588,9 +627,13 @@ fn power_toggle(
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, String> {
     let name = device.name.clone();
-    let notice = |state: &str| Outcome {
-        volume: None,
-        notice: Some(format!("{name} {state}")),
+    let notice = |value: &str| Outcome {
+        notice: Some(Notice {
+            caption: "Power".into(),
+            target: name.clone(),
+            value: value.into(),
+        }),
+        ..Outcome::default()
     };
     /// What to send, decided before anything is sent: reading a kept client's
     /// state and sending through the same caches cannot overlap.
@@ -654,13 +697,13 @@ fn power_toggle(
         )
     };
     match plan {
-        Plan::Toggle => send("toggle").map(|_| notice("power toggled")),
+        Plan::Toggle => send("toggle").map(|_| notice("Toggled")),
         Plan::OffElseWake => match send("power-off") {
-            Ok(_) => Ok(notice("power toggled")),
-            Err(_) => send("power-on").map(|_| notice("waking")),
+            Ok(_) => Ok(notice("Toggled")),
+            Err(_) => send("power-on").map(|_| notice("Waking")),
         },
-        Plan::Observed(Some(true)) => send("power-off").map(|_| notice("off")),
-        Plan::Observed(Some(false)) => send("power-on").map(|_| notice("on")),
+        Plan::Observed(Some(true)) => send("power-off").map(|_| notice("Off")),
+        Plan::Observed(Some(false)) => send("power-on").map(|_| notice("On")),
         Plan::Observed(None) => Err(format!("{name} has not said whether it is on")),
     }
 }
@@ -706,6 +749,7 @@ fn send_network(
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
+    repeat: bool,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, Failure> {
     let command = command.clone();
@@ -756,7 +800,7 @@ fn send_network(
             };
             Ok(Outcome {
                 volume,
-                notice: None,
+                ..Outcome::default()
             })
         }
         Integration::AndroidTv | Integration::AppleTv | Integration::Tizen => {
@@ -848,7 +892,7 @@ fn send_network(
             };
             Ok(Outcome {
                 volume,
-                notice: None,
+                ..Outcome::default()
             })
         }
         Integration::Kodi { host, port } => {
@@ -906,7 +950,7 @@ fn send_network(
             };
             Ok(Outcome {
                 volume,
-                notice: None,
+                ..Outcome::default()
             })
         }
         Integration::WebOs => {
@@ -970,7 +1014,7 @@ fn send_network(
             };
             Ok(Outcome {
                 volume,
-                notice: None,
+                ..Outcome::default()
             })
         }
         Integration::Hue { light_id } => {
@@ -1082,27 +1126,19 @@ fn send_network(
                 timeout,
             );
             match result {
+                // The package reports its level only when asked, and asking
+                // costs as much as the command did. A fresh press reads it back
+                // for the volume card; a held key does not, and the lane reads
+                // it once when the hold ends (`settle`).
+                Ok(couch_plugin::Response::Ok) if sound && repeat => Ok(Outcome {
+                    settle: true,
+                    ..Outcome::default()
+                }),
                 Ok(couch_plugin::Response::Ok) => Ok(Outcome {
-                    // The package reports its level only when asked. One more
-                    // request, for the same card a built-in receiver fills.
                     volume: sound
-                        .then(|| {
-                            couch_plugin::local_request(
-                                &crate::home::path("plugin.sock"),
-                                connection_id.as_str(),
-                                couch_plugin::Request::Status,
-                                timeout,
-                            )
-                            .ok()
-                        })
-                        .flatten()
-                        .and_then(|response| match response {
-                            couch_plugin::Response::Status { status } => {
-                                plugin_volume_reading(&name, &status)
-                            }
-                            _ => None,
-                        }),
-                    notice: None,
+                        .then(|| plugin_level(connection_id.as_str(), &name))
+                        .flatten(),
+                    ..Outcome::default()
                 }),
                 Ok(couch_plugin::Response::Error { code }) => {
                     Err(plugin_failure(code, code.to_string()))
@@ -1116,6 +1152,19 @@ fn send_network(
         _ => Err(Failure::Command(
             "This integration cannot send button commands yet".into(),
         )),
+    }
+}
+
+/// Ask a packaged device for its level, for the volume card.
+fn plugin_level(connection: &str, target: &str) -> Option<VolumeReading> {
+    match couch_plugin::local_request(
+        &crate::home::path("plugin.sock"),
+        connection,
+        couch_plugin::Request::Status,
+        couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
+    ) {
+        Ok(couch_plugin::Response::Status { status }) => plugin_volume_reading(target, &status),
+        _ => None,
     }
 }
 

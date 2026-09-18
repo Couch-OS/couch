@@ -1806,9 +1806,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         match button_controls.poll(&app) {
             Some(activity_buttons::Feedback::Error(error)) => toast(error, 3),
-            Some(activity_buttons::Feedback::Notice(notice)) => toast(notice, 2),
+            Some(activity_buttons::Feedback::Notice(notice)) => {
+                // The same card volume, brightness and scenes report on.
+                app.set_volume_caption(notice.caption.as_str().into());
+                app.set_volume_target(notice.target.as_str().into());
+                app.set_volume(0);
+                app.set_volume_text(notice.value.as_str().into());
+                app.set_volume_meter(false);
+                app.set_feedback_enabled(true);
+                app.set_volume_shown(true);
+                volume_until.set(Some(now_monotonic_us() + 1_500_000));
+            }
             Some(activity_buttons::Feedback::Volume(reading)) => {
                 // The same card the room list shows for a highlighted speaker.
+                app.set_volume_caption("Volume".into());
                 app.set_volume_target(reading.target.as_str().into());
                 app.set_volume(reading.level.max(0));
                 app.set_volume_text(reading.text.as_str().into());
