@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install a verified offline APK closure into clean staging, never a device."""
 import argparse
+from contextlib import ExitStack
 import gzip
 import io
 import json
@@ -13,8 +14,8 @@ import tempfile
 
 from clean_stage import (GENERATED, StageError, archive_name, build, checksum,
                          require, secret_path)
-from package_closure import verify
-from os_baseline import seed as seed_os_baseline
+from package_closure import restore as restore_closure, verify
+from os_baseline import PIN as BASELINE_PIN, check_archive, seed as seed_os_baseline
 
 
 def normalize(data, epoch, private_files=None):
@@ -75,10 +76,31 @@ def normalize(data, epoch, private_files=None):
     return output.getvalue(), len(entries)
 
 
+def open_closure(closure, stack):
+    """Accept a prepared closure directory or the reviewed retained archive."""
+    if closure.is_dir():
+        return closure
+    require(closure.is_file() and not closure.is_symlink(),
+            'Closure must be a prepared directory or a retained closure archive')
+    check_archive(closure.read_bytes())  # Refuse unreviewed bytes before extraction.
+    restored = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='couch-closure-')))
+    restore_closure(closure, restored / 'closure')
+    return restored / 'closure'
+
+
 def prepare(spec, closure, output):
+    with ExitStack() as stack:
+        return assemble(spec, open_closure(closure, stack), output)
+
+
+def assemble(spec, closure, output):
     require(not output.exists(), 'Output directory must be new')
     closure = closure.resolve()
     manifest = verify(closure)
+    # Refuse a closure the baseline never reviewed before assembling anything.
+    require(checksum((closure / 'closure.json').read_bytes()) ==
+            json.loads(BASELINE_PIN.read_text())['package_closure_sha256'],
+            'OS baseline requires the reviewed package closure')
     require(manifest['architecture'] == 'armv7', 'Wrong package architecture')
     require(spec['alpine']['version'].startswith(manifest['branch'][1:] + '.'),
             'Alpine base and package branch differ')
