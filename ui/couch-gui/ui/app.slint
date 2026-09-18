@@ -758,7 +758,10 @@ export component App inherits Window {
         x: Theme.overlay-inset;
         width: parent.width - 2 * Theme.overlay-inset;
         height: 72px;
-        y: parent.height - Theme.overlay-inset - self.height + (1 - self.reveal) * (self.height + Theme.overlay-inset + 4px);
+        // Above a feedback card when one is up, never on top of it: a sentence
+        // and a reading can be due at the same moment.
+        property <bool> card-up: root.feedback-enabled && (root.volume-shown || root.brightness-shown || root.scene-feedback-shown || root.sonos-feedback-shown || root.thermostat-feedback-shown);
+        y: parent.height - Theme.overlay-inset - self.height - (self.card-up ? 140px + 12px : 0px) + (1 - self.reveal) * (self.height + Theme.overlay-inset + 4px + (self.card-up ? 140px + 12px : 0px));
         visible: self.reveal > 0;
         background: Theme.surface-raised;
         border-width: 1px;
