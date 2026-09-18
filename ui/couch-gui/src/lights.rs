@@ -852,19 +852,14 @@ impl Controller {
                             app.invoke_open_camera(e.id.as_str().into(), e.name.as_str().into());
                             continue;
                         }
-                        let kodi = cfg.as_ref().is_some_and(|c| {
+                        let player = cfg.as_ref().is_some_and(|c| {
                             c.devices()
                                 .find(|(_, d)| d.id.as_str() == e.id.trim_start_matches("device:"))
                                 .map(|(_, d)| d)
                                 .and_then(|d| c.resolve_integration(&d.integration))
-                                .is_some_and(|i| {
-                                    matches!(
-                                        i,
-                                        Integration::Kodi { .. } | Integration::Sonos { .. }
-                                    )
-                                })
+                                .is_some_and(|i| crate::shortcuts::opens_player(&i))
                         });
-                        if kodi {
+                        if player {
                             app.invoke_open_activity(e.id.as_str().into());
                             continue;
                         }

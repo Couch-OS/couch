@@ -58,6 +58,18 @@ pub fn plan(config: &Config, areas: &[Area], current: usize, button: Button) -> 
     })
 }
 
+/// Integrations whose device opens the player screen: Kodi and Sonos, and any
+/// device behind an installed integration package, whose pages that screen
+/// renders (`activity::plugin_target`). The room list and the shortcut keys
+/// both ask here; a packaged device used to be missing from both, so OK on it
+/// said its controls were not available although its pages existed.
+pub fn opens_player(integration: &Integration) -> bool {
+    matches!(
+        integration,
+        Integration::Kodi { .. } | Integration::Sonos { .. } | Integration::Plugin { .. }
+    )
+}
+
 /// The screen a device row opens from the room list, for a device named by id.
 fn open_device(config: &Config, id: &Id) -> Dispatch {
     let Some((room, device)) = config.devices().find(|(_, d)| &d.id == id) else {
@@ -71,7 +83,7 @@ fn open_device(config: &Config, id: &Id) -> Dispatch {
             return Dispatch::OpenThermostat(resource, name);
         }
         Some(Integration::UnifiProtect { .. }) => return Dispatch::OpenCamera(resource, name),
-        Some(Integration::Kodi { .. } | Integration::Sonos { .. }) => {
+        Some(integration) if opens_player(integration) => {
             return Dispatch::OpenActivity(resource);
         }
         _ => {}
@@ -200,6 +212,34 @@ mod tests {
                 resource_id: "climate.living".into(),
             }),
         );
+        // A receiver behind an installed integration package.
+        config.connections.push(couch_model::Connection {
+            id: "avr".into(),
+            name: "Theater AVR".into(),
+            provider: couch_model::Provider::Plugin {
+                id: "denon".into(),
+                label: "Denon AVR".into(),
+                capabilities: vec![],
+                supports_inputs: true,
+                presentation: vec![],
+                actions: vec![],
+            },
+        });
+        config
+            .room_mut(&Id::new("living-room"))
+            .unwrap()
+            .devices
+            .push(
+                couch_model::Device::new(
+                    Id::new("living-avr"),
+                    "Theater AVR",
+                    couch_model::DeviceKind::Speaker,
+                )
+                .with_integration(Integration::Connection {
+                    connection_id: "avr".into(),
+                    resource_id: String::new(),
+                }),
+            );
         let upstairs = config.areas[1].id.clone();
         config.areas[0].shortcuts = vec![
             Shortcut {
@@ -289,6 +329,21 @@ mod tests {
             plan(Button::Blue),
             Some(Dispatch::OpenActivity("device:living-kodi".into()))
         );
+        // A packaged device opens the player screen that renders its pages,
+        // under the id `activity::plugin_target` resolves. Every shortcut key
+        // is taken above, so ask for the device directly, as the room list does.
+        assert_eq!(
+            open_device(&config, &Id::new("living-avr")),
+            Dispatch::OpenActivity("device:living-avr".into())
+        );
+        assert!(opens_player(
+            &config
+                .resolve_integration(&Integration::Connection {
+                    connection_id: "avr".into(),
+                    resource_id: String::new(),
+                })
+                .unwrap()
+        ));
         assert!(matches!(
             plan(Button::Yellow),
             Some(Dispatch::Unavailable(_))
