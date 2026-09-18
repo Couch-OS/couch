@@ -254,7 +254,9 @@ Beyond those two:
   etc.) invalidates the current receipt. `tools/release/verify_integration_set.py`
   must produce a fresh one before the release ships
   (`docs/integration-release-rollout.md`). Removing built-in integration code
-  is exactly this kind of change.
+  is exactly this kind of change. The one exception is a compiled-out admission
+  harness listed in `core.harness_paths`, which costs a rerun of the admission
+  suite and a recorded digest update instead.
 - **Migration path before retirement, not after.** The Denon precedent is:
   ship the package, let users opt in, keep the built-in implementation until
   usage/confidence justifies dropping it. Retiring the built-in path before a

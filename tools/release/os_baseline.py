@@ -2,12 +2,49 @@
 import io
 import json
 from pathlib import Path
+import re
 import tarfile
 
 from clean_stage import archive_name, checksum, require
 
 PIN = Path(__file__).with_name('ha100_os_baseline.json')
 MARKER = 'opt/couch/os-baseline.json'
+ARCHIVE = 'package_closure_archive'
+ARCHIVE_FILE = re.compile(r'[A-Za-z0-9][A-Za-z0-9+_.-]*\.tar\.gz')
+
+
+def archive_pin(pin=None):
+    """The reviewed retained closure archive, or None while none is published.
+
+    `package_closure_sha256` stays alongside it and is not redundant. The
+    archive digest binds the exact bytes a build host received; the manifest
+    digest is the reviewed inventory identity, which survives re-archiving and
+    is what `seed` writes the OS capability marker against. An archive that is
+    repacked keeps the second; an archive whose packages were edited and whose
+    manifest was rewritten to match loses it.
+    """
+    pin = json.loads(PIN.read_text()) if pin is None else pin
+    require(ARCHIVE in pin, 'OS baseline must state its retained closure archive')
+    value = pin[ARCHIVE]
+    if value is None:
+        return None
+    require(isinstance(value, dict) and set(value) == {'file', 'size', 'sha256'},
+            'Retained closure archive pin has missing or unexpected fields')
+    require(isinstance(value['file'], str) and ARCHIVE_FILE.fullmatch(value['file']),
+            'Retained closure archive pin needs a plain archive filename')
+    require(type(value['size']) is int and 0 < value['size'], 'Retained closure archive pin needs a positive size')
+    require(isinstance(value['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', value['sha256']),
+            'Retained closure archive pin needs a SHA-256 digest')
+    return value
+
+
+def check_archive(data, pin=None):
+    """Bind retained archive bytes to the reviewed pin before they are trusted."""
+    value = archive_pin(pin)
+    require(value is not None, 'No reviewed retained closure archive is pinned for this OS baseline')
+    require(len(data) == value['size'] and checksum(data) == value['sha256'],
+            'Retained closure archive bytes differ from the reviewed pin')
+    return value
 
 
 def seed(data, closure_digest, *, pin=None):

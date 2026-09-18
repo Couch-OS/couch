@@ -1,0 +1,117 @@
+{
+  "protocol_version": 1,
+  "id": "sonos",
+  "label": "Sonos",
+  "version": "0.1.0",
+  "executable": "bin/couch-plugin-sonos",
+  "capabilities": [
+    {
+      "id": "play",
+      "label": "Play"
+    },
+    {
+      "id": "pause",
+      "label": "Pause"
+    },
+    {
+      "id": "play-pause",
+      "label": "Play / pause"
+    },
+    {
+      "id": "stop",
+      "label": "Stop"
+    },
+    {
+      "id": "next",
+      "label": "Next"
+    },
+    {
+      "id": "previous",
+      "label": "Previous"
+    },
+    {
+      "id": "volume-up",
+      "label": "Volume up"
+    },
+    {
+      "id": "volume-down",
+      "label": "Volume down"
+    },
+    {
+      "id": "mute",
+      "label": "Mute"
+    },
+    {
+      "id": "mute-on",
+      "label": "Mute on"
+    },
+    {
+      "id": "mute-off",
+      "label": "Mute off"
+    }
+  ],
+  "settings": [
+    {
+      "id": "host",
+      "label": "Player address",
+      "kind": "text",
+      "required": true
+    },
+    {
+      "id": "api_key",
+      "label": "Sonos developer API key",
+      "kind": "secret",
+      "required": false
+    },
+    {
+      "id": "api_root",
+      "label": "API root (leave empty for https://<address>:1443/api/v1)",
+      "kind": "text",
+      "required": false
+    }
+  ],
+  "supports_inputs": true,
+  "presentation": [
+    {
+      "kind": "toggle",
+      "label": "Playback",
+      "state": "playing",
+      "on": "play",
+      "off": "pause"
+    },
+    {
+      "kind": "command_group",
+      "title": "Transport",
+      "commands": [
+        "play-pause",
+        "previous",
+        "next",
+        "stop"
+      ]
+    },
+    {
+      "kind": "command_group",
+      "title": "Volume",
+      "commands": [
+        "volume-up",
+        "volume-down"
+      ]
+    },
+    {
+      "kind": "toggle",
+      "label": "Mute",
+      "state": "muted",
+      "on": "mute-on",
+      "off": "mute-off"
+    },
+    {
+      "kind": "status_text",
+      "label": "Volume",
+      "field": "volume"
+    },
+    {
+      "kind": "input_selector",
+      "label": "Source"
+    }
+  ]
+}

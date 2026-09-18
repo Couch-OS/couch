@@ -121,6 +121,7 @@ pub fn serve() -> Result<(), String> {
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err("System service already running".into());
     }
+    couch_system::ui_settings::publish_bluetooth_kernel();
     match fs::remove_file(protocol::SOCKET) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
