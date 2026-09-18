@@ -62,6 +62,13 @@ use system::Approval;
 slint::include_modules!();
 
 const BACKGROUND: u32 = 0x09090b;
+/// The bands of the controls screen that hold still while its tiles slide on
+/// a page turn, in panel rows (ui/screens/activity_pages.slint): the header is
+/// the back button, title and device line above the first tile at y 142; the
+/// footer is the status line at y 654 and the pager below it.
+const PANEL_H: u32 = 800;
+const CONTROLS_HEADER_H: u32 = 130;
+const CONTROLS_FOOTER_Y: u32 = 644;
 
 fn env_secs(name: &str, default: u64) -> u64 {
     std::env::var(name)
@@ -1779,7 +1786,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let activity_navigation = activity_controls.navigation_pending(&app)
             || tv_controls.navigation_pending()
             || thermostat_controls.navigation_pending();
-        if activity_navigation {
+        // A page turn on the controls screen slides like a navigation, but the
+        // screen stays the same one, so it is told apart by its own step.
+        let page_turn = activity_controls
+            .page_turn_pending()
+            .filter(|_| !activity_navigation && app.get_player_shown())
+            .map(|step| (step, app.get_custom_activity_page()));
+        if activity_navigation || page_turn.is_some() {
             screen.snapshot();
         }
         activity_controls.poll(&app);
@@ -1844,6 +1857,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             slint::platform::update_timers_and_animations();
+        }
+        if let Some((step, from_page)) = page_turn {
+            // Nothing to slide when the turn did nothing: a single page, or a
+            // screen that closed meanwhile.
+            if app.get_player_shown() && app.get_custom_activity_page() != from_page {
+                slint::platform::update_timers_and_animations();
+                if let Some(us) = screen.render_offscreen(&window) {
+                    frames += 1;
+                    render_us += us;
+                    frame_max = frame_max.max(us);
+                    // The header and the pager stay put and show the new page
+                    // at once: the pager is the control, and should not move
+                    // with the thing it controls. Only the tiles travel.
+                    let cost = screen.slide(
+                        if step > 0 {
+                            Arrive::FromRight
+                        } else {
+                            Arrive::FromLeft
+                        },
+                        &[
+                            (0, CONTROLS_HEADER_H),
+                            (CONTROLS_FOOTER_Y, PANEL_H - CONTROLS_FOOTER_Y),
+                        ],
+                        SLIDE,
+                    );
+                    frames += cost.frames;
+                    render_us += cost.work_us;
+                    wait_us += cost.wait_us;
+                    frame_max = frame_max.max(cost.max_us);
+                    println!("couch-gui: controls page slide ({} frames)", cost.frames);
+                }
+                slint::platform::update_timers_and_animations();
+            }
         }
         if feedback_page(&app) != last_feedback_page {
             dismiss_feedback(&app, &mut scene_controls, &mut light_controls);
