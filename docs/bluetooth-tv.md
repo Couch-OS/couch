@@ -37,7 +37,10 @@ the design and the kernel side.
 - Bluetooth turned on: Settings → Bluetooth on the remote, or the Remote
   settings page on the web. The row says **STARTING…** for a few seconds
   while the stack comes up (bridge, dbus, bluetoothd, the HID daemon), then
-  **ON**. It stays on until turned off; it does not start at boot.
+  **ON**. It stays on until turned off; it does not start at boot. The very
+  first time, the remote downloads about 2 MB of system packages over Wi-Fi
+  before starting, so allow up to a minute; if it says it could not reach the
+  package server, check Wi-Fi and switch it on again.
 
 ## Setup
 

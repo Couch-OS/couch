@@ -48,6 +48,33 @@ user meets it. It is also off after every restart — the toggle does not start
 the stack at boot, so it has to be switched on by hand each time — which is a
 known gap on the list rather than a settled choice.
 
+## System packages on first use
+
+The installed OS image (built 2026-09-11) predates Bluetooth and has no
+`dbus-daemon`, `hciconfig` or `hcitool`, which the bring-up runs inside the
+Alpine root. A new OS image would only reach new installs, so the first time
+Bluetooth is switched on, from Settings or the web UI, `couch-system` adds them
+to the running remote: `apk add dbus bluez bluez-deprecated`, which brings
+`dbus-daemon-launch-helper`, `eudev-libs`, `json-c` and `readline` with it,
+about 1.5 MB in all. The packages come from the Alpine 3.21 repositories the
+image already names and are verified with the Alpine keys it shipped with.
+D-Bus's own install hook creates the `messagebus` user and this remote's machine
+ID, on the remote, which is where a per-device identity belongs.
+
+The OS image pins every package it shipped with, and this step must not move
+any of them: the service first asks `apk add --simulate` for its plan and
+refuses unless every line is a new install. Each step is bounded (a dead
+network fails in about ten seconds with a sentence naming Wi-Fi), the output is
+kept in `/tmp/couch-bt-packages.log`, the fetched package index is removed
+afterwards, and later starts find the programs and skip all of it. A failed
+install is reported, not retried: the one retry in `set` is for radio flakes.
+
+Checked 2026-09-18 under ARM emulation against the published image's own root
+filesystem: seven installs, nothing upgraded, `dbus-daemon --system` comes up
+with its socket, and an unreachable resolver fails the first step in 10 s. The
+development remote has had the same three packages, installed the same way by
+hand, since 2026-09-14.
+
 ## Goal
 
 Let the HA100 act as a Bluetooth Low Energy HID peripheral (keyboard plus
@@ -434,8 +461,9 @@ The first milestone is the spike: prove the radio through Linux's virtual HCI
 device with BlueZ on top. Everything below it needs a kernel with `CONFIG_BT`
 and `CONFIG_BT_HCIVHCI`. Since [boot image updates](runtime-updates.md#boot-image-updates)
 that kernel reaches a remote on the Dev channel as the boot payload of a dev
-build, no reinstall; only the BlueZ packages still wait for a new OS image and
-are `apk add`ed over SSH on the development remote meanwhile.
+build, no reinstall. The BlueZ packages were `apk add`ed over SSH on the
+development remote at first; since 2026-09-18 the service adds them itself
+([system packages on first use](#system-packages-on-first-use)).
 
 **What is on this branch**
 
