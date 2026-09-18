@@ -168,10 +168,37 @@ pub fn sshd_running() -> bool {
 pub fn bridge_running() -> bool {
     process_running("couch-bt-bridge")
 }
+/// The Bluetooth modules the boot ramdisk carries, one name per line, written
+/// by the system service when it starts. The ramdisk's /extra exists only in
+/// the outer root; couch-confd runs inside the Alpine root and would otherwise
+/// report "no kernel support" on every image that ships its drivers as
+/// modules. /tmp is shared between the two roots and is empty after a boot.
+pub const BLUETOOTH_KERNEL_FILE: &str = "/tmp/couch-bt.kernel";
+const BLUETOOTH_MODULES: &[&str] = &["hci_stp.ko", "hci_vhci.ko"];
+
+fn carried_modules(extra: &Path) -> String {
+    BLUETOOTH_MODULES
+        .iter()
+        .filter(|module| extra.join(module).exists())
+        .map(|module| format!("{module}\n"))
+        .collect()
+}
+fn names_module(published: &str, module: &str) -> bool {
+    published.lines().any(|line| line.trim() == module)
+}
+/// Called once by the system service, which runs in the outer root.
+pub fn publish_bluetooth_kernel() {
+    let _ = std::fs::write(BLUETOOTH_KERNEL_FILE, carried_modules(Path::new("/extra")));
+}
+fn boot_image_carries(module: &str) -> bool {
+    Path::new("/extra").join(module).exists()
+        || std::fs::read_to_string(BLUETOOTH_KERNEL_FILE)
+            .is_ok_and(|published| names_module(&published, module))
+}
 /// A boot image carrying the in-kernel STP HCI driver (hci_stp.ko in the
 /// ramdisk's /extra): the toggle loads it instead of running the bridge.
 pub fn stp_driver_available() -> bool {
-    Path::new("/extra/hci_stp.ko").exists()
+    boot_image_carries("hci_stp.ko")
 }
 /// Whether the transport between BlueZ and the radio is up: the loaded
 /// in-kernel driver, or the userspace bridge on images without it.
@@ -260,7 +287,7 @@ pub fn bluetooth_available() -> bool {
     // in-kernel STP driver never needs it.
     Path::new("/dev/stpbt").exists()
         && (Path::new("/dev/vhci").exists()
-            || Path::new("/extra/hci_vhci.ko").exists()
+            || boot_image_carries("hci_vhci.ko")
             || stp_driver_available())
 }
 /// Whether a process with exactly this `comm` is running.
@@ -310,6 +337,23 @@ pub fn modified(path: &Path) -> Option<std::time::SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_carried_bluetooth_modules_are_published_by_exact_name() {
+        let extra = std::env::temp_dir().join(format!("couch-bt-extra-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&extra);
+        std::fs::create_dir_all(&extra).unwrap();
+        assert_eq!(carried_modules(&extra), "");
+        std::fs::write(extra.join("hci_stp.ko"), b"").unwrap();
+        std::fs::write(extra.join("bluetooth.ko"), b"").unwrap();
+        let published = carried_modules(&extra);
+        assert_eq!(published, "hci_stp.ko\n");
+        assert!(names_module(&published, "hci_stp.ko"));
+        assert!(!names_module(&published, "hci_vhci.ko"));
+        assert!(!names_module("not_hci_stp.ko\n", "hci_stp.ko"));
+        assert!(!names_module("", "hci_stp.ko"));
+        std::fs::remove_dir_all(&extra).unwrap();
+    }
 
     #[test]
     fn render_and_parse_round_trip_and_older_files_still_read() {
