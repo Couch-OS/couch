@@ -439,6 +439,103 @@ fn start_bluetoothd(base: &str) -> Result<(), String> {
     start(STOCK_BLUETOOTHD, ">>")
 }
 
+/// What the stack runs from the Alpine root besides our own binaries, seen from
+/// the outer root. OS images up to 2026-09-11 carry none of them.
+const OS_PROGRAMS: &[&str] = &[
+    "usr/bin/dbus-daemon",
+    "usr/bin/hciconfig",
+    "usr/bin/hcitool",
+];
+/// The Alpine packages that provide them, as `tools/provision-alpine.sh` names
+/// them. About 1.5 MB with their four dependencies.
+const OS_PACKAGES: &str = "dbus bluez bluez-deprecated";
+const OS_PACKAGES_LOG: &str = "/tmp/couch-bt-packages.log";
+
+fn os_programs_present(alpine: &Path) -> bool {
+    OS_PROGRAMS
+        .iter()
+        .all(|program| alpine.join(program).exists())
+}
+
+/// True when `apk add --simulate` plans nothing but new packages. An OS image
+/// pins what it shipped with, and this step must never move any of it.
+fn plan_only_installs(plan: &str) -> bool {
+    let mut installs = 0;
+    for line in plan.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line.starts_with("OK:") {
+            continue;
+        }
+        let step = line
+            .strip_prefix('(')
+            .and_then(|rest| rest.split_once(") "));
+        match step {
+            Some((_, action)) if action.starts_with("Installing ") => installs += 1,
+            _ => return false,
+        }
+    }
+    installs > 0
+}
+
+/// Run one package-manager step inside the Alpine root, keeping its output in
+/// the log. BusyBox `timeout` bounds it: a dead network must not hang the toggle.
+fn apk_step(seconds: u32, arguments: &str) -> Result<String, ()> {
+    let output = Command::new("/bin/busybox")
+        .args(["chroot", "/mnt/alpine", "/bin/sh", "-c"])
+        .arg(format!(
+            "export PATH=/sbin:/usr/sbin:/bin:/usr/bin; timeout {seconds} apk {arguments} 2>&1"
+        ))
+        .output()
+        .map_err(|_| ())?;
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    if let Ok(mut log) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(OS_PACKAGES_LOG)
+    {
+        use std::io::Write;
+        let _ = writeln!(log, "$ apk {arguments}\n{text}");
+    }
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(())
+    }
+}
+
+/// Switching Bluetooth on for the first time adds the system packages an
+/// installed OS image lacks, from the image's own Alpine repositories and
+/// checked against the Alpine keys it shipped with. Later starts find the
+/// programs and skip this. `starting` is republished between steps because the
+/// state file reads as a crashed attempt once it is 40 s old.
+fn ensure_os_packages() -> Result<(), String> {
+    if os_programs_present(Path::new("/mnt/alpine")) {
+        return Ok(());
+    }
+    eprintln!("couch-system: bluetooth: adding {OS_PACKAGES} to the OS image");
+    let _ = fs::remove_file(OS_PACKAGES_LOG);
+    let result = (|| {
+        apk_step(20, "update").map_err(|()| {
+            "Bluetooth needs a one-time download of about 2 MB and could not reach the package server; check Wi-Fi and try again"
+        })?;
+        let plan = apk_step(10, &format!("add --simulate {OS_PACKAGES}"));
+        if !plan.is_ok_and(|plan| plan_only_installs(&plan)) {
+            return Err("Bluetooth's system packages cannot be added without changing this OS image; see /tmp/couch-bt-packages.log");
+        }
+        publish("starting");
+        let added = apk_step(35, &format!("add {OS_PACKAGES}"));
+        publish("starting");
+        if added.is_err() || !os_programs_present(Path::new("/mnt/alpine")) {
+            return Err(
+                "Bluetooth's system packages did not install; see /tmp/couch-bt-packages.log",
+            );
+        }
+        Ok(())
+    })();
+    // Leave no package index behind: the image had none.
+    let _ = alpine_sh("rm -f /var/cache/apk/APKINDEX.*");
+    result.map_err(str::to_owned)
+}
+
 fn publish(state: &str) {
     let _ = fs::write(STATE_FILE, format!("{state}\n"));
 }
@@ -716,6 +813,11 @@ pub fn set(enabled: bool) -> Result<(), String> {
         return down();
     }
     publish("starting");
+    // Not part of the retry below: a failed download is not a radio flake.
+    if let Err(error) = ensure_os_packages() {
+        publish(&format!("error {error}"));
+        return Err(error);
+    }
     // One retry from a clean stop: the first open after boot occasionally
     // leaves the controller stuck in its setup pass with nothing in the logs,
     // and a second open has always come up. Cheaper than making the user do it.
@@ -753,6 +855,38 @@ pub fn auto() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_plan_of_new_packages_may_touch_the_os_image() {
+        // What the 2026-09-11 image plans today.
+        let additive = "(1/7) Installing dbus (1.14.10-r4)\n(2/7) Installing dbus-daemon-launch-helper (1.14.10-r4)\n(7/7) Installing bluez-deprecated (5.79-r0)\nOK: 88 MiB in 149 packages\n";
+        assert!(plan_only_installs(additive));
+        for moved in [
+            "(1/2) Upgrading libcrypto3 (3.3.7-r0 -> 3.3.7-r1)\n(2/2) Installing dbus (1.14.10-r4)\nOK: 88 MiB in 143 packages",
+            "(1/2) Purging readline (8.2.13-r0)\n(2/2) Installing dbus (1.14.10-r4)",
+            "(1/1) Downgrading glib (2.82.5-r0 -> 2.82.4-r0)",
+            "ERROR: unable to select packages:\n  dbus (no such package)",
+            "OK: 85 MiB in 142 packages",
+            "",
+        ] {
+            assert!(!plan_only_installs(moved), "{moved}");
+        }
+    }
+
+    #[test]
+    fn the_install_is_skipped_once_every_program_is_in_the_alpine_root() {
+        let root = std::env::temp_dir().join(format!("couch-bt-os-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("usr/bin")).unwrap();
+        assert!(!os_programs_present(&root));
+        for program in &OS_PROGRAMS[..2] {
+            fs::write(root.join(program), b"").unwrap();
+        }
+        assert!(!os_programs_present(&root));
+        fs::write(root.join(OS_PROGRAMS[2]), b"").unwrap();
+        assert!(os_programs_present(&root));
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn the_controller_address_is_the_wifi_mac_plus_one_and_never_equal_to_it() {
