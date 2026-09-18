@@ -1806,6 +1806,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         match button_controls.poll(&app) {
             Some(activity_buttons::Feedback::Error(error)) => toast(error, 3),
+            Some(activity_buttons::Feedback::Notice(notice)) => toast(notice, 2),
             Some(activity_buttons::Feedback::Volume(reading)) => {
                 // The same card the room list shows for a highlighted speaker.
                 app.set_volume_target(reading.target.as_str().into());

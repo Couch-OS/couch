@@ -40,12 +40,56 @@ pub(crate) struct VolumeReading {
 #[derive(Default, Debug, PartialEq)]
 pub(crate) struct Outcome {
     pub volume: Option<VolumeReading>,
+    /// A sentence for a toast: what a power toggle decided.
+    pub notice: Option<String>,
+}
+/// A room row's Power key. Not a catalogue function: receivers and most TVs
+/// offer power-on and power-off, not a toggle, so the press is resolved against
+/// the device's observed state when it is sent (`power_toggle`).
+pub(crate) const POWER_TOGGLE: &str = "power-toggle";
+/// The context prefix of a highlighted room row, as opposed to an activity id.
+const ROW: &str = "row:";
+
+/// What the volume, mute and power keys do while this device's row is
+/// highlighted in a room: the same commands an activity would map them to, for
+/// whatever the device supports. Sonos rows keep their own controller
+/// (`room_sonos`, which coalesces a held key into one write), and a switchable
+/// row - a light, a cover - has no use for these keys.
+pub(crate) fn row_bindings(config: &Config, device: &couch_model::Device) -> Vec<Binding> {
+    if config.can_toggle(device)
+        || matches!(
+            config.resolve_integration(&device.integration),
+            Some(Integration::Sonos { .. })
+        )
+    {
+        return vec![];
+    }
+    let supports = |id: &str| F::parse(id).is_some_and(|f| f.supports_device(device, config));
+    let bind = |button, command: &str| Binding {
+        button,
+        gesture: Gesture::Short,
+        action: Some(Action::new(device.id.clone(), command)),
+    };
+    let mut bindings: Vec<Binding> = [
+        (Button::VolumeUp, "volume-up"),
+        (Button::VolumeDown, "volume-down"),
+        (Button::Mute, "mute"),
+    ]
+    .into_iter()
+    .filter(|(_, command)| supports(command))
+    .map(|(button, command)| bind(button, command))
+    .collect();
+    if supports("toggle") || supports("power-on") && supports("power-off") {
+        bindings.push(bind(Button::Power, POWER_TOGGLE));
+    }
+    bindings
 }
 /// What the main loop is told about a mapped press: a problem to toast, or a
 /// reading to put on the volume card.
 pub(crate) enum Feedback {
     Error(String),
     Volume(VolumeReading),
+    Notice(String),
 }
 fn volume_reading(target: &str, level: Option<i64>, muted: bool) -> Option<VolumeReading> {
     Some(VolumeReading {
@@ -67,6 +111,9 @@ pub struct Controller {
     // way, so without this the remote's primary input disappears in silence;
     // poll turns it into the same toast every other dispatch path raises.
     dropped: bool,
+    // Power ends a running activity (main.rs); a highlighted row takes the key
+    // only when there is none to end.
+    activity_running: bool,
 }
 impl Controller {
     pub fn new() -> Self {
@@ -85,9 +132,13 @@ impl Controller {
             tx,
             rx: out,
             dropped: false,
+            activity_running: false,
         }
     }
     fn binding(&self, button: Button, gesture: Gesture) -> Option<&Binding> {
+        if button == Button::Power && self.activity_running && self.context.starts_with(ROW) {
+            return None;
+        }
         self.bindings
             .iter()
             .find(|b| b.button == button && b.gesture == gesture)
@@ -156,12 +207,27 @@ impl Controller {
         self.fire(button, Gesture::Short, press.repeat)
     }
     fn sync_context(&mut self, app: &App) {
+        self.activity_running = app.get_activity_running();
+        let config = connections::config();
         let context = if app.get_player_shown() || app.get_tv_shown() {
             app.get_active_activity().to_string()
+        } else if app.get_light_shown() && !app.get_chooser_shown() {
+            // The highlighted row of the open room, when it is a device these
+            // keys mean something to.
+            config
+                .as_ref()
+                .and_then(|config| {
+                    let room = couch_model::Id::new(app.get_light_room_id().as_str());
+                    let row = usize::try_from(app.get_light_index()).ok()?;
+                    let device = crate::lights::device_at(config, &room, row)?;
+                    (!row_bindings(config, device).is_empty())
+                        .then(|| format!("{ROW}{}", device.id))
+                })
+                .unwrap_or_default()
         } else {
             String::new()
         };
-        self.refresh(context, connections::config());
+        self.refresh(context, config);
     }
     fn refresh(&mut self, context: String, config: Option<Arc<Config>>) {
         let changed = config.as_ref().map_or(!self.bindings.is_empty(), |next| {
@@ -173,18 +239,28 @@ impl Controller {
             self.replay.clear();
             self.bindings.clear();
             if let Some(config) = config {
-                self.bindings = config
-                    .activities
-                    .iter()
-                    .find(|a| a.id.as_str() == context)
-                    .map(|a| {
-                        a.buttons
-                            .iter()
-                            .filter(|b| !(b.button == Button::Back && b.gesture == Gesture::Long))
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                self.bindings = if let Some(id) = context.strip_prefix(ROW) {
+                    config
+                        .devices()
+                        .find(|(_, d)| d.id.as_str() == id)
+                        .map(|(_, d)| row_bindings(&config, d))
+                        .unwrap_or_default()
+                } else {
+                    config
+                        .activities
+                        .iter()
+                        .find(|a| a.id.as_str() == context)
+                        .map(|a| {
+                            a.buttons
+                                .iter()
+                                .filter(|b| {
+                                    !(b.button == Button::Back && b.gesture == Gesture::Long)
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
                 self.config = config;
             } else {
                 self.config = Arc::new(Config::default());
@@ -336,8 +412,15 @@ fn connection_worker(
             }
             Ok(Outcome {
                 volume: Some(reading),
+                ..
             }) => {
                 let _ = reply.try_send((r.generation, Feedback::Volume(reading)));
+            }
+            Ok(Outcome {
+                notice: Some(notice),
+                ..
+            }) => {
+                let _ = reply.try_send((r.generation, Feedback::Notice(notice)));
             }
             Ok(_) => {}
         }
@@ -429,6 +512,11 @@ pub(crate) fn execute_with_input(
         .find(|(_, d)| d.id == action.device)
         .map(|(_, d)| d)
         .ok_or("Mapped device was removed")?;
+    if action.command == POWER_TOGGLE {
+        return power_toggle(
+            config, device, denon, tv, streaming, sonos, matter, repeat, current,
+        );
+    }
     let command = F::parse(&action.command).ok_or("Unsupported button function")?;
     let order = device.transport_order(config);
     if order.is_empty() {
@@ -478,6 +566,103 @@ pub(crate) fn execute_with_input(
         }
     }
     Err(skipped.unwrap_or_else(|| "Unsupported button function".into()))
+}
+
+/// A row's Power key. A device with a real toggle (an IR power code, webOS)
+/// gets it; one with only power-on and power-off gets whichever its observed
+/// state calls for. Observed, never assumed: a receiver that will not say
+/// whether it is on is an error, not a guess that could switch it the wrong
+/// way. Samsung and Apple TV report no power state on their remote channel,
+/// so they take what their own TV screens send: off when reachable, wake when
+/// not.
+#[allow(clippy::too_many_arguments)]
+fn power_toggle(
+    config: &Config,
+    device: &couch_model::Device,
+    denon: &mut HashMap<String, couch_control::Denon>,
+    tv: &mut HashMap<String, couch_control::WebOs>,
+    streaming: &mut HashMap<String, couch_control::StreamingTv>,
+    sonos: &mut HashMap<String, couch_sonos::Client>,
+    matter: &connections::MatterFleet,
+    repeat: bool,
+    current: &dyn Fn() -> bool,
+) -> Result<Outcome, String> {
+    let name = device.name.clone();
+    let notice = |state: &str| Outcome {
+        volume: None,
+        notice: Some(format!("{name} {state}")),
+    };
+    /// What to send, decided before anything is sent: reading a kept client's
+    /// state and sending through the same caches cannot overlap.
+    enum Plan {
+        Toggle,
+        Observed(Option<bool>),
+        OffElseWake,
+    }
+    let plan = if F::Toggle.supports_device(device, config) {
+        Plan::Toggle
+    } else {
+        match device.network_integration(config) {
+            Some(Integration::Denon { host, port }) => Plan::Observed(
+                couch_control::Denon::connect(&couch_denon::Settings { host, port })
+                    .and_then(|mut c| c.status())
+                    .map_err(|e| e.to_string())?
+                    .on,
+            ),
+            Some(Integration::Plugin { connection_id, .. }) => {
+                match couch_plugin::local_request(
+                    &crate::home::path("plugin.sock"),
+                    connection_id.as_str(),
+                    couch_plugin::Request::Status,
+                    couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
+                ) {
+                    Ok(couch_plugin::Response::Status { status }) => Plan::Observed(status.on),
+                    Ok(couch_plugin::Response::Error { code }) => return Err(code.to_string()),
+                    Ok(_) => return Err("The integration returned an invalid status".into()),
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            Some(Integration::AndroidTv) => {
+                // Its state arrives on the kept client; without one yet, a
+                // first command opens it and the next press knows.
+                let connection = match &device.integration {
+                    Integration::Connection { connection_id, .. } => connection_id.as_str(),
+                    _ => "",
+                };
+                Plan::Observed(
+                    streaming
+                        .get(&format!("androidtv:{connection}"))
+                        .and_then(|c| c.status().ok())
+                        .and_then(|status| status["on"].as_bool()),
+                )
+            }
+            Some(Integration::Tizen | Integration::AppleTv) => Plan::OffElseWake,
+            _ => Plan::Observed(None),
+        }
+    };
+    let mut send = |command: &str| {
+        execute_with_input(
+            config,
+            &Action::new(device.id.clone(), command),
+            denon,
+            tv,
+            streaming,
+            sonos,
+            matter,
+            repeat,
+            current,
+        )
+    };
+    match plan {
+        Plan::Toggle => send("toggle").map(|_| notice("power toggled")),
+        Plan::OffElseWake => match send("power-off") {
+            Ok(_) => Ok(notice("power toggled")),
+            Err(_) => send("power-on").map(|_| notice("waking")),
+        },
+        Plan::Observed(Some(true)) => send("power-off").map(|_| notice("off")),
+        Plan::Observed(Some(false)) => send("power-on").map(|_| notice("on")),
+        Plan::Observed(None) => Err(format!("{name} has not said whether it is on")),
+    }
 }
 
 /// The remote is the HID peripheral: one datagram with the function's id to
@@ -569,7 +754,10 @@ fn send_network(
             } else {
                 None
             };
-            Ok(Outcome { volume })
+            Ok(Outcome {
+                volume,
+                notice: None,
+            })
         }
         Integration::AndroidTv | Integration::AppleTv | Integration::Tizen => {
             let kind = match integration {
@@ -658,7 +846,10 @@ fn send_network(
             } else {
                 None
             };
-            Ok(Outcome { volume })
+            Ok(Outcome {
+                volume,
+                notice: None,
+            })
         }
         Integration::Kodi { host, port } => {
             let c = couch_kodi::settings::Settings::load(&connections::file(connection, "kodi"))
@@ -713,7 +904,10 @@ fn send_network(
             } else {
                 None
             };
-            Ok(Outcome { volume })
+            Ok(Outcome {
+                volume,
+                notice: None,
+            })
         }
         Integration::WebOs => {
             if matches!(command, F::PowerOn | F::PowerOff | F::Toggle) {
@@ -774,7 +968,10 @@ fn send_network(
             } else {
                 None
             };
-            Ok(Outcome { volume })
+            Ok(Outcome {
+                volume,
+                notice: None,
+            })
         }
         Integration::Hue { light_id } => {
             let (id, raw) = connections::split(&light_id);
@@ -885,7 +1082,28 @@ fn send_network(
                 timeout,
             );
             match result {
-                Ok(couch_plugin::Response::Ok) => Ok(Outcome::default()),
+                Ok(couch_plugin::Response::Ok) => Ok(Outcome {
+                    // The package reports its level only when asked. One more
+                    // request, for the same card a built-in receiver fills.
+                    volume: sound
+                        .then(|| {
+                            couch_plugin::local_request(
+                                &crate::home::path("plugin.sock"),
+                                connection_id.as_str(),
+                                couch_plugin::Request::Status,
+                                timeout,
+                            )
+                            .ok()
+                        })
+                        .flatten()
+                        .and_then(|response| match response {
+                            couch_plugin::Response::Status { status } => {
+                                plugin_volume_reading(&name, &status)
+                            }
+                            _ => None,
+                        }),
+                    notice: None,
+                }),
                 Ok(couch_plugin::Response::Error { code }) => {
                     Err(plugin_failure(code, code.to_string()))
                 }
@@ -899,6 +1117,27 @@ fn send_network(
             "This integration cannot send button commands yet".into(),
         )),
     }
+}
+
+/// A package's status as the volume card shows it: decibels for a receiver,
+/// a percentage for anything that has one, and "Muted" over either.
+fn plugin_volume_reading(target: &str, status: &couch_plugin::Status) -> Option<VolumeReading> {
+    let muted = status.muted == Some(true);
+    if let Some(percent) = status.volume {
+        return volume_reading(target, Some(i64::from(percent)), muted);
+    }
+    let text = match status.volume_db.as_ref()? {
+        _ if muted => "Muted".into(),
+        couch_plugin::VolumeDb::Reading { tenths } => {
+            format!("{:.1} dB", f32::from(*tenths) / 10.0)
+        }
+        couch_plugin::VolumeDb::Minimum => "Minimum".into(),
+    };
+    Some(VolumeReading {
+        target: target.to_owned(),
+        level: -1,
+        text,
+    })
 }
 
 fn plugin_failure(error: couch_plugin::Error, message: String) -> Failure {
@@ -1013,6 +1252,149 @@ fn ir_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A room with a packaged receiver, a built-in receiver, a webOS TV, a
+    /// Sonos speaker and a Hue light.
+    fn room() -> Config {
+        let mut config = Config::seed();
+        let plugin = couch_model::Provider::Plugin {
+            id: "denon".into(),
+            label: "Denon AVR".into(),
+            capabilities: ["power-on", "power-off", "volume-up", "volume-down", "mute"]
+                .into_iter()
+                .map(|id| couch_model::PluginCapability {
+                    id: id.into(),
+                    label: id.into(),
+                })
+                .collect(),
+            supports_inputs: true,
+            presentation: vec![],
+            actions: vec![],
+        };
+        for (id, provider) in [
+            ("avr-package", plugin),
+            (
+                "avr-native",
+                couch_model::Provider::Denon {
+                    host: "192.0.2.10".into(),
+                    port: 23,
+                },
+            ),
+            ("lg", couch_model::Provider::WebOs),
+        ] {
+            config.connections.push(couch_model::Connection {
+                id: id.into(),
+                name: id.into(),
+                provider,
+            });
+        }
+        let room = config.rooms.first_mut().unwrap();
+        for id in ["avr-package", "avr-native", "lg"] {
+            room.devices.push(
+                couch_model::Device::new(
+                    couch_model::Id::new(id),
+                    id,
+                    couch_model::DeviceKind::Speaker,
+                )
+                .with_integration(Integration::Connection {
+                    connection_id: id.into(),
+                    resource_id: String::new(),
+                }),
+            );
+        }
+        config.validate().unwrap();
+        config
+    }
+    fn device<'a>(config: &'a Config, id: &str) -> &'a couch_model::Device {
+        config
+            .devices()
+            .find(|(_, d)| d.id.as_str() == id)
+            .map(|(_, d)| d)
+            .unwrap()
+    }
+    fn keys(bindings: &[Binding]) -> Vec<(Button, String)> {
+        bindings
+            .iter()
+            .map(|b| (b.button, b.action.as_ref().unwrap().command.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_receiver_or_tv_row_answers_volume_mute_and_power_and_other_rows_do_not() {
+        let config = room();
+        let expected = vec![
+            (Button::VolumeUp, "volume-up".to_owned()),
+            (Button::VolumeDown, "volume-down".to_owned()),
+            (Button::Mute, "mute".to_owned()),
+            (Button::Power, POWER_TOGGLE.to_owned()),
+        ];
+        for id in ["avr-package", "avr-native", "lg"] {
+            let bindings = row_bindings(&config, device(&config, id));
+            assert_eq!(keys(&bindings), expected, "{id}");
+            assert!(bindings
+                .iter()
+                .all(|b| b.gesture == Gesture::Short
+                    && b.action.as_ref().unwrap().device.as_str() == id));
+        }
+        // Sonos rows keep their own controller; a light has no use for the keys.
+        for (_, d) in config.devices() {
+            let sonos = matches!(
+                config.resolve_integration(&d.integration),
+                Some(Integration::Sonos { .. })
+            );
+            if sonos || config.can_toggle(d) {
+                assert!(row_bindings(&config, d).is_empty(), "{}", d.name);
+            }
+        }
+    }
+
+    #[test]
+    fn power_on_a_row_yields_to_a_running_activity() {
+        let config = Arc::new(room());
+        let mut controller = Controller::new();
+        controller.refresh(format!("{ROW}avr-native"), Some(config));
+        assert!(controller.binding(Button::Power, Gesture::Short).is_some());
+        assert!(controller
+            .binding(Button::VolumeUp, Gesture::Short)
+            .is_some());
+        controller.activity_running = true;
+        assert!(controller.binding(Button::Power, Gesture::Short).is_none());
+        assert!(controller
+            .binding(Button::VolumeUp, Gesture::Short)
+            .is_some());
+        // A row whose device is gone has no bindings rather than stale ones.
+        controller.activity_running = false;
+        controller.refresh(format!("{ROW}no-such-device"), Some(Arc::new(room())));
+        assert!(controller.binding(Button::Power, Gesture::Short).is_none());
+    }
+
+    #[test]
+    fn a_package_status_fills_the_volume_card_in_decibels_percent_or_muted() {
+        let status = |json: serde_json::Value| -> couch_plugin::Status {
+            serde_json::from_value(json).unwrap()
+        };
+        let card = |json| plugin_volume_reading("Theater AVR", &status(json));
+        let db = card(serde_json::json!({"volume_db":{"kind":"reading","tenths":-415}})).unwrap();
+        assert_eq!(
+            (db.text.as_str(), db.level, db.target.as_str()),
+            ("-41.5 dB", -1, "Theater AVR")
+        );
+        assert_eq!(
+            card(serde_json::json!({"volume_db":{"kind":"minimum"}}))
+                .unwrap()
+                .text,
+            "Minimum"
+        );
+        assert_eq!(
+            card(serde_json::json!({"muted":true,"volume_db":{"kind":"reading","tenths":-300}}))
+                .unwrap()
+                .text,
+            "Muted"
+        );
+        let percent = card(serde_json::json!({"volume":37})).unwrap();
+        assert_eq!((percent.level, percent.text.as_str()), (37, ""));
+        assert!(card(serde_json::json!({"on":true})).is_none());
+    }
     #[test]
     fn supplemental_ir_routes_only_exact_assignments_and_never_falls_back_on_error() {
         let codes =
@@ -1220,6 +1602,7 @@ mod tests {
                 tx,
                 rx: out,
                 dropped: false,
+                activity_running: false,
             },
             rx,
         )
