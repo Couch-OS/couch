@@ -351,6 +351,15 @@ appears in it.
 It also round-trips your settings through a real file to confirm they survive
 being written at 0600 and read back.
 
+`MockHost` answers a line protocol, and that is the only thing in this module
+that assumes one. If your device speaks HTTP, TLS or WebSocket, write the fixture
+your protocol needs and keep `MockHost` as the observer `contract_findings`
+requires; the packaged admission cases in `couch_plugin::testing` take your
+fixture directly through a `FakeDevice`, described in
+[Catalog admission](development/admission.md). Point the client at it through
+ordinary settings - a pinned certificate, an explicit API root - never through a
+test-only branch in shipping code.
+
 None of this reaches a shipped binary. The harness is behind an off-by-default
 feature and belongs in `[dev-dependencies]`, so a production build links no
 listener and spawns no thread:
@@ -495,14 +504,19 @@ Notes that will save you a day:
   `couch-echo` implements it - but the mDNS browser stays in
   `daemon/couch-confd/src/api/streaming_tv.rs`, so one process rather than five
   holds a multicast socket. Nothing calls `Discover` yet.
-- **The mock host is a line protocol.** It fits Denon, Kodi over TCP and the
-  example; it is not an HTTP server, a TLS endpoint or a WebSocket peer. A
-  client needing those still writes its own fixture, as `couch-ha`, `couch-hue`
-  and `couch-sonos` do with `tiny_http`. `contract_findings` still earns its
-  place there: everything it decides before connecting - the slug, the labels,
+- **`MockHost` is a line protocol; the admission harness no longer is.**
+  `MockHost` itself still fits Denon, Kodi over TCP and the example, and is not
+  an HTTP server, a TLS endpoint or a WebSocket peer. A client needing one of
+  those writes its own fixture, as `couch-ha`, `couch-hue` and `couch-sonos` do.
+  What changed is that `couch_plugin::testing` takes that fixture: see
+  [the admission cases](development/admission.md) for the two-method
+  `FakeDevice` trait. `contract_findings` is unaffected and still earns its
+  place: everything it decides before connecting - the slug, the labels,
   canonical and unique capability ids, the gate agreeing with the declaration,
-  and the settings surviving a real 0600 file - runs against any settings, and
-  `couch-sonos` asserts that `connect failed` is the only finding left.
+  and the settings surviving a real 0600 file - runs against any settings, and a
+  client whose settings can name its fixture's origin (`couch-sonos` has an
+  `api_root`) gets the connected half as well, with `MockHost` staying on as the
+  observer that proves a refusal cost no round trip.
 - **`cargo fmt --check` is not clean on committed code** in any of the five
   workspaces, including `clients/`. Check your own crate with
   `cargo fmt -p <crate> -- --check` and leave the rest alone unless you are

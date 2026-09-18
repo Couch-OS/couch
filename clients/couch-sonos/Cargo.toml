@@ -6,14 +6,17 @@ license.workspace = true
 description = "Local Sonos Control API playback and player volume control"
 
 [dependencies]
+couch-plugin = { path = "../couch-plugin" }
 couch-sdk = { path = "../couch-sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "=3.4.1", default-features = false, features = ["rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
-# The contract checker and the settings round-trip run here; the SDK's scripted
-# host is a line protocol, so the HTTP exchanges keep their tiny_http fixture.
+# The contract checker and the settings round-trip run here, and the admission
+# cases run the real package subprocess against the fake Control API in
+# tests/fake/. tiny_http serves both.
 [dev-dependencies]
+couch-plugin = { path = "../couch-plugin", features = ["testing"] }
 couch-sdk = { path = "../couch-sdk", features = ["testing"] }
 tiny_http = "0.12"

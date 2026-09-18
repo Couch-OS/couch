@@ -30,6 +30,9 @@
       "model/couch-model/src/device.rs",
       "model/couch-model/src/buttons.rs"
     ],
+    "harness_paths": {
+      "clients/couch-plugin/src/testing.rs": "f484e03f7e1ffed3287f9c152e8cc84ab6b713b46af89dcbd04a1e1aaa36e711"
+    },
     "supported_protocol_versions": [
       1,
       2
