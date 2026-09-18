@@ -27,6 +27,11 @@ command -v trunk >/dev/null || {
 
 echo "= web/couch-web -> dist"
 ( cd web/couch-web && trunk build --release )
+# couch-confd's build.rs reruns when this changes (see the comment there).
+COUCH_WEB_DIST_DIGEST=$(cd web/couch-web/dist && find . -type f | LC_ALL=C sort |
+    while read -r f; do sha256sum "$f" 2>/dev/null || shasum -a 256 "$f"; done |
+    { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+export COUCH_WEB_DIST_DIGEST
 
 if [ "$TARGET" = host ]; then
     echo "= daemon/couch-confd -> host"
@@ -42,6 +47,18 @@ else
     ( cd daemon && cargo build --release --target "$TARGET" )
     BIN=daemon/target/$TARGET/release/couch-confd
 fi
+
+# The daemon must carry the UI that was just built, not one a stale build
+# script cache baked in. trunk names its bundle by content hash and the asset
+# table stores those names, so their presence in the binary is the proof.
+for f in web/couch-web/dist/couch-web-*; do
+    [ -f "$f" ] || { echo "no browser bundle in web/couch-web/dist" >&2; exit 1; }
+    grep -a -q -F "$(basename "$f")" "$BIN" || {
+        echo "$BIN does not contain $(basename "$f"): it embeds a stale web UI." >&2
+        echo "Remove daemon/target/*/release/build/couch-confd-* and rebuild." >&2
+        exit 1
+    }
+done
 
 # The sizes are the point of the exercise: everything here is downloaded over
 # the remote's own WiFi or stored on its flash, so a build that quietly doubled
