@@ -215,10 +215,16 @@ available requires a new full OS build from the final integration-capable core:
    artifacts with `tools/build-wmt-properties.sh` and
    `tools/build-release.sh`. Run the tested-set verifier and runtime inventory
    in that same frozen checkout.
-2. Assemble the pinned offline Alpine package closure and rootfs, then produce
-   the owner-neutral userdata, installer RAM stage, boot/recovery payloads and
-   logo through the existing public installer workflow. The exact-source build
-   attestation must name the final Couch commit and the actual new file hashes.
+2. Assemble the rootfs from the **retained closure archive** pinned in
+   `ha100_os_baseline.json`, not from a fresh `package_closure.py prepare` run.
+   Re-resolving the root list against the live mirror does not reproduce a
+   closure: only the explicit roots are version-pinned, and Alpine deletes
+   superseded revisions, so the old bytes cannot be fetched back — see
+   [re-resolving a version list is not reproducible](offline-packages.md#re-resolving-a-version-list-is-not-reproducible).
+   Then produce the owner-neutral userdata, installer RAM stage, boot/recovery
+   payloads and logo through the existing public installer workflow. The
+   exact-source build attestation must name the final Couch commit and the
+   actual new file hashes.
 3. Package and admit the public installer inputs with
    `package_public_installer.py` and the native host's `verify-public` command.
    Reusing unchanged host/TUI executables is valid only with their original
@@ -231,6 +237,16 @@ available requires a new full OS build from the final integration-capable core:
 The full OS image may contain the core host and embedded public key. It must not
 contain the Denon APK, an installed package slot, connection settings or an
 automatic migration instruction.
+
+Both halves of a fresh install are bound the same way, and for the same reason.
+The feed's commit-addressed `feed-<commit>` release asset keeps the tested
+package snapshot reproducible because the live Preview index can change. The
+OS's retained closure archive keeps the pinned Alpine package set reproducible
+because the live Alpine mirror does change: `libcrypto3` and `libssl3` moved
+`3.3.7-r0` → `3.3.7-r1` one day after a baseline was pinned, and that is enough
+to make the pinned closure unbuildable forever. In both cases the retained
+bytes, pinned by SHA-256, are the durable input; a version list is not. Never
+loosen either verifier to accept an unreviewed, re-resolved substitute.
 
 ## Candidate state and remaining gates
 
