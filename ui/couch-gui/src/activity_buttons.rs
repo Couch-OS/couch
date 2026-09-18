@@ -45,6 +45,9 @@ pub(crate) struct Outcome {
     /// A held key's level was not read back, to keep the hold fast: read it
     /// once the device's lane goes quiet.
     pub settle: bool,
+    /// The decibel level a read-back observed, in tenths, for the lane to
+    /// predict a held key's steps from.
+    pub observed_db: Option<i16>,
 }
 /// A line for the shared feedback card: "Power" over the device, "Off" beside.
 #[derive(Debug, Clone, PartialEq)]
@@ -392,12 +395,17 @@ fn connection_worker(
     let matter = connections::matter();
     let mut generation = current.load(Ordering::SeqCst);
     // A packaged device whose level is owed a read once its keys stop.
-    let mut settle: Option<(String, String)> = None;
+    let mut settle: Option<(String, String, Option<DbScale>)> = None;
+    // Its last observed decibel level, in tenths: what a held volume key is
+    // predicted from, the way a brightness hold moves its card before the
+    // light has answered. Every real reading replaces it.
+    let mut level: Option<i16> = None;
     loop {
         let request = rx.recv_timeout(Duration::from_millis(100));
         let now = current.load(Ordering::SeqCst);
         if now != generation {
             settle = None;
+            level = None;
             denon.clear();
             tv.clear();
             streaming.clear();
@@ -409,8 +417,9 @@ fn connection_worker(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // The lane has been quiet for a poll: a held volume key is
                 // over. One read for the card, at the level it ended on.
-                if let Some((connection, target)) = settle.take() {
-                    if let Some(reading) = plugin_level(&connection, &target) {
+                if let Some((connection, target, scale)) = settle.take() {
+                    if let Some((reading, observed)) = plugin_level(&connection, &target, scale) {
+                        level = observed;
                         let _ = reply.try_send((generation, Feedback::Volume(reading)));
                     }
                 }
@@ -425,12 +434,34 @@ fn connection_worker(
             .config
             .devices()
             .find(|(_, d)| d.id == r.action.device)
-            .and_then(|(_, d)| match d.network_integration(&r.config)? {
-                Integration::Plugin { connection_id, .. } => {
-                    Some((connection_id.to_string(), d.name.clone()))
+            .and_then(|(_, d)| {
+                let integration = d.network_integration(&r.config)?;
+                let scale = DbScale::of(&integration);
+                match integration {
+                    Integration::Plugin { connection_id, .. } => {
+                        Some((connection_id.to_string(), d.name.clone(), scale))
+                    }
+                    _ => None,
                 }
-                _ => None,
             });
+        // Move the card now, from the last level seen, and let the readings
+        // that follow correct it. Without a declared scale or a level yet
+        // there is nothing to predict from, and the read-back shows the truth.
+        if let (Some((_, target, Some(scale))), Some(known)) = (&settles, level) {
+            let up = match r.action.command.as_str() {
+                "volume-up" => Some(true),
+                "volume-down" => Some(false),
+                _ => None,
+            };
+            if let Some(up) = up {
+                let predicted = scale.stepped(known, up);
+                level = Some(predicted);
+                let _ = reply.try_send((
+                    r.generation,
+                    Feedback::Volume(db_reading(target, predicted, false, Some(*scale))),
+                ));
+            }
+        }
         match execute_with_input(
             &r.config,
             &r.action,
@@ -450,8 +481,12 @@ fn connection_worker(
             }
             Ok(Outcome {
                 volume: Some(reading),
+                observed_db,
                 ..
             }) => {
+                if settles.is_some() {
+                    level = observed_db;
+                }
                 let _ = reply.try_send((r.generation, Feedback::Volume(reading)));
             }
             Ok(Outcome {
@@ -767,6 +802,7 @@ fn send_network(
         Integration::Connection { connection_id, .. } => connection_id.as_str(),
         _ => "",
     };
+    let scale = DbScale::of(&integration);
     match integration {
         // Connecting cost a TLS handshake and a GET /players/local/info before
         // the press could even be sent, inside the same 750 ms deadline the
@@ -1134,12 +1170,16 @@ fn send_network(
                     settle: true,
                     ..Outcome::default()
                 }),
-                Ok(couch_plugin::Response::Ok) => Ok(Outcome {
-                    volume: sound
-                        .then(|| plugin_level(connection_id.as_str(), &name))
-                        .flatten(),
-                    ..Outcome::default()
-                }),
+                Ok(couch_plugin::Response::Ok) => {
+                    let level = sound
+                        .then(|| plugin_level(connection_id.as_str(), &name, scale))
+                        .flatten();
+                    Ok(Outcome {
+                        observed_db: level.as_ref().and_then(|(_, tenths)| *tenths),
+                        volume: level.map(|(reading, _)| reading),
+                        ..Outcome::default()
+                    })
+                }
                 Ok(couch_plugin::Response::Error { code }) => {
                     Err(plugin_failure(code, code.to_string()))
                 }
@@ -1156,37 +1196,104 @@ fn send_network(
 }
 
 /// Ask a packaged device for its level, for the volume card.
-fn plugin_level(connection: &str, target: &str) -> Option<VolumeReading> {
+fn plugin_level(
+    connection: &str,
+    target: &str,
+    scale: Option<DbScale>,
+) -> Option<(VolumeReading, Option<i16>)> {
     match couch_plugin::local_request(
         &crate::home::path("plugin.sock"),
         connection,
         couch_plugin::Request::Status,
         couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
     ) {
-        Ok(couch_plugin::Response::Status { status }) => plugin_volume_reading(target, &status),
+        Ok(couch_plugin::Response::Status { status }) => {
+            let tenths = match (status.muted, status.volume_db.as_ref()) {
+                (Some(true), _) => None,
+                (_, Some(couch_plugin::VolumeDb::Reading { tenths })) => Some(*tenths),
+                _ => None,
+            };
+            plugin_volume_reading(target, &status, scale).map(|reading| (reading, tenths))
+        }
         _ => None,
     }
 }
 
 /// A package's status as the volume card shows it: decibels for a receiver,
 /// a percentage for anything that has one, and "Muted" over either.
-fn plugin_volume_reading(target: &str, status: &couch_plugin::Status) -> Option<VolumeReading> {
+fn plugin_volume_reading(
+    target: &str,
+    status: &couch_plugin::Status,
+    scale: Option<DbScale>,
+) -> Option<VolumeReading> {
     let muted = status.muted == Some(true);
     if let Some(percent) = status.volume {
         return volume_reading(target, Some(i64::from(percent)), muted);
     }
-    let text = match status.volume_db.as_ref()? {
-        _ if muted => "Muted".into(),
-        couch_plugin::VolumeDb::Reading { tenths } => {
-            format!("{:.1} dB", f32::from(*tenths) / 10.0)
-        }
-        couch_plugin::VolumeDb::Minimum => "Minimum".into(),
-    };
-    Some(VolumeReading {
-        target: target.to_owned(),
-        level: -1,
-        text,
+    Some(match status.volume_db.as_ref()? {
+        couch_plugin::VolumeDb::Reading { tenths } => db_reading(target, *tenths, muted, scale),
+        couch_plugin::VolumeDb::Minimum => VolumeReading {
+            target: target.to_owned(),
+            level: if scale.is_some() { 0 } else { -1 },
+            text: if muted { "Muted" } else { "Minimum" }.into(),
+        },
     })
+}
+
+/// The decibel range and key step a packaged receiver declares with its
+/// set-volume action. Decibels have no natural percentage; the declared range
+/// gives the card's bar one, and the step lets a held key move the card
+/// before the receiver has been asked where it ended up.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DbScale {
+    min: i16,
+    max: i16,
+    step: i16,
+}
+impl DbScale {
+    fn of(integration: &Integration) -> Option<Self> {
+        let Integration::Plugin { actions, .. } = integration else {
+            return None;
+        };
+        actions.iter().find_map(|action| match action {
+            couch_model::PluginActionSchema::SetVolumeDb {
+                min_tenths,
+                max_tenths,
+                step_tenths,
+            } if max_tenths > min_tenths && *step_tenths > 0 => Some(Self {
+                min: *min_tenths,
+                max: *max_tenths,
+                step: i16::try_from(*step_tenths).ok()?,
+            }),
+            _ => None,
+        })
+    }
+    fn percent(self, tenths: i16) -> i32 {
+        let span = i32::from(self.max) - i32::from(self.min);
+        ((i32::from(tenths.clamp(self.min, self.max)) - i32::from(self.min)) * 100 + span / 2)
+            / span
+    }
+    /// Where one more press of a volume key should leave the level.
+    fn stepped(self, tenths: i16, up: bool) -> i16 {
+        let next = if up {
+            tenths.saturating_add(self.step)
+        } else {
+            tenths.saturating_sub(self.step)
+        };
+        next.clamp(self.min, self.max)
+    }
+}
+fn db_reading(target: &str, tenths: i16, muted: bool, scale: Option<DbScale>) -> VolumeReading {
+    VolumeReading {
+        target: target.to_owned(),
+        // A level of 0-100 draws the bar; -1 is a reading with no scale.
+        level: scale.map_or(-1, |scale| scale.percent(tenths)),
+        text: if muted {
+            "Muted".into()
+        } else {
+            format!("{:.1} dB", f32::from(tenths) / 10.0)
+        },
+    }
 }
 
 fn plugin_failure(error: couch_plugin::Error, message: String) -> Failure {
@@ -1398,6 +1505,46 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_decibel_range_gives_the_bar_a_percentage_and_a_held_key_its_steps() {
+        let config = room();
+        // The fixture's package declares no set-volume action: no scale, so no
+        // bar and nothing to predict from.
+        let plain = device(&config, "avr-package")
+            .network_integration(&config)
+            .unwrap();
+        assert_eq!(DbScale::of(&plain), None);
+        let mut declared = plain;
+        let Integration::Plugin { actions, .. } = &mut declared else {
+            panic!("a packaged device")
+        };
+        actions.push(couch_model::PluginActionSchema::SetVolumeDb {
+            min_tenths: -800,
+            max_tenths: 180,
+            step_tenths: 5,
+        });
+        let scale = DbScale::of(&declared).unwrap();
+        assert_eq!((scale.percent(-800), scale.percent(180)), (0, 100));
+        assert_eq!(scale.percent(-415), 39);
+        // Out-of-range readings pin to the ends rather than overflow the bar.
+        assert_eq!((scale.percent(-900), scale.percent(300)), (0, 100));
+        assert_eq!(scale.stepped(-415, true), -410);
+        assert_eq!(scale.stepped(-415, false), -420);
+        assert_eq!(scale.stepped(180, true), 180);
+        assert_eq!(scale.stepped(-800, false), -800);
+        let predicted = db_reading("Theater AVR", scale.stepped(-415, true), false, Some(scale));
+        assert_eq!((predicted.text.as_str(), predicted.level), ("-41.0 dB", 40));
+        // A built-in receiver declares no scale either.
+        assert_eq!(
+            DbScale::of(
+                &device(&config, "avr-native")
+                    .network_integration(&config)
+                    .unwrap()
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn power_on_a_row_yields_to_a_running_activity() {
         let config = Arc::new(room());
         let mut controller = Controller::new();
@@ -1422,7 +1569,7 @@ mod tests {
         let status = |json: serde_json::Value| -> couch_plugin::Status {
             serde_json::from_value(json).unwrap()
         };
-        let card = |json| plugin_volume_reading("Theater AVR", &status(json));
+        let card = |json| plugin_volume_reading("Theater AVR", &status(json), None);
         let db = card(serde_json::json!({"volume_db":{"kind":"reading","tenths":-415}})).unwrap();
         assert_eq!(
             (db.text.as_str(), db.level, db.target.as_str()),
@@ -1439,6 +1586,19 @@ mod tests {
                 .unwrap()
                 .text,
             "Muted"
+        );
+        // With the range the package declares, the same readings fill the bar.
+        let scale = Some(DbScale {
+            min: -800,
+            max: 180,
+            step: 5,
+        });
+        let scaled = |json| plugin_volume_reading("Theater AVR", &status(json), scale).unwrap();
+        let bar = scaled(serde_json::json!({"volume_db":{"kind":"reading","tenths":-415}}));
+        assert_eq!((bar.text.as_str(), bar.level), ("-41.5 dB", 39));
+        assert_eq!(
+            scaled(serde_json::json!({"volume_db":{"kind":"minimum"}})).level,
+            0
         );
         let percent = card(serde_json::json!({"volume":37})).unwrap();
         assert_eq!((percent.level, percent.text.as_str()), (37, ""));
