@@ -10,6 +10,14 @@ use std::{
 };
 
 const OFFICIAL_KEY: &str = include_str!("official.rsa.pub");
+/// Where the official feed is published, and where it was published before
+/// the feed repository moved owners. A GitHub Pages address follows its
+/// owner and is not forwarded, and indexes are fetched with redirects off, so
+/// the official repositories try the current address and then the previous
+/// one. Both serve the same feed, verified with the same key; whichever is
+/// live answers, before and after the move.
+const OFFICIAL_FEED: &str = "https://packages.couch-os.dev";
+const PREVIOUS_OFFICIAL_FEED: &str = "https://dangerouslaser.github.io/couch-integrations";
 const MAX_INDEX: u64 = 4 * 1024 * 1024;
 const MAX_EXPANDED_INDEX: u64 = 32 * 1024 * 1024;
 
@@ -106,7 +114,7 @@ impl Manager {
             .map(|channel| Repository {
                 id: format!("official-{channel}"),
                 name: format!("Couch {channel}"),
-                url: format!("https://dangerouslaser.github.io/couch-integrations/{channel}"),
+                url: format!("{OFFICIAL_FEED}/{channel}"),
                 fingerprint: fingerprint(OFFICIAL_KEY),
                 public_key: OFFICIAL_KEY.into(),
                 official: true,
@@ -436,7 +444,7 @@ impl Manager {
         let keys = self.keys(repository)?;
         // Refresh that source immediately before install. A signed index can
         // change between browsing and clicking; require the reviewed version.
-        let current = self.fetch_index(repository, &keys)?;
+        let (current, source) = self.fetch_index(repository, &keys)?;
         if !current
             .iter()
             .any(|p| p.id == selected.id && p.apk_version == selected.apk_version)
@@ -451,7 +459,7 @@ impl Manager {
         let package = format!("couch-integration-{}", selected.id);
         self.0.store.clone().with_keys_dir(keys).fetch_repository(
             &package,
-            &repository.url,
+            &source,
             Some((&selected.id, &selected.version)),
         )?;
         let mut origins = self.origins()?;
@@ -469,6 +477,7 @@ impl Manager {
             match self
                 .keys(&repository)
                 .and_then(|keys| self.fetch_index(&repository, &keys))
+                .map(|(available, _)| available)
             {
                 Ok(mut packages) => available.append(&mut packages),
                 Err(error) => errors.push(format!("{}: {error}", repository.name)),
@@ -507,16 +516,53 @@ impl Manager {
         }
         Ok(latest.into_values().collect())
     }
-    fn fetch_index(&self, repository: &Repository, keys: &Path) -> Result<Vec<Available>> {
+    /// The addresses to try for a repository, in order. Only an official
+    /// repository at its built-in address has a second one.
+    fn sources(repository: &Repository) -> Vec<String> {
+        let mut sources = vec![repository.url.clone()];
+        if repository.official {
+            if let Some(channel) = repository.url.strip_prefix(OFFICIAL_FEED) {
+                sources.push(format!("{PREVIOUS_OFFICIAL_FEED}{channel}"));
+            }
+        }
+        sources
+    }
+    /// The verified index, and the address that served it: a package is then
+    /// fetched from the same place as the index that named it.
+    fn fetch_index(
+        &self,
+        repository: &Repository,
+        keys: &Path,
+    ) -> Result<(Vec<Available>, String)> {
+        let mut last = err("cannot download repository index over HTTPS");
+        for source in Self::sources(repository) {
+            match self.fetch_index_from(repository, &source, keys) {
+                Ok(available) => return Ok((available, source)),
+                Err(error) => last = error,
+            }
+        }
+        Err(last)
+    }
+    fn fetch_index_from(
+        &self,
+        repository: &Repository,
+        source: &str,
+        keys: &Path,
+    ) -> Result<Vec<Available>> {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .max_redirects(0)
             .build()
             .new_agent();
         let mut response = agent
-            .get(&format!("{}/armv7/APKINDEX.tar.gz", repository.url))
+            .get(&format!("{source}/armv7/APKINDEX.tar.gz"))
             .call()
             .map_err(|_| err("cannot download repository index over HTTPS"))?;
+        // Redirects are off, so a moved address answers 3xx with a page, not
+        // an index: that is a failed download, not a malformed repository.
+        if response.status() != 200 {
+            return Err(err("cannot download repository index over HTTPS"));
+        }
         let mut bytes = Vec::new();
         response
             .body_mut()
@@ -758,6 +804,28 @@ mod tests {
             url: "https://example.com/feed/".into(),
             public_key: OFFICIAL_KEY.into(),
         }
+    }
+    #[test]
+    fn only_official_repositories_fall_back_to_the_previous_feed_address() {
+        let official = Manager::official();
+        assert_eq!(official.len(), 2);
+        for (repository, channel) in official.iter().zip(["stable", "preview"]) {
+            assert_eq!(
+                Manager::sources(repository),
+                [
+                    format!("https://packages.couch-os.dev/{channel}"),
+                    format!("https://dangerouslaser.github.io/couch-integrations/{channel}"),
+                ]
+            );
+        }
+        // A user's repository is fetched from its own address only, even one
+        // that claims the official host, and so is anything not marked official.
+        let mut theirs = official[0].clone();
+        theirs.official = false;
+        assert_eq!(Manager::sources(&theirs), [theirs.url.clone()]);
+        let mut elsewhere = official[0].clone();
+        elsewhere.url = "https://example.com/feed".into();
+        assert_eq!(Manager::sources(&elsewhere), [elsewhere.url.clone()]);
     }
     #[test]
     fn trust_requires_exact_review_and_survives_restart() {

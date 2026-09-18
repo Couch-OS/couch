@@ -38,17 +38,24 @@ dependencies.
 
 ## Before moving `couch-integrations`
 
-The signed integrations feed is served by GitHub Pages, which is not redirected.
-Remotes read it from `https://packages.couch-os.dev/{stable,preview}`, a custom
-domain on that repository's Pages site, so the URL survives the move. Its DNS
-record is a Cloudflare CNAME, DNS only, pointing at `dangerouslaser.github.io`.
+The signed integrations feed is served by GitHub Pages, which is not redirected
+when a repository changes owner, and remotes fetch the index with redirects off
+(`fetch_index_from` in `daemon/couch-integrations/src/management.rs`). Runtimes
+up to `.175.dev` know one address, `dangerouslaser.github.io/couch-integrations`;
+moving the repository, or attaching a custom domain to its Pages site (which
+turns that address into a 301), breaks their package manager. Later runtimes try
+`https://packages.couch-os.dev/{stable,preview}` first and the old address
+second, with the same official key, so they work on either side of the move.
 
-1. Point that DNS record at `couch-os.github.io.` when the repository moves, and
-   confirm the custom domain and HTTPS enforcement survived the transfer.
-2. Ship a runtime whose official feed URL is `packages.couch-os.dev` to every
-   remote that uses integrations. The URL lives in an integration contract path
-   (`daemon/couch-integrations`), so the tested integration set evidence must be
-   renewed first (`tools/release/tested-integrations.json`).
+1. Ship that runtime and give remotes that use integrations time to take it.
+   The address lives in an integration contract path
+   (`daemon/couch-integrations`), so the tested integration set is renewed with
+   it (`tools/release/tested-integrations.json`).
+2. Move the repository, attach `packages.couch-os.dev` to its Pages site, point
+   the Cloudflare CNAME (DNS only) at `couch-os.github.io.`, and confirm HTTPS
+   enforcement. A remote still on an older runtime keeps its installed
+   integrations but cannot browse or update packages until it updates; a static
+   copy of the feed at the old address is the fallback if that matters.
 3. Afterwards, switch the feed's own `source-pin.json` tooling entry and the
    `gh workflow run` command in its README.
 4. Check that the `package-signing` and `github-pages` environments, their

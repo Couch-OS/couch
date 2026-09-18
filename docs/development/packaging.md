@@ -280,9 +280,13 @@ https://packages.couch-os.dev/preview
 https://packages.couch-os.dev/stable
 ```
 
-Runtimes up to `.171.dev` still read the official feeds from
-`dangerouslaser.github.io/couch-integrations`, which redirects here until
-that repository moves to the Couch-OS organization.
+Runtimes up to `.175.dev` read the official feeds only from
+`dangerouslaser.github.io/couch-integrations`. Later runtimes try the address
+above first and that one second, so they work before and after the feed
+repository moves to the Couch-OS organization. Indexes are fetched with
+redirects off, so the old address cannot simply forward: the feed must not
+move, and the custom domain must not be attached, until remotes that use
+integrations run a runtime with both addresses.
 
 The installer adds `armv7` when it fetches the index. `preview` initially
 contains the Denon integration. `stable` serves a valid signed empty index and
