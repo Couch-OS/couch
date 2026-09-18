@@ -171,7 +171,10 @@ impl Controller {
                 action,
                 repeat,
             });
-            self.dropped |= sent.is_err();
+            // A held key repeats faster than a slow device answers. A repeat
+            // there is no room for is the hold running at the device's pace,
+            // not a lost press: only a fresh press is worth a toast.
+            self.dropped |= sent.is_err() && !repeat;
         }
         true
     }
@@ -371,7 +374,12 @@ fn worker(
             std::thread::spawn(move || connection_worker(rx, reply, current));
             tx
         });
+        let repeat = r.repeat;
         if tx.try_send(r).is_err() {
+            // The same rule as `fire`: a surplus repeat is dropped quietly.
+            if repeat {
+                continue;
+            }
             eprintln!("couch-gui: mapped connection queue full");
             let _ = reply.try_send((
                 generation,
@@ -1795,6 +1803,36 @@ mod tests {
         );
         assert!(c.feedback().is_none());
         assert_eq!(rx.try_iter().count(), 8);
+    }
+
+    #[test]
+    fn a_held_key_that_outruns_the_queue_is_not_an_error() {
+        let (mut c, rx) = fixture();
+        c.bindings = vec![Binding {
+            button: Button::VolumeUp,
+            gesture: Gesture::Short,
+            action: Some(Action::new("tv", "volume-up")),
+        }];
+        // One press, then the hold's repeats arrive faster than anything drains.
+        assert!(c.handle_press(&press(115, false)));
+        let mut held = press(115, false);
+        held.repeat = true;
+        for _ in 0..20 {
+            assert!(c.handle_press(&held), "the key is still consumed");
+        }
+        assert!(
+            c.feedback().is_none(),
+            "surplus repeats are dropped quietly"
+        );
+        assert_eq!(rx.try_iter().count(), 8);
+        // A fresh press with no room is still worth telling the user about.
+        for _ in 0..8 {
+            c.handle_press(&held);
+        }
+        assert!(c.handle_press(&press(115, false)));
+        assert!(
+            matches!(c.feedback(), Some(Feedback::Error(m)) if m == "Still sending the last command")
+        );
     }
 
     fn fixture() -> (Controller, mpsc::Receiver<Request>) {
