@@ -9,8 +9,8 @@
     "v2_action_refused_for_v1": "passed"
   },
   "core": {
-    "binary_sha256": "48b166c97925634a95f281ce0cdb43a58d83908007ea9058eb1ccdacbf64478f",
-    "source_commit": "f274804c5219db00446f1b9e5ce46391adcfd37c",
+    "binary_sha256": "0f27768856a2266819bb5d5a2519d490aaf51359083473d7301425279fa76ffd",
+    "source_commit": "96f038bcc9b0662ae640e900b1de94eb8f634072",
     "supported_protocol_versions": [
       1,
       2
@@ -19,7 +19,7 @@
   },
   "evidence_level": "host-protocol-compatibility",
   "hardware_validation": false,
-  "harness_sha256": "1879c1dd4379e2b8349d190fddb77c9ce42b33dc6d81c453ff8ca29874b9c5db",
+  "harness_sha256": "d8762cc9a2a60e92a17f000690c30bffe4178c87cc76135bcb2d617501df570d",
   "integrations": [
     {
       "apk_sha256": "61e135854816bd4f996e46d918386937913860e583ccdb3bda7eac739252b270",
@@ -32,6 +32,6 @@
     }
   ],
   "kind": "couch-integration-host-compatibility",
-  "report_sha256": "1c7b42bb991f64d5f654579b745f8c53e0af758ce417ceac7ef497f6c46bbb9b",
+  "report_sha256": "29f8e781d9c67249a1b3000bdfff3d408b35d2704b25f3c570e0ff8b7eac0f71",
   "schema": 1
 }
