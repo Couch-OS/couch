@@ -26,6 +26,11 @@ struct Request {
     config: Arc<Config>,
     action: Action,
     repeat: bool,
+    /// Which hold a repeat belongs to. Releasing the key starts a new one, and
+    /// a repeat from a hold that has ended is never sent: the queue may still
+    /// hold several, and a volume that keeps rising after the finger has left
+    /// the key is the one failure this path must not have.
+    hold: u64,
 }
 /// A volume level read back from a device after a volume or mute command,
 /// for the volume card. `level` is 0..=100 where the device has such a scale;
@@ -60,6 +65,12 @@ pub(crate) struct Notice {
 /// offer power-on and power-off, not a toggle, so the press is resolved against
 /// the device's observed state when it is sent (`power_toggle`).
 pub(crate) const POWER_TOGGLE: &str = "power-toggle";
+/// A held volume key's absolute write, `set-volume-db:<tenths>`. Like
+/// `POWER_TOGGLE` it is made here, never configured: the lane turns a repeat
+/// into it once it knows the device's level and declared scale.
+pub(crate) const SET_VOLUME_DB: &str = "set-volume-db:";
+const HOLD_UP_TENTHS: i16 = 10;
+const HOLD_DOWN_TENTHS: i16 = 20;
 /// The context prefix of a highlighted room row, as opposed to an activity id.
 const ROW: &str = "row:";
 
@@ -127,6 +138,8 @@ pub struct Controller {
     // Power ends a running activity (main.rs); a highlighted row takes the key
     // only when there is none to end.
     activity_running: bool,
+    // Bumped when a key is released; see `Request::hold`.
+    hold: Arc<AtomicU64>,
 }
 impl Controller {
     pub fn new() -> Self {
@@ -134,7 +147,9 @@ impl Controller {
         let (reply, out) = mpsc::sync_channel(8);
         let generation = Arc::new(AtomicU64::new(0));
         let current = generation.clone();
-        std::thread::spawn(move || worker(rx, reply, current));
+        let hold = Arc::new(AtomicU64::new(0));
+        let holds = hold.clone();
+        std::thread::spawn(move || worker(rx, reply, current, holds));
         Self {
             context: String::new(),
             config: Arc::new(Config::default()),
@@ -146,6 +161,7 @@ impl Controller {
             rx: out,
             dropped: false,
             activity_running: false,
+            hold,
         }
     }
     fn binding(&self, button: Button, gesture: Gesture) -> Option<&Binding> {
@@ -170,6 +186,7 @@ impl Controller {
                 config: self.config.clone(),
                 action,
                 repeat,
+                hold: self.hold.load(Ordering::SeqCst),
             });
             // A held key repeats faster than a slow device answers. A repeat
             // there is no room for is the hold running at the device's pace,
@@ -197,6 +214,8 @@ impl Controller {
             return false;
         };
         if press.released {
+            // The hold is over: whatever repeats are still queued are stale.
+            self.hold.fetch_add(1, Ordering::SeqCst);
             if let Some(pending) = self.pending.remove(&press.code) {
                 if !pending.fired && pending.at.elapsed() >= HOLD {
                     self.fire(button, Gesture::Long, false);
@@ -331,6 +350,7 @@ fn worker(
     rx: mpsc::Receiver<Request>,
     reply: mpsc::SyncSender<(u64, Feedback)>,
     current: Arc<AtomicU64>,
+    hold: Arc<AtomicU64>,
 ) {
     let mut lanes = HashMap::<String, mpsc::SyncSender<Request>>::new();
     let mut generation = current.load(Ordering::SeqCst);
@@ -371,7 +391,8 @@ fn worker(
             let (tx, rx) = mpsc::sync_channel(8);
             let reply = reply.clone();
             let current = current.clone();
-            std::thread::spawn(move || connection_worker(rx, reply, current));
+            let hold = hold.clone();
+            std::thread::spawn(move || connection_worker(rx, reply, current, hold));
             tx
         });
         let repeat = r.repeat;
@@ -393,6 +414,7 @@ fn connection_worker(
     rx: mpsc::Receiver<Request>,
     reply: mpsc::SyncSender<(u64, Feedback)>,
     current: Arc<AtomicU64>,
+    hold: Arc<AtomicU64>,
 ) {
     let mut denon = HashMap::new();
     let mut tv = HashMap::new();
@@ -438,6 +460,12 @@ fn connection_worker(
         if r.generation != generation || r.at.elapsed() > Duration::from_millis(750) {
             continue;
         }
+        if r.repeat && r.hold != hold.load(Ordering::SeqCst) {
+            // The key was released while this waited: see `Request::hold`. A
+            // level is still owed to the card once the lane is quiet.
+            continue;
+        }
+        let mut r = r;
         let settles = r
             .config
             .devices()
@@ -462,7 +490,18 @@ fn connection_worker(
                 _ => None,
             };
             if let Some(up) = up {
-                let predicted = scale.stepped(known, up);
+                // A press is one of the receiver's own steps. A hold is a
+                // request to travel: one absolute write per repeat, a larger
+                // stride than a step, so the level moves at a useful pace
+                // without a queue of half-decibel commands behind it.
+                let predicted = if r.repeat {
+                    let target = scale.held(known, up);
+                    r.action =
+                        Action::new(r.action.device.clone(), format!("{SET_VOLUME_DB}{target}"));
+                    target
+                } else {
+                    scale.stepped(known, up)
+                };
                 level = Some(predicted);
                 let _ = reply.try_send((
                     r.generation,
@@ -594,6 +633,30 @@ pub(crate) fn execute_with_input(
         .find(|(_, d)| d.id == action.device)
         .map(|(_, d)| d)
         .ok_or("Mapped device was removed")?;
+    if let Some(tenths) = action.command.strip_prefix(SET_VOLUME_DB) {
+        let tenths: i16 = tenths.parse().map_err(|_| "Unsupported button function")?;
+        let Some(Integration::Plugin { connection_id, .. }) = device.network_integration(config)
+        else {
+            return Err("Unsupported button function".into());
+        };
+        return match couch_plugin::local_request(
+            &crate::home::path("plugin.sock"),
+            connection_id.as_str(),
+            couch_plugin::Request::Action {
+                action: couch_model::TypedAction::SetVolumeDb { tenths },
+            },
+            couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
+        ) {
+            // Part of a hold: the lane reads the level once it goes quiet.
+            Ok(couch_plugin::Response::Ok) => Ok(Outcome {
+                settle: true,
+                ..Outcome::default()
+            }),
+            Ok(couch_plugin::Response::Error { code }) => Err(code.to_string()),
+            Ok(_) => Err("The integration returned an invalid response".into()),
+            Err(error) => Err(error.to_string()),
+        };
+    }
     if action.command == POWER_TOGGLE {
         return power_toggle(
             config, device, denon, tv, streaming, sonos, matter, repeat, current,
@@ -1281,6 +1344,18 @@ impl DbScale {
         ((i32::from(tenths.clamp(self.min, self.max)) - i32::from(self.min)) * 100 + span / 2)
             / span
     }
+    /// Where one repeat of a held volume key should leave the level: 1 dB up,
+    /// 2 dB down, in whole declared steps. Down is the larger stride because
+    /// getting quieter quickly is the safe direction.
+    fn held(self, tenths: i16, up: bool) -> i16 {
+        let stride = |tenths_wanted: i16| (tenths_wanted / self.step).max(1) * self.step;
+        let next = if up {
+            tenths.saturating_add(stride(HOLD_UP_TENTHS))
+        } else {
+            tenths.saturating_sub(stride(HOLD_DOWN_TENTHS))
+        };
+        next.clamp(self.min, self.max)
+    }
     /// Where one more press of a volume key should leave the level.
     fn stepped(self, tenths: i16, up: bool) -> i16 {
         let next = if up {
@@ -1539,6 +1614,21 @@ mod tests {
         assert_eq!(scale.stepped(-415, false), -420);
         assert_eq!(scale.stepped(180, true), 180);
         assert_eq!(scale.stepped(-800, false), -800);
+        // A held key travels: 1 dB up, 2 dB down, clamped at the ends, and
+        // never less than one declared step on a coarser scale.
+        assert_eq!(scale.held(-415, true), -405);
+        assert_eq!(scale.held(-415, false), -435);
+        assert_eq!(scale.held(175, true), 180);
+        assert_eq!(scale.held(-790, false), -800);
+        let coarse = DbScale {
+            min: -800,
+            max: 180,
+            step: 30,
+        };
+        assert_eq!(
+            (coarse.held(-400, true), coarse.held(-400, false)),
+            (-370, -430)
+        );
         let predicted = db_reading("Theater AVR", scale.stepped(-415, true), false, Some(scale));
         assert_eq!((predicted.text.as_str(), predicted.level), ("-41.0 dB", 40));
         // A built-in receiver declares no scale either.
@@ -1806,6 +1896,31 @@ mod tests {
     }
 
     #[test]
+    fn releasing_a_key_ends_its_hold_so_queued_repeats_can_be_discarded() {
+        let (mut c, rx) = fixture();
+        c.bindings = vec![Binding {
+            button: Button::VolumeUp,
+            gesture: Gesture::Short,
+            action: Some(Action::new("tv", "volume-up")),
+        }];
+        let mut held = press(115, false);
+        c.handle_press(&held);
+        held.repeat = true;
+        c.handle_press(&held);
+        c.handle_press(&held);
+        let first: Vec<_> = rx.try_iter().map(|r| (r.repeat, r.hold)).collect();
+        assert_eq!(first, [(false, 0), (true, 0), (true, 0)]);
+        // Finger off the key: a repeat still queued carries the old hold and
+        // no longer matches, which is how the lane knows not to send it.
+        let mut up = press(115, false);
+        up.released = true;
+        c.handle_press(&up);
+        assert_eq!(c.hold.load(Ordering::SeqCst), 1);
+        c.handle_press(&press(115, false));
+        assert_eq!(rx.try_recv().unwrap().hold, 1);
+    }
+
+    #[test]
     fn a_held_key_that_outruns_the_queue_is_not_an_error() {
         let (mut c, rx) = fixture();
         c.bindings = vec![Binding {
@@ -1850,6 +1965,7 @@ mod tests {
                 rx: out,
                 dropped: false,
                 activity_running: false,
+                hold: Arc::new(AtomicU64::new(0)),
             },
             rx,
         )
@@ -2126,13 +2242,15 @@ mod worker_tests {
         let (reply, _out) = mpsc::sync_channel(8);
         let current = Arc::new(AtomicU64::new(1));
         let shared = current.clone();
-        let thread = std::thread::spawn(move || worker(rx, reply, shared));
+        let thread =
+            std::thread::spawn(move || worker(rx, reply, shared, Arc::new(AtomicU64::new(0))));
         tx.send(Request {
             generation: 1,
             at: Instant::now(),
             config: Arc::new(config),
             action: Action::new("avr", "volume-up"),
             repeat: false,
+            hold: 0,
         })
         .unwrap();
         assert_eq!(
