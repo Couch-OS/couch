@@ -9,7 +9,7 @@ image to make the two releases appear atomic.
 The initial receiver pilot used the core contract at
 `b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb` with Denon `0.1.1` from the
 official preview feed. The renewed host compatibility set tests the exact same
-signed APK against core `96f038bcc9b0662ae640e900b1de94eb8f634072` under
+signed APK against core `e32fcaac36a8f7575984e08e82d982627de311fc` under
 ARM emulation with a simulated receiver. The machine-readable identity is
 `tools/release/tested-integrations.json`. Its schema 2 separates:
 
@@ -177,8 +177,10 @@ that removal requires anyway because it changed the frozen contract paths.
    `couch-confd`; it adds no runtime filename. Keep the Denon APK out of the
    runtime archive.
 2. Validate the signed runtime update and rollback on an HA100. Updating the
-   core preserves a legacy-readable configuration projection and does not
-   install a package or migrate an existing connection automatically.
+   core preserves a legacy-readable configuration projection. The one thing it
+   does by itself is described above: an old-style built-in Denon connection
+   installs the Denon package from an official repository and converts in
+   place. Nothing else is installed or migrated automatically.
 3. The tester explicitly updates the core, confirms
    `couch-confd --supports-integration-protocol=1`, opens **Integrations**, and
    explicitly installs Denon `0.1.1` from Preview.
