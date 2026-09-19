@@ -57,7 +57,6 @@ const catalog = {
 };
 const calls = [];
 let volumeState = 'reading';
-let migrationHasV2Parity = false;
 
 function status() {
   if (volumeState === 'reading') return {volume_db: {kind: 'reading', tenths: -345}};
@@ -92,22 +91,6 @@ async function mockApi(page) {
       assert.deepEqual(body, {action: 'set_volume_db', tenths: -345});
       volumeState = 'minimum';
       return json({});
-    }
-    if (request.method() === 'GET' && path === '/api/integrations/catalog') {
-      return json({installed: [], available: [], repositories: []});
-    }
-    if (request.method() === 'GET' && path === '/api/integrations/recovery') {
-      return json({recovery: null});
-    }
-    if (request.method() === 'GET' && path === '/api/integrations/operations/current') {
-      return json({operation: null});
-    }
-    if (request.method() === 'GET' && path === '/api/integrations/migrations/denon') {
-      return json({
-        revision: 12, package_available: true, connections: [],
-        supports_volume_db: migrationHasV2Parity,
-        supports_absolute_volume: migrationHasV2Parity,
-      });
     }
     throw new Error(`Unexpected component request: ${request.method()} ${path}`);
   });
@@ -170,23 +153,8 @@ try {
   assert.equal(await page.getByRole('button', {name: 'Set volume', exact: true}).count(), 0, 'v1 manifests cannot invoke typed dB actions');
   assert.equal(calls.filter(call => call.path.endsWith('/typed-action')).length, 1, 'only the declared v2 action reached the API');
 
-  await page.getByRole('navigation').getByRole('button', {name: 'Integrations', exact: true}).click();
-  const warning = 'Preview limitation: this package does not provide full dB reading and absolute-volume support. Keep built-in control if you need either feature.';
-  await page.getByText(warning, {exact: true}).waitFor();
-
-  migrationHasV2Parity = true;
-  const parityPage = await context.newPage();
-  const parityErrors = [];
-  parityPage.on('pageerror', error => parityErrors.push(String(error)));
-  await mockApi(parityPage);
-  await parityPage.goto(origin);
-  await parityPage.getByRole('navigation').getByRole('button', {name: 'Integrations', exact: true}).click();
-  await parityPage.getByRole('heading', {name: 'Denon migration pilot', exact: true}).waitFor();
-  assert.equal(await parityPage.getByText(warning, {exact: true}).count(), 0, 'the migration warning clears only when both v2 parity flags are true');
-  await parityPage.close();
-  assert.deepEqual(parityErrors, []);
   assert.deepEqual(errors, []);
-  console.log('PASS: v2 dB controls validate declared bounds, post one typed action then refresh status, preserve v1 controls, and gate the Denon migration warning on v2 parity.');
+  console.log('PASS: v2 dB controls validate declared bounds, post one typed action then refresh status, and preserve v1 controls.');
 } finally {
   await browser.close();
 }

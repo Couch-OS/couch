@@ -118,7 +118,6 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
             &mut Default::default(),
             &mut Default::default(),
             &mut Default::default(),
-            &mut Default::default(),
             &crate::connections::matter(),
             work.repeat,
             &current,

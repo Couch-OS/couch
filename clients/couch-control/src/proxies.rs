@@ -75,29 +75,6 @@ impl Kodi {
         )?)?)
     }
 }
-pub struct Denon {
-    handle: Handle,
-}
-impl Denon {
-    pub fn connect(s: &couch_denon::Settings) -> Result<Self> {
-        s.validate()?;
-        Ok(Self {
-            handle: Handle::new(Spec::Denon(s.clone())),
-        })
-    }
-    pub fn status(&mut self) -> Result<couch_denon::State> {
-        self.handle.get(Op::AvrStatus)
-    }
-    pub fn toggle_mute(&mut self) -> Result<couch_denon::State> {
-        self.handle.get(Op::AvrToggleMute)
-    }
-    pub fn sources(&mut self) -> Result<Vec<(String, String)>> {
-        self.handle.get(Op::AvrSources)
-    }
-    pub fn command(&mut self, command: couch_denon::Command) -> Result<couch_denon::State> {
-        self.handle.get(Op::AvrCommand(command))
-    }
-}
 pub struct WebOs {
     handle: Handle,
 }

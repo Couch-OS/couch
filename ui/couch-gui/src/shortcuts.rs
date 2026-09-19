@@ -85,6 +85,12 @@ fn open_device(config: &Config, id: &Id) -> Dispatch {
         Some(integration) if opens_player(integration) => {
             return Dispatch::OpenActivity(resource);
         }
+        // Saved while its client was built in; couch-confd has not handed it
+        // to the package yet. The same sentence its keys and its row give.
+        Some(integration) if integration.legacy_builtin().is_some() => {
+            let row = integration.legacy_builtin().expect("checked by the guard");
+            return Dispatch::Unavailable(row.needs_package());
+        }
         _ => {}
     }
     if crate::lights::tv_connection(config, device.id.as_str()).is_some() {
@@ -352,6 +358,26 @@ mod tests {
         assert_eq!(
             super::plan(&config, &areas, areas.len() - 1, Button::Red),
             None
+        );
+    }
+
+    #[test]
+    fn a_shortcut_to_a_receiver_waiting_for_its_package_says_what_it_needs() {
+        let (mut config, _) = house();
+        // The same receiver as saved by a release with the built-in client.
+        config
+            .connections
+            .iter_mut()
+            .find(|c| c.id.as_str() == "avr")
+            .unwrap()
+            .provider = couch_model::Provider::LegacyDenon {
+            host: "avr.invalid".into(),
+            port: 23,
+        };
+        config.validate().unwrap();
+        assert_eq!(
+            open_device(&config, &Id::new("living-avr")),
+            Dispatch::Unavailable("Needs the Denon package".into())
         );
     }
 

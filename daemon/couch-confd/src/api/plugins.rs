@@ -111,33 +111,7 @@ impl Api {
                         Ok(value) => value,
                         Err(reply) => return reply,
                     };
-                    if id == "denon" {
-                        // Serialize target edits with migration preflight and
-                        // its commit, including edits to other Denon packages.
-                        let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-                        if store
-                            .config()
-                            .migrated_denon(&Id::new(connection))
-                            .is_some()
-                        {
-                            return Reply::error(409, "Restore built-in Denon before changing a migrated receiver's settings");
-                        }
-                        if !store.config().connection(&Id::new(connection)).is_some_and(
-                            |c| matches!(&c.provider, Provider::Plugin { id, .. } if id == "denon"),
-                        ) {
-                            return Reply::error(
-                                409,
-                                "Denon connection changed; refresh before saving settings",
-                            );
-                        }
-                        self.plugins.save_denon_settings(
-                            connection,
-                            value,
-                            crate::plugins::protected_denon_targets(store.config()),
-                        )
-                    } else {
-                        self.plugins.save_settings(connection, &id, value)
-                    }
+                    self.plugins.save_settings(connection, &id, value)
                 }
                 _ => return Reply::error(405, "Use GET or POST for integration settings"),
             };

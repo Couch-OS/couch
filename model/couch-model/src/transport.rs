@@ -58,8 +58,12 @@ impl Config {
     /// connection, which carried nothing, is dropped once no device refers to
     /// it. The empty address keeps today's behaviour (keys go to whichever TV
     /// the daemon has) until the device is paired again from its own settings.
+    ///
+    /// A receiver named inline on a device, from before named connections,
+    /// gets a connection (`integration_migration.rs`), so that it can be handed
+    /// to the package that replaced the built-in client.
     pub fn migrate(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.migrate_legacy_builtins();
         let bluetooth_connections: Vec<crate::Id> = self
             .connections
             .iter()

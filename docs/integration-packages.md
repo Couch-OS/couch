@@ -41,7 +41,7 @@ Build the supplied plugin binaries with:
 (cd clients && cargo build --release --target armv7-unknown-linux-musleabihf \
   -p couch-echo --bin couch-plugin-echo)
 (cd clients && cargo build --release --target armv7-unknown-linux-musleabihf \
-  -p couch-denon --bin couch-plugin-denon)
+  -p couch-sonos --bin couch-plugin-sonos)
 ```
 
 Build an APK with the reusable script in an Alpine `abuild` environment. It
@@ -65,9 +65,9 @@ install -Dm644 "$KEY_DIR/developer.rsa.pub" \
 tools/integrations/build-apk.sh echo 0.1.0 \
   clients/target/armv7-unknown-linux-musleabihf/release/couch-plugin-echo \
   clients/couch-echo/plugin.json "$KEY_DIR/developer.rsa" build/integrations
-tools/integrations/build-apk.sh denon 0.1.0 \
-  clients/target/armv7-unknown-linux-musleabihf/release/couch-plugin-denon \
-  clients/couch-denon/plugin.json "$KEY_DIR/developer.rsa" build/integrations
+tools/integrations/build-apk.sh sonos 0.1.0 \
+  clients/target/armv7-unknown-linux-musleabihf/release/couch-plugin-sonos \
+  clients/couch-sonos/plugin.json "$KEY_DIR/developer.rsa" build/integrations
 tools/integrations/build-repository.sh "$KEY_DIR/developer.rsa" \
   build/integrations build/integration-repository
 ```
@@ -92,7 +92,7 @@ flow with a newly generated ephemeral key for every declared binary/manifest.
 It leaves `packages.tsv`, packages, a signed `test-repository`, public test
 key, and `lifecycle.log` in `OUTPUT_DIR`; its container is removed afterwards.
 The test repository deliberately includes both `test-only` Echo and `preview`
-Denon entries and is never a production feed. Do not use its key for a release.
+Sonos entries and is never a production feed. Do not use its key for a release.
 The harness sideloads and repository-installs each entry, verifies an empty
 trust store rejects a valid signed first package without state, and records the
 archive-integrity rejection of an appended-byte package. It requires Docker

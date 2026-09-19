@@ -257,7 +257,7 @@ fn manual(app: App, cfg: &Config, connection: Connection, room: Id) -> AnyView {
     ) || matches!(&connection.provider,Provider::Plugin{capabilities,..} if capabilities.iter().any(|capability|matches!(capability.id.as_str(),"up"|"down"|"left"|"right"|"ok"|"home")));
     let receiver = matches!(
         &connection.provider,
-        Provider::Denon { .. } | Provider::Sonos { .. }
+        Provider::LegacyDenon { .. } | Provider::Sonos { .. }
     ) || matches!(&connection.provider,Provider::Plugin{capabilities,..} if !television && capabilities.iter().any(|capability|matches!(capability.id.as_str(),"volume-up"|"volume-down"|"mute")));
     let existing = assigned(cfg, &connection, "");
     let name = RwSignal::new(connection.name.clone());
@@ -278,13 +278,14 @@ pub fn controls(app: App, config: &Config, device: &Device) -> AnyView {
                 _ => ().into_any(),
             };
         }
-        Some(Integration::Denon { .. }) => {
-            return match &device.integration {
-                Integration::Connection { connection_id, .. } => {
-                    super::connections::denon_controls(app, connection_id.to_string())
-                }
-                _ => ().into_any(),
-            }
+        // Saved while its client was built in; the remote is handing it to
+        // the package. Until then there is nothing to control it with.
+        Some(integration) if integration.legacy_builtin().is_some() => {
+            let message = integration
+                .legacy_builtin()
+                .map(|row| row.needs_package())
+                .unwrap_or_default();
+            return view! {<p class="notice small">{format!("{message}. Open its connection to see why and to try again.")}</p>}.into_any();
         }
         Some(Integration::AndroidTv | Integration::AppleTv) => {
             let apple = matches!(

@@ -81,14 +81,6 @@ fn main() {
             std::process::exit(1);
         }
     };
-    // The panel may retain a pre-migration native target. Reject those stale
-    // broker requests before exposing either control service after a restart.
-    for original in store.config().denon_migrations.values() {
-        if let Err(error) = couch_control::block_denon(&original.host, original.port) {
-            eprintln!("couch-confd: cannot establish Denon ownership: {error}");
-            std::process::exit(1);
-        }
-    }
     println!(
         "couch-confd: config {} at revision {}",
         store.path().display(),
@@ -202,6 +194,16 @@ fn main() {
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
             api.tick();
+        });
+    }
+    // A connection saved while its client was built in (Denon) is handed to
+    // its package here: install it from the feed if needed, then convert. An
+    // install downloads, so this never shares the one-second tick above.
+    {
+        let api = api.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            api.legacy_conversion_pass();
         });
     }
     let mut workers = Vec::new();

@@ -424,7 +424,6 @@ fn connection_worker(
     current: Arc<AtomicU64>,
     hold: Arc<AtomicU64>,
 ) {
-    let mut denon = HashMap::new();
     let mut tv = HashMap::new();
     let mut streaming = HashMap::new();
     let mut sonos = HashMap::new();
@@ -444,7 +443,6 @@ fn connection_worker(
         if now != generation {
             settle = None;
             level = None;
-            denon.clear();
             tv.clear();
             streaming.clear();
             sonos.clear();
@@ -520,7 +518,6 @@ fn connection_worker(
         match execute_with_input(
             &r.config,
             &r.action,
-            &mut denon,
             &mut tv,
             &mut streaming,
             &mut sonos,
@@ -570,23 +567,14 @@ fn session_is_suspect(error: &couch_sonos::Error) -> bool {
 pub(crate) fn execute(
     config: &Config,
     action: &Action,
-    denon: &mut HashMap<String, couch_control::Denon>,
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
 ) -> Result<(), String> {
-    execute_with_input(
-        config,
-        action,
-        denon,
-        tv,
-        streaming,
-        sonos,
-        matter,
-        false,
-        &|| true,
-    )
+    execute_with_input(config, action, tv, streaming, sonos, matter, false, &|| {
+        true
+    })
     .map(|_| ())
 }
 
@@ -625,7 +613,6 @@ fn unreachable(e: impl std::fmt::Display) -> Failure {
 pub(crate) fn execute_with_input(
     config: &Config,
     action: &Action,
-    denon: &mut HashMap<String, couch_control::Denon>,
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
@@ -667,7 +654,7 @@ pub(crate) fn execute_with_input(
     }
     if action.command == POWER_TOGGLE {
         return power_toggle(
-            config, device, denon, tv, streaming, sonos, matter, repeat, current,
+            config, device, tv, streaming, sonos, matter, repeat, current,
         );
     }
     let command = F::parse(&action.command).ok_or("Unsupported button function")?;
@@ -699,7 +686,7 @@ pub(crate) fn execute_with_input(
             }
             couch_model::Transport::Bluetooth => send_bluetooth(device, &command),
             couch_model::Transport::Ip => send_network(
-                config, device, &command, denon, tv, streaming, sonos, matter, repeat, current,
+                config, device, &command, tv, streaming, sonos, matter, repeat, current,
             ),
         };
         match result {
@@ -732,7 +719,6 @@ pub(crate) fn execute_with_input(
 fn power_toggle(
     config: &Config,
     device: &couch_model::Device,
-    denon: &mut HashMap<String, couch_control::Denon>,
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
@@ -760,12 +746,6 @@ fn power_toggle(
         Plan::Toggle
     } else {
         match device.network_integration(config) {
-            Some(Integration::Denon { host, port }) => Plan::Observed(
-                couch_control::Denon::connect(&couch_denon::Settings { host, port })
-                    .and_then(|mut c| c.status())
-                    .map_err(|e| e.to_string())?
-                    .on,
-            ),
             Some(Integration::Plugin { connection_id, .. }) => {
                 match couch_plugin::local_request(
                     &crate::home::path("plugin.sock"),
@@ -794,6 +774,11 @@ fn power_toggle(
                 )
             }
             Some(Integration::Tizen | Integration::AppleTv) => Plan::OffElseWake,
+            // Nothing can ask it: say why, in the words every other key uses.
+            Some(integration) if integration.legacy_builtin().is_some() => {
+                let row = integration.legacy_builtin().expect("checked by the guard");
+                return Err(row.needs_package());
+            }
             _ => Plan::Observed(None),
         }
     };
@@ -801,7 +786,6 @@ fn power_toggle(
         execute_with_input(
             config,
             &Action::new(device.id.clone(), command),
-            denon,
             tv,
             streaming,
             sonos,
@@ -858,7 +842,6 @@ fn send_network(
     config: &Config,
     device: &couch_model::Device,
     command: &F,
-    denon: &mut HashMap<String, couch_control::Denon>,
     tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
@@ -954,61 +937,13 @@ fn send_network(
             }
             result.map(|_| Outcome::default()).map_err(Failure::Command)
         }
-        Integration::Denon { host, port } => {
-            let key = format!("{host}:{port}");
-            if !denon.contains_key(&key) {
-                denon.insert(
-                    key.clone(),
-                    couch_control::Denon::connect(&couch_denon::Settings { host, port })
-                        .map_err(unreachable)?,
-                );
-            }
-            let c = denon.get_mut(&key).unwrap();
-            // The receiver answers every command with its state, so the
-            // reading for the volume card costs no further query.
-            let result = (|| {
-                use couch_denon::Command as C;
-                if command == F::Mute {
-                    return c.toggle_mute();
-                }
-                let cmd = match command {
-                    F::PowerOn => C::Power(true),
-                    F::PowerOff => C::Power(false),
-                    F::VolumeUp => C::VolumeUp,
-                    F::VolumeDown => C::VolumeDown,
-                    F::MuteOn => C::Mute(true),
-                    F::MuteOff => C::Mute(false),
-                    F::Input(ref id) => C::Input(id.clone()),
-
-                    _ => return Err(couch_control::Error::Protocol),
-                };
-                c.command(cmd)
-            })();
-            if result.is_err() {
-                denon.remove(&key);
-            }
-            let state = result.map_err(|e| e.to_string())?;
-            let volume = if sound {
-                Some(VolumeReading {
-                    target: name.clone(),
-                    level: -1,
-                    text: if state.muted == Some(true) {
-                        "Muted".into()
-                    } else {
-                        match state.volume_db {
-                            Some(db) => format!("{db:.1} dB"),
-                            None if state.volume_minimum => "Minimum".into(),
-                            None => "—".into(),
-                        }
-                    },
-                })
-            } else {
-                None
-            };
-            Ok(Outcome {
-                volume,
-                ..Outcome::default()
-            })
+        // A connection saved while its client was built in, not yet handed
+        // to its package (couch-confd does that by itself once the package is
+        // installed). Unavailable rather than failed: a device that also has
+        // infrared codes or a Bluetooth bond still takes the key that way.
+        integration if integration.legacy_builtin().is_some() => {
+            let row = integration.legacy_builtin().expect("checked by the guard");
+            Err(Failure::Unavailable(row.needs_package()))
         }
         Integration::Kodi { host, port } => {
             let c = couch_kodi::settings::Settings::load(&connections::file(connection, "kodi"))
@@ -1500,8 +1435,9 @@ fn ir_message(
 mod tests {
     use super::*;
 
-    /// A room with a packaged receiver, a built-in receiver, a webOS TV, a
-    /// Sonos speaker and a Hue light.
+    /// A room with a packaged receiver, a receiver saved while its client was
+    /// built in and not yet handed to the package, a webOS TV, a Sonos speaker
+    /// and a Hue light.
     fn room() -> Config {
         let mut config = Config::seed();
         let plugin = couch_model::Provider::Plugin {
@@ -1521,8 +1457,8 @@ mod tests {
         for (id, provider) in [
             ("avr-package", plugin),
             (
-                "avr-native",
-                couch_model::Provider::Denon {
+                "avr-legacy",
+                couch_model::Provider::LegacyDenon {
                     host: "192.0.2.10".into(),
                     port: 23,
                 },
@@ -1536,7 +1472,7 @@ mod tests {
             });
         }
         let room = config.rooms.first_mut().unwrap();
-        for id in ["avr-package", "avr-native", "lg"] {
+        for id in ["avr-package", "avr-legacy", "lg"] {
             room.devices.push(
                 couch_model::Device::new(
                     couch_model::Id::new(id),
@@ -1575,7 +1511,7 @@ mod tests {
             (Button::Mute, "mute".to_owned()),
             (Button::Power, POWER_TOGGLE.to_owned()),
         ];
-        for id in ["avr-package", "avr-native", "lg"] {
+        for id in ["avr-package", "avr-legacy", "lg"] {
             let bindings = row_bindings(&config, device(&config, id));
             assert_eq!(keys(&bindings), expected, "{id}");
             assert!(bindings
@@ -1639,10 +1575,10 @@ mod tests {
         );
         let predicted = db_reading("Theater AVR", scale.stepped(-415, true), false, Some(scale));
         assert_eq!((predicted.text.as_str(), predicted.level), ("-41.0 dB", 40));
-        // A built-in receiver declares no scale either.
+        // A receiver still waiting for its package declares no scale either.
         assert_eq!(
             DbScale::of(
-                &device(&config, "avr-native")
+                &device(&config, "avr-legacy")
                     .network_integration(&config)
                     .unwrap()
             ),
@@ -1654,7 +1590,7 @@ mod tests {
     fn power_on_a_row_yields_to_a_running_activity() {
         let config = Arc::new(room());
         let mut controller = Controller::new();
-        controller.refresh(format!("{ROW}avr-native"), Some(config));
+        controller.refresh(format!("{ROW}avr-legacy"), Some(config));
         assert!(controller.binding(Button::Power, Gesture::Short).is_some());
         assert!(controller
             .binding(Button::VolumeUp, Gesture::Short)
@@ -1668,6 +1604,32 @@ mod tests {
         controller.activity_running = false;
         controller.refresh(format!("{ROW}no-such-device"), Some(Arc::new(room())));
         assert!(controller.binding(Button::Power, Gesture::Short).is_none());
+    }
+
+    #[test]
+    fn every_key_on_a_receiver_waiting_for_its_package_says_so() {
+        let config = room();
+        let matter = connections::MatterFleet::default();
+        // Its row still takes the keys, so a press is answered and not lost.
+        let bound = keys(&row_bindings(&config, device(&config, "avr-legacy")));
+        assert_eq!(bound.len(), 4);
+        for (_, command) in bound.into_iter().chain([
+            (Button::Red, "input:SAT/CBL".to_owned()),
+            (Button::Red, "power-on".to_owned()),
+        ]) {
+            let error = execute_with_input(
+                &config,
+                &Action::new("avr-legacy", command.as_str()),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &matter,
+                false,
+                &|| true,
+            )
+            .unwrap_err();
+            assert_eq!(error, "Needs the Denon package", "{command}");
+        }
     }
 
     #[test]
@@ -2080,7 +2042,6 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &mut HashMap::new(),
-                &mut HashMap::new(),
                 &matter,
                 false,
                 &|| true,
@@ -2140,7 +2101,6 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &mut HashMap::new(),
-                &mut HashMap::new(),
                 &matter,
                 false,
                 &|| true,
@@ -2189,90 +2149,5 @@ mod tests {
         ] {
             assert!(session_is_suspect(&error), "{error}");
         }
-    }
-}
-
-#[cfg(test)]
-mod worker_tests {
-    use super::*;
-    use std::{
-        io::{Read, Write},
-        net::TcpListener,
-    };
-    #[test]
-    fn leaving_an_activity_releases_the_avr_socket_without_another_key() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (observed, events) = mpsc::channel();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
-            let mut line = Vec::new();
-            let mut b = [0];
-            loop {
-                match socket.read(&mut b).unwrap() {
-                    0 => {
-                        observed.send("closed").unwrap();
-                        break;
-                    }
-                    _ => {
-                        if b[0] == b'\r' {
-                            let q = String::from_utf8(std::mem::take(&mut line)).unwrap();
-                            assert!(q == "MVUP" || q == "MV?");
-                            socket.write_all(b"MV275\r").unwrap();
-                            if q == "MV?" {
-                                observed.send("command").unwrap();
-                            }
-                        } else {
-                            line.push(b[0]);
-                        }
-                    }
-                }
-            }
-        });
-        let mut config = Config::default();
-        config.rooms.push(couch_model::Room {
-            id: "room".into(),
-            name: "Room".into(),
-            icon: None,
-            devices: vec![couch_model::Device::new(
-                "avr".into(),
-                "AVR",
-                couch_model::DeviceKind::Speaker,
-            )
-            .with_integration(Integration::Denon {
-                host: "127.0.0.1".into(),
-                port,
-            })],
-        });
-        let (tx, rx) = mpsc::sync_channel(8);
-        let (reply, _out) = mpsc::sync_channel(8);
-        let current = Arc::new(AtomicU64::new(1));
-        let shared = current.clone();
-        let thread =
-            std::thread::spawn(move || worker(rx, reply, shared, Arc::new(AtomicU64::new(0))));
-        tx.send(Request {
-            generation: 1,
-            at: Instant::now(),
-            config: Arc::new(config),
-            action: Action::new("avr", "volume-up"),
-            repeat: false,
-            hold: 0,
-        })
-        .unwrap();
-        assert_eq!(
-            events.recv_timeout(Duration::from_secs(3)).unwrap(),
-            "command"
-        );
-        current.store(2, Ordering::SeqCst);
-        assert_eq!(
-            events.recv_timeout(Duration::from_secs(2)).unwrap(),
-            "closed"
-        );
-        drop(tx);
-        thread.join().unwrap();
-        server.join().unwrap();
     }
 }

@@ -9,7 +9,7 @@ image to make the two releases appear atomic.
 The initial receiver pilot used the core contract at
 `b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb` with Denon `0.1.1` from the
 official preview feed. The renewed host compatibility set tests the exact same
-signed APK against core `96f038bcc9b0662ae640e900b1de94eb8f634072` under
+signed APK against core `e32fcaac36a8f7575984e08e82d982627de311fc` under
 ARM emulation with a simulated receiver. The machine-readable identity is
 `tools/release/tested-integrations.json`. Its schema 2 separates:
 
@@ -141,6 +141,35 @@ adopt a later feed snapshot, review its new immutable archive, advance the
 tested-set manifest deliberately and regenerate the receipt. Never loosen the
 verifier to accept an unreviewed mutable index.
 
+## After built-in Denon left the OS
+
+Everything below describes the pilot, in which nothing was installed or
+converted unless the owner asked. One thing changed when the built-in Denon
+client was removed: a core that finds a Denon connection saved by an earlier
+release installs the `denon` package and converts that connection by itself,
+retrying while the feed is unreachable
+([Built-in integrations that became packages](integration-migration.md)).
+
+That is the whole of what is automatic, and it is narrow on purpose:
+
+- it applies only to converting a connection saved while its integration was
+  built into Couch (the rows of `couch_model::LEGACY_BUILTINS`);
+- the package is taken only from an official repository, `official-stable` and
+  then `official-preview`. A repository the owner added is never used for an
+  install nobody asked for, even if it is the only one offering the package; a
+  package the owner installed from it by hand is used as it is;
+- nothing else installs, updates or converts by itself. A remote without such
+  a connection installs nothing, and a new connection is always made by hand;
+- packages are still not bundled: neither a runtime archive nor an installer
+  image carries an APK, a package slot or connection settings.
+
+`tested-integrations.json` records this in `rollout`. The verifier requires all
+four fields to be booleans and the two `bundle_packages_in_*` fields to be
+`false`; `automatic_install` and `automatic_configuration_migration` may be
+`true`, and say what the tested core does within the limits above. They are set
+when the tested set is renewed for the core that removed built-in Denon, which
+that removal requires anyway because it changed the frozen contract paths.
+
 ## Existing-device pilot
 
 1. Build, sign and publish a normal floor-compatible core runtime from the
@@ -148,8 +177,10 @@ verifier to accept an unreviewed mutable index.
    `couch-confd`; it adds no runtime filename. Keep the Denon APK out of the
    runtime archive.
 2. Validate the signed runtime update and rollback on an HA100. Updating the
-   core preserves a legacy-readable configuration projection and does not
-   install a package or migrate an existing connection automatically.
+   core preserves a legacy-readable configuration projection. The one thing it
+   does by itself is described above: an old-style built-in Denon connection
+   installs the Denon package from an official repository and converts in
+   place. Nothing else is installed or migrated automatically.
 3. The tester explicitly updates the core, confirms
    `couch-confd --supports-integration-protocol=1`, opens **Integrations**, and
    explicitly installs Denon `0.1.1` from Preview.

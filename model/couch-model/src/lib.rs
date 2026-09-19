@@ -74,7 +74,9 @@ mod id;
 mod integration_migration;
 mod seed;
 mod storage;
-pub use integration_migration::DenonMigration;
+pub use integration_migration::{
+    DenonMigration, LegacyBuiltin, LegacySetting, LegacySettings, LEGACY_BUILTINS,
+};
 mod validate;
 pub use storage::StoredConfig;
 
@@ -125,7 +127,8 @@ pub struct Config {
     pub remote: RemoteSettings,
     #[serde(default)]
     pub connections: Vec<Connection>,
-    /// Explicit native Denon migration receipts; also restore the old-core projection.
+    /// Receipts from the reversible Denon pilot. Read so that a file the pilot
+    /// wrote still loads; [`Config::migrate`] drops them. See [`DenonMigration`].
     #[serde(
         default,
         skip_serializing_if = "alloc::collections::BTreeMap::is_empty"

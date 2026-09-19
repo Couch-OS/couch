@@ -21,8 +21,11 @@ For a new network integration, start with a package. It runs as a separate
 process, can be installed independently of the base OS, and uses a versioned
 JSON protocol at the process boundary.
 
-Existing built-in clients remain linked into Couch itself. Echo and Denon are
-the external-package pilot. Use the built-in path when a feature needs
+Integrations live in their own repositories; the OS carries only the host.
+Denon was the first built-in client to move out and is the repository to copy
+([`couch-integration-denon`](https://github.com/Couch-OS/couch-integration-denon));
+Echo is the in-tree template. The remaining built-in clients are still linked
+into Couch itself until a package can replace them. Use the built-in path only when a feature needs
 privileged hardware, a pairing or discovery flow that protocol v1 cannot
 express, application launching, or unsolicited device events. It requires a
 core change and ships with a Couch release.
@@ -58,8 +61,9 @@ before planning a move from a built-in client.
 
 ## Is a built-in integration ready to move?
 
-Denon is the only current protocol-v1 migration pilot; its package path is
-usable as a preview, with its recorded receiver-validation and dB/input limits.
+Denon has moved: its built-in client is removed and saved connections convert
+to the package automatically
+([how](https://github.com/Couch-OS/couch/blob/main/docs/integration-migration.md)).
 Sonos already has a `DeviceClient` adapter, but still needs a package wrapper,
 admission, and an opt-in ownership migration. Kodi, webOS, Tizen, Apple TV,
 Android TV, CoreELEC, Home Assistant, Hue, Matter, and UniFi Protect need at

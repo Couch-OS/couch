@@ -28,9 +28,11 @@ const calls = [];
 const operations = new Map([['resume', {polls: 0, message: 'Resuming package operation…'}]]);
 let sequence = 0;
 let catalogReads = 0;
-let migrationRevision = 7;
-let migrationState = 'native';
-let rejectStaleMigration = true;
+// A connection saved while Denon was built into the OS. The remote converts it
+// by itself; here it has failed once (no internet) and waits for its backoff.
+const waitingReason = "The package feed could not be read (Couch preview: cannot download repository index over HTTPS). Check the remote's internet connection.";
+let legacy = 'waiting';
+let configReads = 0;
 function operation(message) {
   const id = `op-${++sequence}`;
   operations.set(id, {polls: 0, message});
@@ -49,7 +51,10 @@ await page.route('**/api/**', async route => {
   calls.push({path, method: request.method(), body});
   const json = value => route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(value)});
   if (request.method() === 'GET' && path === '/api/auth/status') return json({authenticated: true, pairing: false, expires_in: 0, tries_left: 0, disabled: true});
-  if (request.method() === 'GET' && path === '/api/config') return json({schema_version: 1, revision: migrationRevision, areas: [], rooms: [], scenes: [], activities: []});
+  if (request.method() === 'GET' && path === '/api/config') {
+    configReads += 1;
+    return json({schema_version: 1, revision: 7, areas: [], rooms: [], scenes: [], activities: []});
+  }
   if (request.method() === 'POST' && path === '/api/updates/check') return json({});
   if (request.method() === 'GET' && path === '/api/updates') return json({installed: 'test', channel: 'stable', available: null, notes: '', phase: 'idle', message: '', can_install: false, automatic_checks: false});
   if (request.method() === 'GET' && path === '/api/integrations/catalog') {
@@ -58,18 +63,19 @@ await page.route('**/api/**', async route => {
     return json(catalog);
   }
   if (request.method() === 'GET' && path === '/api/integrations/recovery') return json({recovery: {integrations_active: false, revision: 4, path: '/opt/couch/legacy-config.json', pending_path: null}});
-  if (request.method() === 'GET' && path === '/api/integrations/migrations/denon') return json({revision: migrationRevision, package_available: true, connections: [{id: 'living-avr', name: 'Living room receiver', state: migrationState}]});
-  if (request.method() === 'POST' && path === '/api/integrations/migrations/denon/living-avr') {
-    assert.equal(body.revision, migrationRevision);
-    if (rejectStaleMigration) {
-      rejectStaleMigration = false;
-      migrationRevision += 1;
-      return route.fulfill({status: 409, contentType: 'application/json', body: JSON.stringify({error: 'Configuration changed; refresh before migrating'})});
-    }
-    assert(['migrate', 'restore-native'].includes(body.action));
-    migrationState = body.action === 'migrate' ? 'migrated' : 'native';
-    migrationRevision += 1;
-    return json({changed: true, revision: migrationRevision});
+  if (request.method() === 'GET' && path === '/api/integrations/legacy') {
+    if (legacy === 'converted') return json({connections: [], working: false, retry_in_seconds: null});
+    const working = legacy === 'retrying';
+    if (working) legacy = 'converted';
+    return json({working, retry_in_seconds: working ? null : 240, connections: [{
+      id: 'living-avr', name: 'Living room receiver', kind: 'denon', package: 'denon', package_name: 'Denon',
+      message: 'Needs the Denon package', reason: waitingReason,
+    }]});
+  }
+  if (request.method() === 'POST' && path === '/api/integrations/legacy/retry') {
+    assert.equal(body, null, 'trying again names nothing: the remote knows what is waiting');
+    legacy = 'retrying';
+    return route.fulfill({status: 202, contentType: 'application/json', body: JSON.stringify({retrying: true})});
   }
   if (request.method() === 'GET' && path === '/api/integrations/operations/current') return json({operation: {id: 'resume', state: 'running', phase: 'download', message: 'Resuming package operation…'}});
   if (request.method() === 'POST' && path === '/api/integrations/refresh') return json({operation_id: 'expired'});
@@ -107,22 +113,23 @@ try {
   assert(catalogReads >= 2, 'a transient catalog lock reloads after the resumed operation completes');
   await page.getByRole('heading', {name: 'Denon AVR', exact: true}).waitFor();
   await page.getByText('Saved connection settings are retained.').waitFor();
-  await page.getByText('Preview limitation: this package does not provide full dB reading and absolute-volume support. Keep built-in control if you need either feature.', {exact: true}).waitFor();
-  await page.getByRole('button', {name: 'Switch to Denon package', exact: true}).click();
-  assert.equal(calls.filter(c => c.method === 'POST' && c.path.includes('/migrations/')).length, 0, 'reviewing migration must not change a connection');
-  await page.getByRole('button', {name: 'Cancel', exact: true}).click();
-  await page.getByRole('button', {name: 'Switch to Denon package', exact: true}).click();
-  await page.getByRole('button', {name: 'Confirm switch', exact: true}).click();
-  await page.getByText('Configuration changed; refresh before migrating', {exact: true}).waitFor();
-  await page.getByRole('button', {name: 'Switch to Denon package', exact: true}).click();
-  await page.getByRole('button', {name: 'Confirm switch', exact: true}).click();
-  await page.getByText('This connection now uses the Denon package.', {exact: true}).waitFor();
-  await page.getByRole('button', {name: 'Restore built-in control', exact: true}).click();
-  await page.getByRole('button', {name: 'Confirm restore', exact: true}).click();
-  await page.getByText('Built-in Denon control restored.', {exact: true}).waitFor();
-  assert.deepEqual(calls.filter(c => c.method === 'POST' && c.path.includes('/migrations/')).map(c => c.body), [
-    {action: 'migrate', revision: 7}, {action: 'migrate', revision: 8}, {action: 'restore-native', revision: 9},
-  ]);
+  // The reversible pilot is gone: nothing offers to switch a connection by
+  // hand, in either direction.
+  assert.equal(await page.getByRole('heading', {name: 'Denon migration pilot', exact: true}).count(), 0);
+  assert.equal(await page.getByRole('button', {name: 'Switch to Denon package', exact: true}).count(), 0);
+  assert.equal(await page.getByRole('button', {name: 'Restore built-in control', exact: true}).count(), 0);
+  // A connection from before the package says what it needs and why it is
+  // still waiting, and the remote can be told to try now.
+  await page.getByRole('heading', {name: 'Connections waiting for a package', exact: true}).waitFor();
+  await page.getByRole('heading', {name: 'Living room receiver', exact: true}).waitFor();
+  await page.getByText('Needs the Denon package', {exact: true}).waitFor();
+  await page.getByText(`Last attempt: ${waitingReason}`, {exact: true}).waitFor();
+  await page.getByText('The remote tries again by itself in about 4 min.', {exact: true}).waitFor();
+  const readsBefore = configReads;
+  await page.getByRole('button', {name: 'Try again', exact: true}).click();
+  await page.getByRole('heading', {name: 'Connections waiting for a package', exact: true}).waitFor({state: 'detached'});
+  assert.equal(calls.filter(c => c.method === 'POST' && c.path === '/api/integrations/legacy/retry').length, 1);
+  assert(configReads > readsBefore, 'a converted connection reloads the configuration the page holds');
   await page.getByRole('button', {name: 'Update to 1.5.0', exact: true}).click();
   await page.getByText('Package operation complete.').waitFor();
   const update = calls.find(call => call.path === '/api/integrations/update');
@@ -158,7 +165,7 @@ try {
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Integrations page overflows a desktop viewport');
   await page.screenshot({path: process.env.COUCH_DESKTOP_SCREENSHOT ?? 'build/webui-review/integrations-desktop.png', fullPage: true});
   assert.deepEqual(errors, []);
-  console.log('PASS: integration catalog actions use IDs, package operations report progress, connection settings survive removal, and custom repositories require key fingerprint confirmation.');
+  console.log('PASS: integration catalog actions use IDs, package operations report progress, connection settings survive removal, a connection waiting for its package says why and can be retried, and custom repositories require key fingerprint confirmation.');
 } finally {
   await browser.close();
 }

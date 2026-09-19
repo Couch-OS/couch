@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn native_spaced_inputs_also_need_the_v2_envelope() {
         let mut config = Config::seed();
-        config.rooms[0].devices[0].integration = Integration::Denon {
+        config.rooms[0].devices[0].integration = Integration::LegacyDenon {
             host: "avr.invalid".into(),
             port: 23,
         };

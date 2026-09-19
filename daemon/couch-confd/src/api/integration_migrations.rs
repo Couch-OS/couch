@@ -1,61 +1,472 @@
-use super::{parse, Api, Reply};
-use couch_model::{Id, Provider};
-use serde::Deserialize;
-use serde_json::json;
+//! Connections whose built-in client left the OS, handed to their package.
+//!
+//! `couch_model::LEGACY_BUILTINS` names the built-ins that became packages
+//! (Denon is the first). A saved connection of such a kind still loads, but
+//! nothing drives it, so the daemon finishes the move by itself: install the
+//! package from a trusted repository if it is missing, give the package the
+//! address the connection carried, and switch the connection in place. The id
+//! does not change, so rooms, activities and button maps keep working. It is
+//! one way; there is no built-in client to return to.
+//!
+//! An attempt runs shortly after start, again on a backoff while anything is
+//! still waiting (no internet on the first boot after an update is the usual
+//! reason, so those first retries are quick), whenever the Integrations page
+//! refreshes or installs, and when someone presses "Try again". Until it
+//! succeeds the connection reads "Needs the Denon package" everywhere, with the
+//! reason kept here for the web UI.
+//!
+//! Nobody asked for this install, so it only ever takes the package from an
+//! official repository. A package the owner installed by hand, from any
+//! repository they trust, is used as it is.
+use super::{Api, Reply};
+use couch_integrations::management::Action;
+use couch_model::{Id, LegacyBuiltin, LegacySetting, Provider};
+use serde_json::{json, Value};
+use std::{
+    collections::BTreeMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Change {
-    action: Action,
-    revision: u64,
+/// Waits after the first, second, ... failed attempt. The last one repeats.
+const BACKOFF: [u64; 6] = [30, 60, 120, 300, 900, 3600];
+/// The waits that come first while the feed cannot be reached. The attempt a
+/// second after start usually finds Wi-Fi still coming up, and until the
+/// conversion an activity stops at its receiver step.
+const UNREACHABLE_FIRST: [u64; 3] = [5, 10, 20];
+/// A package operation somebody else started is not a failure; look again soon.
+const BUSY_RETRY: Duration = Duration::from_secs(5);
+/// However often "Try again" or a refresh asks, attempts (each of which may
+/// refresh the feed) start at least this far apart.
+const MIN_INTERVAL: Duration = Duration::from_secs(5);
+const OPERATION_DEADLINE: Duration = Duration::from_secs(600);
+/// The only repositories an install nobody asked for may use, in order.
+const OFFICIAL_REPOSITORIES: [&str; 2] = ["official-stable", "official-preview"];
+
+type Installer = Box<dyn Fn(&LegacyBuiltin) -> Result<(), Install> + Send>;
+
+fn wait_after(failures: u32, unreachable: bool) -> u64 {
+    let quick: &[u64] = if unreachable { &UNREACHABLE_FIRST } else { &[] };
+    let at = failures as usize;
+    quick
+        .get(at)
+        .or_else(|| BACKOFF.get(at - quick.len().min(at)))
+        .copied()
+        .unwrap_or(BACKOFF[BACKOFF.len() - 1])
+}
+
+/// The official repository to install `package` from, given the package
+/// manager's catalog. A repository the owner added is never chosen here, even
+/// when it is the only one that offers the package.
+fn official_source(catalog: &Value, package: &str) -> Option<&'static str> {
+    let offered: Vec<&str> = catalog["available"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry["id"] == package)
+        .filter_map(|entry| entry["repository"].as_str())
+        .collect();
+    OFFICIAL_REPOSITORIES
+        .into_iter()
+        .find(|official| offered.contains(official))
+}
+
+#[derive(Default)]
+struct State {
+    running: bool,
+    failures: u32,
+    /// When the next automatic attempt may start; `None` is "now".
+    retry_at: Option<Instant>,
+    /// When the last attempt started, which `MIN_INTERVAL` counts from.
+    last_attempt: Option<Instant>,
+    /// Why each connection is still waiting, by connection id.
+    reasons: BTreeMap<String, String>,
+}
+
+#[derive(Default)]
+pub(crate) struct LegacyConversion {
+    state: Mutex<State>,
+    /// Tests stand in for the feed; the daemon always installs through the
+    /// package manager.
+    installer: Mutex<Option<Installer>>,
+}
+
+impl LegacyConversion {
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Make the next pass attempt now rather than when its backoff ends.
+    pub(crate) fn kick(&self) {
+        self.state().retry_at = None;
+    }
+}
+
+fn settings_value(row: &LegacyBuiltin, provider: &Provider) -> Option<Value> {
+    let map = row
+        .settings(provider)?
+        .into_iter()
+        .map(|(key, value)| {
+            let value = match value {
+                LegacySetting::Text(text) => Value::String(text),
+                LegacySetting::Integer(number) => Value::from(number),
+            };
+            (key.to_owned(), value)
+        })
+        .collect::<serde_json::Map<_, _>>();
+    Some(Value::Object(map))
+}
+
+impl Api {
+    pub(super) fn legacy_conversion_route(&self, method: &str, path: &[&str]) -> Reply {
+        match (method, path) {
+            ("GET", []) => {
+                let now = Instant::now();
+                let connections: Vec<(Id, String, &'static LegacyBuiltin)> = self.with(|store| {
+                    store
+                        .config()
+                        .legacy_connections()
+                        .map(|(connection, row)| {
+                            (connection.id.clone(), connection.name.clone(), row)
+                        })
+                        .collect()
+                });
+                let state = self.legacy.state();
+                let retry = state
+                    .retry_at
+                    .filter(|_| !connections.is_empty())
+                    .map(|at| at.saturating_duration_since(now).as_secs());
+                let connections: Vec<_> = connections
+                    .into_iter()
+                    .map(|(id, name, row)| {
+                        json!({
+                            "id": id, "name": name,
+                            "kind": row.kind, "package": row.package,
+                            "package_name": row.name,
+                            "message": row.needs_package(),
+                            "reason": state.reasons.get(id.as_str()),
+                        })
+                    })
+                    .collect();
+                Reply::json(
+                    200,
+                    &json!({
+                        "connections": connections,
+                        "working": state.running,
+                        "retry_in_seconds": retry,
+                    }),
+                )
+            }
+            ("POST", ["retry"]) => {
+                self.legacy.kick();
+                Reply::json(202, &json!({"retrying": true}))
+            }
+            _ => Reply::error(404, "Unknown legacy connection operation"),
+        }
+    }
+
+    /// One look at whether anything waits for a package, and one attempt if it
+    /// is due. Blocking (an install downloads); the daemon gives it a thread
+    /// of its own and calls it once a second.
+    pub fn legacy_conversion_pass(&self) {
+        self.legacy_conversion_pass_at(Instant::now());
+    }
+
+    fn legacy_conversion_pass_at(&self, now: Instant) {
+        let waiting = self.with(|store| store.config().legacy_connections().next().is_some());
+        {
+            let mut state = self.legacy.state();
+            if !waiting {
+                *state = State::default();
+                return;
+            }
+            if state.running
+                || state.retry_at.is_some_and(|at| now < at)
+                || state.last_attempt.is_some_and(|at| now < at + MIN_INTERVAL)
+            {
+                return;
+            }
+            // Somebody is refreshing or installing by hand. Their operation
+            // owns the package manager; go right after it.
+            if self
+                .integration_packages
+                .current_operation()
+                .is_some_and(|operation| operation.state == "running")
+            {
+                return;
+            }
+            state.running = true;
+            state.last_attempt = Some(now);
+        }
+        let outcome = self.convert_legacy_connections();
+        let mut state = self.legacy.state();
+        state.running = false;
+        match outcome {
+            Attempt::Busy => state.retry_at = Some(now + BUSY_RETRY),
+            Attempt::Done { reasons, .. } if reasons.is_empty() => *state = State::default(),
+            Attempt::Done {
+                reasons,
+                unreachable,
+            } => {
+                let wait = wait_after(state.failures, unreachable);
+                state.failures = state.failures.saturating_add(1);
+                state.retry_at = Some(now + Duration::from_secs(wait));
+                for (id, reason) in &reasons {
+                    if state.reasons.get(id) != Some(reason) {
+                        eprintln!("couch-confd: connection {id} still needs its package: {reason}");
+                    }
+                }
+                state.reasons = reasons;
+            }
+        }
+    }
+
+    fn convert_legacy_connections(&self) -> Attempt {
+        let waiting: Vec<(Id, &'static LegacyBuiltin)> = self.with(|store| {
+            store
+                .config()
+                .legacy_connections()
+                .map(|(connection, row)| (connection.id.clone(), row))
+                .collect()
+        });
+        let mut reasons = BTreeMap::new();
+        let mut unavailable = BTreeMap::<&str, String>::new();
+        // Whether the feed being out of reach is all that went wrong.
+        let (mut unreachable, mut other) = (false, false);
+        for (id, row) in waiting {
+            if let Some(reason) = unavailable.get(row.package) {
+                reasons.insert(id.to_string(), reason.clone());
+                continue;
+            }
+            if self.plugins.manifest(row.package).is_err() {
+                match self.install_legacy_package(row) {
+                    Ok(()) => println!(
+                        "couch-confd: installed the {} package for a saved connection",
+                        row.name
+                    ),
+                    Err(Install::Busy) => return Attempt::Busy,
+                    Err(failure) => {
+                        let reason = match failure {
+                            Install::Unreachable(reason) => {
+                                unreachable = true;
+                                reason
+                            }
+                            Install::Failed(reason) => {
+                                other = true;
+                                reason
+                            }
+                            Install::Busy => unreachable!("handled above"),
+                        };
+                        unavailable.insert(row.package, reason.clone());
+                        reasons.insert(id.to_string(), reason);
+                        continue;
+                    }
+                }
+            }
+            match self.convert_legacy_connection(&id, row) {
+                Ok(()) => println!(
+                    "couch-confd: connection {id} now uses the {} package",
+                    row.name
+                ),
+                Err(reason) => {
+                    other = true;
+                    reasons.insert(id.to_string(), reason);
+                }
+            }
+        }
+        Attempt::Done {
+            reasons,
+            unreachable: unreachable && !other,
+        }
+    }
+
+    /// The same checks, settings hand-over and single config write the package
+    /// connection form goes through, for a connection that already exists.
+    fn convert_legacy_connection(&self, id: &Id, row: &LegacyBuiltin) -> Result<(), String> {
+        let snapshot = self.with(|store| store.config().connection(id).map(|c| c.provider.clone()));
+        let Some(provider) = snapshot else {
+            return Ok(());
+        };
+        let Some(settings) = settings_value(row, &provider) else {
+            return Ok(());
+        };
+        // The slow part, with the configuration unlocked: start the package
+        // and let it check the carried-over address (it contacts no device).
+        let prepared = self.plugins.prepare_legacy(row.package, settings)?;
+        // Config readers and writers wait from here to the commit, so nothing
+        // edits the connection in between. What was checked above has to be
+        // what is converted: an address edited meanwhile goes round again.
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next = store.config().clone();
+        match next.connection(id).map(|c| &c.provider) {
+            None => return Ok(()),
+            Some(current) if *current != provider => {
+                return Err("The connection changed while its package was being prepared".into())
+            }
+            Some(_) => {}
+        }
+        let revision = store.revision();
+        self.plugins
+            .adopt_legacy(id.as_str(), &prepared, |manifest| {
+                next.convert_legacy(
+                    id,
+                    Provider::Plugin {
+                        id: manifest.id.clone(),
+                        label: manifest.label.clone(),
+                        capabilities: manifest
+                            .capabilities
+                            .iter()
+                            .map(|c| couch_model::PluginCapability {
+                                id: c.id.clone(),
+                                label: c.label.clone(),
+                            })
+                            .collect(),
+                        supports_inputs: manifest.supports_inputs,
+                        presentation: manifest.presentation.clone(),
+                        actions: manifest.actions.clone(),
+                    },
+                )?;
+                store
+                    .mutate(Some(revision), |config| *config = next)
+                    .map_err(|e| e.to_string())
+            })
+    }
+
+    fn install_legacy_package(&self, row: &LegacyBuiltin) -> Result<(), Install> {
+        if let Some(installer) = self
+            .legacy
+            .installer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            return installer(row);
+        }
+        // What the Integrations page does - refresh the signed indexes, then
+        // install - except that the owner chose nothing here, so only an
+        // official repository will do.
+        let refreshed = self.package_operation("refresh", None);
+        if let Err(Install::Busy) = refreshed {
+            return Err(Install::Busy);
+        }
+        let catalog = self
+            .integration_packages
+            .catalog(&[])
+            .map_err(|e| Install::Failed(e.to_string()))?;
+        let Some(repository) = official_source(&catalog, row.package) else {
+            return Err(match refreshed {
+                Err(Install::Failed(error) | Install::Unreachable(error)) => {
+                    Install::Unreachable(format!(
+                    "The package feed could not be read ({error}). Check the remote's internet connection."
+                ))
+                }
+                _ => Install::Failed(format!(
+                    "The official package feed does not offer the {} package yet",
+                    row.name
+                )),
+            });
+        };
+        self.package_operation(
+            "install",
+            Some(Action {
+                id: row.package.into(),
+                repository: Some(repository.into()),
+                preserve_connection_config: true,
+            }),
+        )
+    }
+
+    fn package_operation(&self, kind: &str, action: Option<Action>) -> Result<(), Install> {
+        let manager = &self.integration_packages;
+        let id = manager.start(kind, action).map_err(|error| {
+            if error.is_busy() {
+                Install::Busy
+            } else {
+                Install::Failed(error.to_string())
+            }
+        })?;
+        let deadline = Instant::now() + OPERATION_DEADLINE;
+        loop {
+            std::thread::sleep(Duration::from_millis(200));
+            match manager.operation(&id) {
+                Some(operation) if operation.state == "running" => {
+                    if Instant::now() > deadline {
+                        return Err(Install::Failed(
+                            "The package operation did not finish".into(),
+                        ));
+                    }
+                }
+                Some(operation) if operation.state == "succeeded" => return Ok(()),
+                Some(operation) => return Err(Install::Failed(operation.message)),
+                None => return Err(Install::Busy),
+            }
+        }
+    }
+}
+
+enum Attempt {
+    Busy,
+    Done {
+        /// Why each connection that is still waiting could not be converted.
+        reasons: BTreeMap<String, String>,
+        /// Nothing went wrong except that the feed could not be reached.
+        unreachable: bool,
+    },
+}
+
+enum Install {
+    Busy,
+    /// The feed could not be read: the network is not up, or not there.
+    Unreachable(String),
+    Failed(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{assets::Assets, auth::Auth, store::Store};
-    use couch_model::{Config, Connection, StoredConfig};
-    use std::{fs, path::PathBuf, sync::Arc};
+    use couch_model::{Config, StoredConfig};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
+
+    const MANIFEST: &str = include_str!("../../tests/fixtures/denon-0.2.1-plugin.json");
+
+    /// A house saved by a release that still had the built-in client: a named
+    /// receiver, a device on it, an activity that uses it and a key bound to it.
+    fn built_in_era(host: &str, port: u16) -> Value {
+        json!({
+            "schema_version": 1, "revision": 4,
+            "connections": [{"id":"receiver","name":"Receiver","provider":{"kind":"denon","host":host,"port":port}}],
+            "areas": [{"id":"home","name":"Home","rooms":["den"],"activities":["movie"]}],
+            "rooms": [{"id":"den","name":"Den","devices":[
+                {"id":"avr","name":"AVR","kind":"speaker","integration":{"via":"connection","connection_id":"receiver"}}]}],
+            "activities": [{"id":"movie","name":"Movie","room":"den","source":"avr",
+                "steps":[{"device":"avr","command":"input:SAT/CBL"}],
+                "buttons":[{"button":"red","action":{"device":"avr","command":"volume-up"}}]}]
+        })
+    }
 
     struct Fixture {
         api: Api,
         home: PathBuf,
     }
     impl Fixture {
-        fn new(name: &str, migrated: bool) -> Self {
+        fn new(name: &str, config: &Value) -> Self {
             let home = std::env::temp_dir().join(format!(
-                "couch-denon-migration-{name}-{}",
+                "couch-legacy-conversion-{name}-{}",
                 std::process::id()
             ));
             let _ = fs::remove_dir_all(&home);
             fs::create_dir_all(&home).unwrap();
-            let mut config = Config::default();
-            config.connections.push(Connection {
-                id: Id::new("receiver"),
-                name: "Receiver".into(),
-                provider: Provider::Denon {
-                    host: format!("{name}.invalid"),
-                    port: 23,
-                },
-            });
-            if migrated {
-                config
-                    .migrate_denon(
-                        &Id::new("receiver"),
-                        Provider::Plugin {
-                            id: "denon".into(),
-                            label: "Denon".into(),
-                            capabilities: vec![],
-                            supports_inputs: true,
-                            presentation: vec![],
-                            actions: vec![],
-                        },
-                    )
-                    .unwrap();
-            }
             fs::write(
                 home.join("config.json"),
-                serde_json::to_vec(&StoredConfig::new(&config)).unwrap(),
+                serde_json::to_vec(config).unwrap(),
             )
             .unwrap();
             let api = Api::new(
@@ -65,64 +476,17 @@ mod tests {
             );
             Self { api, home }
         }
-        fn action(&self, action: &str, revision: u64) -> Reply {
-            self.api.denon_migration_route(
-                "POST",
-                &["receiver"],
-                &serde_json::to_vec(&json!({"action":action,"revision":revision})).unwrap(),
-            )
+        fn status(&self) -> Value {
+            let reply = self.api.legacy_conversion_route("GET", &[]);
+            assert_eq!(reply.status, 200);
+            serde_json::from_slice(&reply.body).unwrap()
         }
-
-        /// Real archive audit, immutable selection, hash revalidation and host
-        /// handshake; APK extraction/signature checking is a test fixture.
-        /// Real signature admission remains covered by the package smoke test.
-        fn install_package_fixture(&self) -> couch_integrations::Store {
-            use std::os::unix::fs::PermissionsExt;
-            let manifest: serde_json::Value =
-                serde_json::from_str(include_str!("../../../../clients/couch-denon/plugin.json"))
-                    .unwrap();
-            let payload = self.home.join("payload");
-            let directory = payload.join("usr/lib/couch/integrations/denon");
-            fs::create_dir_all(directory.join("bin")).unwrap();
-            fs::write(
-                directory.join("manifest.json"),
-                serde_json::to_vec(&manifest).unwrap(),
-            )
-            .unwrap();
-            let mut script = String::from("#!/bin/sh\n");
-            for value in [
-                json!({"id":1,"body":{"type":"hello","manifest":manifest}}),
-                json!({"id":2,"body":{"type":"ok"}}),
-            ] {
-                let mut frame = Vec::new();
-                couch_plugin::write_frame(&mut frame, &value).unwrap();
-                let bytes: String = frame.iter().map(|byte| format!("\\{byte:03o}")).collect();
-                script.push_str(&format!("printf '{bytes}'\n"));
-            }
-            script.push_str("sleep 5\n");
-            let executable = directory.join("bin/couch-plugin-denon");
-            fs::write(&executable, script).unwrap();
-            fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
-            let package = self.home.join("denon-fixture.apk");
-            assert!(std::process::Command::new("tar")
-                .args(["-czf"])
-                .arg(&package)
-                .arg("-C")
-                .arg(payload)
-                .args([
-                    "usr/lib/couch/integrations/denon/manifest.json",
-                    "usr/lib/couch/integrations/denon/bin/couch-plugin-denon"
-                ])
-                .status()
-                .unwrap()
-                .success());
-            let apk = self.home.join("fixture-apk");
-            fs::write(&apk, "#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n").unwrap();
-            fs::set_permissions(&apk, fs::Permissions::from_mode(0o755)).unwrap();
-            let packages =
-                couch_integrations::Store::new(self.home.join("integrations")).with_apk(apk);
-            packages.install(&package).unwrap();
-            packages
+        fn config(&self) -> Config {
+            self.api.with(|store| store.config().clone())
+        }
+        /// The feed, as far as the converter is concerned.
+        fn feed(&self, installer: impl Fn(&LegacyBuiltin) -> Result<(), Install> + Send + 'static) {
+            *self.api.legacy.installer.lock().unwrap() = Some(Box::new(installer));
         }
     }
     impl Drop for Fixture {
@@ -131,43 +495,353 @@ mod tests {
         }
     }
 
-    fn manual_denon() -> Connection {
-        Connection {
-            id: Id::new("manual"),
-            name: "Manual package".into(),
-            provider: Provider::Plugin {
-                id: "denon".into(),
-                label: "Denon".into(),
-                capabilities: vec![],
-                supports_inputs: true,
-                presentation: vec![],
-                actions: vec![],
-            },
+    /// Real archive audit, immutable selection, hash revalidation and host
+    /// handshake; APK extraction/signature checking is a test fixture.
+    /// Real signature admission remains covered by the package smoke test.
+    fn install_package_fixture(home: &Path) -> couch_integrations::Store {
+        use std::os::unix::fs::PermissionsExt;
+        let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+        let payload = home.join("payload");
+        let directory = payload.join("usr/lib/couch/integrations/denon");
+        fs::create_dir_all(directory.join("bin")).unwrap();
+        fs::write(
+            directory.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut script = String::from("#!/bin/sh\n");
+        for value in [
+            json!({"id":1,"body":{"type":"hello","manifest":manifest}}),
+            json!({"id":2,"body":{"type":"ok"}}),
+        ] {
+            let mut frame = Vec::new();
+            couch_plugin::write_frame(&mut frame, &value).unwrap();
+            let bytes: String = frame.iter().map(|byte| format!("\\{byte:03o}")).collect();
+            script.push_str(&format!("printf '{bytes}'\n"));
         }
+        script.push_str("sleep 5\n");
+        let executable = directory.join("bin/couch-plugin-denon");
+        fs::write(&executable, script).unwrap();
+        fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let package = home.join("denon-fixture.apk");
+        assert!(std::process::Command::new("tar")
+            .args(["-czf"])
+            .arg(&package)
+            .arg("-C")
+            .arg(payload)
+            .args([
+                "usr/lib/couch/integrations/denon/manifest.json",
+                "usr/lib/couch/integrations/denon/bin/couch-plugin-denon"
+            ])
+            .status()
+            .unwrap()
+            .success());
+        let apk = home.join("fixture-apk");
+        fs::write(&apk, "#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n").unwrap();
+        fs::set_permissions(&apk, fs::Permissions::from_mode(0o755)).unwrap();
+        let packages = couch_integrations::Store::new(home.join("integrations")).with_apk(apk);
+        packages.install(&package).unwrap();
+        packages
     }
 
     #[test]
-    fn migration_rejects_a_configured_package_owner_before_preparing_settings() {
-        let fixture = Fixture::new("duplicate-package", false);
-        fixture
+    fn a_saved_built_in_connection_loads_and_says_what_it_needs() {
+        let fixture = Fixture::new("loads", &built_in_era("avr.invalid", 23));
+        let status = fixture.status();
+        assert_eq!(status["working"], false);
+        assert_eq!(status["connections"][0]["id"], "receiver");
+        assert_eq!(status["connections"][0]["package"], "denon");
+        assert_eq!(
+            status["connections"][0]["message"],
+            "Needs the Denon package"
+        );
+        assert_eq!(status["connections"][0]["reason"], Value::Null);
+        // Reading it is all the API offers: there is no built-in client left
+        // behind it, and nobody can add another of its kind.
+        assert_eq!(
+            fixture
+                .api
+                .connection_route("GET", &["receiver", "denon", "status"], &[], None)
+                .status,
+            404
+        );
+        let created = fixture.api.connection_route(
+            "POST",
+            &[],
+            &serde_json::to_vec(
+                &json!({"name":"Another","provider":{"kind":"denon","host":"x.invalid","port":23}}),
+            )
+            .unwrap(),
+            None,
+        );
+        assert_eq!(created.status, 400);
+        assert!(String::from_utf8_lossy(&created.body).contains("integration package"));
+        assert_eq!(fixture.config().connections.len(), 1);
+    }
+
+    #[test]
+    fn with_the_package_installed_the_connection_converts_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let fixture = Fixture::new("installed", &built_in_era("127.0.0.1", port));
+        install_package_fixture(&fixture.home);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        fixture.feed(move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Err(Install::Failed(
+                "the feed must not be asked for an installed package".into(),
+            ))
+        });
+        let before = fixture.config();
+
+        fixture.api.legacy_conversion_pass();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let after = fixture.config();
+        assert_eq!(after.revision, before.revision + 1);
+        assert_eq!(after.rooms, before.rooms);
+        assert_eq!(after.activities, before.activities);
+        assert_eq!(after.areas, before.areas);
+        assert_eq!(after.connections.len(), 1);
+        assert_eq!(after.connections[0].id, before.connections[0].id);
+        assert_eq!(after.connections[0].name, "Receiver");
+        let Provider::Plugin {
+            id,
+            label,
+            supports_inputs,
+            actions,
+            ..
+        } = &after.connections[0].provider
+        else {
+            panic!("still {:?}", after.connections[0].provider);
+        };
+        assert_eq!((id.as_str(), label.as_str()), ("denon", "Denon AVR"));
+        assert!(*supports_inputs && !actions.is_empty());
+        // The room's device and the activity's commands resolve through it.
+        after.validate().unwrap();
+        let device = &after.rooms[0].devices[0];
+        assert!(matches!(
+            after.resolve_integration(&device.integration),
+            Some(couch_model::Integration::Plugin { connection_id, .. })
+                if connection_id == Id::new("receiver")
+        ));
+        for command in ["input:SAT/CBL", "volume-up"] {
+            assert!(couch_model::commands::Function::parse(command)
+                .unwrap()
+                .supports_device(device, &after));
+        }
+        // The address moved into the package's private settings, and the
+        // receiver itself was never contacted.
+        let path = couch_sdk::connection_file(&fixture.home, "receiver", "plugin").unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
+            json!({"host":"127.0.0.1","port":port})
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(fixture.status()["connections"], json!([]));
+        // It survives a restart as an ordinary package connection, and an
+        // older runtime reading the same file is not shown a half-built one.
+        let reopened = Store::open(fixture.home.join("config.json")).unwrap();
+        assert_eq!(reopened.config(), &after);
+        let outer: Config =
+            serde_json::from_slice(&fs::read(fixture.home.join("config.json")).unwrap()).unwrap();
+        outer.validate().unwrap();
+        assert!(outer.connections.is_empty());
+        // Nothing left to do: another pass writes nothing.
+        fixture.api.legacy_conversion_pass();
+        assert_eq!(fixture.config().revision, after.revision);
+    }
+
+    #[test]
+    fn an_unreachable_feed_leaves_it_waiting_and_is_tried_again_quickly_at_first() {
+        let fixture = Fixture::new("offline", &built_in_era("avr.invalid", 23));
+        let before = fs::read(fixture.home.join("config.json")).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (seen, home) = (calls.clone(), fixture.home.clone());
+        fixture.feed(move |row| {
+            assert_eq!(row.package, "denon");
+            // Wi-Fi is still coming up for the first three looks.
+            if seen.fetch_add(1, Ordering::SeqCst) < 3 {
+                return Err(Install::Unreachable(
+                    "cannot download repository index over HTTPS".into(),
+                ));
+            }
+            install_package_fixture(&home);
+            Ok(())
+        });
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+
+        fixture.api.legacy_conversion_pass_at(start);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let status = fixture.status();
+        assert_eq!(status["working"], false);
+        assert_eq!(
+            status["connections"][0]["message"],
+            "Needs the Denon package"
+        );
+        assert_eq!(
+            status["connections"][0]["reason"],
+            "cannot download repository index over HTTPS"
+        );
+        assert!(status["retry_in_seconds"].as_u64().is_some());
+        assert_eq!(fs::read(fixture.home.join("config.json")).unwrap(), before);
+        assert!(!fixture.home.join("connections/receiver").exists());
+
+        // 5 s, then 10 s, then 20 s: not before its time, however often the
+        // daemon looks, and then again.
+        fixture.api.legacy_conversion_pass_at(at(4));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        fixture.api.legacy_conversion_pass_at(at(5));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        fixture.api.legacy_conversion_pass_at(at(14));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        fixture.api.legacy_conversion_pass_at(at(15));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(fs::read(fixture.home.join("config.json")).unwrap(), before);
+        fixture.api.legacy_conversion_pass_at(at(34));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        // The feed answers on the next look; the connection converts.
+        fixture.api.legacy_conversion_pass_at(at(35));
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        let after = fixture.config();
+        assert!(matches!(
+            &after.connections[0].provider,
+            Provider::Plugin { id, .. } if id == "denon"
+        ));
+        assert_eq!(after.connections[0].id, Id::new("receiver"));
+        let status = fixture.status();
+        assert_eq!(status["connections"], json!([]));
+        assert_eq!(status["retry_in_seconds"], Value::Null);
+    }
+
+    #[test]
+    fn the_waits_are_quick_only_while_the_feed_is_out_of_reach() {
+        let unreachable: Vec<u64> = (0..11).map(|n| wait_after(n, true)).collect();
+        assert_eq!(
+            unreachable,
+            [5, 10, 20, 30, 60, 120, 300, 900, 3600, 3600, 3600]
+        );
+        let other: Vec<u64> = (0..8).map(|n| wait_after(n, false)).collect();
+        assert_eq!(other, [30, 60, 120, 300, 900, 3600, 3600, 3600]);
+        assert_eq!(wait_after(u32::MAX, true), 3600);
+    }
+
+    #[test]
+    fn try_again_skips_the_backoff_but_cannot_hammer_the_feed() {
+        let fixture = Fixture::new("try-again", &built_in_era("avr.invalid", 23));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        fixture.feed(move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            // Not a network problem, so the long ladder: 30 s to the next.
+            Err(Install::Failed(
+                "The official package feed does not offer the Denon package yet".into(),
+            ))
+        });
+        let start = Instant::now();
+        let at = |millis: u64| start + Duration::from_millis(millis);
+        let retry = || {
+            assert_eq!(
+                fixture
+                    .api
+                    .legacy_conversion_route("POST", &["retry"])
+                    .status,
+                202
+            );
+        };
+        fixture.api.legacy_conversion_pass_at(start);
+        fixture.api.legacy_conversion_pass_at(at(29_000));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "its backoff is 30 s");
+        // A client that posts as fast as it can gets one attempt per 5 s.
+        for millis in (29_000..41_000).step_by(250) {
+            retry();
+            fixture.api.legacy_conversion_pass_at(at(millis));
+        }
+        // 29.0 s (the first post), 34.0 s and 39.0 s.
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        // The last post is still owed an attempt, 5 s after the one before;
+        // left alone after that, it is back on its ladder.
+        fixture.api.legacy_conversion_pass_at(at(43_900));
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        fixture.api.legacy_conversion_pass_at(at(44_000));
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        fixture.api.legacy_conversion_pass_at(at(60_000));
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn an_install_nobody_asked_for_only_comes_from_an_official_repository() {
+        let offer = |repositories: &[&str]| {
+            json!({"available": repositories.iter().map(|repository| json!({
+                "id":"denon","name":"Denon AVR","version":"9.9.9","repository":repository,
+            })).chain([json!({"id":"echo","repository":"official-stable"})]).collect::<Vec<_>>()})
+        };
+        // The owner trusts a repository of their own that offers `denon`.
+        // That is theirs to install from, by hand; it is never picked here.
+        assert_eq!(official_source(&offer(&["living-room"]), "denon"), None);
+        assert_eq!(
+            official_source(&offer(&["living-room", "official-preview"]), "denon"),
+            Some("official-preview")
+        );
+        assert_eq!(
+            official_source(
+                &offer(&["official-preview", "living-room", "official-stable"]),
+                "denon"
+            ),
+            Some("official-stable")
+        );
+        // A look-alike id is not official, and nothing offered is nothing chosen.
+        assert_eq!(
+            official_source(&offer(&["official-previews"]), "denon"),
+            None
+        );
+        assert_eq!(official_source(&json!({"available":[]}), "denon"), None);
+        assert_eq!(official_source(&json!({}), "denon"), None);
+    }
+
+    #[test]
+    fn a_package_installed_by_hand_from_any_repository_is_used_as_it_is() {
+        // However it got there (the owner's own repository, a sideload), an
+        // installed package means the feed is never consulted.
+        let fixture = Fixture::new("by-hand", &built_in_era("avr.invalid", 23));
+        install_package_fixture(&fixture.home);
+        fixture.feed(|_| panic!("an installed package needs no feed"));
+        fixture.api.legacy_conversion_pass();
+        assert!(fixture.config().legacy_connections().next().is_none());
+    }
+
+    #[test]
+    fn a_package_swapped_between_the_check_and_the_commit_converts_nothing() {
+        let fixture = Fixture::new("swapped", &built_in_era("avr.invalid", 23));
+        let packages = install_package_fixture(&fixture.home);
+        let prepared = fixture
             .api
-            .store
-            .lock()
-            .unwrap()
-            .mutate(None, |config| config.connections.push(manual_denon()))
+            .plugins
+            .prepare_legacy("denon", json!({"host":"avr.invalid","port":23}))
             .unwrap();
-        let path = couch_sdk::connection_file(&fixture.home, "manual", "plugin").unwrap();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        couch_sdk::save_private(
-            &path,
-            &json!({"host":"duplicate-package.invalid","port":23}),
-        )
-        .unwrap();
-        let before = fixture.api.with(|store| store.config().clone());
-        let response = fixture.action("migrate", 1);
-        assert_eq!(response.status, 409);
-        assert!(String::from_utf8_lossy(&response.body).contains("already owns"));
-        assert_eq!(fixture.api.with(|store| store.config().clone()), before);
+        packages.remove("denon").unwrap();
+        let committed = std::cell::Cell::new(false);
+        let result = fixture
+            .api
+            .plugins
+            .adopt_legacy("receiver", &prepared, |_| {
+                committed.set(true);
+                Ok(())
+            });
+        assert!(result.is_err());
+        assert!(!committed.get());
         assert!(
             !couch_sdk::connection_file(&fixture.home, "receiver", "plugin")
                 .unwrap()
@@ -176,196 +850,136 @@ mod tests {
     }
 
     #[test]
-    fn settings_merge_and_import_cannot_add_an_owner_for_a_migrated_target() {
-        let fixture = Fixture::new("protected-target", true);
-        fixture.install_package_fixture();
-        let path = couch_sdk::connection_file(&fixture.home, "manual", "plugin").unwrap();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        couch_sdk::save_private(&path, &json!({"host":"protected-target.invalid","port":23}))
-            .unwrap();
-        let before = fixture.api.with(|store| store.config().clone());
-        assert!(fixture
-            .api
-            .store
-            .lock()
-            .unwrap()
-            .mutate(None, |config| config.connections.push(manual_denon()))
-            .is_err());
-        assert_eq!(fixture.api.with(|store| store.config().clone()), before);
-
-        couch_sdk::save_private(&path, &json!({"host":"protected-target.invalid","port":24}))
-            .unwrap();
-        fixture
-            .api
-            .store
-            .lock()
-            .unwrap()
-            .mutate(None, |config| config.connections.push(manual_denon()))
-            .unwrap();
-        let previous_settings = fs::read(&path).unwrap();
-        // The patch omits host. Compare the effective merged endpoint, not
-        // only fields present in the request.
-        assert_eq!(
-            fixture
-                .api
-                .plugin_route("POST", "manual", &["settings"], br#"{"port":23}"#)
-                .status,
-            400
-        );
-        assert_eq!(fs::read(&path).unwrap(), previous_settings);
-        // Null removes the saved port and the manifest restores its default.
-        assert_eq!(
-            fixture
-                .api
-                .plugin_route("POST", "manual", &["settings"], br#"{"port":null}"#)
-                .status,
-            400
-        );
-        assert_eq!(fs::read(&path).unwrap(), previous_settings);
-        assert_eq!(
-            fixture
-                .api
-                .plugin_route("POST", "manual", &["settings"], br#"{"port":25}"#)
-                .status,
-            200
-        );
-        let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        assert_eq!(saved["port"], 25);
-        assert_eq!(fixture.action("restore-native", 1).status, 200);
-        // Removing the receipt must not remove protection for the now-native
-        // receiver. Settings continue to share the same config mutex.
-        assert_eq!(
-            fixture
-                .api
-                .plugin_route("POST", "manual", &["settings"], br#"{"port":23}"#)
-                .status,
-            400
-        );
-    }
-
-    #[test]
-    fn manual_saves_and_retained_settings_imports_cannot_duplicate_native_receivers() {
-        for inline in [false, true] {
-            let name = if inline {
-                "inline-native-target"
-            } else {
-                "native-target"
-            };
-            let fixture = Fixture::new(name, false);
-            let host = format!("{name}.invalid");
-            if inline {
-                fixture
-                    .api
-                    .store
-                    .lock()
-                    .unwrap()
-                    .mutate(None, |config| {
-                        config.connections.clear();
-                        config.rooms.push(couch_model::Room {
-                            id: Id::new("room"),
-                            name: "Room".into(),
-                            icon: None,
-                            devices: vec![couch_model::Device::new(
-                                Id::new("avr"),
-                                "AVR",
-                                couch_model::DeviceKind::Speaker,
-                            )
-                            .with_integration(
-                                couch_model::Integration::Denon {
-                                    host: host.clone(),
-                                    port: 23,
-                                },
-                            )],
-                        });
-                    })
-                    .unwrap();
-            }
-            fixture.install_package_fixture();
-            let path = couch_sdk::connection_file(&fixture.home, "manual", "plugin").unwrap();
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            couch_sdk::save_private(&path, &json!({"host":host,"port":23})).unwrap();
-            let before = fixture.api.with(|store| store.config().clone());
-            assert!(fixture
-                .api
-                .store
-                .lock()
-                .unwrap()
-                .mutate(None, |config| config.connections.push(manual_denon()))
-                .is_err());
-            assert_eq!(fixture.api.with(|store| store.config().clone()), before);
-
-            fs::remove_file(&path).unwrap();
+    fn an_inline_receiver_without_an_address_does_not_stop_the_daemon_starting() {
+        for (name, host, port) in [
+            ("blank", "", 23),
+            ("space", " \t", 23),
+            ("port", "avr.invalid", 0),
+        ] {
+            let mut inline = built_in_era("avr.invalid", 23);
+            inline["connections"] = json!([]);
+            inline["rooms"][0]["devices"][0]["integration"] =
+                json!({"via":"denon","host":host,"port":port});
+            let fixture = Fixture::new(&format!("inert-{name}"), &inline);
+            let loaded = fixture.config();
+            assert!(loaded.connections.is_empty(), "{name}");
+            loaded.validate().unwrap();
+            fixture.feed(|_| panic!("nothing waits for a package"));
+            fixture.api.legacy_conversion_pass();
+            // An edit saves, and what it saved opens again.
             fixture
                 .api
                 .store
                 .lock()
                 .unwrap()
-                .mutate(None, |config| config.connections.push(manual_denon()))
+                .mutate(None, |config| config.rooms[0].name = "Study".into())
                 .unwrap();
-            let request = serde_json::to_vec(&json!({"host":host})).unwrap();
-            assert_eq!(
-                fixture
-                    .api
-                    .plugin_route("POST", "manual", &["settings"], &request)
-                    .status,
-                400
-            );
-            assert!(!path.exists());
-            let request = serde_json::to_vec(&json!({"host":host,"port":24})).unwrap();
-            assert_eq!(
-                fixture
-                    .api
-                    .plugin_route("POST", "manual", &["settings"], &request)
-                    .status,
-                200
-            );
-
-            // The reverse direction is also an import/edit: moving the native
-            // target onto the package's saved endpoint must fail atomically.
-            let before = fixture.api.with(|store| store.config().clone());
-            assert!(fixture
-                .api
-                .store
-                .lock()
-                .unwrap()
-                .mutate(None, |config| {
-                    if inline {
-                        config.rooms[0].devices[0].integration = couch_model::Integration::Denon {
-                            host: host.clone(),
-                            port: 24,
-                        };
-                    } else {
-                        config.connections[0].provider = Provider::Denon {
-                            host: host.clone(),
-                            port: 24,
-                        };
-                    }
-                })
-                .is_err());
-            assert_eq!(fixture.api.with(|store| store.config().clone()), before);
+            let reopened = Store::open(fixture.home.join("config.json")).unwrap();
+            assert_eq!(reopened.config().rooms[0].name, "Study");
         }
     }
 
     #[test]
-    fn typed_http_refuses_malformed_and_out_of_range_before_device_io() {
-        let fixture = Fixture::new("typed-action", false);
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
+    fn a_package_that_cannot_be_verified_converts_nothing() {
+        let fixture = Fixture::new("tampered", &built_in_era("avr.invalid", 23));
+        let packages = install_package_fixture(&fixture.home);
+        let (directory, manifest) = packages.resolve("denon").unwrap();
+        let executable = directory.join(manifest.executable);
+        let mut bytes = fs::read(&executable).unwrap();
+        bytes.extend_from_slice(b"\n# modified after admission\n");
+        fs::write(executable, bytes).unwrap();
+        fixture.feed(|_| Err(Install::Unreachable("offline".into())));
+        let before = fixture.config();
+        fixture.api.legacy_conversion_pass();
+        assert_eq!(fixture.config(), before);
+        assert!(fixture.status()["connections"][0]["reason"].is_string());
+        assert!(
+            !couch_sdk::connection_file(&fixture.home, "receiver", "plugin")
+                .unwrap()
+                .exists()
+        );
+    }
+
+    #[test]
+    fn a_failed_config_write_leaves_the_old_connection_in_charge_until_the_retry() {
+        let fixture = Fixture::new("write-fails", &built_in_era("avr.invalid", 23));
+        install_package_fixture(&fixture.home);
+        let before = fixture.config();
+        fs::create_dir(fixture.home.join("config.json.tmp")).unwrap();
+        let start = Instant::now();
+        fixture.api.legacy_conversion_pass_at(start);
+        assert_eq!(fixture.config(), before);
+        assert!(fixture.status()["connections"][0]["reason"].is_string());
+        fs::remove_dir(fixture.home.join("config.json.tmp")).unwrap();
         fixture
             .api
-            .store
-            .lock()
-            .unwrap()
-            .mutate(None, |config| {
-                config.connections[0].provider = Provider::Denon {
-                    host: "127.0.0.1".into(),
-                    port: listener.local_addr().unwrap().port(),
-                };
-            })
-            .unwrap();
-        fixture.install_package_fixture();
-        let revision = fixture.api.with(|store| store.revision());
-        assert_eq!(fixture.action("migrate", revision).status, 200);
+            .legacy_conversion_pass_at(start + Duration::from_secs(BACKOFF[0]));
+        assert!(fixture.config().legacy_connections().next().is_none());
+    }
+
+    #[test]
+    fn a_receiver_named_on_a_device_and_a_pilot_receipt_both_come_forward() {
+        // Inline on the device, from before named connections.
+        let mut inline = built_in_era("avr.invalid", 23);
+        inline["connections"] = json!([]);
+        inline["rooms"][0]["devices"][0]["integration"] =
+            json!({"via":"denon","host":"192.0.2.7","port":23});
+        let fixture = Fixture::new("inline", &inline);
+        install_package_fixture(&fixture.home);
+        let loaded = fixture.config();
+        assert_eq!(
+            loaded.connections.len(),
+            1,
+            "the store gave it a connection"
+        );
+        assert_eq!(loaded.connections[0].id, Id::new("avr"));
+        fixture.api.legacy_conversion_pass();
+        let after = fixture.config();
+        assert!(matches!(
+            &after.connections[0].provider,
+            Provider::Plugin { id, .. } if id == "denon"
+        ));
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &fs::read(couch_sdk::connection_file(&fixture.home, "avr", "plugin").unwrap())
+                    .unwrap()
+            )
+            .unwrap(),
+            json!({"host":"192.0.2.7","port":23})
+        );
+
+        // Switched by the reversible pilot: already a package connection, with
+        // a receipt nothing can act on any more.
+        let mut piloted: Config = serde_json::from_value(built_in_era("avr.invalid", 23)).unwrap();
+        piloted.connections[0].provider = after.connections[0].provider.clone();
+        piloted.denon_migrations.insert(
+            Id::new("receiver"),
+            couch_model::DenonMigration {
+                host: "avr.invalid".into(),
+                port: 23,
+            },
+        );
+        let fixture = Fixture::new(
+            "piloted",
+            &serde_json::to_value(StoredConfig::new(&piloted)).unwrap(),
+        );
+        let loaded = fixture.config();
+        assert!(loaded.denon_migrations.is_empty());
+        assert_eq!(loaded.connections, piloted.connections);
+        assert_eq!(fixture.status()["connections"], json!([]));
+    }
+
+    #[test]
+    fn typed_http_refuses_malformed_and_out_of_range_before_device_io() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let fixture = Fixture::new(
+            "typed-action",
+            &built_in_era("127.0.0.1", listener.local_addr().unwrap().port()),
+        );
+        install_package_fixture(&fixture.home);
+        fixture.api.legacy_conversion_pass();
+        assert!(fixture.config().legacy_connections().next().is_none());
         for value in [
             json!({"action":"set_volume_db","tenths":-34.5}),
             json!({"action":"set_volume_db","tenths":"-345"}),
@@ -388,369 +1002,5 @@ mod tests {
             listener.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
         );
-        let list = fixture.api.denon_migration_route("GET", &[], &[]);
-        assert_eq!(list.status, 200);
-        let value: serde_json::Value = serde_json::from_slice(&list.body).unwrap();
-        assert_eq!(value["package_protocol_version"], 2);
-        assert_eq!(value["supports_volume_db"], true);
-        assert_eq!(value["supports_absolute_volume"], true);
-    }
-
-    #[test]
-    fn migration_requires_verified_package_and_changes_nothing_when_missing() {
-        let fixture = Fixture::new("missing", false);
-        let before = fs::read(fixture.home.join("config.json")).unwrap();
-        assert_eq!(fixture.action("migrate", 0).status, 409);
-        assert_eq!(fs::read(fixture.home.join("config.json")).unwrap(), before);
-        assert!(!fixture
-            .home
-            .join("connections/receiver/plugin-connection.json")
-            .exists());
-        assert_eq!(fixture.action("migrate", 99).status, 409);
-        assert_eq!(fixture.api.with(|s| s.revision()), 0);
-    }
-
-    #[test]
-    fn tampered_installed_fixture_cannot_prepare_or_convert_native_settings() {
-        let fixture = Fixture::new("tampered", false);
-        let packages = fixture.install_package_fixture();
-        let (directory, manifest) = packages.resolve("denon").unwrap();
-        let executable = directory.join(manifest.executable);
-        let mut bytes = fs::read(&executable).unwrap();
-        bytes.extend_from_slice(b"\n# modified after admission\n");
-        fs::write(executable, bytes).unwrap();
-        let before = fixture.api.with(|store| store.config().clone());
-        assert_eq!(fixture.action("migrate", 0).status, 409);
-        assert_eq!(fixture.api.with(|store| store.config().clone()), before);
-        assert!(
-            !couch_sdk::connection_file(&fixture.home, "receiver", "plugin")
-                .unwrap()
-                .exists()
-        );
-    }
-
-    #[test]
-    fn restoration_works_without_package_and_preserves_private_settings() {
-        let fixture = Fixture::new("restore", true);
-        let path = couch_sdk::connection_file(&fixture.home, "receiver", "plugin").unwrap();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        couch_sdk::save_private(&path, &json!({"host":"restore.invalid","port":23})).unwrap();
-        let before = fs::read(&path).unwrap();
-        assert_eq!(fixture.action("migrate", 0).status, 200); // already migrated
-        assert_eq!(fixture.api.with(|s| s.revision()), 0);
-        assert_eq!(fixture.action("restore-native", 0).status, 200);
-        assert_eq!(fixture.action("restore-native", 1).status, 200); // already native
-        assert_eq!(fixture.api.with(|s| s.revision()), 1);
-        assert!(fixture.api.with(|s| s.config().denon_migrations.is_empty()));
-        assert!(matches!(
-            fixture
-                .api
-                .with(|s| s.config().connections[0].provider.clone()),
-            Provider::Denon { port: 23, .. }
-        ));
-        assert_eq!(fs::read(path).unwrap(), before);
-        assert_eq!(
-            fixture
-                .api
-                .plugins
-                .execute("receiver", "denon", couch_plugin::Request::Status),
-            Err(couch_plugin::Error::Invalid)
-        );
-    }
-
-    #[test]
-    fn normal_edits_cannot_bypass_ownership_or_change_migrated_settings() {
-        let fixture = Fixture::new("edits", true);
-        let mut store = fixture.api.store.lock().unwrap();
-        let before = store.config().clone();
-        assert!(store
-            .mutate(None, |c| {
-                c.denon_migrations.clear();
-            })
-            .is_err());
-        assert!(store
-            .mutate(None, |c| {
-                c.connections.clear();
-            })
-            .is_err());
-        assert_eq!(store.config(), &before);
-        store
-            .mutate(None, |c| c.connections[0].name = "Renamed".into())
-            .unwrap();
-        drop(store);
-        assert_eq!(
-            fixture
-                .api
-                .plugin_route(
-                    "POST",
-                    "receiver",
-                    &["settings"],
-                    br#"{"host":"different.invalid","port":23}"#
-                )
-                .status,
-            409
-        );
-    }
-
-    #[test]
-    fn failed_restore_commit_keeps_migration_and_execution_owner() {
-        let fixture = Fixture::new("failed-restore", true);
-        // Store's temporary-file creation fails before its atomic rename.
-        fs::create_dir(fixture.home.join("config.json.tmp")).unwrap();
-        let before = fixture.api.with(|s| s.config().clone());
-        assert_eq!(fixture.action("restore-native", 0).status, 409);
-        assert_eq!(fixture.api.with(|s| s.config().clone()), before);
-        assert_eq!(
-            Store::open(fixture.home.join("config.json"))
-                .unwrap()
-                .config(),
-            &before
-        );
-    }
-
-    #[test]
-    fn installed_fixture_migrates_reuses_prepared_settings_and_restores_without_receiver_io() {
-        use std::os::unix::fs::PermissionsExt;
-        let fixture = Fixture::new("installed", false);
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        fixture
-            .api
-            .store
-            .lock()
-            .unwrap()
-            .mutate(None, |config| {
-                config.connections[0].provider = Provider::Denon {
-                    host: "127.0.0.1".into(),
-                    port,
-                };
-            })
-            .unwrap();
-        let original = fixture.api.with(|store| store.config().clone());
-        let packages = fixture.install_package_fixture();
-        let path = couch_sdk::connection_file(&fixture.home, "receiver", "plugin").unwrap();
-
-        // Preparation succeeds, but config replacement fails. The native
-        // document stays authoritative and a retry can reuse the durable file.
-        fs::create_dir(fixture.home.join("config.json.tmp")).unwrap();
-        assert_eq!(fixture.action("migrate", 1).status, 409);
-        assert_eq!(fixture.api.with(|store| store.config().clone()), original);
-        let prepared = fs::read(&path).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&prepared).unwrap(),
-            json!({"host":"127.0.0.1","port":port})
-        );
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        fs::remove_dir(fixture.home.join("config.json.tmp")).unwrap();
-
-        // A recovery-confirmation rename fails after the live config rename.
-        // That must remain a committed migration, with native access blocked.
-        let recovery = fixture.home.join("config.integration-recovery.json");
-        fs::create_dir(&recovery).unwrap();
-
-        let reply = fixture.action("migrate", 1);
-        assert_eq!(
-            reply.status,
-            200,
-            "{}",
-            String::from_utf8_lossy(&reply.body)
-        );
-        assert_eq!(fixture.action("migrate", 2).status, 200);
-        assert_eq!(fixture.api.with(|store| store.revision()), 2);
-        assert_eq!(fs::read(&path).unwrap(), prepared);
-        assert!(fixture
-            .home
-            .join("config.integration-recovery.pending.json")
-            .is_file());
-        fs::remove_dir(recovery).unwrap();
-        let envelope = fs::read(fixture.home.join("config.json")).unwrap();
-        let mut old: Config = serde_json::from_slice(&envelope).unwrap();
-        old.revision = original.revision;
-        assert_eq!(old, original);
-        assert!(Store::open(fixture.home.join("config.json"))
-            .unwrap()
-            .config()
-            .migrated_denon(&Id::new("receiver"))
-            .is_some());
-        assert!(couch_control::Denon::connect(&couch_denon::Settings {
-            host: "127.0.0.1".into(),
-            port
-        })
-        .unwrap()
-        .status()
-        .is_err());
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-
-        packages.remove("denon").unwrap();
-        assert_eq!(fixture.action("restore-native", 2).status, 200);
-        let mut restored = fixture.api.with(|store| store.config().clone());
-        restored.revision = original.revision;
-        assert_eq!(restored, original);
-        assert_eq!(fs::read(path).unwrap(), prepared);
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-    }
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum Action {
-    Migrate,
-    RestoreNative,
-}
-
-impl Api {
-    pub(super) fn denon_migration_route(&self, method: &str, path: &[&str], body: &[u8]) -> Reply {
-        if method == "GET" && path.is_empty() {
-            let manifest = self.plugins.manifest("denon").ok();
-            let available = manifest.is_some();
-            let package_protocol_version = manifest.as_ref().map(|m| m.protocol_version);
-            let supports_volume_db = manifest.as_ref().is_some_and(|m| {
-                m.protocol_version >= 2
-                    && m.presentation.iter().any(|component| {
-                        matches!(
-                            component,
-                            couch_model::PluginComponent::StatusText {
-                                field: couch_model::PluginStatusField::VolumeDb,
-                                ..
-                            } | couch_model::PluginComponent::VolumeDbControl { .. }
-                        )
-                    })
-            });
-            let supports_absolute_volume = manifest.as_ref().is_some_and(|m| !m.actions.is_empty());
-            return self.with(|store| {
-                let config = store.config();
-                let connections: Vec<_> = config.connections.iter().filter_map(|c| {
-                    let state = if config.migrated_denon(&c.id).is_some() { "migrated" }
-                        else if matches!(c.provider, Provider::Denon { .. }) { "native" }
-                        else { return None };
-                    Some(json!({"id":c.id,"name":c.name,"state":state}))
-                }).collect();
-                Reply::json(200, &json!({"revision":config.revision,"connections":connections,"package_available":available,"package_protocol_version":package_protocol_version,"supports_volume_db":supports_volume_db,"supports_absolute_volume":supports_absolute_volume}))
-            });
-        }
-        let ("POST", [id]) = (method, path) else {
-            return Reply::error(404, "Unknown Denon migration operation");
-        };
-        let change: Change = match parse(body) {
-            Ok(v) => v,
-            Err(reply) => return reply,
-        };
-        let id = Id::new(*id);
-        // Serialize config readers/writers through verification, ownership
-        // transfer and commit so no newly looked-up native request can escape.
-        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        if change.revision != store.revision() {
-            return Reply::error(409, "Configuration changed; refresh before migrating");
-        }
-        let mut next = store.config().clone();
-        let result = match change.action {
-            Action::Migrate => {
-                if next.migrated_denon(&id).is_some() {
-                    return Reply::json(200, &json!({"changed":false,"revision":store.revision()}));
-                }
-                let Some(Provider::Denon { host, port }) =
-                    next.connection(&id).map(|c| &c.provider)
-                else {
-                    return Reply::error(400, "Choose a built-in Denon connection");
-                };
-                let settings = couch_denon::Settings {
-                    host: host.clone(),
-                    port: *port,
-                };
-                // Denon settings saves hold the same config mutex. This read
-                // therefore stays authoritative through the ownership commit.
-                for other in &next.connections {
-                    if other.id == id
-                        || !matches!(&other.provider, Provider::Plugin { id, .. } if id == "denon")
-                    {
-                        continue;
-                    }
-                    match self.plugins.denon_target(other.id.as_str()) {
-                        Ok(Some(target))
-                            if target.host == settings.host && target.port == settings.port =>
-                        {
-                            return Reply::error(
-                                409,
-                                "Another Denon package connection already owns this receiver",
-                            );
-                        }
-                        Err(message) => return Reply::error(409, message),
-                        _ => {}
-                    }
-                }
-                self.plugins
-                    .migrate_denon(id.as_str(), &settings, |manifest| {
-                        next.migrate_denon(
-                            &id,
-                            Provider::Plugin {
-                                id: manifest.id.clone(),
-                                label: manifest.label.clone(),
-                                capabilities: manifest
-                                    .capabilities
-                                    .iter()
-                                    .map(|c| couch_model::PluginCapability {
-                                        id: c.id.clone(),
-                                        label: c.label.clone(),
-                                    })
-                                    .collect(),
-                                supports_inputs: manifest.supports_inputs,
-                                presentation: manifest.presentation.clone(),
-                                actions: manifest.actions.clone(),
-                            },
-                        )?;
-                        if let Err(error) =
-                            couch_control::block_denon(&settings.host, settings.port)
-                        {
-                            let _ = couch_control::unblock_denon(&settings.host, settings.port);
-                            return Err(error.to_string());
-                        }
-                        if let Err(error) =
-                            store.mutate_migration(Some(change.revision), |config| *config = next)
-                        {
-                            let _ = couch_control::unblock_denon(&settings.host, settings.port);
-                            return Err(error.to_string());
-                        }
-                        Ok(())
-                    })
-            }
-            Action::RestoreNative => {
-                let original = next.migrated_denon(&id).cloned();
-                match next.restore_native_denon(&id) {
-                    Ok(false) => {
-                        return Reply::json(
-                            200,
-                            &json!({"changed":false,"revision":store.revision()}),
-                        )
-                    }
-                    Err(message) => return Reply::error(400, message),
-                    Ok(true) => {}
-                }
-                let original = original.unwrap();
-                self.plugins
-                    .restore_denon(id.as_str(), || {
-                        store
-                            .mutate_migration(Some(change.revision), |config| *config = next)
-                            .map_err(|e| e.to_string())?;
-                        Ok(())
-                    })
-                    .and_then(|()| {
-                        couch_control::unblock_denon(&original.host, original.port)
-                            .map_err(|e| e.to_string())
-                    })
-            }
-        };
-        match result {
-            Ok(()) => Reply::json(200, &json!({"changed":true,"revision":store.revision()})),
-            Err(message) => Reply::error(409, message),
-        }
     }
 }

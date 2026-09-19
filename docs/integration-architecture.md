@@ -24,9 +24,13 @@ operating system, and shared native controls. The framed, versioned JSON
 subprocess boundary, rather than a Rust dynamic-library ABI, is what permits an
 integration to be built and installed independently.
 
-This is a developer preview. Echo and Denon demonstrate the package path;
-existing built-in integrations remain available. Denon is the first
-independently sourced package. The published
+This is a developer preview. Integrations live in their own repositories and
+the OS carries only the host that runs them. Denon is the first independently
+sourced package and the first built-in to leave the OS: its client is no longer
+linked into Couch, and a connection saved before that converts by itself
+([Built-in integrations that became packages](integration-migration.md)). The
+other built-in integrations remain until their packages can replace them; Echo
+is the in-tree template. The published
 `v0.1.0-alpha.20260916.171.dev` prerelease provides the protocol-v1 host and
 paired web package management. It is not a production compatibility guarantee.
 The older `.170` runtime does not contain the package host.
@@ -104,7 +108,7 @@ passed admission, or that a device has been validated.
 
 | Adapter | Current implementation evidence | Package readiness | Blocking contract or migration work |
 | --- | --- | --- | --- |
-| Denon | `couch-denon` has a `DeviceClient`, manifest, package binary, catalog cases, and an explicit per-connection pilot. | **Can migrate now as protocol-v1 preview.** | Full receiver hardware evidence remains outstanding. dB status/control and space-containing source bindings wait for protocol v2 and the shared input grammar work. |
+| Denon | Lives in `Couch-OS/couch-integration-denon`: `DeviceClient`, manifest, package binary and admission cases, published in the feed. | **Moved; the built-in client is removed.** Saved connections convert automatically. | Full receiver hardware evidence remains outstanding. Space-containing source bindings need a protocol-v2 core (shared input grammar). |
 | Sonos | `couch-sonos::sdk::Client` already implements `DeviceClient` for playback, volume, mute, status, and inputs. | **Package-shaped adapter; not yet a migration.** | Needs a package binary/manifest, four package cases, catalog/feed admission, and an explicit owner/configuration migration. Discovery is not carried by v1. |
 | Echo | `couch-echo` is a packaged `DeviceClient` with fake-peer admission coverage. | **Test-only fixture.** | It is fictional and must never become a device-support migration. |
 | Kodi | The client has JSON-RPC playback, chapters, streams, and notification handling. | **Needs a richer media/event contract.** | Protocol v1 cannot express unsolicited notifications, chapters, stream selection, or richer media state. |
@@ -141,9 +145,11 @@ admission harness, and rollback behavior must all still be represented.
    plugin dependencies, ARM build, package admission, and device evidence have
    been reviewed.
 
-Denon's [migration guide](integration-migration.md) is the implemented pilot.
-It shows the required preservation and rollback behavior; it is not a template
-for claiming that every built-in integration is ready.
+Denon's [retirement](integration-migration.md) is the implemented case: a
+table of departed built-ins, a `Legacy*` variant kept so the file still loads,
+and an automatic, one-way conversion that keeps the connection's id. It shows
+the required preservation and rollback behavior; it is not a claim that every
+built-in integration is ready.
 
 ## Protocol v2 boundary: unreleased
 

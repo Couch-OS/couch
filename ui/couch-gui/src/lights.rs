@@ -139,6 +139,24 @@ pub struct Controller {
     brightness_flight: Option<(String, u8)>,
     brightness_until: Option<Instant>,
     last_brightness_send: Instant,
+    /// A sentence for the main loop's toast, raised by a row press.
+    notice: Option<String>,
+}
+/// What a row says, and OK on it toasts, when its device's built-in client has
+/// left the OS and the connection has not been handed to the package yet: the
+/// sentence the device's volume and power keys give too (`activity_buttons`).
+pub(crate) fn needs_package(config: &couch_model::Config, device_id: &str) -> Option<String> {
+    let (_, device) = config.devices().find(|(_, d)| d.id.as_str() == device_id)?;
+    let row = config
+        .resolve_integration(&device.integration)?
+        .legacy_builtin()?;
+    Some(row.needs_package())
+}
+/// The second line of a device row that opens a screen.
+fn device_row_detail(config: Option<&couch_model::Config>, entry_id: &str) -> String {
+    config
+        .and_then(|c| needs_package(c, entry_id.trim_start_matches("device:")))
+        .unwrap_or_else(|| "Press OK for controls".into())
 }
 fn configured(room: &Id) -> Result<Vec<Entry>, String> {
     let config = crate::connections::config().ok_or("Cannot read your rooms")?;
@@ -465,6 +483,7 @@ impl Controller {
             brightness_flight: None,
             brightness_until: None,
             last_brightness_send: Instant::now() - Duration::from_secs(1),
+            notice: None,
         }
     }
     pub fn hue_live(&self) -> Arc<crate::connections::HueFleet> {
@@ -485,7 +504,7 @@ impl Controller {
         } else if let Some((_, caption)) = &e.activity {
             caption.clone()
         } else if e.id.starts_with("device:") {
-            "Press OK for controls".into()
+            device_row_detail(crate::connections::config().as_deref(), &e.id)
         } else {
             e.state
                 .as_ref()
@@ -761,6 +780,10 @@ impl Controller {
             .iter()
             .any(|input| matches!(input, Input::Open(_) | Input::Back))
     }
+    /// The toast a row press asked for, once.
+    pub fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
+    }
     pub fn poll(&mut self, app: &App) {
         if self
             .brightness_until
@@ -869,6 +892,13 @@ impl Controller {
                         {
                             app.set_active_activity("".into());
                             app.invoke_open_tv(e.id.as_str().into(), e.name.as_str().into());
+                            continue;
+                        }
+                        if let Some(message) = cfg
+                            .as_ref()
+                            .and_then(|c| needs_package(c, e.id.trim_start_matches("device:")))
+                        {
+                            self.notice = Some(message);
                             continue;
                         }
                         app.set_light_detail(
@@ -1066,6 +1096,116 @@ pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_receiver_waiting_for_its_package_says_so_instead_of_opening_anything() {
+        let config:couch_model::Config=serde_json::from_value(serde_json::json!({"schema_version":1,
+            "connections":[{"id":"receiver","name":"Receiver","provider":{"kind":"denon","host":"avr.invalid","port":23}},
+                {"id":"tv","name":"TV","provider":{"kind":"apple-tv"}}],
+            "rooms":[{"id":"r","name":"Room","devices":[
+                {"id":"avr","name":"Theater AVR","kind":"speaker","integration":{"via":"connection","connection_id":"receiver"}},
+                {"id":"inline","name":"Old AVR","kind":"speaker","integration":{"via":"denon","host":"192.0.2.7","port":23}},
+                {"id":"tv","name":"TV","kind":"tv","integration":{"via":"connection","connection_id":"tv"}}]}]})).unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            needs_package(&config, "avr").as_deref(),
+            Some("Needs the Denon package")
+        );
+        assert_eq!(
+            needs_package(&config, "inline").as_deref(),
+            Some("Needs the Denon package")
+        );
+        // The row says it before anyone presses OK.
+        assert_eq!(
+            device_row_detail(Some(&config), "device:avr"),
+            "Needs the Denon package"
+        );
+        assert_eq!(
+            device_row_detail(Some(&config), "device:tv"),
+            "Press OK for controls"
+        );
+        assert_eq!(
+            device_row_detail(None, "device:avr"),
+            "Press OK for controls"
+        );
+        assert_eq!(needs_package(&config, "tv"), None);
+        assert_eq!(needs_package(&config, "missing"), None);
+        // It still has a row, and no screen of its own to open.
+        let entries = configured_in(&config, &Id::new("r")).unwrap();
+        assert!(entries.iter().any(|e| e.id == "device:avr"));
+        assert_eq!(tv_connection(&config, "avr"), None);
+    }
+    /// The sentence has to fit the toast on the 480-pixel panel, under a real
+    /// room list. `COUCH_LEGACY_SCREENSHOTS=<dir>` keeps the picture.
+    #[test]
+    fn the_needs_package_toast_renders_over_the_room_list() {
+        const NAME: &str = "lights::tests::the_needs_package_toast_renders_over_the_room_list";
+        if std::env::var_os("COUCH_TEST_LEGACY_TOAST").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_LEGACY_TOAST", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::{platform::WindowEvent, ComponentHandle};
+        let config:couch_model::Config=serde_json::from_value(serde_json::json!({"schema_version":1,
+            "connections":[{"id":"receiver","name":"Receiver","provider":{"kind":"denon","host":"avr.invalid","port":23}}],
+            "rooms":[{"id":"r","name":"Den","devices":[
+                {"id":"avr","name":"Theater AVR","kind":"speaker","integration":{"via":"connection","connection_id":"receiver"}}]}]})).unwrap();
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let entries = configured_in(&config, &Id::new("r")).unwrap();
+        app.set_light_title("Den".into());
+        app.set_light_items(slint::ModelRc::new(slint::VecModel::from(
+            entries
+                .iter()
+                .map(|e| ChoiceItem {
+                    icon: crate::icons::image(e.icon),
+                    title: e.name.clone().into(),
+                    detail: device_row_detail(Some(&config), &e.id).into(),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        )));
+        app.set_light_shown(true);
+        app.set_feedback_enabled(true);
+        // What OK on that row raises (`poll` hands it to the main loop's toast).
+        let message = needs_package(&config, "avr").unwrap();
+        app.set_toast(message.as_str().into());
+        app.show().unwrap();
+        window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        for _ in 0..20 {
+            slint::platform::update_timers_and_animations();
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        let mut pixels = vec![slint::Rgb8Pixel::default(); 480 * 800];
+        window.request_redraw();
+        window.draw_if_needed(|r| {
+            r.render(&mut pixels, 480);
+        });
+        // The bar is up: its band is not the page background all the way across.
+        let band = &pixels[720 * 480..760 * 480];
+        assert!(band.iter().any(|p| *p != band[0]), "the toast drew nothing");
+        if let Some(dir) = std::env::var_os("COUCH_LEGACY_SCREENSHOTS") {
+            let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+            image::save_buffer(
+                std::path::Path::new(&dir).join("legacy-needs-package-toast.png"),
+                &bytes,
+                480,
+                800,
+                image::ColorType::Rgb8,
+            )
+            .unwrap();
+        }
+        app.hide().unwrap();
+    }
     #[test]
     fn sonos_rows_are_the_only_media_rows() {
         let config:couch_model::Config=serde_json::from_value(serde_json::json!({"schema_version":1,

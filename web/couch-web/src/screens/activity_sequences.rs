@@ -68,7 +68,6 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         };
         let Some(connection) = connection else { return };
         let prefix = match &connection.provider {
-            Provider::Denon { .. } => "denon",
             Provider::WebOs => "webos",
             Provider::AppleTv => "appletv",
             Provider::Tizen => "tizen",
@@ -85,28 +84,10 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
             let inputs = if prefix == "appletv" {
                 Ok(serde_json::Value::Null)
             } else {
-                api::ha(
-                    "GET",
-                    &format!(
-                        "{path}/{}",
-                        if prefix == "denon" {
-                            "sources"
-                        } else {
-                            "inputs"
-                        }
-                    ),
-                    None,
-                )
-                .await
+                api::ha("GET", &format!("{path}/inputs"), None).await
             };
             if let Ok(value) = &inputs {
-                if prefix == "denon" {
-                    if let Ok(v) = serde_json::from_value::<Vec<(String, String)>>(value.clone()) {
-                        rows.extend(v.into_iter().map(|(id, label)| {
-                            (format!("input:{id}"), format!("Input · {label}"))
-                        }));
-                    }
-                } else if prefix == "plugin" {
+                if prefix == "plugin" {
                     for item in value
                         .as_array()
                         .or_else(|| value["inputs"].as_array())

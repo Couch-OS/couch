@@ -110,7 +110,6 @@ pub fn screen(app: App) -> AnyView {
         ("android-tv", "Android / Google TV · experimental"),
         ("apple-tv", "Apple TV · experimental"),
         ("tizen", "Samsung Tizen TV · experimental"),
-        ("denon", "Denon AVR"),
         ("unifi-protect", "UniFi Protect"),
         ("matter", "Matter · experimental"),
     ]
@@ -124,11 +123,35 @@ pub fn screen(app: App) -> AnyView {
         {move ||order.with(Vec::is_empty).then(||ui::empty("No connections yet. Add your first connection below."))}
         <div class="destination-grid"><For each=move ||order.get() key=|id|id.clone() children=move |id|card(app,id)/></div>
         <section class="creation"><h2>"Add a connection"</h2>
-        <label class="field">"Connection type"<select aria-label="Connection type" prop:value=move || choice.get() on:change=move |e|choice.set(event_target_value(&e))><option value="">"Choose a type"</option>{available.into_iter().map(|(kind,label)|view!{<option value=kind>{label}</option>}).collect_view()}{move ||plugins.get().into_iter().map(|plugin|view!{<option value=format!("plugin:{}",plugin.id)>{format!("{} · installed package",plugin.label)}</option>}).collect_view()}</select></label>
+        <label class="field">"Connection type"<select aria-label="Connection type" prop:value=move || choice.get() on:change=move |e|choice.set(event_target_value(&e))><option value="">"Choose a type"</option>{available.into_iter().map(|(kind,label)|view!{<option value=kind>{label}</option>}).collect_view()}{move ||plugins.get().into_iter().map(|plugin|view!{<option value=format!("plugin:{}",plugin.id)>{format!("{} · installed package",plugin.label)}</option>}).collect_view()}{move ||{let installed=plugins.get();PACKAGED.iter().filter(|(id,_)|!installed.iter().any(|plugin|plugin.id==*id)).map(|(id,label)|view!{<option value=format!("package:{id}")>{format!("{label} · integration package")}</option>}).collect_view()}}</select></label>
         <p class="dim" role="status">{move ||catalog_status.get()}</p>
-        {move || {let selected=choice.get();if let Some(id)=selected.strip_prefix("plugin:"){plugins.get().into_iter().find(|plugin|plugin.id==id).map(|plugin|create_plugin(app,plugin)).unwrap_or_else(||view!{<p class="notice">"That integration package is no longer installed. Existing connections are retained, but a new one cannot be created."</p>}.into_any())}else{match selected.as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"matter"=>create_named(app,Provider::Matter),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"denon"=>denon_form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"hue"=>create_named(app,Provider::Hue),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),"tizen"=>create_named(app,Provider::Tizen),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}}}
+        {move || {let selected=choice.get();if let Some(id)=selected.strip_prefix("package:"){
+            // Installed since the list was drawn (from Integrations, in another
+            // tab): go straight to its form.
+            let id=id.to_string();
+            match plugins.get().into_iter().find(|plugin|plugin.id==id){Some(plugin)=>create_plugin(app,plugin),None=>install_first(app,&id)}
+        }else if let Some(id)=selected.strip_prefix("plugin:"){plugins.get().into_iter().find(|plugin|plugin.id==id).map(|plugin|create_plugin(app,plugin)).unwrap_or_else(||view!{<p class="notice">"That integration package is no longer installed. Existing connections are retained, but a new one cannot be created."</p>}.into_any())}else{match selected.as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"matter"=>create_named(app,Provider::Matter),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"hue"=>create_named(app,Provider::Hue),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),"tizen"=>create_named(app,Provider::Tizen),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}}}
         </section>
     }.into_any()
+}
+
+/// Integrations that are packages rather than part of Couch, offered in the
+/// connection picker all the same so nobody has to know that to find them.
+/// Installed, a package lists itself; until then its entry leads to the
+/// Integrations page.
+const PACKAGED: [(&str, &str); 1] = [("denon", "Denon AVR")];
+
+fn install_first(app: App, id: &str) -> AnyView {
+    let label = PACKAGED
+        .iter()
+        .find(|(package, _)| *package == id)
+        .map_or(id, |(_, label)| *label)
+        .to_string();
+    view! {<div class="notice" role="status">
+        <strong>{format!("{label} is an integration package")}</strong>
+        <p>{format!("Install {label} from Integrations first. It takes a moment and needs the remote to be online; then choose it here again to enter the address.")}</p>
+        <button class="primary" type="button" on:click=move |_| app.go(Route::Integrations)>"Open Integrations"</button>
+    </div>}.into_any()
 }
 
 /// A Bluetooth TV connection from before per-device pairing. The daemon
@@ -176,7 +199,13 @@ fn address(c: &Connection) -> String {
         Provider::Kodi { host, port } | Provider::CoreElec { host, port } => {
             format!("{host}:{port} · Saved address")
         }
-        Provider::Denon { host, port } => format!("{host}:{port} · Telnet control"),
+        Provider::LegacyDenon { host, port } => format!(
+            "{host}:{port} · {}",
+            c.provider
+                .legacy_builtin()
+                .map(|row| row.needs_package())
+                .unwrap_or_default()
+        ),
         Provider::Ir => "Built-in transmitter · Codes are configured per device".into(),
         _ => "Credentials are kept privately on the remote".into(),
     }
@@ -226,7 +255,14 @@ fn page(app: App, id: Id) -> AnyView {
         Provider::Sonos { .. } => view!{{titled("Connection",super::sonos::form(app,Some(c.clone())))}{super::sonos::controls(app,c.id.to_string())}}.into_any(),
         Provider::CoreElec { .. } => view!{{titled("Connection",super::coreelec::form(app,Some(c.clone())))}{super::kodi::setup(app,&c)}{super::coreelec::setup(app,&c)}}.into_any(),
         Provider::Kodi { .. } => view!{{titled("Connection",local_form(app, Some(c.clone()), false))}{super::kodi::setup(app, &c)}}.into_any(),
-        Provider::Denon { .. } => view!{{titled("Connection",denon_form(app, Some(c.clone())))}{denon_controls(app,c.id.to_string())}}.into_any(),
+        Provider::LegacyDenon { .. } => super::integration_migrations::connection_notice(
+            app,
+            c.id.to_string(),
+            c.provider
+                .legacy_builtin()
+                .map(|row| row.name.to_string())
+                .unwrap_or_default(),
+        ),
         Provider::Ir => titled("Connection", local_form(app, Some(c.clone()), true)),
         Provider::UnifiProtect => super::protect::setup(app, &c),
         Provider::Matter => super::matter::setup(app, &c),
@@ -375,14 +411,6 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
     let cached_inputs = *supports_inputs;
     let cached_presentation = presentation.clone();
     let connection_id = connection.id.to_string();
-    let migrated_id = connection.id.clone();
-    let migrated = Memo::new(move |_| {
-        app.config.with(|config| {
-            config
-                .as_ref()
-                .is_some_and(|config| config.migrated_denon(&migrated_id).is_some())
-        })
-    });
     let base = StoredValue::new(format!("/api/connections/{connection_id}/plugin"));
     let manifest = RwSignal::new(None::<PluginManifest>);
     let values = RwSignal::new(BTreeMap::<String, Value>::new());
@@ -466,8 +494,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
             <h2>"Integration settings"</h2>
             <p class="dim">"Settings are stored in the remote’s private connection store and never appear in the home configuration."</p>
             <p role="status">{move ||message.get()}</p>
-            {move || migrated.get().then(|| view! { <p class="notice">"This connection is part of the Denon migration pilot. Restore built-in control on the Integrations page before changing its receiver address."</p> })}
-            {move || (!migrated.get()).then(|| manifest.get().map(|installed|plugin_form(app,base,installed,values,saved_secrets,clear_secrets,configured,busy,message)))}
+            {move || manifest.get().map(|installed|plugin_form(app,base,installed,values,saved_secrets,clear_secrets,configured,busy,message))}
         </section>
         {plugin_controls(app,connection_id,cached,manifest,busy)}
     }.into_any()
@@ -835,87 +862,4 @@ mod plugin_tests {
             "50%"
         );
     }
-}
-
-fn denon_form(app: App, existing: Option<Connection>) -> AnyView {
-    let name = RwSignal::new(
-        existing
-            .as_ref()
-            .map(|c| c.name.clone())
-            .unwrap_or("Denon AVR".into()),
-    );
-    let (host, port) = match existing.as_ref().map(|c| &c.provider) {
-        Some(Provider::Denon { host, port }) => (host.clone(), port.to_string()),
-        _ => (String::new(), "23".into()),
-    };
-    let host = RwSignal::new(host);
-    let port = RwSignal::new(port);
-    let error = RwSignal::new(String::new());
-    view!{<form on:submit=move |e|{e.prevent_default();let Ok(port)=port.get_untracked().parse::<u16>() else {error.set("Enter a valid TCP port".into());return};
-        let body=json!({"name":name.get_untracked(),"provider":Provider::Denon{host:host.get_untracked().trim().into(),port}});
-        match &existing {Some(c)=>app.run(api::put(format!("/api/connections/{}",c.id),body)),None=>create(app,body)}
-    }>{field("Connection name",name,"Theater receiver")}{field("Hostname or IP address",host,"192.168.1.29")}{field("TCP port",port,"23")}
-    <p class="dim">"Enable Network Control / Always On on the receiver for standby access. Add the receiver to a room, then assign activity volume, mute and power buttons to it."</p>
-    <p role="alert">{move ||error.get()}</p><button class="primary" type="submit">"Save connection"</button></form>}.into_any()
-}
-
-pub(super) fn denon_controls(app: App, id: String) -> AnyView {
-    use leptos::task::spawn_local;
-    let base = StoredValue::new(format!("/api/connections/{id}/denon"));
-    let status = RwSignal::new(String::new());
-    let busy = RwSignal::new(false);
-    let sources = RwSignal::new(Vec::<(String, String)>::new());
-    let send = move |command: Option<&'static str>, value: Option<serde_json::Value>| {
-        if busy.get_untracked() {
-            return;
-        }
-        busy.set(true);
-        spawn_local(async move {
-            let (method, path, body) = match command {
-                Some(command) => (
-                    "POST",
-                    "command",
-                    Some(json!({"command":command,"value":value})),
-                ),
-                None => ("GET", "status", None),
-            };
-            match api::ha(method, &format!("{}/{path}", base.get_value()), body).await {
-                Ok(s) => {
-                    status.set(format!(
-                        "{} · {} · {}{}",
-                        if s["on"] == true {
-                            "Main zone on"
-                        } else {
-                            "Standby"
-                        },
-                        s["input"].as_str().unwrap_or("Unknown input"),
-                        s["volume_db"]
-                            .as_f64()
-                            .map(|db| format!("{db:.1} dB"))
-                            .unwrap_or("Minimum volume".into()),
-                        if s["muted"] == true { " · Muted" } else { "" }
-                    ));
-                    if command.is_none() {
-                        if let Ok(v) =
-                            api::ha("GET", &format!("{}/sources", base.get_value()), None).await
-                        {
-                            sources.set(serde_json::from_value(v).unwrap_or_default());
-                        }
-                    }
-                }
-                Err(e) => {
-                    if e.unauthorized {
-                        app.paired.set(Some(false));
-                    }
-                    status.set(e.message);
-                }
-            }
-            busy.set(false);
-        });
-    };
-    view!{<section><h3>"Receiver controls"</h3><p class="dim">"Test the saved address from here. Power, volume and mute act on the main zone."</p><p role="status">{move ||status.get()}</p><div class="actions">
-        <button class="ghost" disabled=move ||busy.get() on:click=move |_|send(None,None)>"Test connection / refresh"</button>
-        {[("power-on","On"),("power-off","Standby"),("volume-down","Volume −"),("volume-up","Volume +"),("mute","Mute"),("unmute","Unmute")].into_iter().map(move |(command,label)|view!{<button class="ghost" disabled=move ||busy.get() on:click=move |_|send(Some(command),None)>{label}</button>}).collect_view()}
-        </div><label class="field">"Input"<select aria-label="AVR input" disabled=move ||busy.get() on:change=move |e|{let id=event_target_value(&e);if !id.is_empty(){send(Some("input"),Some(json!(id)));}}><option value="">"Choose an input (refresh to discover)"</option>{move ||sources.get().into_iter().map(|(id,name)|view!{<option value=id>{name}</option>}).collect_view()}</select></label>
-    </section>}.into_any()
 }

@@ -9,8 +9,8 @@ and select a command to save it immediately. The slot displays the saved
 function and target device. Saving does not send the command; reopen the
 activity on the remote to load changes.
 
-Choose a device in the picker to discover Denon inputs or LG webOS inputs
-and apps. Previously saved mappings remain intact when discovery is unavailable.
+Choose a device in the picker to discover a packaged receiver's inputs (Denon)
+or LG webOS inputs and apps. Previously saved mappings remain intact when discovery is unavailable.
 Use **Use activity default** to remove an override, or **Do nothing** to consume
 the press. Close the picker without choosing to leave a mapping unchanged.
 The dialog supports keyboard navigation, focus trapping and Escape; when the
@@ -49,8 +49,9 @@ remains unavailable until the built-in blaster can send codes.
   picker, then choose the level row; the mapping is saved as `dim:30`,
   `volume:20` or `position:70`. They are offered only where a client sets a
   level: brightness on Hue, Matter and Home Assistant lights, volume on Sonos,
-  Kodi and LG webOS, position on Home Assistant covers. Denon sets volume in dB rather
-  than percent, so it keeps only its relative keys.
+  Kodi and LG webOS, position on Home Assistant covers. A Denon receiver sets volume
+  in dB rather than percent, so a mapping keeps only its relative keys; its dB target
+  is on the receiver's own controls.
 - Home Assistant blinds offer Open, Close, Stop and a position level; Home
   Assistant thermostats offer each HVAC mode and Warmer / Cooler, one advertised
   increment per press. Offered keys follow the entity domain, so a light never
