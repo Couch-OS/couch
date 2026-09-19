@@ -269,6 +269,11 @@ Beyond those two:
 
 ## Wave ordering
 
+> Superseded on 2026-09-19 by the
+> [integration extraction roadmap](development/integration-extraction-roadmap.md),
+> which replaces the per-wave protocol additions below with one protocol 3
+> effort. The retirement criteria above still stand.
+
 The source material's number — 2 to 4 repositories over roughly two quarters,
 not twelve — is a scope recommendation, not something derivable from the
 code; treat it as an estimate someone made, not a fact this document confirms.
