@@ -250,12 +250,12 @@ union, and the designs are referenced rather than repeated:
 | **E1** | Change hints (plugin speaks first) | Strictly request/response. Needed for Kodi, Hue, Cast/AirPlay metadata; optional for Sonos. |
 | **P1** | Pairing conversation | No multi-step exchange: start, show "enter the PIN / press the button / approve on TV", finish, cancel, time out. |
 | **P2** | Credential write-back | `configure` is one-way. Pairing produces tokens, certificates and private keys (some binary, some several kB) that the host must store privately and hand back next time. |
-| **P3** | Discovery | The SDK's `Discover` trait is used by nothing in production. The daemon browses mDNS itself for Android TV and Apple TV; Tizen, Sonos, CoreELEC and Hue scan from their own crates. No request lets a package say "here is what I found". |
+| **P3** | Discovery | The SDK's `Discover` trait is used by nothing in production. The daemon browses mDNS itself for Android TV and Apple TV and calls Tizen's SSDP scan; Sonos and CoreELEC can scan but only from a CLI; Hue, webOS, Kodi, Home Assistant and Protect addresses are typed by hand. No request lets a package take part. |
 | **P4** | Apps | No `apps` request; `manifest.rs` rejects `app:` capabilities outright. |
 | **P5** | Stay-connected sessions | The child is reaped after 60 s idle and started lazily. Android TV must answer keep-alives every second; pairing must survive between two HTTP calls; pinned WebSockets are slow to reopen. |
 | **P6** | Text entry | Not implemented by any built-in either, so not needed for parity. Listed so it is designed with P1, which needs the same "ask the user for a short string" UI. |
 | **R1** | Many resources per connection | No resource list, no `resource_id` on requests, no per-resource status. |
-| **R2** | Typed domain controls | Light: on, brightness, colour temperature, colour. Scene: activate. Cover: position. Climate: target, mode. None can cross as a `function` string with a value. |
+| **R2** | Typed domain controls | Light: on, brightness (colour and colour temperature have no UI today, so they are not needed for parity). Scene: activate. Cover: position. Climate: target, mode. None can cross as a `function` string with a value. |
 | **R3** | Per-resource live state | E1 generalised: "light 7 changed". |
 | **V1** | Camera pictures | Snapshot: reuse M2. Live video: a byte stream the 64 KiB JSON frames cannot carry. |
 | **K1** | Hold, repeat, long-press | `Request::Command` is a bare id; a package cannot tell a press from the 70 ms key repeat, and Kodi's long-press cannot be expressed. Found by the Kodi preview. |
