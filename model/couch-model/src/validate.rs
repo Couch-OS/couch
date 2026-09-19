@@ -182,8 +182,18 @@ impl Config {
                     }
                     capability_ids.push(&capability.id);
                 }
-                if actions.len() > 1
-                    || actions.iter().any(|action| !action.is_valid())
+                if capability_ids
+                    .iter()
+                    .filter(|id| id.starts_with("x:"))
+                    .count()
+                    > crate::commands::MAX_CUSTOM_FUNCTIONS
+                {
+                    problems.push(Problem {
+                        at: alloc::format!("connections[{i}].provider.capabilities"),
+                        message: "External integration names too many buttons of its own".into(),
+                    });
+                }
+                if !crate::PluginActionSchema::valid_set(actions)
                     || presentation.len() > 16
                     || presentation.iter().any(|component| {
                         !valid_plugin_component(component, capabilities, *supports_inputs, actions)
@@ -344,18 +354,29 @@ impl Config {
         // does not parse saves and then fails on the first press. Only the parse
         // is checked here, not `supports_device`: a binding picks from a
         // device's button catalog, while a step says "on" or "off" to a device
-        // whose catalog has neither.
+        // whose catalog has neither. A package-named button (`x:info`) is the
+        // exception: Couch has no meaning of its own for it, so it is a step
+        // only for a device whose package declares that exact id.
+        let step_problem = |step: &crate::Action| -> Option<String> {
+            if !device_ids.contains(&&step.device) {
+                return Some(alloc::format!("no device \"{}\"", step.device));
+            }
+            let declared = match crate::commands::Function::parse(&step.command) {
+                None => false,
+                Some(function @ crate::commands::Function::Custom(_)) => self
+                    .devices()
+                    .find(|(_, d)| d.id == step.device)
+                    .is_some_and(|(_, d)| function.supports_device(d, self)),
+                Some(_) => true,
+            };
+            (!declared).then(|| alloc::format!("unsupported command \"{}\"", step.command))
+        };
         for (i, scene) in self.scenes.iter().enumerate() {
             for (j, step) in scene.steps.iter().enumerate() {
-                if !device_ids.contains(&&step.device) {
+                if let Some(message) = step_problem(step) {
                     problems.push(Problem {
                         at: alloc::format!("scenes[{i}].steps[{j}]"),
-                        message: alloc::format!("no device \"{}\"", step.device),
-                    });
-                } else if crate::commands::Function::parse(&step.command).is_none() {
-                    problems.push(Problem {
-                        at: alloc::format!("scenes[{i}].steps[{j}]"),
-                        message: alloc::format!("unsupported command \"{}\"", step.command),
+                        message,
                     });
                 }
             }
@@ -405,15 +426,10 @@ impl Config {
                 }
             }
             for (j, step) in act.steps.iter().enumerate() {
-                if !device_ids.contains(&&step.device) {
+                if let Some(message) = step_problem(step) {
                     problems.push(Problem {
                         at: alloc::format!("activities[{i}].steps[{j}]"),
-                        message: alloc::format!("no device \"{}\"", step.device),
-                    });
-                } else if crate::commands::Function::parse(&step.command).is_none() {
-                    problems.push(Problem {
-                        at: alloc::format!("activities[{i}].steps[{j}]"),
-                        message: alloc::format!("unsupported command \"{}\"", step.command),
+                        message,
                     });
                 }
             }
@@ -476,7 +492,9 @@ fn valid_plugin_component(
                 && declared(off)
         }
         crate::PluginComponent::VolumeDbControl { label } => {
-            valid_plugin_label(label) && actions.len() == 1 && actions[0].is_valid()
+            valid_plugin_label(label)
+                && crate::PluginActionSchema::find(actions, crate::volume::ActionKind::SetVolumeDb)
+                    .is_some_and(|schema| schema.is_valid())
         }
         crate::PluginComponent::InputSelector { label } => {
             valid_plugin_label(label) && supports_inputs
@@ -707,6 +725,211 @@ mod tests {
                     "{command}"
                 );
             }
+        }
+    }
+
+    /// A home with a packaged device (`player`, through a connection),
+    /// another saved in its resolved form (`direct`), and a built-in lamp.
+    fn packaged(capabilities: &[&str]) -> Config {
+        let capabilities: Vec<crate::PluginCapability> = capabilities
+            .iter()
+            .map(|id| crate::PluginCapability {
+                id: (*id).into(),
+                label: "Label".into(),
+            })
+            .collect();
+        let mut living = room("living", "Living room");
+        living.devices = vec![
+            Device::new(Id::new("player"), "Player", DeviceKind::MediaPlayer).with_integration(
+                crate::Integration::Connection {
+                    connection_id: Id::new("package"),
+                    resource_id: "".into(),
+                },
+            ),
+            Device::new(Id::new("direct"), "Direct", DeviceKind::MediaPlayer).with_integration(
+                crate::Integration::Plugin {
+                    id: "sample".into(),
+                    connection_id: Id::new("package"),
+                    resource_id: "".into(),
+                    capabilities: capabilities.clone(),
+                    supports_inputs: false,
+                    presentation: vec![],
+                    actions: vec![],
+                },
+            ),
+            Device::new(Id::new("lamp"), "Lamp", DeviceKind::Light).with_integration(
+                crate::Integration::Hue {
+                    light_id: "id".into(),
+                },
+            ),
+            Device::new(Id::new("tv"), "TV", DeviceKind::Tv).with_integration(
+                crate::Integration::Ir {
+                    codeset: "tv".into(),
+                },
+            ),
+        ];
+        Config {
+            connections: vec![crate::Connection {
+                id: Id::new("package"),
+                name: "Package".into(),
+                provider: crate::Provider::Plugin {
+                    id: "sample".into(),
+                    label: "Sample".into(),
+                    capabilities,
+                    supports_inputs: false,
+                    presentation: vec![],
+                    actions: vec![],
+                },
+            }],
+            rooms: vec![living],
+            scenes: vec![crate::Scene {
+                hue: None,
+                rooms: vec![],
+                id: Id::new("s"),
+                name: "S".to_string(),
+                icon: None,
+                steps: vec![],
+            }],
+            activities: vec![crate::Activity {
+                setup: Default::default(),
+                id: Id::new("a"),
+                name: "A".to_string(),
+                kind: Default::default(),
+                room: Id::new("living"),
+                source: None,
+                buttons: vec![],
+                steps: vec![],
+            }],
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn a_package_named_button_is_valid_only_for_a_device_whose_package_declares_it() {
+        // Every place a command is saved, against every kind of device.
+        for (device, command, valid) in [
+            ("player", "x:info", true),
+            ("direct", "x:info", true),
+            ("player", "x:osd", false),
+            ("direct", "x:osd", false),
+            ("lamp", "x:info", false),
+            ("tv", "x:info", false),
+            ("player", "x:Info", false),
+            ("player", "x:", false),
+        ] {
+            let action = Action::new(Id::new(device), command);
+            type Place = fn(&mut Config, Action);
+            let sites: [(&str, Place); 6] = [
+                ("scenes[0].steps[0]", |c, a| c.scenes[0].steps = vec![a]),
+                ("activities[0].steps[0]", |c, a| {
+                    c.activities[0].steps = vec![a]
+                }),
+                ("activities[0].buttons[0]", |c, a| {
+                    c.activities[0].buttons = vec![crate::buttons::Binding {
+                        button: crate::buttons::Button::Red,
+                        gesture: Default::default(),
+                        action: Some(a),
+                    }]
+                }),
+                ("activities[0].setup", |c, a| {
+                    c.activities[0].setup.on = vec![crate::SequenceStep::Command { action: a }]
+                }),
+                ("activities[0].setup", |c, a| {
+                    c.activities[0].setup.off = vec![crate::SequenceStep::Command { action: a }]
+                }),
+                ("activities[0].setup", |c, a| {
+                    c.activities[0].setup.pages = vec![crate::ActivityPage {
+                        title: "Page".into(),
+                        widgets: vec![crate::ActivityWidget {
+                            label: "Button".into(),
+                            icon: None,
+                            action: a,
+                        }],
+                    }]
+                }),
+            ];
+            for (index, (at, place)) in sites.into_iter().enumerate() {
+                let mut cfg = packaged(&["menu", "x:info"]);
+                cfg.activities[0].setup.devices = vec![Id::new(device)];
+                place(&mut cfg, action.clone());
+                match cfg.validate() {
+                    Ok(()) => assert!(valid, "{command} on {device} at site {index}"),
+                    Err(e) => {
+                        assert!(!valid, "{command} on {device} at site {index}: {e}");
+                        assert_eq!(e.problems.len(), 1, "{e}");
+                        assert_eq!(e.problems[0].at, at);
+                    }
+                }
+            }
+        }
+        // A word Couch knows is still a step for any device, as before: a
+        // scene says "on" to a device whose catalog has no such key.
+        let mut cfg = packaged(&["menu"]);
+        cfg.scenes[0].steps = vec![
+            Action::new(Id::new("player"), "on"),
+            Action::new(Id::new("tv"), "dim:30"),
+        ];
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn a_package_names_at_most_thirty_two_buttons_of_its_own() {
+        let ids: Vec<String> = (0..=crate::commands::MAX_CUSTOM_FUNCTIONS)
+            .map(|n| alloc::format!("x:key-{n}"))
+            .collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        assert!(packaged(&refs[..crate::commands::MAX_CUSTOM_FUNCTIONS])
+            .validate()
+            .is_ok());
+        let problems = packaged(&refs).validate().unwrap_err().problems;
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].at, "connections[0].provider.capabilities");
+        // Spelled outside the grammar, or twice, it is not a capability at all.
+        for ids in [&["x:Info"][..], &["x:info", "x:info"], &["x:"]] {
+            assert!(packaged(ids).validate().is_err(), "{ids:?}");
+        }
+    }
+
+    #[test]
+    fn typed_actions_are_a_set_of_distinct_kinds_and_the_db_control_needs_its_own() {
+        let schema = crate::PluginActionSchema::SetVolumeDb {
+            min_tenths: -800,
+            max_tenths: 180,
+            step_tenths: 5,
+        };
+        let invalid = crate::PluginActionSchema::SetVolumeDb {
+            min_tenths: 0,
+            max_tenths: 0,
+            step_tenths: 5,
+        };
+        let control = crate::PluginComponent::VolumeDbControl {
+            label: "Volume".into(),
+        };
+        for (actions, presentation, valid) in [
+            (vec![], vec![], true),
+            (vec![schema], vec![], true),
+            (vec![schema], vec![control.clone()], true),
+            (vec![], vec![control.clone()], false),
+            (vec![invalid], vec![control.clone()], false),
+            (vec![invalid], vec![], false),
+            (vec![schema, schema], vec![control.clone()], false),
+            (vec![schema; 9], vec![], false),
+        ] {
+            let mut cfg = packaged(&["menu"]);
+            if let crate::Provider::Plugin {
+                actions: a,
+                presentation: p,
+                ..
+            } = &mut cfg.connections[0].provider
+            {
+                *a = actions.clone();
+                *p = presentation.clone();
+            }
+            assert_eq!(
+                cfg.validate().is_ok(),
+                valid,
+                "{actions:?} {presentation:?}"
+            );
         }
     }
 

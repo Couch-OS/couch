@@ -180,8 +180,41 @@ v1 host: the hello exchange selects the manifest's version and requires the
 same manifest in response. Existing v1 manifests retain their byte shape and
 default to a minimum core protocol version of 1.
 
+## Protocol 3: unreleased and switched off
+
+Protocol 3 is being built in steps on `dev`. It is **switched off**: the host
+accepts protocol 1 and 2 manifests only, the feed accepts only those, and no
+released or development build can install a protocol 3 package. Everything in
+this section may change until the step that switches it on. Do not write a
+package against it yet.
+
+What exists so far is vocabulary in `couch-model`, so that a Couch which later
+saves protocol 3 content can always be rolled back:
+
+- **Package-named buttons.** A capability id of the form `x:<id>`, where `<id>`
+  is 1 to 48 bytes of lowercase letters, digits, `-` and `_`
+  (`Function::Custom`). It is for the words Couch has none for (Info, the
+  on-screen display, subtitles). Couch never interprets it. It is offered in the
+  button picker under the package's own label, only for a device whose package
+  declares that exact id, and is refused everywhere else, including in scene and
+  activity steps. A package may declare at most 32. It never repeats while held.
+  A protocol 1 or 2 manifest that declares one is invalid.
+- **Key phase.** `KeyPhase` is `tap`, `repeat` or `long_press`, default `tap`,
+  and `tap` is never written. `couch_model::buttons::key_phase(gesture, repeat)`
+  maps a panel key event to it. No request carries it yet; when one does, a
+  protocol 1 or 2 package will keep receiving the bytes it receives today.
+- **More than one typed action.** A saved package snapshot may hold up to eight
+  action schemas of distinct kinds, and a request finds its schema by kind
+  (`PluginActionSchema::find`). `set_volume_db` is still the only kind, so
+  nothing can declare a second one yet.
+- **`integration_config_v3`.** The saved configuration gains a third layer for
+  whatever a protocol 2 core cannot read; see
+  [Compatibility and independent source](https://github.com/Couch-OS/couch/blob/main/docs/integration-architecture.md#protocol-3-layer-unreleased).
+
 ## Source references
 
 - [`clients/couch-plugin/src/protocol.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/protocol.rs)
 - [`clients/couch-plugin/src/manifest.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/manifest.rs)
 - [`clients/couch-sdk/src/client.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-sdk/src/client.rs)
+- [`model/couch-model/src/commands.rs`](https://github.com/Couch-OS/couch/blob/main/model/couch-model/src/commands.rs)
+- [`model/couch-model/src/storage.rs`](https://github.com/Couch-OS/couch/blob/main/model/couch-model/src/storage.rs)

@@ -330,7 +330,10 @@ pub fn functions(integration: &Integration) -> &'static [(&'static str, &'static
     }
 }
 /// Owned version of [`functions`] that also represents capabilities supplied
-/// by an external integration manifest.
+/// by an external integration manifest. For a packaged device that is the
+/// whole list, in the package's order and under the package's own labels,
+/// and it is the only place a package-named button (`x:info`, protocol 3,
+/// unreleased) is ever offered: no other device's list can contain one.
 pub fn function_choices(
     integration: &Integration,
 ) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)> {
@@ -347,6 +350,17 @@ pub fn function_choices(
 }
 pub fn repeatable(command: &str) -> bool {
     crate::commands::Function::parse(command).is_some_and(|f| f.repeatable())
+}
+/// What a key event is to a package that asked to be told (protocol 3,
+/// unreleased). A long press wins over a repeat: the panel decides a hold once,
+/// and the binding that matched is the long one.
+pub fn key_phase(gesture: Gesture, repeat: bool) -> crate::commands::KeyPhase {
+    use crate::commands::KeyPhase;
+    match (gesture, repeat) {
+        (Gesture::Long, _) => KeyPhase::LongPress,
+        (Gesture::Short, true) => KeyPhase::Repeat,
+        (Gesture::Short, false) => KeyPhase::Tap,
+    }
 }
 
 #[cfg(test)]
@@ -382,6 +396,93 @@ mod tests {
             *supports_inputs = true;
         }
         assert!(crate::commands::Function::Input("hdmi-1".into()).supports(&with_inputs));
+    }
+    #[test]
+    fn package_named_buttons_are_offered_under_the_package_label_and_nowhere_else() {
+        let integration = Integration::Plugin {
+            id: "sample".into(),
+            connection_id: "player".into(),
+            resource_id: "".into(),
+            capabilities: vec![
+                crate::PluginCapability {
+                    id: "menu".into(),
+                    label: "Menu".into(),
+                },
+                crate::PluginCapability {
+                    id: "x:info".into(),
+                    label: "Info".into(),
+                },
+            ],
+            supports_inputs: false,
+            presentation: vec![],
+            actions: vec![],
+        };
+        assert_eq!(
+            function_choices(&integration),
+            vec![
+                ("menu".into(), "Menu".into()),
+                ("x:info".into(), "Info".into())
+            ]
+        );
+        assert!(crate::commands::Function::parse("x:info")
+            .unwrap()
+            .supports(&integration));
+        assert!(!crate::commands::Function::parse("x:osd")
+            .unwrap()
+            .supports(&integration));
+        // No fixed catalog has, or may grow, a word in the package namespace.
+        for integration in [
+            Integration::None,
+            Integration::Sonos { host: "h".into() },
+            Integration::Kodi {
+                host: "h".into(),
+                port: 9090,
+            },
+            Integration::AndroidTv,
+            Integration::AppleTv,
+            Integration::Tizen,
+            Integration::BluetoothTv,
+            Integration::WebOs,
+            Integration::LegacyDenon {
+                host: "h".into(),
+                port: 23,
+            },
+            Integration::Ir {
+                codeset: "tv".into(),
+            },
+            Integration::HomeAssistant {
+                entity_id: "light.office".into(),
+            },
+            Integration::HomeAssistant {
+                entity_id: "cover.office".into(),
+            },
+            Integration::HomeAssistant {
+                entity_id: "climate.office".into(),
+            },
+            Integration::Hue {
+                light_id: "id".into(),
+            },
+            Integration::Matter {
+                device: "matter/7/1".into(),
+            },
+        ] {
+            assert!(
+                function_choices(&integration)
+                    .iter()
+                    .all(|(id, _)| !id.starts_with("x:")),
+                "{}",
+                integration.via()
+            );
+        }
+    }
+    #[test]
+    fn a_key_event_is_a_tap_a_repeat_or_a_long_press() {
+        use crate::commands::KeyPhase;
+        assert_eq!(key_phase(Gesture::Short, false), KeyPhase::Tap);
+        assert_eq!(key_phase(Gesture::Short, true), KeyPhase::Repeat);
+        assert_eq!(key_phase(Gesture::Long, false), KeyPhase::LongPress);
+        assert_eq!(key_phase(Gesture::Long, true), KeyPhase::LongPress);
+        assert_eq!(key_phase(Gesture::default(), false), KeyPhase::default());
     }
     #[test]
     fn ha_entities_advertise_their_own_domain_and_nothing_else() {

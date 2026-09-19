@@ -128,6 +128,10 @@ impl Manifest {
                 || Function::parse(&cap.id).is_none()
                 || cap.id.starts_with("input:")
                 || cap.id.starts_with("app:")
+                // couch-model now parses `x:` (protocol 3, unreleased) so that
+                // it can read every file it writes. No protocol this host
+                // accepts may declare one.
+                || cap.id.starts_with("x:")
             {
                 return Err(Error::Invalid);
             }
