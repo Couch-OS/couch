@@ -4,6 +4,7 @@
 //! extracts there with scripts and networking disabled; Couch then admits only
 //! one regular-file integration payload into its own versioned store.
 
+mod feed;
 pub mod management;
 pub use couch_plugin::Manifest;
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,41 @@ struct Selection {
     active: Option<Slot>,
     previous: Option<Slot>,
 }
+/// The file a feed's signed metadata promises for a package: checked after
+/// the download and before apk is asked to open it.
+#[derive(Clone, Debug)]
+pub(crate) struct ExpectedApk {
+    file: String,
+    size: u64,
+    sha256: String,
+}
+impl ExpectedApk {
+    /// apk checks the package's signature next; this is what ties the file to
+    /// the feed that was current when it was chosen, not only to the key.
+    fn check(&self, package: &Path) -> Result<()> {
+        let mismatch = || {
+            err("The downloaded package is not the one the package feed's signed metadata describes")
+        };
+        let file = File::open(package).map_err(|e| io("read fetched APK", e))?;
+        let size = file
+            .metadata()
+            .map_err(|e| io("read fetched APK", e))?
+            .len();
+        if package.file_name() != Some(OsStr::new(&self.file)) || size != self.size {
+            return Err(mismatch());
+        }
+        let mut hash = Sha256::new();
+        std::io::copy(&mut file.take(MAX_APK_BYTES), &mut hash)
+            .map_err(|e| io("read fetched APK", e))?;
+        if !self
+            .sha256
+            .eq_ignore_ascii_case(&format!("{:x}", hash.finalize()))
+        {
+            return Err(mismatch());
+        }
+        Ok(())
+    }
+}
 /// Hold this lease while changing settings/configuration that package admission reads.
 pub struct ReadLease {
     _lock: Lock,
@@ -142,7 +178,7 @@ impl Store {
         package: &str,
         repository: &str,
     ) -> Result<InstalledIntegration> {
-        self.fetch_repository(package, repository, None)
+        self.fetch_repository(package, repository, None, None)
     }
     fn trust_keys(&self) -> Result<PathBuf> {
         if self.keys_dir != Path::new(DEFAULT_KEYS_DIR) {
@@ -176,6 +212,7 @@ impl Store {
         package: &str,
         repository: &str,
         expected: Option<(&str, &str)>,
+        promised: Option<&ExpectedApk>,
     ) -> Result<InstalledIntegration> {
         let valid_package = package.split_once('=').map_or_else(
             || valid_component(package),
@@ -216,7 +253,9 @@ impl Store {
             let _ = fs::remove_dir_all(&fetch);
             return Err(err("repository fetch did not produce exactly one APK"));
         }
-        let result = self.install_expected(&candidates[0], expected);
+        let result = promised
+            .map_or(Ok(()), |promised| promised.check(&candidates[0]))
+            .and_then(|_| self.install_expected(&candidates[0], expected));
         let _ = fs::remove_dir_all(&fetch);
         result
     }
