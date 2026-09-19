@@ -28,6 +28,13 @@ fn main() {
         .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/couch-web/dist"));
 
     println!("cargo:rerun-if-env-changed=COUCH_WEB_DIST");
+    // The paths below are absolute, and cargo shares this script's cached
+    // output between checkouts that build into one target directory. A cache
+    // written from another checkout names that checkout's dist, whose files
+    // never change, so this script was never run again and five releases
+    // shipped a days-old UI (.173 to .177). tools/build-webui.sh sets this to a
+    // digest of the dist it just built, so a different UI always reruns this.
+    println!("cargo:rerun-if-env-changed=COUCH_WEB_DIST_DIGEST");
     println!("cargo:rerun-if-changed={}", dist.display());
 
     let mut files = Vec::new();

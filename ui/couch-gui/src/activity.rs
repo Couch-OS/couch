@@ -157,6 +157,13 @@ fn plugin_target(config: &Config, id: &str) -> Option<pages::PluginTarget> {
         _ => None,
     }
 }
+/// The first queued page turn's direction: -1 back, 1 forward.
+fn page_turn(inputs: &[(String, f64, bool)]) -> Option<i32> {
+    inputs
+        .iter()
+        .find(|(action, _, _)| action == "custom:page")
+        .map(|(_, step, _)| if *step < 0.0 { -1 } else { 1 })
+}
 fn kodi_client(t: &Target) -> Kodi {
     if let Ok(s) =
         couch_kodi::settings::Settings::load(&crate::connections::file(&t.connection, "kodi"))
@@ -771,6 +778,14 @@ impl Controller {
                     && app.get_player_panel() == 0
         })
     }
+    /// The direction of a queued page turn on the controls screen, if there
+    /// is one: the main loop snapshots the panel before `poll` performs it and
+    /// slides the new page in from that side afterwards, as it does for every
+    /// other page change. The step, not a before/after comparison, because the
+    /// pages wrap around.
+    pub fn page_turn_pending(&self) -> Option<i32> {
+        page_turn(&self.input.borrow())
+    }
     pub fn poll(&mut self, app: &App) {
         let inputs = std::mem::take(&mut *self.input.borrow_mut());
         for (action, value, repeat) in inputs {
@@ -1068,6 +1083,37 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_queued_page_turn_reports_its_direction_and_nothing_else_does() {
+        let q = |items: &[(&str, f64)]| {
+            items
+                .iter()
+                .map(|(a, v)| (a.to_string(), *v, false))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(page_turn(&q(&[("custom:page", 1.0)])), Some(1));
+        assert_eq!(page_turn(&q(&[("custom:page", -1.0)])), Some(-1));
+        // The first turn decides; a command or a bare "page" is not a turn.
+        assert_eq!(
+            page_turn(&q(&[
+                ("custom:command", 0.0),
+                ("custom:page", -1.0),
+                ("custom:page", 1.0)
+            ])),
+            Some(-1)
+        );
+        assert_eq!(
+            page_turn(&q(&[
+                ("custom:command", 1.0),
+                ("page", 1.0),
+                ("custom:back", 0.0)
+            ])),
+            None
+        );
+        assert_eq!(page_turn(&[]), None);
+    }
+
     #[test]
     fn kodi_ir_overrides_use_explicit_functions_without_replacing_seek() {
         use couch_model::commands::Function as F;

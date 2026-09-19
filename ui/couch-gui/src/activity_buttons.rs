@@ -26,6 +26,11 @@ struct Request {
     config: Arc<Config>,
     action: Action,
     repeat: bool,
+    /// Which hold a repeat belongs to. Releasing the key starts a new one, and
+    /// a repeat from a hold that has ended is never sent: the queue may still
+    /// hold several, and a volume that keeps rising after the finger has left
+    /// the key is the one failure this path must not have.
+    hold: u64,
 }
 /// A volume level read back from a device after a volume or mute command,
 /// for the volume card. `level` is 0..=100 where the device has such a scale;
@@ -40,12 +45,75 @@ pub(crate) struct VolumeReading {
 #[derive(Default, Debug, PartialEq)]
 pub(crate) struct Outcome {
     pub volume: Option<VolumeReading>,
+    /// What a power toggle decided, for the feedback card.
+    pub notice: Option<Notice>,
+    /// A held key's level was not read back, to keep the hold fast: read it
+    /// once the device's lane goes quiet.
+    pub settle: bool,
+    /// The decibel level a read-back observed, in tenths, for the lane to
+    /// predict a held key's steps from.
+    pub observed_db: Option<i16>,
+}
+/// A line for the shared feedback card: "Power" over the device, "Off" beside.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Notice {
+    pub caption: String,
+    pub target: String,
+    pub value: String,
+}
+/// A room row's Power key. Not a catalogue function: receivers and most TVs
+/// offer power-on and power-off, not a toggle, so the press is resolved against
+/// the device's observed state when it is sent (`power_toggle`).
+pub(crate) const POWER_TOGGLE: &str = "power-toggle";
+/// A held volume key's absolute write, `set-volume-db:<tenths>`. Like
+/// `POWER_TOGGLE` it is made here, never configured: the lane turns a repeat
+/// into it once it knows the device's level and declared scale.
+pub(crate) const SET_VOLUME_DB: &str = "set-volume-db:";
+const HOLD_UP_TENTHS: i16 = 10;
+const HOLD_DOWN_TENTHS: i16 = 20;
+/// The context prefix of a highlighted room row, as opposed to an activity id.
+const ROW: &str = "row:";
+
+/// What the volume, mute and power keys do while this device's row is
+/// highlighted in a room: the same commands an activity would map them to, for
+/// whatever the device supports. Sonos rows keep their own controller
+/// (`room_sonos`, which coalesces a held key into one write), and a switchable
+/// row - a light, a cover - has no use for these keys.
+pub(crate) fn row_bindings(config: &Config, device: &couch_model::Device) -> Vec<Binding> {
+    if config.can_toggle(device)
+        || matches!(
+            config.resolve_integration(&device.integration),
+            Some(Integration::Sonos { .. })
+        )
+    {
+        return vec![];
+    }
+    let supports = |id: &str| F::parse(id).is_some_and(|f| f.supports_device(device, config));
+    let bind = |button, command: &str| Binding {
+        button,
+        gesture: Gesture::Short,
+        action: Some(Action::new(device.id.clone(), command)),
+    };
+    let mut bindings: Vec<Binding> = [
+        (Button::VolumeUp, "volume-up"),
+        (Button::VolumeDown, "volume-down"),
+        (Button::Mute, "mute"),
+    ]
+    .into_iter()
+    .filter(|(_, command)| supports(command))
+    .map(|(button, command)| bind(button, command))
+    .collect();
+    if supports("toggle") || supports("power-on") && supports("power-off") {
+        bindings.push(bind(Button::Power, POWER_TOGGLE));
+    }
+    bindings
 }
 /// What the main loop is told about a mapped press: a problem to toast, or a
 /// reading to put on the volume card.
 pub(crate) enum Feedback {
     Error(String),
     Volume(VolumeReading),
+    Notice(Notice),
 }
 fn volume_reading(target: &str, level: Option<i64>, muted: bool) -> Option<VolumeReading> {
     Some(VolumeReading {
@@ -67,6 +135,14 @@ pub struct Controller {
     // way, so without this the remote's primary input disappears in silence;
     // poll turns it into the same toast every other dispatch path raises.
     dropped: bool,
+    // Power ends a running activity (main.rs); a highlighted row takes the key
+    // only when there is none to end.
+    activity_running: bool,
+    // Bumped when a key is released; see `Request::hold`.
+    hold: Arc<AtomicU64>,
+    // The packaged device on the core control screen, which has no activity
+    // and so no bindings of its own: its keys mean what they mean on its row.
+    screen_device: Option<String>,
 }
 impl Controller {
     pub fn new() -> Self {
@@ -74,7 +150,9 @@ impl Controller {
         let (reply, out) = mpsc::sync_channel(8);
         let generation = Arc::new(AtomicU64::new(0));
         let current = generation.clone();
-        std::thread::spawn(move || worker(rx, reply, current));
+        let hold = Arc::new(AtomicU64::new(0));
+        let holds = hold.clone();
+        std::thread::spawn(move || worker(rx, reply, current, holds));
         Self {
             context: String::new(),
             config: Arc::new(Config::default()),
@@ -85,9 +163,15 @@ impl Controller {
             tx,
             rx: out,
             dropped: false,
+            activity_running: false,
+            hold,
+            screen_device: None,
         }
     }
     fn binding(&self, button: Button, gesture: Gesture) -> Option<&Binding> {
+        if button == Button::Power && self.activity_running && self.context.starts_with(ROW) {
+            return None;
+        }
         self.bindings
             .iter()
             .find(|b| b.button == button && b.gesture == gesture)
@@ -106,8 +190,12 @@ impl Controller {
                 config: self.config.clone(),
                 action,
                 repeat,
+                hold: self.hold.load(Ordering::SeqCst),
             });
-            self.dropped |= sent.is_err();
+            // A held key repeats faster than a slow device answers. A repeat
+            // there is no room for is the hold running at the device's pace,
+            // not a lost press: only a fresh press is worth a toast.
+            self.dropped |= sent.is_err() && !repeat;
         }
         true
     }
@@ -130,6 +218,8 @@ impl Controller {
             return false;
         };
         if press.released {
+            // The hold is over: whatever repeats are still queued are stale.
+            self.hold.fetch_add(1, Ordering::SeqCst);
             if let Some(pending) = self.pending.remove(&press.code) {
                 if !pending.fired && pending.at.elapsed() >= HOLD {
                     self.fire(button, Gesture::Long, false);
@@ -155,13 +245,38 @@ impl Controller {
         }
         self.fire(button, Gesture::Short, press.repeat)
     }
+    pub fn set_screen_device(&mut self, device: Option<String>) {
+        self.screen_device = device;
+    }
     fn sync_context(&mut self, app: &App) {
+        self.activity_running = app.get_activity_running();
+        let config = connections::config();
         let context = if app.get_player_shown() || app.get_tv_shown() {
-            app.get_active_activity().to_string()
+            // A device's own screen (`device:<id>`) has no activity bindings to
+            // read; the keys mean there what they mean on its row.
+            let active = app.get_active_activity().to_string();
+            match (active.strip_prefix("device:"), &self.screen_device) {
+                (Some(id), _) => format!("{ROW}{id}"),
+                (None, Some(id)) if active.is_empty() => format!("{ROW}{id}"),
+                _ => active,
+            }
+        } else if app.get_light_shown() && !app.get_chooser_shown() {
+            // The highlighted row of the open room, when it is a device these
+            // keys mean something to.
+            config
+                .as_ref()
+                .and_then(|config| {
+                    let room = couch_model::Id::new(app.get_light_room_id().as_str());
+                    let row = usize::try_from(app.get_light_index()).ok()?;
+                    let device = crate::lights::device_at(config, &room, row)?;
+                    (!row_bindings(config, device).is_empty())
+                        .then(|| format!("{ROW}{}", device.id))
+                })
+                .unwrap_or_default()
         } else {
             String::new()
         };
-        self.refresh(context, connections::config());
+        self.refresh(context, config);
     }
     fn refresh(&mut self, context: String, config: Option<Arc<Config>>) {
         let changed = config.as_ref().map_or(!self.bindings.is_empty(), |next| {
@@ -173,18 +288,28 @@ impl Controller {
             self.replay.clear();
             self.bindings.clear();
             if let Some(config) = config {
-                self.bindings = config
-                    .activities
-                    .iter()
-                    .find(|a| a.id.as_str() == context)
-                    .map(|a| {
-                        a.buttons
-                            .iter()
-                            .filter(|b| !(b.button == Button::Back && b.gesture == Gesture::Long))
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                self.bindings = if let Some(id) = context.strip_prefix(ROW) {
+                    config
+                        .devices()
+                        .find(|(_, d)| d.id.as_str() == id)
+                        .map(|(_, d)| row_bindings(&config, d))
+                        .unwrap_or_default()
+                } else {
+                    config
+                        .activities
+                        .iter()
+                        .find(|a| a.id.as_str() == context)
+                        .map(|a| {
+                            a.buttons
+                                .iter()
+                                .filter(|b| {
+                                    !(b.button == Button::Back && b.gesture == Gesture::Long)
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
                 self.config = config;
             } else {
                 self.config = Arc::new(Config::default());
@@ -233,6 +358,7 @@ fn worker(
     rx: mpsc::Receiver<Request>,
     reply: mpsc::SyncSender<(u64, Feedback)>,
     current: Arc<AtomicU64>,
+    hold: Arc<AtomicU64>,
 ) {
     let mut lanes = HashMap::<String, mpsc::SyncSender<Request>>::new();
     let mut generation = current.load(Ordering::SeqCst);
@@ -273,10 +399,16 @@ fn worker(
             let (tx, rx) = mpsc::sync_channel(8);
             let reply = reply.clone();
             let current = current.clone();
-            std::thread::spawn(move || connection_worker(rx, reply, current));
+            let hold = hold.clone();
+            std::thread::spawn(move || connection_worker(rx, reply, current, hold));
             tx
         });
+        let repeat = r.repeat;
         if tx.try_send(r).is_err() {
+            // The same rule as `fire`: a surplus repeat is dropped quietly.
+            if repeat {
+                continue;
+            }
             eprintln!("couch-gui: mapped connection queue full");
             let _ = reply.try_send((
                 generation,
@@ -290,6 +422,7 @@ fn connection_worker(
     rx: mpsc::Receiver<Request>,
     reply: mpsc::SyncSender<(u64, Feedback)>,
     current: Arc<AtomicU64>,
+    hold: Arc<AtomicU64>,
 ) {
     let mut denon = HashMap::new();
     let mut tv = HashMap::new();
@@ -299,10 +432,18 @@ fn connection_worker(
     // shared with the room list, which is still holding them open.
     let matter = connections::matter();
     let mut generation = current.load(Ordering::SeqCst);
+    // A packaged device whose level is owed a read once its keys stop.
+    let mut settle: Option<(String, String, Option<DbScale>)> = None;
+    // Its last observed decibel level, in tenths: what a held volume key is
+    // predicted from, the way a brightness hold moves its card before the
+    // light has answered. Every real reading replaces it.
+    let mut level: Option<i16> = None;
     loop {
         let request = rx.recv_timeout(Duration::from_millis(100));
         let now = current.load(Ordering::SeqCst);
         if now != generation {
+            settle = None;
+            level = None;
             denon.clear();
             tv.clear();
             streaming.clear();
@@ -311,11 +452,70 @@ fn connection_worker(
         }
         let r = match request {
             Ok(r) => r,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // The lane has been quiet for a poll: a held volume key is
+                // over. One read for the card, at the level it ended on.
+                if let Some((connection, target, scale)) = settle.take() {
+                    if let Some((reading, observed)) = plugin_level(&connection, &target, scale) {
+                        level = observed;
+                        let _ = reply.try_send((generation, Feedback::Volume(reading)));
+                    }
+                }
+                continue;
+            }
             Err(_) => return,
         };
         if r.generation != generation || r.at.elapsed() > Duration::from_millis(750) {
             continue;
+        }
+        if r.repeat && r.hold != hold.load(Ordering::SeqCst) {
+            // The key was released while this waited: see `Request::hold`. A
+            // level is still owed to the card once the lane is quiet.
+            continue;
+        }
+        let mut r = r;
+        let settles = r
+            .config
+            .devices()
+            .find(|(_, d)| d.id == r.action.device)
+            .and_then(|(_, d)| {
+                let integration = d.network_integration(&r.config)?;
+                let scale = DbScale::of(&integration);
+                match integration {
+                    Integration::Plugin { connection_id, .. } => {
+                        Some((connection_id.to_string(), d.name.clone(), scale))
+                    }
+                    _ => None,
+                }
+            });
+        // Move the card now, from the last level seen, and let the readings
+        // that follow correct it. Without a declared scale or a level yet
+        // there is nothing to predict from, and the read-back shows the truth.
+        if let (Some((_, target, Some(scale))), Some(known)) = (&settles, level) {
+            let up = match r.action.command.as_str() {
+                "volume-up" => Some(true),
+                "volume-down" => Some(false),
+                _ => None,
+            };
+            if let Some(up) = up {
+                // A press is one of the receiver's own steps. A hold is a
+                // request to travel: one absolute write per repeat, a larger
+                // stride than a step, so the level moves at a useful pace
+                // without a queue of half-decibel commands behind it.
+                let predicted = if r.repeat {
+                    let target = scale.held(known, up);
+                    r.action =
+                        Action::new(r.action.device.clone(), format!("{SET_VOLUME_DB}{target}"));
+                    target
+                } else {
+                    scale.stepped(known, up)
+                };
+                level = Some(predicted);
+                let _ = reply.try_send((
+                    r.generation,
+                    Feedback::Volume(db_reading(target, predicted, false, Some(*scale))),
+                ));
+            }
         }
         match execute_with_input(
             &r.config,
@@ -336,9 +536,21 @@ fn connection_worker(
             }
             Ok(Outcome {
                 volume: Some(reading),
+                observed_db,
+                ..
             }) => {
+                if settles.is_some() {
+                    level = observed_db;
+                }
                 let _ = reply.try_send((r.generation, Feedback::Volume(reading)));
             }
+            Ok(Outcome {
+                notice: Some(notice),
+                ..
+            }) => {
+                let _ = reply.try_send((r.generation, Feedback::Notice(notice)));
+            }
+            Ok(Outcome { settle: true, .. }) => settle = settles,
             Ok(_) => {}
         }
     }
@@ -429,6 +641,35 @@ pub(crate) fn execute_with_input(
         .find(|(_, d)| d.id == action.device)
         .map(|(_, d)| d)
         .ok_or("Mapped device was removed")?;
+    if let Some(tenths) = action.command.strip_prefix(SET_VOLUME_DB) {
+        let tenths: i16 = tenths.parse().map_err(|_| "Unsupported button function")?;
+        let Some(Integration::Plugin { connection_id, .. }) = device.network_integration(config)
+        else {
+            return Err("Unsupported button function".into());
+        };
+        return match couch_plugin::local_request(
+            &crate::home::path("plugin.sock"),
+            connection_id.as_str(),
+            couch_plugin::Request::Action {
+                action: couch_model::TypedAction::SetVolumeDb { tenths },
+            },
+            couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
+        ) {
+            // Part of a hold: the lane reads the level once it goes quiet.
+            Ok(couch_plugin::Response::Ok) => Ok(Outcome {
+                settle: true,
+                ..Outcome::default()
+            }),
+            Ok(couch_plugin::Response::Error { code }) => Err(code.to_string()),
+            Ok(_) => Err("The integration returned an invalid response".into()),
+            Err(error) => Err(error.to_string()),
+        };
+    }
+    if action.command == POWER_TOGGLE {
+        return power_toggle(
+            config, device, denon, tv, streaming, sonos, matter, repeat, current,
+        );
+    }
     let command = F::parse(&action.command).ok_or("Unsupported button function")?;
     let order = device.transport_order(config);
     if order.is_empty() {
@@ -458,7 +699,7 @@ pub(crate) fn execute_with_input(
             }
             couch_model::Transport::Bluetooth => send_bluetooth(device, &command),
             couch_model::Transport::Ip => send_network(
-                config, device, &command, denon, tv, streaming, sonos, matter, current,
+                config, device, &command, denon, tv, streaming, sonos, matter, repeat, current,
             ),
         };
         match result {
@@ -478,6 +719,107 @@ pub(crate) fn execute_with_input(
         }
     }
     Err(skipped.unwrap_or_else(|| "Unsupported button function".into()))
+}
+
+/// A row's Power key. A device with a real toggle (an IR power code, webOS)
+/// gets it; one with only power-on and power-off gets whichever its observed
+/// state calls for. Observed, never assumed: a receiver that will not say
+/// whether it is on is an error, not a guess that could switch it the wrong
+/// way. Samsung and Apple TV report no power state on their remote channel,
+/// so they take what their own TV screens send: off when reachable, wake when
+/// not.
+#[allow(clippy::too_many_arguments)]
+fn power_toggle(
+    config: &Config,
+    device: &couch_model::Device,
+    denon: &mut HashMap<String, couch_control::Denon>,
+    tv: &mut HashMap<String, couch_control::WebOs>,
+    streaming: &mut HashMap<String, couch_control::StreamingTv>,
+    sonos: &mut HashMap<String, couch_sonos::Client>,
+    matter: &connections::MatterFleet,
+    repeat: bool,
+    current: &dyn Fn() -> bool,
+) -> Result<Outcome, String> {
+    let name = device.name.clone();
+    let notice = |value: &str| Outcome {
+        notice: Some(Notice {
+            caption: "Power".into(),
+            target: name.clone(),
+            value: value.into(),
+        }),
+        ..Outcome::default()
+    };
+    /// What to send, decided before anything is sent: reading a kept client's
+    /// state and sending through the same caches cannot overlap.
+    enum Plan {
+        Toggle,
+        Observed(Option<bool>),
+        OffElseWake,
+    }
+    let plan = if F::Toggle.supports_device(device, config) {
+        Plan::Toggle
+    } else {
+        match device.network_integration(config) {
+            Some(Integration::Denon { host, port }) => Plan::Observed(
+                couch_control::Denon::connect(&couch_denon::Settings { host, port })
+                    .and_then(|mut c| c.status())
+                    .map_err(|e| e.to_string())?
+                    .on,
+            ),
+            Some(Integration::Plugin { connection_id, .. }) => {
+                match couch_plugin::local_request(
+                    &crate::home::path("plugin.sock"),
+                    connection_id.as_str(),
+                    couch_plugin::Request::Status,
+                    couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
+                ) {
+                    Ok(couch_plugin::Response::Status { status }) => Plan::Observed(status.on),
+                    Ok(couch_plugin::Response::Error { code }) => return Err(code.to_string()),
+                    Ok(_) => return Err("The integration returned an invalid status".into()),
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            Some(Integration::AndroidTv) => {
+                // Its state arrives on the kept client; without one yet, a
+                // first command opens it and the next press knows.
+                let connection = match &device.integration {
+                    Integration::Connection { connection_id, .. } => connection_id.as_str(),
+                    _ => "",
+                };
+                Plan::Observed(
+                    streaming
+                        .get(&format!("androidtv:{connection}"))
+                        .and_then(|c| c.status().ok())
+                        .and_then(|status| status["on"].as_bool()),
+                )
+            }
+            Some(Integration::Tizen | Integration::AppleTv) => Plan::OffElseWake,
+            _ => Plan::Observed(None),
+        }
+    };
+    let mut send = |command: &str| {
+        execute_with_input(
+            config,
+            &Action::new(device.id.clone(), command),
+            denon,
+            tv,
+            streaming,
+            sonos,
+            matter,
+            repeat,
+            current,
+        )
+    };
+    match plan {
+        Plan::Toggle => send("toggle").map(|_| notice("Toggled")),
+        Plan::OffElseWake => match send("power-off") {
+            Ok(_) => Ok(notice("Toggled")),
+            Err(_) => send("power-on").map(|_| notice("Waking")),
+        },
+        Plan::Observed(Some(true)) => send("power-off").map(|_| notice("Off")),
+        Plan::Observed(Some(false)) => send("power-on").map(|_| notice("On")),
+        Plan::Observed(None) => Err(format!("{name} has not said whether it is on")),
+    }
 }
 
 /// The remote is the HID peripheral: one datagram with the function's id to
@@ -521,6 +863,7 @@ fn send_network(
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
+    repeat: bool,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, Failure> {
     let command = command.clone();
@@ -538,6 +881,7 @@ fn send_network(
         Integration::Connection { connection_id, .. } => connection_id.as_str(),
         _ => "",
     };
+    let scale = DbScale::of(&integration);
     match integration {
         // Connecting cost a TLS handshake and a GET /players/local/info before
         // the press could even be sent, inside the same 750 ms deadline the
@@ -569,7 +913,10 @@ fn send_network(
             } else {
                 None
             };
-            Ok(Outcome { volume })
+            Ok(Outcome {
+                volume,
+                ..Outcome::default()
+            })
         }
         Integration::AndroidTv | Integration::AppleTv | Integration::Tizen => {
             let kind = match integration {
@@ -658,7 +1005,10 @@ fn send_network(
             } else {
                 None
             };
-            Ok(Outcome { volume })
+            Ok(Outcome {
+                volume,
+                ..Outcome::default()
+            })
         }
         Integration::Kodi { host, port } => {
             let c = couch_kodi::settings::Settings::load(&connections::file(connection, "kodi"))
@@ -713,7 +1063,10 @@ fn send_network(
             } else {
                 None
             };
-            Ok(Outcome { volume })
+            Ok(Outcome {
+                volume,
+                ..Outcome::default()
+            })
         }
         Integration::WebOs => {
             if matches!(command, F::PowerOn | F::PowerOff | F::Toggle) {
@@ -774,7 +1127,10 @@ fn send_network(
             } else {
                 None
             };
-            Ok(Outcome { volume })
+            Ok(Outcome {
+                volume,
+                ..Outcome::default()
+            })
         }
         Integration::Hue { light_id } => {
             let (id, raw) = connections::split(&light_id);
@@ -885,7 +1241,24 @@ fn send_network(
                 timeout,
             );
             match result {
-                Ok(couch_plugin::Response::Ok) => Ok(Outcome::default()),
+                // The package reports its level only when asked, and asking
+                // costs as much as the command did. A fresh press reads it back
+                // for the volume card; a held key does not, and the lane reads
+                // it once when the hold ends (`settle`).
+                Ok(couch_plugin::Response::Ok) if sound && repeat => Ok(Outcome {
+                    settle: true,
+                    ..Outcome::default()
+                }),
+                Ok(couch_plugin::Response::Ok) => {
+                    let level = sound
+                        .then(|| plugin_level(connection_id.as_str(), &name, scale))
+                        .flatten();
+                    Ok(Outcome {
+                        observed_db: level.as_ref().and_then(|(_, tenths)| *tenths),
+                        volume: level.map(|(reading, _)| reading),
+                        ..Outcome::default()
+                    })
+                }
                 Ok(couch_plugin::Response::Error { code }) => {
                     Err(plugin_failure(code, code.to_string()))
                 }
@@ -898,6 +1271,119 @@ fn send_network(
         _ => Err(Failure::Command(
             "This integration cannot send button commands yet".into(),
         )),
+    }
+}
+
+/// Ask a packaged device for its level, for the volume card.
+fn plugin_level(
+    connection: &str,
+    target: &str,
+    scale: Option<DbScale>,
+) -> Option<(VolumeReading, Option<i16>)> {
+    match couch_plugin::local_request(
+        &crate::home::path("plugin.sock"),
+        connection,
+        couch_plugin::Request::Status,
+        couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
+    ) {
+        Ok(couch_plugin::Response::Status { status }) => {
+            let tenths = match (status.muted, status.volume_db.as_ref()) {
+                (Some(true), _) => None,
+                (_, Some(couch_plugin::VolumeDb::Reading { tenths })) => Some(*tenths),
+                _ => None,
+            };
+            plugin_volume_reading(target, &status, scale).map(|reading| (reading, tenths))
+        }
+        _ => None,
+    }
+}
+
+/// A package's status as the volume card shows it: decibels for a receiver,
+/// a percentage for anything that has one, and "Muted" over either.
+fn plugin_volume_reading(
+    target: &str,
+    status: &couch_plugin::Status,
+    scale: Option<DbScale>,
+) -> Option<VolumeReading> {
+    let muted = status.muted == Some(true);
+    if let Some(percent) = status.volume {
+        return volume_reading(target, Some(i64::from(percent)), muted);
+    }
+    Some(match status.volume_db.as_ref()? {
+        couch_plugin::VolumeDb::Reading { tenths } => db_reading(target, *tenths, muted, scale),
+        couch_plugin::VolumeDb::Minimum => VolumeReading {
+            target: target.to_owned(),
+            level: if scale.is_some() { 0 } else { -1 },
+            text: if muted { "Muted" } else { "Minimum" }.into(),
+        },
+    })
+}
+
+/// The decibel range and key step a packaged receiver declares with its
+/// set-volume action. Decibels have no natural percentage; the declared range
+/// gives the card's bar one, and the step lets a held key move the card
+/// before the receiver has been asked where it ended up.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DbScale {
+    min: i16,
+    max: i16,
+    step: i16,
+}
+impl DbScale {
+    fn of(integration: &Integration) -> Option<Self> {
+        let Integration::Plugin { actions, .. } = integration else {
+            return None;
+        };
+        actions.iter().find_map(|action| match action {
+            couch_model::PluginActionSchema::SetVolumeDb {
+                min_tenths,
+                max_tenths,
+                step_tenths,
+            } if max_tenths > min_tenths && *step_tenths > 0 => Some(Self {
+                min: *min_tenths,
+                max: *max_tenths,
+                step: i16::try_from(*step_tenths).ok()?,
+            }),
+            _ => None,
+        })
+    }
+    fn percent(self, tenths: i16) -> i32 {
+        let span = i32::from(self.max) - i32::from(self.min);
+        ((i32::from(tenths.clamp(self.min, self.max)) - i32::from(self.min)) * 100 + span / 2)
+            / span
+    }
+    /// Where one repeat of a held volume key should leave the level: 1 dB up,
+    /// 2 dB down, in whole declared steps. Down is the larger stride because
+    /// getting quieter quickly is the safe direction.
+    fn held(self, tenths: i16, up: bool) -> i16 {
+        let stride = |tenths_wanted: i16| (tenths_wanted / self.step).max(1) * self.step;
+        let next = if up {
+            tenths.saturating_add(stride(HOLD_UP_TENTHS))
+        } else {
+            tenths.saturating_sub(stride(HOLD_DOWN_TENTHS))
+        };
+        next.clamp(self.min, self.max)
+    }
+    /// Where one more press of a volume key should leave the level.
+    fn stepped(self, tenths: i16, up: bool) -> i16 {
+        let next = if up {
+            tenths.saturating_add(self.step)
+        } else {
+            tenths.saturating_sub(self.step)
+        };
+        next.clamp(self.min, self.max)
+    }
+}
+fn db_reading(target: &str, tenths: i16, muted: bool, scale: Option<DbScale>) -> VolumeReading {
+    VolumeReading {
+        target: target.to_owned(),
+        // A level of 0-100 draws the bar; -1 is a reading with no scale.
+        level: scale.map_or(-1, |scale| scale.percent(tenths)),
+        text: if muted {
+            "Muted".into()
+        } else {
+            format!("{:.1} dB", f32::from(tenths) / 10.0)
+        },
     }
 }
 
@@ -1013,6 +1499,217 @@ fn ir_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A room with a packaged receiver, a built-in receiver, a webOS TV, a
+    /// Sonos speaker and a Hue light.
+    fn room() -> Config {
+        let mut config = Config::seed();
+        let plugin = couch_model::Provider::Plugin {
+            id: "denon".into(),
+            label: "Denon AVR".into(),
+            capabilities: ["power-on", "power-off", "volume-up", "volume-down", "mute"]
+                .into_iter()
+                .map(|id| couch_model::PluginCapability {
+                    id: id.into(),
+                    label: id.into(),
+                })
+                .collect(),
+            supports_inputs: true,
+            presentation: vec![],
+            actions: vec![],
+        };
+        for (id, provider) in [
+            ("avr-package", plugin),
+            (
+                "avr-native",
+                couch_model::Provider::Denon {
+                    host: "192.0.2.10".into(),
+                    port: 23,
+                },
+            ),
+            ("lg", couch_model::Provider::WebOs),
+        ] {
+            config.connections.push(couch_model::Connection {
+                id: id.into(),
+                name: id.into(),
+                provider,
+            });
+        }
+        let room = config.rooms.first_mut().unwrap();
+        for id in ["avr-package", "avr-native", "lg"] {
+            room.devices.push(
+                couch_model::Device::new(
+                    couch_model::Id::new(id),
+                    id,
+                    couch_model::DeviceKind::Speaker,
+                )
+                .with_integration(Integration::Connection {
+                    connection_id: id.into(),
+                    resource_id: String::new(),
+                }),
+            );
+        }
+        config.validate().unwrap();
+        config
+    }
+    fn device<'a>(config: &'a Config, id: &str) -> &'a couch_model::Device {
+        config
+            .devices()
+            .find(|(_, d)| d.id.as_str() == id)
+            .map(|(_, d)| d)
+            .unwrap()
+    }
+    fn keys(bindings: &[Binding]) -> Vec<(Button, String)> {
+        bindings
+            .iter()
+            .map(|b| (b.button, b.action.as_ref().unwrap().command.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_receiver_or_tv_row_answers_volume_mute_and_power_and_other_rows_do_not() {
+        let config = room();
+        let expected = vec![
+            (Button::VolumeUp, "volume-up".to_owned()),
+            (Button::VolumeDown, "volume-down".to_owned()),
+            (Button::Mute, "mute".to_owned()),
+            (Button::Power, POWER_TOGGLE.to_owned()),
+        ];
+        for id in ["avr-package", "avr-native", "lg"] {
+            let bindings = row_bindings(&config, device(&config, id));
+            assert_eq!(keys(&bindings), expected, "{id}");
+            assert!(bindings
+                .iter()
+                .all(|b| b.gesture == Gesture::Short
+                    && b.action.as_ref().unwrap().device.as_str() == id));
+        }
+        // Sonos rows keep their own controller; a light has no use for the keys.
+        for (_, d) in config.devices() {
+            let sonos = matches!(
+                config.resolve_integration(&d.integration),
+                Some(Integration::Sonos { .. })
+            );
+            if sonos || config.can_toggle(d) {
+                assert!(row_bindings(&config, d).is_empty(), "{}", d.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_declared_decibel_range_gives_the_bar_a_percentage_and_a_held_key_its_steps() {
+        let config = room();
+        // The fixture's package declares no set-volume action: no scale, so no
+        // bar and nothing to predict from.
+        let plain = device(&config, "avr-package")
+            .network_integration(&config)
+            .unwrap();
+        assert_eq!(DbScale::of(&plain), None);
+        let mut declared = plain;
+        let Integration::Plugin { actions, .. } = &mut declared else {
+            panic!("a packaged device")
+        };
+        actions.push(couch_model::PluginActionSchema::SetVolumeDb {
+            min_tenths: -800,
+            max_tenths: 180,
+            step_tenths: 5,
+        });
+        let scale = DbScale::of(&declared).unwrap();
+        assert_eq!((scale.percent(-800), scale.percent(180)), (0, 100));
+        assert_eq!(scale.percent(-415), 39);
+        // Out-of-range readings pin to the ends rather than overflow the bar.
+        assert_eq!((scale.percent(-900), scale.percent(300)), (0, 100));
+        assert_eq!(scale.stepped(-415, true), -410);
+        assert_eq!(scale.stepped(-415, false), -420);
+        assert_eq!(scale.stepped(180, true), 180);
+        assert_eq!(scale.stepped(-800, false), -800);
+        // A held key travels: 1 dB up, 2 dB down, clamped at the ends, and
+        // never less than one declared step on a coarser scale.
+        assert_eq!(scale.held(-415, true), -405);
+        assert_eq!(scale.held(-415, false), -435);
+        assert_eq!(scale.held(175, true), 180);
+        assert_eq!(scale.held(-790, false), -800);
+        let coarse = DbScale {
+            min: -800,
+            max: 180,
+            step: 30,
+        };
+        assert_eq!(
+            (coarse.held(-400, true), coarse.held(-400, false)),
+            (-370, -430)
+        );
+        let predicted = db_reading("Theater AVR", scale.stepped(-415, true), false, Some(scale));
+        assert_eq!((predicted.text.as_str(), predicted.level), ("-41.0 dB", 40));
+        // A built-in receiver declares no scale either.
+        assert_eq!(
+            DbScale::of(
+                &device(&config, "avr-native")
+                    .network_integration(&config)
+                    .unwrap()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn power_on_a_row_yields_to_a_running_activity() {
+        let config = Arc::new(room());
+        let mut controller = Controller::new();
+        controller.refresh(format!("{ROW}avr-native"), Some(config));
+        assert!(controller.binding(Button::Power, Gesture::Short).is_some());
+        assert!(controller
+            .binding(Button::VolumeUp, Gesture::Short)
+            .is_some());
+        controller.activity_running = true;
+        assert!(controller.binding(Button::Power, Gesture::Short).is_none());
+        assert!(controller
+            .binding(Button::VolumeUp, Gesture::Short)
+            .is_some());
+        // A row whose device is gone has no bindings rather than stale ones.
+        controller.activity_running = false;
+        controller.refresh(format!("{ROW}no-such-device"), Some(Arc::new(room())));
+        assert!(controller.binding(Button::Power, Gesture::Short).is_none());
+    }
+
+    #[test]
+    fn a_package_status_fills_the_volume_card_in_decibels_percent_or_muted() {
+        let status = |json: serde_json::Value| -> couch_plugin::Status {
+            serde_json::from_value(json).unwrap()
+        };
+        let card = |json| plugin_volume_reading("Theater AVR", &status(json), None);
+        let db = card(serde_json::json!({"volume_db":{"kind":"reading","tenths":-415}})).unwrap();
+        assert_eq!(
+            (db.text.as_str(), db.level, db.target.as_str()),
+            ("-41.5 dB", -1, "Theater AVR")
+        );
+        assert_eq!(
+            card(serde_json::json!({"volume_db":{"kind":"minimum"}}))
+                .unwrap()
+                .text,
+            "Minimum"
+        );
+        assert_eq!(
+            card(serde_json::json!({"muted":true,"volume_db":{"kind":"reading","tenths":-300}}))
+                .unwrap()
+                .text,
+            "Muted"
+        );
+        // With the range the package declares, the same readings fill the bar.
+        let scale = Some(DbScale {
+            min: -800,
+            max: 180,
+            step: 5,
+        });
+        let scaled = |json| plugin_volume_reading("Theater AVR", &status(json), scale).unwrap();
+        let bar = scaled(serde_json::json!({"volume_db":{"kind":"reading","tenths":-415}}));
+        assert_eq!((bar.text.as_str(), bar.level), ("-41.5 dB", 39));
+        assert_eq!(
+            scaled(serde_json::json!({"volume_db":{"kind":"minimum"}})).level,
+            0
+        );
+        let percent = card(serde_json::json!({"volume":37})).unwrap();
+        assert_eq!((percent.level, percent.text.as_str()), (37, ""));
+        assert!(card(serde_json::json!({"on":true})).is_none());
+    }
     #[test]
     fn supplemental_ir_routes_only_exact_assignments_and_never_falls_back_on_error() {
         let codes =
@@ -1206,6 +1903,61 @@ mod tests {
         assert_eq!(rx.try_iter().count(), 8);
     }
 
+    #[test]
+    fn releasing_a_key_ends_its_hold_so_queued_repeats_can_be_discarded() {
+        let (mut c, rx) = fixture();
+        c.bindings = vec![Binding {
+            button: Button::VolumeUp,
+            gesture: Gesture::Short,
+            action: Some(Action::new("tv", "volume-up")),
+        }];
+        let mut held = press(115, false);
+        c.handle_press(&held);
+        held.repeat = true;
+        c.handle_press(&held);
+        c.handle_press(&held);
+        let first: Vec<_> = rx.try_iter().map(|r| (r.repeat, r.hold)).collect();
+        assert_eq!(first, [(false, 0), (true, 0), (true, 0)]);
+        // Finger off the key: a repeat still queued carries the old hold and
+        // no longer matches, which is how the lane knows not to send it.
+        let mut up = press(115, false);
+        up.released = true;
+        c.handle_press(&up);
+        assert_eq!(c.hold.load(Ordering::SeqCst), 1);
+        c.handle_press(&press(115, false));
+        assert_eq!(rx.try_recv().unwrap().hold, 1);
+    }
+
+    #[test]
+    fn a_held_key_that_outruns_the_queue_is_not_an_error() {
+        let (mut c, rx) = fixture();
+        c.bindings = vec![Binding {
+            button: Button::VolumeUp,
+            gesture: Gesture::Short,
+            action: Some(Action::new("tv", "volume-up")),
+        }];
+        // One press, then the hold's repeats arrive faster than anything drains.
+        assert!(c.handle_press(&press(115, false)));
+        let mut held = press(115, false);
+        held.repeat = true;
+        for _ in 0..20 {
+            assert!(c.handle_press(&held), "the key is still consumed");
+        }
+        assert!(
+            c.feedback().is_none(),
+            "surplus repeats are dropped quietly"
+        );
+        assert_eq!(rx.try_iter().count(), 8);
+        // A fresh press with no room is still worth telling the user about.
+        for _ in 0..8 {
+            c.handle_press(&held);
+        }
+        assert!(c.handle_press(&press(115, false)));
+        assert!(
+            matches!(c.feedback(), Some(Feedback::Error(m)) if m == "Still sending the last command")
+        );
+    }
+
     fn fixture() -> (Controller, mpsc::Receiver<Request>) {
         let (tx, rx) = mpsc::sync_channel(8);
         let (_, out) = mpsc::channel();
@@ -1220,6 +1972,9 @@ mod tests {
                 tx,
                 rx: out,
                 dropped: false,
+                activity_running: false,
+                hold: Arc::new(AtomicU64::new(0)),
+                screen_device: None,
             },
             rx,
         )
@@ -1496,13 +2251,15 @@ mod worker_tests {
         let (reply, _out) = mpsc::sync_channel(8);
         let current = Arc::new(AtomicU64::new(1));
         let shared = current.clone();
-        let thread = std::thread::spawn(move || worker(rx, reply, shared));
+        let thread =
+            std::thread::spawn(move || worker(rx, reply, shared, Arc::new(AtomicU64::new(0))));
         tx.send(Request {
             generation: 1,
             at: Instant::now(),
             config: Arc::new(config),
             action: Action::new("avr", "volume-up"),
             repeat: false,
+            hold: 0,
         })
         .unwrap();
         assert_eq!(

@@ -33,12 +33,16 @@ export component ActivityPages inherits Rectangle {
     }
     if root.tiles.length==0: Text { x:32px; y:260px; width:parent.width - 64px; height:120px; text:"Add command buttons to this page in the web UI."; color:Theme.text-secondary; font-size:24px; wrap:word-wrap; horizontal-alignment:center; }
     Text { x:24px; y:654px; width:parent.width - 48px; height:48px; text:root.status; color:Theme.text-secondary; font-size:18px; wrap:word-wrap; overflow:elide; }
-    Rectangle { x:24px; y:720px; width:72px; height:52px; border-radius:14px; background:Theme.surface;
+    // The pager shares its row with the Media button when the activity has a
+    // source. Without one - a packaged device's own controls - it is the only
+    // thing on the row, and sits in the middle of it.
+    property <length> pager-x: root.has-source ? 24px : (root.width - 280px) / 2;
+    Rectangle { x:root.pager-x; y:720px; width:72px; height:52px; border-radius:14px; background:Theme.surface;
         Image { x:(parent.width - 30px)/2; y:(parent.height - 30px)/2; width:30px; height:30px; source:@image-url("../../../../assets/lucide/arrow-big-left.svg"); colorize:Theme.text; }
         TouchArea { enabled:root.page-count>1; clicked=>{root.action("page",-1);} }
     }
-    Text { x:108px; y:730px; width:110px; height:32px; text:(root.page+1) + " / " + root.page-count; color:Theme.text-secondary; font-size:20px; horizontal-alignment:center; }
-    Rectangle { x:232px; y:720px; width:72px; height:52px; border-radius:14px; background:Theme.surface;
+    Text { x:root.pager-x + 84px; y:730px; width:110px; height:32px; text:(root.page+1) + " / " + root.page-count; color:Theme.text-secondary; font-size:20px; horizontal-alignment:center; }
+    Rectangle { x:root.pager-x + 208px; y:720px; width:72px; height:52px; border-radius:14px; background:Theme.surface;
         Image { x:(parent.width - 30px)/2; y:(parent.height - 30px)/2; width:30px; height:30px; source:@image-url("../../../../assets/lucide/arrow-big-right.svg"); colorize:Theme.text; }
         TouchArea { enabled:root.page-count>1; clicked=>{root.action("page",1);} }
     }
