@@ -14,7 +14,9 @@ custom repositories. The page separates installed packages from available
 catalog entries. A signed empty feed is valid; Stable stays empty until a
 package has production-tier hardware evidence.
 
-Choose **Install** beside a catalog entry. After installation, create a
+Choose **Install** beside a catalog entry. An entry that says "Needs a newer
+Couch" cannot be installed until the remote itself is updated; the feed says so
+before anything is downloaded. After installation, create a
 connection on **Connections** and enter that integration's settings. Installing
 a package does not create a device connection. The one connection it does
 change is one saved while that integration was still built into Couch (Denon):
@@ -104,7 +106,7 @@ All management routes require the existing paired session:
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/integrations/catalog` | Installed state, available catalog entries, repositories and refresh errors |
+| `GET /api/integrations/catalog` | Installed state, available catalog entries, repositories and refresh errors. An available entry the [feed metadata](integration-packages.md#feed-metadata) rules out carries `installable: false` and a `reason` ("Needs a newer Couch"); an installed entry whose newer version is ruled out carries `update_installable: false` and `update_reason`. Install and update of such a package are refused before any download |
 | `POST /api/integrations/refresh` | Verify and refresh repository indexes |
 | `POST /api/integrations/{install,update,rollback,remove}` | Start an explicit operation; removal must preserve connection configuration |
 | `GET /api/integrations/operations/current` | Reattach to the current operation after returning to the page |

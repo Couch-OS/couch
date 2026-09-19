@@ -14,10 +14,20 @@ const catalog = {
     available_version: '1.5.0', status: {kind: 'ready'},
     description: 'Controls a network receiver.', repository: 'official-preview',
     connection_configured: true, can_rollback: true,
+  }, {
+    // The feed's signed metadata says the newer version needs a newer Couch.
+    id: 'kodi', name: 'Kodi', version: '0.1.0',
+    available_version: '0.2.0', update_installable: false, update_reason: 'Needs a newer Couch',
+    status: {kind: 'installed'}, repository: 'official-preview',
+    connection_configured: false, can_rollback: false,
   }],
   available: [{
     id: 'example-tv', name: 'Example TV', version: '0.3.0',
     description: 'A test integration from a signed catalog.', repository: 'official-preview',
+  }, {
+    id: 'future-tv', name: 'Future TV', version: '1.0.0',
+    description: 'Built for the next Couch.', repository: 'official-preview',
+    installable: false, reason: 'Needs a newer Couch',
   }],
   repositories: [{
     id: 'official-preview', name: 'Couch preview', url: 'https://packages.couch.example/preview',
@@ -130,6 +140,17 @@ try {
   await page.getByRole('heading', {name: 'Connections waiting for a package', exact: true}).waitFor({state: 'detached'});
   assert.equal(calls.filter(c => c.method === 'POST' && c.path === '/api/integrations/legacy/retry').length, 1);
   assert(configReads > readsBefore, 'a converted connection reloads the configuration the page holds');
+  // A package this Couch cannot run says so and cannot be asked for; the
+  // daemon would refuse it before downloading anything. The rows beside it
+  // are untouched.
+  const card = name => page.locator('article.integration-card').filter({has: page.getByRole('heading', {name, exact: true})});
+  await card('Future TV').getByText('Needs a newer Couch.', {exact: true}).waitFor();
+  assert(await card('Future TV').getByRole('button', {name: 'Install', exact: true}).isDisabled(), 'a package that needs a newer Couch cannot be installed');
+  assert(await card('Example TV').getByRole('button', {name: 'Install', exact: true}).isEnabled(), 'an installable package beside it still can');
+  assert.equal(await card('Example TV').getByText('Needs a newer Couch').count(), 0);
+  await card('Kodi').getByText('Version 0.2.0 is available. Needs a newer Couch.', {exact: true}).waitFor();
+  assert(await card('Kodi').getByRole('button', {name: 'Update to 0.2.0', exact: true}).isDisabled(), 'an update that needs a newer Couch cannot be asked for');
+  assert(await card('Kodi').getByRole('button', {name: 'Remove package', exact: true}).isEnabled(), 'the installed version can still be removed');
   await page.getByRole('button', {name: 'Update to 1.5.0', exact: true}).click();
   await page.getByText('Package operation complete.').waitFor();
   const update = calls.find(call => call.path === '/api/integrations/update');
@@ -156,16 +177,17 @@ try {
   await page.getByRole('alert').filter({hasText: 'The package operation is no longer available after the remote restarted.'}).waitFor();
   assert(calls.some(call => call.path === '/api/integrations/operations/current'), 'opening the page restores a daemon-owned operation');
 
-  await page.getByRole('button', {name: 'Remove package', exact: true}).click();
+  await card('Denon AVR').getByRole('button', {name: 'Remove package', exact: true}).click();
   await page.getByRole('button', {name: 'Confirm delete', exact: true}).click();
   await page.getByText('Package operation complete.').waitFor();
+  assert.equal(calls.some(call => ['kodi', 'future-tv'].includes(call.body?.id)), false, 'nothing was asked of a package that cannot be installed');
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Integrations page overflows a phone viewport');
   await page.screenshot({path: process.env.COUCH_SCREENSHOT ?? 'build/webui-review/integrations-mobile.png', fullPage: true});
   await page.setViewportSize({width: 1280, height: 900});
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Integrations page overflows a desktop viewport');
   await page.screenshot({path: process.env.COUCH_DESKTOP_SCREENSHOT ?? 'build/webui-review/integrations-desktop.png', fullPage: true});
   assert.deepEqual(errors, []);
-  console.log('PASS: integration catalog actions use IDs, package operations report progress, connection settings survive removal, a connection waiting for its package says why and can be retried, and custom repositories require key fingerprint confirmation.');
+  console.log('PASS: integration catalog actions use IDs, a package that needs a newer Couch says so and cannot be installed or updated, package operations report progress, connection settings survive removal, a connection waiting for its package says why and can be retried, and custom repositories require key fingerprint confirmation.');
 } finally {
   await browser.close();
 }

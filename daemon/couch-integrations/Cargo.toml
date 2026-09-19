@@ -15,4 +15,5 @@ flate2 = "1"
 tar = "0.4"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 url = "2"
+ring = "0.17"
 couch-model = { path = "../../model/couch-model" }
