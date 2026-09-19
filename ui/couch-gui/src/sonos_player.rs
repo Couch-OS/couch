@@ -1078,6 +1078,634 @@ mod tests {
         );
         app.hide().unwrap();
     }
+    /// The speaker the pictures are taken of: one fixed Sonos player whose
+    /// answers the test chooses. It stands where the worker thread stands,
+    /// without a network: every request the screen makes is answered the way
+    /// `worker` answers it, from `now`, `answer` and `sources`.
+    struct Rig {
+        controller: Controller,
+        requests: mpsc::Receiver<(u64, Request)>,
+        events: mpsc::SyncSender<(u64, Event)>,
+        /// What the speaker reports when it is read.
+        now: Result<Snapshot, String>,
+        /// What the next command comes back with.
+        answer: Result<String, String>,
+        sources: Result<Vec<Source>, String>,
+        /// Whether the speaker answers when the screen connects to it.
+        connect: Result<(), String>,
+        connected: bool,
+        art_sent: String,
+        /// What reached the speaker, in order, in plain words.
+        sent: Vec<String>,
+    }
+    impl Rig {
+        fn new() -> Self {
+            let (tx, requests) = mpsc::sync_channel(16);
+            let (events, rx) = mpsc::sync_channel(8);
+            let controller = Controller {
+                tx,
+                rx,
+                active: Arc::new(AtomicU64::new(0)),
+                generation: 0,
+                target: None,
+                snapshot: None,
+                at: Instant::now(),
+                tick: Instant::now(),
+                refresh_at: Instant::now(),
+                busy: false,
+                message_until: None,
+                volume_until: None,
+                art_key: String::new(),
+                sources: Vec::new(),
+                selected: 3,
+                views: std::collections::HashMap::new(),
+            };
+            Self {
+                controller,
+                requests,
+                events,
+                now: Err("Cannot reach the speaker.".into()),
+                answer: Ok(String::new()),
+                sources: Ok(Vec::new()),
+                connect: Ok(()),
+                connected: false,
+                art_sent: String::new(),
+                sent: Vec::new(),
+            }
+        }
+        fn read(&mut self) {
+            let generation = self.controller.generation;
+            if !self.connected {
+                let lost = Err("Not connected to the speaker.".to_owned());
+                self.events
+                    .send((generation, Event::State(Box::new(lost))))
+                    .unwrap();
+                return;
+            }
+            let art = self
+                .now
+                .as_ref()
+                .ok()
+                .and_then(|s| s.now_playing.current.as_ref())
+                .map(|t| t.image_url.clone())
+                .unwrap_or_default();
+            self.sent.push("read".into());
+            self.events
+                .send((generation, Event::State(Box::new(self.now.clone()))))
+                .unwrap();
+            if self.now.is_ok() && !art.is_empty() && art != self.art_sent {
+                self.sent.push(format!("artwork {art}"));
+                self.art_sent = art.clone();
+                let pixels = activity_art::decode(&cover(), activity_art::Shape::Backdrop);
+                self.events
+                    .send((generation, Event::Art(art, pixels)))
+                    .unwrap();
+            } else if art.is_empty() {
+                self.art_sent.clear();
+            }
+        }
+        /// Hold the one-second clock and the three-second re-read still, so a
+        /// picture never depends on how long the test took to get here.
+        fn hold(&mut self) {
+            self.controller.tick = Instant::now();
+            self.controller.refresh_at = Instant::now() + REFRESH;
+        }
+        /// Answer everything the screen has asked for, then let it take the
+        /// answers in.
+        fn pump(&mut self, app: &App) {
+            loop {
+                self.hold();
+                let Ok((generation, request)) = self.requests.try_recv() else {
+                    break;
+                };
+                if generation != self.controller.generation {
+                    continue;
+                }
+                match request {
+                    Request::Close => {
+                        self.sent.push("close".into());
+                        self.art_sent.clear();
+                    }
+                    Request::Open(_, known_art) => {
+                        self.sent.push(format!("open, showing art {known_art:?}"));
+                        self.art_sent = known_art;
+                        self.connected = self.connect.is_ok();
+                        match self.connect.clone() {
+                            Ok(()) => self.read(),
+                            Err(e) => self
+                                .events
+                                .send((generation, Event::State(Box::new(Err(e)))))
+                                .unwrap(),
+                        }
+                    }
+                    Request::Refresh => self.read(),
+                    Request::Command(Op::Sources) => {
+                        self.sent.push("sources".into());
+                        self.events
+                            .send((generation, Event::Sources(self.sources.clone())))
+                            .unwrap();
+                    }
+                    Request::Command(_) if !self.connected => {
+                        let lost = Err("Not connected to the speaker.".to_owned());
+                        self.events.send((generation, Event::Done(lost))).unwrap();
+                    }
+                    Request::Command(op) => {
+                        self.sent.push(match &op {
+                            Op::PlayPause => "play-pause".into(),
+                            Op::Skip(true) => "next".into(),
+                            Op::Skip(false) => "previous".into(),
+                            Op::Seek(position) => format!("seek to {position} ms"),
+                            Op::Volume(delta) => format!("volume {delta:+}"),
+                            Op::ToggleMute => "mute".into(),
+                            Op::Select(_, name) => format!("source {name}"),
+                            Op::Modes(change) => format!(
+                                "modes shuffle {:?} repeat {:?} repeat-one {:?} crossfade {:?}",
+                                change.shuffle, change.repeat, change.repeat_one, change.crossfade
+                            ),
+                            Op::Sources => unreachable!(),
+                        });
+                        let answer = std::mem::replace(&mut self.answer, Ok(String::new()));
+                        let lost = answer
+                            .as_ref()
+                            .is_err_and(|e| e == "Cannot reach the speaker.");
+                        self.events.send((generation, Event::Done(answer))).unwrap();
+                        if lost {
+                            self.connected = false;
+                        } else {
+                            self.read();
+                        }
+                    }
+                }
+                self.controller.poll(app);
+            }
+            self.hold();
+            self.controller.poll(app);
+        }
+        fn act(&mut self, app: &App, action: &str, value: f64) {
+            self.controller.action(app, action, value, false);
+            self.pump(app);
+        }
+        /// The periodic re-read, now rather than in three seconds.
+        fn refresh(&mut self, app: &App) {
+            self.controller.tick = Instant::now();
+            self.controller.refresh_at = Instant::now();
+            self.controller.poll(app);
+            self.pump(app);
+        }
+        /// Let a notice and the volume card run out now rather than in seconds.
+        fn expire(&mut self, app: &App) {
+            let now = Instant::now();
+            self.controller.message_until = self.controller.message_until.map(|_| now);
+            self.controller.volume_until = self.controller.volume_until.map(|_| now);
+            self.pump(app);
+        }
+    }
+    /// Cover art: a fixed picture made here, so nothing binary is in the tree.
+    fn cover() -> Vec<u8> {
+        let picture = image::RgbImage::from_fn(600, 600, |x, y| {
+            let tile = (x / 75 + y / 75) % 2 == 0;
+            image::Rgb([
+                (x * 255 / 600) as u8,
+                if tile { 200 } else { 90 },
+                (y * 255 / 600) as u8,
+            ])
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        picture
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+    fn track(
+        name: &str,
+        artist: &str,
+        album: &str,
+        art: &str,
+        ms: Option<u64>,
+    ) -> couch_sonos::Track {
+        couch_sonos::Track {
+            name: name.into(),
+            artist: artist.into(),
+            album: album.into(),
+            image_url: art.into(),
+            duration_ms: ms,
+            service: "Apple Music".into(),
+        }
+    }
+    /// The Lounge speaker playing the second track of an album from a playlist.
+    fn playing() -> Snapshot {
+        Snapshot {
+            status: couch_sonos::Status {
+                player: couch_sonos::Player {
+                    uuid: "RINCON_LOUNGE".into(),
+                    name: "Lounge".into(),
+                    model: "Era 100".into(),
+                },
+                coordinator: "RINCON_LOUNGE".into(),
+                coordinator_name: "Lounge".into(),
+                transport: "PLAYING".into(),
+                volume: 18,
+                muted: false,
+            },
+            playback: couch_sonos::PlaybackStatus {
+                state: "PLAYING".into(),
+                position_ms: 74_210,
+                modes: couch_sonos::PlayModes::default(),
+                can_seek: true,
+                can_skip: true,
+                can_skip_back: true,
+            },
+            now_playing: couch_sonos::NowPlaying {
+                container: "Evening".into(),
+                container_type: "playlist".into(),
+                current: Some(track(
+                    "Weird Fishes / Arpeggi",
+                    "Radiohead",
+                    "In Rainbows",
+                    "http://192.0.2.9:1400/getaa?s=1&u=weird-fishes",
+                    Some(318_000),
+                )),
+                next: Some(track(
+                    "All I Need",
+                    "Radiohead",
+                    "In Rainbows",
+                    "http://192.0.2.9:1400/getaa?s=1&u=all-i-need",
+                    Some(229_000),
+                )),
+            },
+        }
+    }
+    fn paused() -> Snapshot {
+        let mut s = playing();
+        s.playback.state = "PAUSED".into();
+        s.status.transport = "PAUSED".into();
+        s
+    }
+    /// Everything on the screen that is not a pixel, as text, so a change
+    /// shows up as a readable difference on any machine.
+    fn words(app: &App) -> String {
+        use slint::Model;
+        let mut flags = Vec::new();
+        for (on, name) in [
+            (app.get_player_shown(), "shown"),
+            (app.get_player_music(), "music"),
+            (app.get_player_connected(), "connected"),
+            (app.get_player_ready(), "ready"),
+            (app.get_player_paused(), "paused"),
+            (app.get_player_can_seek(), "can-seek"),
+            (app.get_player_has_art(), "art"),
+            (app.get_player_has_logo(), "logo"),
+        ] {
+            if on {
+                flags.push(name);
+            }
+        }
+        let mut out = format!(
+            "  heading: {} / {}\n  title: {:?}\n  line: {:?}\n  clock: {:?} {:?} {:.2}%\n  flags: {}\n  selected: {}\n  sheets: {}\n",
+            app.get_player_activity(),
+            app.get_player_room(),
+            app.get_player_title(),
+            app.get_player_metadata(),
+            app.get_player_elapsed(),
+            app.get_player_remaining(),
+            app.get_player_progress(),
+            flags.join(" "),
+            app.get_player_selected(),
+            app.get_player_sheets()
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        if app.get_player_panel() != 0 {
+            out += &format!(
+                "  sheet {}: {:?}\n",
+                app.get_player_panel(),
+                app.get_player_panel_detail()
+            );
+            for row in app.get_player_choices().iter() {
+                out += &format!("    {:?} / {:?}\n", row.title, row.detail);
+            }
+        }
+        if !app.get_player_message().is_empty() {
+            out += &format!("  notice: {:?}\n", app.get_player_message());
+        }
+        if app.get_volume_shown() {
+            out += &format!(
+                "  volume card: {} {} for {:?}\n",
+                app.get_volume_caption(),
+                app.get_volume(),
+                app.get_volume_target()
+            );
+        }
+        out
+    }
+    /// The Sonos player screen, picture by picture, from one fixed speaker.
+    ///
+    /// Three records come out of one run. The words on the screen and what was
+    /// sent to the speaker are compared with `tests/golden/player-screen.txt`
+    /// on every run. With `COUCH_PLAYER_SCREENSHOTS=<dir>` each 480x800 picture
+    /// is written there as a PNG, and with `COUCH_PLAYER_GOLDENS=<dir>` each
+    /// picture must equal the PNG of the same name in that directory, pixel for
+    /// pixel: that is how a change to the code behind the screen is shown to
+    /// leave the screen alone. Nothing binary is kept in the tree.
+    #[test]
+    fn the_player_screen_is_the_same_picture_for_the_same_speaker() {
+        if std::env::var_os("COUCH_TEST_PLAYER_PICTURES").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sonos_player::tests::the_player_screen_is_the_same_picture_for_the_same_speaker",
+                ])
+                .env("COUCH_TEST_PLAYER_PICTURES", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::{platform::WindowEvent, ComponentHandle};
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.show().unwrap();
+        window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        let record = std::cell::RefCell::new(String::new());
+        let differing = std::cell::RefCell::new(Vec::new());
+        // One buffer for the whole run, as on the panel: the renderer redraws
+        // only what changed since the last frame.
+        let frame = std::cell::RefCell::new(vec![slint::Rgb8Pixel::default(); 480 * 800]);
+        // One picture: let the 200 ms sheet and card movements finish, draw,
+        // and note the words beside it.
+        let picture = |rig: &mut Rig, name: &str| {
+            for _ in 0..15 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            slint::platform::update_timers_and_animations();
+            let mut pixels = frame.borrow_mut();
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(&mut pixels, 480);
+            });
+            let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+            let file = format!("player-{name}.png");
+            if let Some(dir) = std::env::var_os("COUCH_PLAYER_SCREENSHOTS") {
+                let path = std::path::Path::new(&dir).join(&file);
+                image::save_buffer(path, &bytes, 480, 800, image::ColorType::Rgb8).unwrap();
+            }
+            if let Some(dir) = std::env::var_os("COUCH_PLAYER_GOLDENS") {
+                let golden = image::open(std::path::Path::new(&dir).join(&file))
+                    .unwrap()
+                    .to_rgb8();
+                let wrong = golden
+                    .as_raw()
+                    .chunks(3)
+                    .zip(bytes.chunks(3))
+                    .filter(|(a, b)| a != b)
+                    .count();
+                if golden.dimensions() != (480, 800) || wrong != 0 {
+                    differing
+                        .borrow_mut()
+                        .push(format!("{file}: {wrong} pixels"));
+                }
+            }
+            let mut record = record.borrow_mut();
+            *record += &format!("== {name}\n{}", words(&app));
+            if !rig.sent.is_empty() {
+                *record += &format!("  sent: {}\n", rig.sent.join("; "));
+                rig.sent.clear();
+            }
+        };
+        let target = Target {
+            device: "lounge-sonos".into(),
+            name: "Lounge Sonos".into(),
+            room: "Living room".into(),
+            host: Ipv4Addr::new(192, 0, 2, 9),
+        };
+        let mut rig = Rig::new();
+        let rig = &mut rig;
+
+        // Opening: the waiting screen, then the speaker's first answer.
+        rig.controller.open(&app, target.clone());
+        picture(rig, "01-connecting");
+        rig.now = Ok(paused());
+        rig.pump(&app);
+        picture(rig, "02-paused");
+        rig.now = Ok(playing());
+        rig.act(&app, "play", 0.);
+        // A playing clock moves: draw at once.
+        picture(rig, "03-playing");
+        rig.now = Ok(paused());
+        rig.act(&app, "play", 0.);
+
+        // The D-pad walks the controls; OK on the seek line plays or pauses.
+        rig.act(&app, "Input.Up", 0.);
+        picture(rig, "04-seek-line-selected");
+        rig.act(&app, "seek", 50.);
+        rig.act(&app, "Input.Down", 0.);
+        rig.act(&app, "Input.Left", 0.);
+        rig.act(&app, "Input.Select", 0.);
+        rig.act(&app, "next", 0.);
+        picture(rig, "05-previous-selected");
+
+        // Sources: asked for once, listed, and one started.
+        rig.sources = Ok(vec![
+            Source {
+                id: SourceId::HomeTheater,
+                name: "TV".into(),
+                detail: "This player".into(),
+            },
+            Source {
+                id: SourceId::Favorite("4".into()),
+                name: "Morning Jazz".into(),
+                detail: "Apple Music".into(),
+            },
+            Source {
+                id: SourceId::Playlist("0".into()),
+                name: "Evening".into(),
+                detail: "Sonos playlist · 12 tracks".into(),
+            },
+        ]);
+        rig.act(&app, "Input.Down", 0.);
+        rig.controller.action(&app, "Input.Select", 0., false);
+        picture(rig, "06-sources-finding");
+        rig.pump(&app);
+        picture(rig, "07-sources");
+        rig.answer = Ok("Playing Morning Jazz".into());
+        rig.controller.action(&app, "choose", 1., false);
+        picture(rig, "08-source-starting");
+        rig.pump(&app);
+        picture(rig, "09-source-started");
+        rig.expire(&app);
+
+        // Modes: shuffle on, then repeat all, this track, off.
+        rig.act(&app, "audio", 0.);
+        picture(rig, "10-modes");
+        let mut state = paused();
+        for (row, change) in [
+            (0., "shuffle"),
+            (1., "all"),
+            (1., "one"),
+            (1., "off"),
+            (2., "crossfade"),
+        ] {
+            let modes = &mut state.playback.modes;
+            match change {
+                "shuffle" => modes.shuffle = true,
+                "all" => modes.repeat = true,
+                "one" => (modes.repeat, modes.repeat_one) = (false, true),
+                "off" => modes.repeat_one = false,
+                _ => modes.crossfade = true,
+            }
+            rig.now = Ok(state.clone());
+            rig.act(&app, "choose", row);
+            if change == "one" {
+                picture(rig, "11-modes-shuffled-repeating-this-track");
+            }
+        }
+        picture(rig, "12-modes-shuffle-and-crossfade");
+        rig.act(&app, "back", 0.);
+
+        // Up next, with and without something queued.
+        rig.act(&app, "subtitles", 0.);
+        picture(rig, "13-up-next");
+        rig.act(&app, "choose", 0.);
+        state.now_playing.next = None;
+        rig.now = Ok(state.clone());
+        rig.act(&app, "subtitles", 0.);
+        rig.refresh(&app);
+        picture(rig, "14-up-next-empty");
+        rig.act(&app, "Input.Back", 0.);
+
+        // Volume and mute: the shared card, then a sentence.
+        rig.answer = Ok("volume:23".into());
+        rig.act(&app, "volume", 5.);
+        picture(rig, "15-volume-card");
+        rig.expire(&app);
+        rig.answer = Ok("Muted".into());
+        rig.act(&app, "mute", 0.);
+        picture(rig, "16-muted");
+        rig.expire(&app);
+
+        // A command the speaker refuses, in the screen's words.
+        rig.answer = Err("Sonos found nothing to play there.".into());
+        rig.act(&app, "previous", 0.);
+        picture(rig, "17-refused");
+        rig.expire(&app);
+
+        // Leaving and coming straight back shows the same screen at once.
+        rig.controller.close(&app);
+        rig.pump(&app);
+        app.set_player_shown(false);
+        rig.controller.open(&app, target.clone());
+        picture(rig, "18-reopened-before-the-speaker-answers");
+        rig.pump(&app);
+
+        // A speaker that follows another one.
+        let mut member = playing();
+        member.status.coordinator = "RINCON_KITCHEN".into();
+        member.status.coordinator_name = "Kitchen".into();
+        rig.now = Ok(member);
+        rig.refresh(&app);
+        picture(rig, "19-follows-kitchen");
+        let mut member = paused();
+        member.status.coordinator = "RINCON_KITCHEN".into();
+        member.status.coordinator_name = "Kitchen".into();
+        rig.now = Ok(member);
+        rig.refresh(&app);
+        rig.act(&app, "play", 0.);
+        picture(rig, "20-follows-kitchen-refuses-play");
+        rig.expire(&app);
+        rig.act(&app, "audio", 0.);
+        picture(rig, "21-follows-kitchen-modes");
+        rig.act(&app, "choose", 0.);
+        rig.act(&app, "back", 0.);
+        rig.expire(&app);
+
+        // A radio stream, the TV input, and nothing at all.
+        let mut radio = paused();
+        radio.now_playing.container = "BBC Radio 6 Music".into();
+        radio.now_playing.container_type = "station".into();
+        radio.now_playing.current = Some(track(
+            "BBC Radio 6 Music",
+            "",
+            "",
+            "http://192.0.2.9:1400/getaa?s=1&u=6music",
+            None,
+        ));
+        radio.now_playing.next = None;
+        rig.now = Ok(radio);
+        rig.refresh(&app);
+        picture(rig, "22-radio");
+        let mut tv = paused();
+        tv.now_playing = couch_sonos::NowPlaying {
+            container: "TV".into(),
+            container_type: "linein.homeTheater".into(),
+            current: None,
+            next: None,
+        };
+        rig.now = Ok(tv.clone());
+        rig.refresh(&app);
+        picture(rig, "23-tv-input");
+        tv.now_playing.container.clear();
+        tv.now_playing.container_type.clear();
+        tv.playback.state = "IDLE".into();
+        rig.now = Ok(tv);
+        rig.refresh(&app);
+        picture(rig, "24-idle");
+        rig.act(&app, "play", 0.);
+
+        // A read that fails says so and the next one recovers by itself.
+        rig.now = Err("Cannot reach the speaker.".into());
+        rig.refresh(&app);
+        picture(rig, "25-read-cannot-reach");
+        rig.now = Ok(paused());
+        rig.refresh(&app);
+        // A command that cannot reach the speaker drops the connection: the
+        // next read says so, a command says so, and Reconnect asks again,
+        // first in vain.
+        rig.answer = Err("Cannot reach the speaker.".into());
+        rig.act(&app, "play", 0.);
+        picture(rig, "26-command-cannot-reach");
+        rig.expire(&app);
+        rig.refresh(&app);
+        rig.act(&app, "volume", -5.);
+        picture(rig, "27-not-connected");
+        rig.expire(&app);
+        rig.connect = Err("Cannot reach the speaker.".into());
+        rig.act(&app, "retry", 0.);
+        picture(rig, "28-reconnect-failed");
+        rig.connect = Ok(());
+        rig.act(&app, "retry", 0.);
+        picture(rig, "29-reconnected");
+
+        rig.controller.close(&app);
+        rig.pump(&app);
+        let record = record.into_inner();
+        if let Some(dir) = std::env::var_os("COUCH_PLAYER_SCREENSHOTS") {
+            std::fs::write(
+                std::path::Path::new(&dir).join("player-screen.txt"),
+                &record,
+            )
+            .unwrap();
+        }
+        assert!(
+            differing.borrow().is_empty(),
+            "pictures differ from the goldens: {:?}",
+            differing.borrow()
+        );
+        let golden = include_str!("../tests/golden/player-screen.txt");
+        assert!(
+            record == golden,
+            "the player screen's words changed; this run said:\n{record}"
+        );
+        app.hide().unwrap();
+    }
     #[test]
     fn dpad_walks_the_controls_and_the_sheets() {
         // Pure state: no window needed. Start on play (3), move around the
