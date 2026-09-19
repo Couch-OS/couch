@@ -6,8 +6,10 @@ component Tile inherits Rectangle {
     in property <string> title;
     in property <string> detail;
     in property <image> icon;
+    in property <bool> selected;
     callback activate();
     background:Theme.surface-raised;border-radius:18px;
+    border-width:root.selected ? 3px : 0px;border-color:Theme.accent;
     Image {x:18px;y:16px;width:24px;height:24px;source:root.icon;colorize:Theme.accent;}
     Text {x:18px;y:48px;width:parent.width - 36px;height:30px;text:root.title;font-size:21px;color:Theme.text;font-weight:600;}
     Text {x:18px;y:81px;width:parent.width - 36px;height:26px;text:root.detail;font-size:17px;color:Theme.text-secondary;overflow:elide;}
@@ -41,7 +43,21 @@ export component Television inherits Rectangle {
     in property <bool> media-has-duration;
     in property <bool> media-live;
     property <bool> media-view: (root.android-tv || root.apple-tv) && root.media-active;
-    property <bool> streaming-tv: root.android-tv || root.apple-tv || root.tizen || root.infrared || root.sonos;
+    // A device described by what it declares rather than by its kind: a
+    // packaged integration today, every integration in time. It has no picture
+    // to steer, so the D-pad moves between its tiles and OK presses one.
+    in property <bool> generic;
+    in property <string> kind-label;
+    in property <bool> can-power;
+    in property <bool> can-input;
+    in property <bool> can-command;
+    in-out property <int> tray-selected: 0;
+    property <int> tile-count: (root.can-power ? 1 : 0) + (root.can-input ? 1 : 0) + (root.can-command ? 1 : 0);
+    property <int> input-slot: root.can-power ? 1 : 0;
+    property <int> command-slot: root.input-slot + (root.can-input ? 1 : 0);
+    property <int> selected-tile: 0;
+    changed shown => { root.selected-tile = 0; }
+    property <bool> streaming-tv: root.android-tv || root.apple-tv || root.tizen || root.infrared || root.sonos || root.generic;
     in property <string> title;
     in property <string> status;
     in property <string> error;
@@ -66,13 +82,13 @@ export component Television inherits Rectangle {
     Text {x:88px;y:27px;width:parent.width - 112px;height:27px;text:root.title;font-size:20px;color:Theme.text;font-weight:600;overflow:elide;}
     Text {x:88px;y:58px;width:parent.width - 112px;height:25px;text:root.status;font-size:16px;color:Theme.text-secondary;overflow:elide;}
     if !root.media-view: Rectangle {x:0px;y:0px;width:parent.width;height:420px;background:transparent;
-    Image {x:32px;y:146px;width:52px;height:52px;source:root.sonos ? @image-url("../../../../assets/lucide/speaker.svg") : @image-url("../../../../assets/lucide/tv.svg");colorize:Theme.accent;}
-    Text {x:32px;y:220px;width:parent.width - 64px;height:25px;text:root.sonos ? "SONOS" : root.infrared ? "INFRARED" : root.apple-tv ? "APPLE TV" : root.tizen ? "SAMSUNG TV" : root.android-tv ? "ANDROID TV" : "NOW ON YOUR TV";font-size:16px;letter-spacing:2px;color:Theme.accent;}
+    Image {x:32px;y:146px;width:52px;height:52px;source:(root.sonos || root.generic) ? @image-url("../../../../assets/lucide/speaker.svg") : @image-url("../../../../assets/lucide/tv.svg");colorize:Theme.accent;}
+    Text {x:32px;y:220px;width:parent.width - 64px;height:25px;text:root.generic ? root.kind-label : root.sonos ? "SONOS" : root.infrared ? "INFRARED" : root.apple-tv ? "APPLE TV" : root.tizen ? "SAMSUNG TV" : root.android-tv ? "ANDROID TV" : "NOW ON YOUR TV";font-size:16px;letter-spacing:2px;color:Theme.accent;}
     Text {x:32px;y:256px;width:parent.width - 64px;height:108px;text:root.source-name;font-size:40px;font-weight:700;wrap:word-wrap;overflow:elide;color:Theme.text;}
-    Text {x:32px;y:370px;width:parent.width - 64px;height:32px;text:root.sonos ? "Playback controls the selected group" : root.infrared ? "Point the remote at your device" : root.apple-tv ? "Power sleeps Apple TV · Wake resumes it" : root.tizen ? "Power toggles the TV · Wake sends Wake-on-LAN" : "Playback controls depend on the active app";font-size:16px;color:Theme.text-secondary;}
+    Text {x:32px;y:370px;width:parent.width - 64px;height:32px;text:root.generic ? root.picture : root.sonos ? "Playback controls the selected group" : root.infrared ? "Point the remote at your device" : root.apple-tv ? "Power sleeps Apple TV · Wake resumes it" : root.tizen ? "Power toggles the TV · Wake sends Wake-on-LAN" : "Playback controls depend on the active app";font-size:16px;color:Theme.text-secondary;}
     }
     for icon[i] in [@image-url("../../../../assets/lucide/rewind.svg"),@image-url("../../../../assets/lucide/play.svg"),@image-url("../../../../assets/lucide/pause.svg"),@image-url("../../../../assets/lucide/fast-forward.svg")]: IconButton {
-        visible:!root.infrared;
+        visible:!root.infrared && !root.generic;
         x:40px+i*102px;y:root.media-view ? 554px : 424px;width:88px;height:64px;icon:(root.apple-tv || root.sonos) && i==0 ? @image-url("../../../../assets/lucide/skip-back.svg") : (root.apple-tv || root.sonos) && i==3 ? @image-url("../../../../assets/lucide/skip-forward.svg") : icon;primary:i==1;
         activate=>{root.action(i==0 ? ((root.apple-tv || root.sonos) ? "previous" : "rewind") : i==1 ? "play" : i==2 ? "pause" : ((root.apple-tv || root.sonos) ? "next" : "forward"));}
     }
@@ -115,6 +131,9 @@ export component Television inherits Rectangle {
     if (root.apple-tv || root.tizen) && !root.media-view: Tile {x:24px;y:514px;width:210px;height:120px;title:"Wake";detail:root.tizen ? "Wake-on-LAN" : "Resume Apple TV";icon:@image-url("../../../../assets/lucide/power.svg");activate=>{root.action("wake");}}
     if (root.apple-tv || root.tizen) && !root.media-view: Tile {x:246px;y:514px;width:210px;height:120px;title:"Apps";detail:"Installed apps";icon:@image-url("../../../../assets/lucide/layout-grid.svg");activate=>{root.action("apps");}}
     if root.infrared: Tile {x:24px;y:424px;width:432px;height:120px;title:"Commands";detail:"Assigned to this device";icon:@image-url("../../../../assets/lucide/list.svg");activate=>{root.action("commands");}}
+    if root.generic && root.can-power: Tile {x:24px;y:514px;width:210px;height:120px;title:"Power";detail:root.sound;selected:root.selected-tile==0 && root.panel==0;icon:@image-url("../../../../assets/lucide/power.svg");activate=>{root.selected-tile=0;root.action("power");}}
+    if root.generic && root.can-input: Tile {x:24px + mod(root.input-slot,2)*222px;y:514px + floor(root.input-slot/2)*132px;width:210px;height:120px;title:"Input";detail:root.source-name;selected:root.selected-tile==root.input-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/hdmi-port.svg");activate=>{root.selected-tile=root.input-slot;root.action("inputs");}}
+    if root.generic && root.can-command: Tile {x:24px + mod(root.command-slot,2)*222px;y:514px + floor(root.command-slot/2)*132px;width:210px;height:120px;title:"Commands";detail:"More controls";selected:root.selected-tile==root.command-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/list.svg");activate=>{root.selected-tile=root.command-slot;root.action("commands");}}
     tray := BottomTray {
         width: parent.width; height: parent.height;
         open: root.panel > 0;
@@ -123,11 +142,14 @@ export component Television inherits Rectangle {
         // Explicit bounds keep projected children relative to the inset surface.
         Rectangle { x: Theme.overlay-inset; y: tray.content-y; width: tray.content-width; height: tray.content-height;
             TouchArea { }
-            Text {x:26px;y:24px;width:parent.width - 110px;height:36px;text:root.displayed-panel==1 ? "Choose an input" : root.displayed-panel==2 ? (root.infrared ? "Assigned commands" : root.android-tv ? "App shortcuts" : "TV apps") : root.displayed-panel==3 ? "Picture" : "Sound output";font-size:27px;color:#ffffff;font-weight:600;}
+            Text {x:26px;y:24px;width:parent.width - 110px;height:36px;text:root.displayed-panel==1 ? "Choose an input" : root.displayed-panel==2 ? (root.generic ? "Commands" : root.infrared ? "Assigned commands" : root.android-tv ? "App shortcuts" : "TV apps") : root.displayed-panel==3 ? "Picture" : "Sound output";font-size:27px;color:#ffffff;font-weight:600;}
             IconButton {x:parent.width - 70px;y:20px;width:44px;height:44px;icon:@image-url("../../../../assets/lucide/x.svg");activate=>{root.action("dismiss");}}
-            Text {x:26px;y:80px;width:parent.width - 52px;height:84px;wrap:word-wrap;text:root.displayed-panel==3 ? "Picture-mode changes are available through your TV’s on-screen settings." : root.choices.length==0 ? (root.infrared ? "Assign commands in Rooms & devices in the web UI." : root.android-tv ? "Add app shortcuts in Connections in the web UI." : "No choices available. Reconnect to refresh.") : "Select by touch. Physical buttons continue to control the TV.";font-size:19px;color:Theme.text-secondary;}
+            Text {x:26px;y:80px;width:parent.width - 52px;height:84px;wrap:word-wrap;text:root.displayed-panel==3 ? "Picture-mode changes are available through your TV’s on-screen settings." : root.choices.length==0 ? (root.infrared ? "Assign commands in Rooms & devices in the web UI." : root.android-tv ? "Add app shortcuts in Connections in the web UI." : "No choices available. Reconnect to refresh.") : root.generic ? "Up and Down to move, OK to choose." : "Select by touch. Physical buttons continue to control the TV.";font-size:19px;color:Theme.text-secondary;}
             Flickable {x:24px;y:176px;width:parent.width - 48px;height:parent.height - 198px;viewport-height:root.choices.length*82px;viewport-width:self.width;
+                // Keep the D-pad's row in view: one row of context above it.
+                viewport-y: root.generic ? -max(0px, min(max(0px, self.viewport-height - self.height), root.tray-selected*82px - 82px)) : 0px;
                 for item[i] in root.choices: Rectangle {x:0px;y:i*82px;width:parent.width;height:74px;background:Theme.surface-raised;border-radius:12px;
+                    border-width:root.generic && root.tray-selected==i ? 3px : 0px;border-color:Theme.accent;
                     Text {x:16px;y:10px;width:parent.width - 32px;height:29px;text:item.title;font-size:21px;color:#ffffff;overflow:elide;}
                     Text {x:16px;y:43px;width:parent.width - 32px;height:22px;text:item.detail;font-size:16px;color:Theme.text-secondary;overflow:elide;}
                     TouchArea {clicked=>{root.action(item.action);}}
@@ -140,6 +162,28 @@ export component Television inherits Rectangle {
         Rectangle {x:20px;y:170px;width:parent.width - 40px;height:44px;background:Theme.accent;border-radius:12px;Text {width:parent.width;height:parent.height;text:root.infrared ? "Reload commands" : "Reconnect";color:Theme.bg;horizontal-alignment:center;vertical-alignment:center;font-size:20px;}TouchArea {clicked=>{root.action("retry");}}}
     }
     keys:=FocusScope {enabled:root.shown;key-pressed(e)=>{
+        if(root.generic){
+            if(root.panel>0){
+                if(e.text==Key.UpArrow){root.tray-selected=max(0,root.tray-selected - 1);}
+                if(e.text==Key.DownArrow){root.tray-selected=min(max(0,root.choices.length - 1),root.tray-selected+1);}
+                if(e.text==Key.Return && root.choices.length>0){root.action(root.choices[root.tray-selected].action);}
+                if(e.text==Key.Escape || e.text==Key.Home){root.action("dismiss");}
+                return accept;
+            }
+            if(e.text==Key.LeftArrow || e.text==Key.UpArrow){root.selected-tile=max(0,root.selected-tile - (e.text==Key.UpArrow ? 2 : 1));}
+            if(e.text==Key.RightArrow || e.text==Key.DownArrow){root.selected-tile=min(max(0,root.tile-count - 1),root.selected-tile + (e.text==Key.DownArrow ? 2 : 1));}
+            if(e.text==Key.Return && root.tile-count>0){
+                if(root.can-power && root.selected-tile==0){root.action("power");}
+                else if(root.can-input && root.selected-tile==root.input-slot){root.action("inputs");}
+                else if(root.can-command && root.selected-tile==root.command-slot){root.action("commands");}
+            }
+            if(e.text==Key.Escape || e.text==Key.Home){root.action("close");}
+            if(e.text==Key.F13){root.action("power");}
+            if(e.text==Key.F14){root.action("toggle-mute");}
+            if(e.text==Key.F23){root.action("volume-up");}
+            if(e.text==Key.F24){root.action("volume-down");}
+            return accept;
+        }
         if(e.text==Key.UpArrow){root.action("up");}
         if(e.text==Key.DownArrow){root.action("down");}
         if(e.text==Key.LeftArrow){root.action("left");}

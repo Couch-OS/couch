@@ -58,15 +58,14 @@ pub fn plan(config: &Config, areas: &[Area], current: usize, button: Button) -> 
     })
 }
 
-/// Integrations whose device opens the player screen: Kodi and Sonos, and any
-/// device behind an installed integration package, whose pages that screen
-/// renders (`activity::plugin_target`). The room list and the shortcut keys
-/// both ask here; a packaged device used to be missing from both, so OK on it
-/// said its controls were not available although its pages existed.
+/// Integrations whose device opens the player screen: Kodi and Sonos. The
+/// room list and the shortcut keys both ask here, so they cannot disagree. A
+/// packaged device is not one of them: it opens the core control screen, as
+/// `lights::tv_connection` says.
 pub fn opens_player(integration: &Integration) -> bool {
     matches!(
         integration,
-        Integration::Kodi { .. } | Integration::Sonos { .. } | Integration::Plugin { .. }
+        Integration::Kodi { .. } | Integration::Sonos { .. }
     )
 }
 
@@ -329,14 +328,13 @@ mod tests {
             plan(Button::Blue),
             Some(Dispatch::OpenActivity("device:living-kodi".into()))
         );
-        // A packaged device opens the player screen that renders its pages,
-        // under the id `activity::plugin_target` resolves. Every shortcut key
+        // A packaged device opens the core control screen. Every shortcut key
         // is taken above, so ask for the device directly, as the room list does.
         assert_eq!(
             open_device(&config, &Id::new("living-avr")),
-            Dispatch::OpenActivity("device:living-avr".into())
+            Dispatch::OpenTv("device:living-avr".into(), "Theater AVR".into())
         );
-        assert!(opens_player(
+        assert!(!opens_player(
             &config
                 .resolve_integration(&Integration::Connection {
                     connection_id: "avr".into(),

@@ -7,6 +7,8 @@ mod apple;
 mod infrared;
 #[path = "tv_media.rs"]
 mod media;
+#[path = "tv_plugin.rs"]
+pub(crate) mod plugin;
 #[path = "tv_sonos.rs"]
 mod sonos;
 #[path = "tv_tizen.rs"]
@@ -45,10 +47,15 @@ enum Command {
     App(String),
     Sound(String),
     IrFunction(String),
+    /// A command a packaged device declares, by its function id.
+    Function(String),
 }
 fn command(name: &str) -> Option<Command> {
     if let Some(id) = name.strip_prefix("ir:") {
         return Some(Command::IrFunction(id.into()));
+    }
+    if let Some(id) = name.strip_prefix("fn:") {
+        return Some(Command::Function(id.into()));
     }
     if let Some(id) = name.strip_prefix("input:") {
         return Some(Command::Input(id.into()));
@@ -111,7 +118,7 @@ fn execute(c: &mut Client, action: &Command) -> couch_control::Result<()> {
             Playback::Pause
         }),
         Command::Retry => Ok(()),
-        Command::Next(_) | Command::Wake | Command::IrFunction(_) => {
+        Command::Next(_) | Command::Wake | Command::IrFunction(_) | Command::Function(_) => {
             Err(couch_control::Error::Rejected)
         }
         Command::Stop => c.playback(Playback::Stop),
@@ -493,6 +500,22 @@ fn worker(rx: mpsc::Receiver<Work>, tx: mpsc::SyncSender<Event>, active: Arc<Ato
                     }
                 }
             }
+            if w.connection.starts_with("plugin:") {
+                match plugin::run(&w, &active) {
+                    Ok(Some(event)) => {
+                        let _ = tx.try_send(event);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = tx.try_send(Event {
+                            generation,
+                            details: None,
+                            status: Err(error),
+                        });
+                    }
+                }
+                continue;
+            }
             if w.connection.starts_with("sonos:") {
                 match sonos::run(&w, &active) {
                     Ok(Some(event)) => {
@@ -806,6 +829,9 @@ fn resolve_target(
     if matches!(integration, Some(couch_model::Integration::Sonos { .. })) {
         return Ok((format!("sonos:{id}"), Some(id.into())));
     }
+    if matches!(integration, Some(couch_model::Integration::Plugin { .. })) {
+        return Ok((format!("plugin:{id}"), Some(id.into())));
+    }
     let provider = match integration {
         Some(couch_model::Integration::AndroidTv) => couch_model::Provider::AndroidTv,
         Some(couch_model::Integration::AppleTv) => couch_model::Provider::AppleTv,
@@ -954,6 +980,13 @@ impl Controller {
             .iter()
             .any(|(action, _, _)| action.starts_with("open:") || action == "close")
     }
+    /// The packaged device this screen is showing, if that is what it shows:
+    /// its volume, mute and power keys take the row's fast path and card.
+    pub fn packaged_device(&self, app: &App) -> Option<String> {
+        (app.get_tv_shown() && app.get_tv_generic())
+            .then(|| self.device.clone())
+            .flatten()
+    }
     fn save_view(&mut self, app: &App) {
         if let (Some(key), Some(at)) = (&self.view_key, self.view_at) {
             if app.get_tv_error().is_empty() {
@@ -978,12 +1011,14 @@ impl Controller {
             app.set_tv_status(
                 if app.get_tv_sonos() {
                     "Checking Sonos status…"
+                } else if app.get_tv_generic() {
+                    "Checking status…"
                 } else {
                     "Checking TV status…"
                 }
                 .into(),
             );
-            if app.get_tv_sonos() {
+            if app.get_tv_sonos() || app.get_tv_generic() {
                 let _ = self.tx.try_send(Work {
                     connection: self.connection.clone(),
                     device: self.device.clone(),
@@ -1041,6 +1076,18 @@ impl Controller {
                         .is_some_and(|c| c.provider == couch_model::Provider::AppleTv)
                 });
                 app.set_tv_sonos(connection.starts_with("sonos:"));
+                // A packaged device: the screen shows what it declares.
+                let declared = connection.strip_prefix("plugin:").and_then(|id| {
+                    let config = config.as_ref()?;
+                    let (_, device) = config.devices().find(|(_, d)| d.id.as_str() == id)?;
+                    plugin::layout(config, device)
+                });
+                app.set_tv_generic(declared.is_some());
+                let declared = declared.unwrap_or_default();
+                app.set_tv_kind_label(declared.kind.as_str().into());
+                app.set_tv_can_power(declared.power);
+                app.set_tv_can_input(declared.inputs);
+                app.set_tv_can_command(!declared.commands.is_empty());
                 app.set_tv_ir(one_way(connection));
                 let bluetooth = connection.starts_with("bt:");
                 let tizen = crate::connections::config().is_some_and(|c| {
@@ -1079,6 +1126,8 @@ impl Controller {
                     } else {
                         if app.get_tv_sonos() {
                             "Connecting to Sonos…"
+                        } else if app.get_tv_generic() {
+                            "Connecting…"
                         } else {
                             "Connecting to TV…"
                         }
@@ -1101,6 +1150,33 @@ impl Controller {
                 continue;
             }
             if ["inputs", "apps", "picture", "sound", "commands"].contains(&action) {
+                if app.get_tv_generic() {
+                    let (panel, prefix) = match action {
+                        "inputs" => (1, "input:"),
+                        "commands" => (2, "fn:"),
+                        _ => continue,
+                    };
+                    let rows: Vec<TvChoice> = self
+                        .choices
+                        .iter()
+                        .filter(|(id, _, _)| id.starts_with(prefix))
+                        .map(|(id, title, detail)| TvChoice {
+                            action: id.as_str().into(),
+                            title: title.as_str().into(),
+                            detail: detail.as_str().into(),
+                        })
+                        .collect();
+                    // Start on the current input, so OK-then-Down moves from
+                    // where the device is rather than from the top.
+                    app.set_tv_tray_selected(
+                        rows.iter()
+                            .position(|row| row.detail == "Current input")
+                            .unwrap_or(0) as i32,
+                    );
+                    app.set_tv_choices(ModelRc::new(VecModel::from(rows)));
+                    app.set_tv_panel(panel);
+                    continue;
+                }
                 if app.get_tv_sonos() {
                     app.set_tv_error("Sonos has no TV inputs or apps".into());
                     continue;
@@ -1262,7 +1338,7 @@ impl Controller {
                     }
                     .into(),
                 );
-                app.set_tv_picture(if view.picture.is_empty() {
+                app.set_tv_picture(if view.picture.is_empty() && !app.get_tv_generic() {
                     "On your TV".into()
                 } else {
                     view.picture.into()

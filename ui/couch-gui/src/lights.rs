@@ -1045,6 +1045,9 @@ pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Op
     }
     let provider = match integration? {
         Integration::Sonos { .. } => return Some(format!("sonos:{device_id}")),
+        // A packaged device: the core control screen, filled from what the
+        // package declares (tv_plugin.rs).
+        Integration::Plugin { .. } => return Some(format!("plugin:{device_id}")),
         Integration::WebOs => couch_model::Provider::WebOs,
         Integration::AndroidTv => couch_model::Provider::AndroidTv,
         Integration::AppleTv => couch_model::Provider::AppleTv,
