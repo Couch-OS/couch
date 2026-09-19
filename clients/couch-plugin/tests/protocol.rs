@@ -199,6 +199,26 @@ fn manifest_settings_reject_unknowns_types_and_secrets_in_defaults() {
 }
 
 #[test]
+fn no_accepted_protocol_lets_a_package_name_buttons_of_its_own() {
+    let p = Package::new();
+    for manifest in [p.manifest.clone(), v2_manifest(p.manifest.clone())] {
+        assert!(manifest.validate().is_ok());
+        assert!(!manifest.supports("x:info"));
+        let mut named = manifest.clone();
+        named.capabilities.push(couch_plugin::Capability {
+            id: "x:info".into(),
+            label: "Info".into(),
+        });
+        assert_eq!(
+            named.validate(),
+            Err(Error::Invalid),
+            "protocol {}",
+            manifest.protocol_version
+        );
+    }
+}
+
+#[test]
 fn executable_must_be_contained_and_not_writable_by_other_users() {
     let mut p = Package::new();
     p.script("exit 1");
