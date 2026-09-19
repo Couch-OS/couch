@@ -124,6 +124,31 @@ class TestedIntegrationSetTests(unittest.TestCase):
         self.assertEqual(receipt["hardware_evidence_core_commits"], {"denon": verify.LEGACY_EVIDENCE_COMMIT})
         self.assertFalse(receipt["artifact_bytes_verified"])
 
+    def test_an_integration_in_its_own_repository_needs_no_catalog_entry_and_a_listed_one_cannot_overclaim(self):
+        real = json.loads
+
+        def catalog_with(entry):
+            def loads(text, *args, **kwargs):
+                value = real(text, *args, **kwargs)
+                if isinstance(value, dict) and "kind" not in value and "protocol_version" in value \
+                        and isinstance(value.get("integrations"), list):
+                    value["integrations"] = [e for e in value["integrations"] if e["id"] != "denon"] + entry
+                return value
+            return mock.patch.object(verify.json, "loads", loads)
+
+        listed = {"id": "denon", "tier": "preview", "hardware_validation": {"status": "not-tested"}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_manifest(Path(directory))
+            # Denon's source left this repository, and the catalog with it.
+            with catalog_with([]):
+                self.assertEqual(verify.receipt(path)["integration_versions"], {"denon": "0.1.1"})
+            with catalog_with([listed]):
+                verify.receipt(path)
+            for claim in ({"tier": "production"}, {"hardware_validation": {"status": "validated"}}):
+                with self.subTest(claim=claim), catalog_with([{**listed, **claim}]), \
+                        self.assertRaisesRegex(ValueError, "not a not-tested preview catalog entry"):
+                    verify.receipt(path)
+
     def test_legacy_schema1_remains_readable_only_with_its_protocol_contract(self):
         self.manifest["schema"] = 1
         self.manifest["core"].pop("supported_protocol_versions")

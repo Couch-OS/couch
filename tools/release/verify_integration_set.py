@@ -351,8 +351,13 @@ def validate_manifest(path=DEFAULT):
                 and item["not_validated"] == [
                     "full receiver command behavior", "receiver model and firmware compatibility"],
                 f"{where} overstates or changes the Denon pilot evidence")
+        # The catalog lists only integrations whose source is still in this
+        # repository. One that lives in its own repository (Denon) has no entry,
+        # and its tier is the tested set's own, checked above; one that is
+        # listed must not claim more there than the tested set does here.
         entry = catalog_by_id.get(item["id"])
-        require(entry and entry["tier"] == "preview" and entry["hardware_validation"]["status"] == "not-tested",
+        require(entry is None
+                or entry["tier"] == "preview" and entry["hardware_validation"]["status"] == "not-tested",
                 f"{where} is not a not-tested preview catalog entry")
         exact(item["artifact"], ("file", "size", "sha256"), where + ".artifact")
         provenance = item["provenance"]

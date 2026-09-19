@@ -558,16 +558,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "couch-denon"
-version = "0.1.0"
-dependencies = [
- "couch-plugin",
- "couch-sdk",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "couch-echo"
 version = "0.1.0"
 dependencies = [

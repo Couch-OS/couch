@@ -3,30 +3,6 @@
   "protocol_version": 2,
   "integrations": [
     {
-      "id": "denon",
-      "manifest": "clients/couch-denon/plugin.json",
-      "crate": "clients/couch-denon",
-      "cargo_package": "couch-denon",
-      "binary": "couch-plugin-denon",
-      "tier": "preview",
-      "synthetic": false,
-      "limitations": [
-        "Protocol-v2 Denon 0.2.0 is unreleased and has mock-device coverage only. Prior read-only hardware results apply to the published 0.1.1 protocol-v1 package.",
-        "The client covers the receiver main zone only."
-      ],
-      "tests": {
-        "conformance": {"target": "admission", "case": "conformance"},
-        "failure": {"target": "admission", "case": "failure"},
-        "timeout_no_retry": {"target": "admission", "case": "timeout_no_retry"},
-        "spike": {"target": "admission", "case": "spike"}
-      },
-      "hardware_validation": {
-        "status": "not-tested",
-        "evidence": [],
-        "notes": "The earlier 0.1.1 package passed read-only status and input enumeration on HA100. This 0.2.0 protocol-v2 candidate requires its own hardware validation, including model/firmware and command behavior; it remains not-tested and preview."
-      }
-    },
-    {
       "id": "echo",
       "manifest": "clients/couch-echo/plugin.json",
       "crate": "clients/couch-echo",
