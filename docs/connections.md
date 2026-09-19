@@ -35,9 +35,40 @@ Private files are beside `config.json`, under `connections/<connection-id>/`:
 Credentials are mode 0600 and absent from exported house configuration. The daemon
 copies former singleton files into their original named connection on startup,
 keeping the originals. `connection-legacy-map.json` prevents reassignment of a
-legacy pairing after its connection is deleted. Retained credential directories
-reserve their IDs; creating another connection with the same name gets a new ID.
+legacy pairing after its connection is deleted.
+
+## Removing a connection
+
 Deletion is rejected while devices or scenes still reference the connection.
+Removing a connection (`DELETE /api/connections/<id>`, **Remove connection** on
+its page) also removes `connections/<connection-id>/` and everything in it: the
+pairing, keys, tokens, passwords and a package's settings. A package connection's
+running child is stopped first. To use the same bridge, server or TV again, add
+a connection and pair or sign in again; a new connection with the same name gets
+the same ID and starts with nothing saved.
+
+The order is fixed: the configuration is saved first, and only a saved deletion
+removes anything. A deletion that is refused (devices still assigned, a stale
+revision, the connection busy pairing or answering a request) removes nothing. A
+power cut between the two steps leaves a folder that no connection reads.
+
+What is deliberately not removed:
+
+- **Matter.** A Matter connection's folder holds the remote's own fabric: the CA
+  and controller keys every paired device trusts, which cannot be issued again.
+  Deleting a Matter connection leaves its folder alone, and a `matter/` folder
+  found under any other connection is kept too. **Forget device** on the
+  connection's page is how a paired device is released.
+- **Whole-configuration changes.** `PUT /api/config` and `POST /api/config/reset`
+  never remove private files, so importing a backup that drops a connection and
+  later one that brings it back keeps its pairing.
+- **Files outside `connections/`**: the former singleton files kept for
+  rollback, `connection-legacy-map.json` and the household Sonos API key.
+
+A folder that is still there (a Matter fabric, a connection dropped by an import,
+a deletion made by an older release) reserves its ID: creating another connection
+with the same name gets a new ID and never inherits what is in it. Nothing
+removes such folders automatically, at startup or otherwise.
 
 Provider operations use `/api/connections/<id>/<hue|ha|webos|kodi|androidtv|appletv|tizen|matter>/...`.
 Legacy provider-only routes reject ambiguous requests when several connections
