@@ -62,6 +62,8 @@ export component Television inherits Rectangle {
     in property <string> status;
     in property <string> error;
     in property <string> source-name;
+    // Set when source-name carries what is playing: the Input tile still names the input.
+    in property <string> input-name;
     in property <string> sound;
     in property <string> picture;
     in property <int> panel;
@@ -132,7 +134,7 @@ export component Television inherits Rectangle {
     if (root.apple-tv || root.tizen) && !root.media-view: Tile {x:246px;y:514px;width:210px;height:120px;title:"Apps";detail:"Installed apps";icon:@image-url("../../../../assets/lucide/layout-grid.svg");activate=>{root.action("apps");}}
     if root.infrared: Tile {x:24px;y:424px;width:432px;height:120px;title:"Commands";detail:"Assigned to this device";icon:@image-url("../../../../assets/lucide/list.svg");activate=>{root.action("commands");}}
     if root.generic && root.can-power: Tile {x:24px;y:514px;width:210px;height:120px;title:"Power";detail:root.sound;selected:root.selected-tile==0 && root.panel==0;icon:@image-url("../../../../assets/lucide/power.svg");activate=>{root.selected-tile=0;root.action("power");}}
-    if root.generic && root.can-input: Tile {x:24px + mod(root.input-slot,2)*222px;y:514px + floor(root.input-slot/2)*132px;width:210px;height:120px;title:"Input";detail:root.source-name;selected:root.selected-tile==root.input-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/hdmi-port.svg");activate=>{root.selected-tile=root.input-slot;root.action("inputs");}}
+    if root.generic && root.can-input: Tile {x:24px + mod(root.input-slot,2)*222px;y:514px + floor(root.input-slot/2)*132px;width:210px;height:120px;title:"Input";detail:root.input-name != "" ? root.input-name : root.source-name;selected:root.selected-tile==root.input-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/hdmi-port.svg");activate=>{root.selected-tile=root.input-slot;root.action("inputs");}}
     if root.generic && root.can-command: Tile {x:24px + mod(root.command-slot,2)*222px;y:514px + floor(root.command-slot/2)*132px;width:210px;height:120px;title:"Commands";detail:"More controls";selected:root.selected-tile==root.command-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/list.svg");activate=>{root.selected-tile=root.command-slot;root.action("commands");}}
     tray := BottomTray {
         width: parent.width; height: parent.height;

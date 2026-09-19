@@ -309,6 +309,8 @@ struct Work {
 struct Details {
     sources: Vec<(String, String)>,
     source: String,
+    /// The selected input, when `source` says what is playing instead.
+    input: String,
     sound: String,
     picture: String,
     choices: Vec<(String, String, String)>,
@@ -394,6 +396,7 @@ fn details(c: &mut Client) -> Details {
     Details {
         sources,
         source,
+        input: String::new(),
         sound,
         picture,
         choices,
@@ -773,6 +776,7 @@ impl<T: Clone> ViewCache<T> {
 #[derive(Clone)]
 struct ViewPresentation {
     source: slint::SharedString,
+    input: slint::SharedString,
     sound: slint::SharedString,
     picture: slint::SharedString,
     status: slint::SharedString,
@@ -781,6 +785,7 @@ impl ViewPresentation {
     fn capture(app: &App) -> Self {
         Self {
             source: app.get_tv_source(),
+            input: app.get_tv_input(),
             sound: app.get_tv_sound(),
             picture: app.get_tv_picture(),
             status: app.get_tv_status(),
@@ -788,6 +793,7 @@ impl ViewPresentation {
     }
     fn apply(&self, app: &App) {
         app.set_tv_source(self.source.clone());
+        app.set_tv_input(self.input.clone());
         app.set_tv_sound(self.sound.clone());
         app.set_tv_picture(self.picture.clone());
         app.set_tv_status(self.status.clone());
@@ -1006,6 +1012,7 @@ impl Controller {
                 self.view_cache.remove(key);
             }
             app.set_tv_source("Checking…".into());
+            app.set_tv_input("".into());
             app.set_tv_sound("Checking…".into());
             app.set_tv_picture("Checking…".into());
             app.set_tv_status(
@@ -1114,6 +1121,7 @@ impl Controller {
                     }
                     .into(),
                 );
+                app.set_tv_input("".into());
                 app.set_tv_sound("Checking…".into());
                 app.set_tv_picture("Checking…".into());
                 app.set_tv_panel(0);
@@ -1329,6 +1337,7 @@ impl Controller {
             if let Some(view) = event.details {
                 self.view_at = Some(Instant::now());
                 app.set_tv_source(view.source.into());
+                app.set_tv_input(view.input.into());
                 app.set_tv_sound(
                     match view.sound.as_str() {
                         "tv_speaker" => "TV speakers",
@@ -1374,6 +1383,7 @@ impl Controller {
                     self.view_at = None;
                     self.media.invalidate(app);
                     app.set_tv_source("Unavailable".into());
+                    app.set_tv_input("".into());
                     app.set_tv_sound("Unavailable".into());
                     app.set_tv_picture("On your TV".into());
                     app.set_tv_status("Control needs attention".into());

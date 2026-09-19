@@ -113,6 +113,60 @@ pub(crate) fn level(status: &Status) -> String {
     }
 }
 
+/// What one status reading puts in the header and on the big line.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Shown {
+    /// Under the device's name: "Off" wins, then whether it is playing, then
+    /// "On", and "Connected" for a device that reports none of them.
+    pub status: &'static str,
+    /// The Power tile: "On", "Off", or nothing the device reports.
+    pub power: &'static str,
+    /// The big line: what is playing when the device says, else its input.
+    pub source: String,
+    /// The Input tile's line when a title has taken the input's place.
+    pub input: String,
+}
+
+pub(crate) fn shown(status: &Status, inputs: &[couch_plugin::Selectable]) -> Shown {
+    let input = status
+        .input
+        .as_deref()
+        .map(|id| {
+            inputs
+                .iter()
+                .find(|input| input.id == id)
+                .map_or_else(|| id.to_owned(), |input| input.name.clone())
+        })
+        .unwrap_or_default();
+    let power = match status.on {
+        Some(true) => "On",
+        Some(false) => "Off",
+        None => "",
+    };
+    let title = status.title.as_deref().map(str::trim).unwrap_or_default();
+    Shown {
+        status: match (status.on, status.playing) {
+            // A device that is off is not playing, whatever it last said.
+            (Some(false), _) => "Off",
+            (_, Some(true)) => "Playing",
+            (_, Some(false)) => "Paused",
+            (Some(true), None) => "On",
+            (None, None) => "Connected",
+        },
+        power,
+        source: if title.is_empty() {
+            input.clone()
+        } else {
+            title.to_owned()
+        },
+        input: if title.is_empty() {
+            String::new()
+        } else {
+            input
+        },
+    }
+}
+
 pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, String> {
     let current =
         || super::infrared::request_current(work, active, crate::connections::config().as_ref());
@@ -171,21 +225,7 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     {
         return Ok(None);
     }
-    let source = status
-        .input
-        .as_deref()
-        .map(|id| {
-            inputs
-                .iter()
-                .find(|input| input.id == id)
-                .map_or_else(|| id.to_owned(), |input| input.name.clone())
-        })
-        .unwrap_or_default();
-    let power = match status.on {
-        Some(true) => "On",
-        Some(false) => "Off",
-        None => "",
-    };
+    let shown = shown(&status, &inputs);
     let mut choices: Vec<(String, String, String)> = inputs
         .iter()
         .map(|input| {
@@ -210,12 +250,14 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     }
     Ok(Some(Event {
         generation: work.generation,
-        // The header says whether it is on; the level has the line under the
-        // current input to itself, and the volume card keeps that line fresh.
-        status: Ok(if power.is_empty() { "Connected" } else { power }.into()),
+        // The header says whether it is on or playing; the level has the line
+        // under the title or input to itself, and the volume card keeps that
+        // line fresh.
+        status: Ok(shown.status.into()),
         details: Some(Details {
-            source,
-            sound: power.into(),
+            source: shown.source,
+            input: shown.input,
+            sound: shown.power.into(),
             picture: level(&status),
             choices,
             ..Details::default()
@@ -314,6 +356,99 @@ mod tests {
         assert_eq!(level(&status(serde_json::json!({}))), "");
     }
 
+    fn reading(json: serde_json::Value) -> Status {
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn receiver_inputs() -> Vec<couch_plugin::Selectable> {
+        vec![
+            couch_plugin::Selectable::new("BD", "CoreELEC"),
+            couch_plugin::Selectable::new("NET", "Network"),
+        ]
+    }
+
+    #[test]
+    fn the_header_says_playing_or_paused_and_a_title_takes_the_big_line() {
+        // A receiver that reports neither: exactly what the screen said before.
+        let denon = shown(
+            &reading(serde_json::json!({"on":true,"input":"BD",
+                "volume_db":{"kind":"reading","tenths":-395}})),
+            &receiver_inputs(),
+        );
+        assert_eq!(
+            denon,
+            Shown {
+                status: "On",
+                power: "On",
+                source: "CoreELEC".into(),
+                input: String::new(),
+            }
+        );
+        assert_eq!(
+            shown(&reading(serde_json::json!({})), &[]).status,
+            "Connected"
+        );
+        assert_eq!(
+            shown(&reading(serde_json::json!({"input":"AUX"})), &[]).source,
+            "AUX",
+            "an input the device did not list is shown by its ID"
+        );
+        // Kodi: no power, no inputs, a title while something is loaded.
+        let kodi = shown(
+            &reading(serde_json::json!({"volume":64,"muted":false,"playing":true,
+                "title":"Breaking Bad S5E14 - Ozymandias"})),
+            &[],
+        );
+        assert_eq!(
+            (
+                kodi.status,
+                kodi.power,
+                kodi.source.as_str(),
+                kodi.input.as_str()
+            ),
+            ("Playing", "", "Breaking Bad S5E14 - Ozymandias", "")
+        );
+        // Sonos 0.1.0: whether it plays, and no title.
+        let sonos = shown(
+            &reading(serde_json::json!({"volume":22,"muted":false,"playing":false})),
+            &[],
+        );
+        assert_eq!(
+            (sonos.status, sonos.source.as_str(), sonos.input.as_str()),
+            ("Paused", "", "")
+        );
+        // Both: the title has the big line and the Input tile keeps the input.
+        let streaming = shown(
+            &reading(
+                serde_json::json!({"on":true,"input":"NET","playing":true,"title":"  Blue in Green  "}),
+            ),
+            &receiver_inputs(),
+        );
+        assert_eq!(
+            (
+                streaming.status,
+                streaming.power,
+                streaming.source.as_str(),
+                streaming.input.as_str()
+            ),
+            ("Playing", "On", "Blue in Green", "Network")
+        );
+        // Off wins over a stale play state; an empty title is no title.
+        let off = shown(
+            &reading(serde_json::json!({"on":false,"input":"BD","playing":true,"title":" "})),
+            &receiver_inputs(),
+        );
+        assert_eq!(
+            (
+                off.status,
+                off.power,
+                off.source.as_str(),
+                off.input.as_str()
+            ),
+            ("Off", "Off", "CoreELEC", "")
+        );
+    }
+
     #[test]
     fn the_core_screen_shows_a_receiver_and_its_keys_move_between_tiles_and_rows() {
         if std::env::var_os("COUCH_TEST_CORE_SCREEN").is_none() {
@@ -340,16 +475,54 @@ mod tests {
         let actions = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let received = actions.clone();
         app.on_tv_action(move |name| received.borrow_mut().push(name.to_string()));
-        app.set_tv_shown(true);
-        app.set_tv_generic(true);
-        app.set_tv_kind_label("DENON AVR".into());
-        app.set_tv_can_power(true);
-        app.set_tv_can_input(true);
-        app.set_tv_title("Theater AVR".into());
-        app.set_tv_status("On".into());
-        app.set_tv_source("CoreELEC".into());
-        app.set_tv_sound("On".into());
-        app.set_tv_picture("-39.5 dB".into());
+        // One status reading, put on the screen the way the controller does.
+        let fill = |kind: &str,
+                    (power, input, command): (bool, bool, bool),
+                    name: &str,
+                    status: serde_json::Value| {
+            let status = reading(status);
+            let shown = shown(&status, &receiver_inputs());
+            app.set_tv_shown(false);
+            slint::platform::update_timers_and_animations();
+            app.set_tv_generic(true);
+            app.set_tv_kind_label(kind.into());
+            app.set_tv_can_power(power);
+            app.set_tv_can_input(input);
+            app.set_tv_can_command(command);
+            app.set_tv_title(name.into());
+            app.set_tv_status(shown.status.into());
+            app.set_tv_source(shown.source.into());
+            app.set_tv_input(shown.input.into());
+            app.set_tv_sound(
+                if shown.power.is_empty() {
+                    "Unavailable"
+                } else {
+                    shown.power
+                }
+                .into(),
+            );
+            app.set_tv_picture(level(&status).into());
+            app.set_tv_shown(true);
+            slint::platform::update_timers_and_animations();
+        };
+        // A receiver reports neither a title nor whether it plays: its screen
+        // is the one it always had.
+        fill(
+            "DENON AVR",
+            (true, true, false),
+            "Theater AVR",
+            serde_json::json!({"on":true,"input":"BD","volume_db":{"kind":"reading","tenths":-395}}),
+        );
+        assert_eq!(
+            (
+                app.get_tv_status().as_str(),
+                app.get_tv_source().as_str(),
+                app.get_tv_input().as_str(),
+                app.get_tv_sound().as_str(),
+                app.get_tv_picture().as_str()
+            ),
+            ("On", "CoreELEC", "", "On", "-39.5 dB")
+        );
         app.show().unwrap();
         window.dispatch_event(WindowEvent::WindowActiveChanged(true));
         app.invoke_focus_tv();
@@ -415,6 +588,44 @@ mod tests {
         app.set_tv_panel(0);
         key(slint::platform::Key::Escape);
         assert_eq!(actions.borrow().last().map(String::as_str), Some("close"));
+        // What a package says is playing: the header has the state, the big
+        // line the title.
+        fill(
+            "KODI",
+            (false, false, true),
+            "Living room Kodi",
+            serde_json::json!({"volume":64,"muted":false,"playing":true,
+                "title":"Breaking Bad S5E14 - Ozymandias"}),
+        );
+        assert_eq!(app.get_tv_status(), "Playing");
+        assert_eq!(app.get_tv_source(), "Breaking Bad S5E14 - Ozymandias");
+        // Let the input list finish sliding away before the first picture.
+        for _ in 0..30 {
+            slint::platform::update_timers_and_animations();
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        shot("core-4-playing-title.png");
+        fill(
+            "SONOS",
+            (false, false, true),
+            "Kitchen",
+            serde_json::json!({"volume":22,"muted":false,"playing":false}),
+        );
+        assert_eq!(app.get_tv_status(), "Paused");
+        assert_eq!(app.get_tv_source(), "");
+        shot("core-5-paused-no-title.png");
+        // A title longer than two lines ends in an ellipsis, and the Input
+        // tile still names the input.
+        fill(
+            "DENON AVR",
+            (true, true, false),
+            "Theater AVR",
+            serde_json::json!({"on":true,"input":"NET","playing":true,
+                "volume_db":{"kind":"reading","tenths":-395},
+                "title":"The Lord of the Rings: The Fellowship of the Ring (Extended Edition)"}),
+        );
+        assert_eq!(app.get_tv_input(), "Network");
+        shot("core-6-title-and-input.png");
         app.hide().unwrap();
     }
 }

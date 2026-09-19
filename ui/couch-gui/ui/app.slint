@@ -211,6 +211,8 @@ export component App inherits Window {
     in-out property <string> tv-status;
     in-out property <string> tv-error;
     in-out property <string> tv-source;
+    // The selected input, when tv-source says what is playing instead.
+    in-out property <string> tv-input;
     in-out property <string> tv-sound;
     in-out property <string> tv-picture;
     in-out property <int> tv-panel;
@@ -570,7 +572,7 @@ export component App inherits Window {
         visible:root.tv-shown;shown:root.tv-shown;android-tv:root.tv-android;apple-tv:root.tv-apple;tizen:root.tv-tizen;infrared:root.tv-ir;sonos:root.tv-sonos;generic:root.tv-generic;kind-label:root.tv-kind-label;can-power:root.tv-can-power;can-input:root.tv-can-input;can-command:root.tv-can-command;tray-selected<=>root.tv-tray-selected;
         width:parent.width;height:parent.height;
         title:root.tv-title;status:root.tv-status;error:root.tv-error;
-        source-name:root.tv-source;sound:root.tv-sound;picture:root.tv-picture;panel:root.tv-panel;choices:root.tv-choices;
+        source-name:root.tv-source;input-name:root.tv-input;sound:root.tv-sound;picture:root.tv-picture;panel:root.tv-panel;choices:root.tv-choices;
         media-active:root.tv-media-active;media-title:root.tv-media-title;media-subtitle:root.tv-media-subtitle;media-state:root.tv-media-state;media-app:root.tv-media-app;
         media-art:root.tv-media-art;media-has-art:root.tv-media-has-art;
         media-position:root.tv-media-position;media-duration:root.tv-media-duration;media-progress:root.tv-media-progress;
