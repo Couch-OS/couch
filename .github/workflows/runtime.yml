@@ -92,5 +92,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ matrix.workspace }}
+      # The player screen test draws 29 pictures of the screen from one fixed
+      # speaker. Nothing binary is kept in the tree, so they are kept here: two
+      # runs' pictures can be compared, and a change to the screen can be seen.
+      - name: Keep the player screen's pictures
+        if: matrix.id == 'gui'
+        run: echo "COUCH_PLAYER_SCREENSHOTS=$RUNNER_TEMP/player-screen" >> "$GITHUB_ENV"
       - run: ${{ matrix.command }}
         working-directory: ${{ matrix.workspace }}
+      - uses: actions/upload-artifact@v4
+        if: matrix.id == 'gui' && always()
+        with:
+          name: player-screen
+          path: ${{ runner.temp }}/player-screen
+          if-no-files-found: warn
+          retention-days: 14

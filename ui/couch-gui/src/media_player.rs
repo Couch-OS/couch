@@ -1589,6 +1589,7 @@ mod tests {
             let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
             let file = format!("player-{name}.png");
             if let Some(dir) = std::env::var_os("COUCH_PLAYER_SCREENSHOTS") {
+                std::fs::create_dir_all(&dir).unwrap();
                 let path = std::path::Path::new(&dir).join(&file);
                 image::save_buffer(path, &bytes, 480, 800, image::ColorType::Rgb8).unwrap();
             }
