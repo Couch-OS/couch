@@ -74,6 +74,18 @@ const HOLD_DOWN_TENTHS: i16 = 20;
 /// The context prefix of a highlighted room row, as opposed to an activity id.
 const ROW: &str = "row:";
 
+/// The Kodi player call behind a transport key, and nothing for any other
+/// function: a command Kodi does not have must never become one it does.
+fn kodi_player_call(command: &F) -> Option<(&'static str, serde_json::Value)> {
+    match command {
+        F::PlayPause => Some(("Player.PlayPause", json!({}))),
+        F::Stop => Some(("Player.Stop", json!({}))),
+        F::Next => Some(("Player.GoTo", json!({"to":"next"}))),
+        F::Previous => Some(("Player.GoTo", json!({"to":"previous"}))),
+        _ => None,
+    }
+}
+
 /// What the volume, mute and power keys do while this device's row is
 /// highlighted in a room: the same commands an activity would map them to, for
 /// whatever the device supports. Sonos rows keep their own controller
@@ -976,18 +988,23 @@ fn send_network(
                     .call("Application.SetMute", json!({"mute":"toggle"}))
                     .map(|_| ()),
                 F::Volume(percent) => c.set_volume(i64::from(percent)).map(|_| ()),
-                _ => {
+                F::PlayPause | F::Stop | F::Next | F::Previous => {
                     let p = c
                         .playback()
                         .map_err(|e| e.to_string())?
                         .ok_or("Kodi has no active playback")?;
-                    let (method, params) = match command {
-                        F::PlayPause => ("Player.PlayPause", json!({})),
-                        F::Stop => ("Player.Stop", json!({})),
-                        F::Next => ("Player.GoTo", json!({"to":"next"})),
-                        _ => ("Player.GoTo", json!({"to":"previous"})),
-                    };
+                    let (method, params) = kodi_player_call(&command).expect("matched above");
                     c.player_command(p.player, method, params).map(|_| ())
+                }
+                // Anything else has no Kodi call. It used to fall through to
+                // "previous item", so a sequence step such as `on` aimed at a
+                // Kodi box skipped back a track. Unavailable rather than
+                // failed: infrared or Bluetooth may still carry the key.
+                other => {
+                    return Err(Failure::Unavailable(format!(
+                        "Kodi has no {} command",
+                        other.id()
+                    )))
                 }
             };
             result.map_err(|e| e.to_string())?;
@@ -1529,6 +1546,76 @@ mod tests {
                 assert!(row_bindings(&config, d).is_empty(), "{}", d.name);
             }
         }
+    }
+
+    #[test]
+    fn a_command_kodi_does_not_have_is_refused_and_never_becomes_previous_item() {
+        // Only the four transport keys have a player call.
+        for (function, method) in [
+            (F::PlayPause, "Player.PlayPause"),
+            (F::Stop, "Player.Stop"),
+            (F::Next, "Player.GoTo"),
+            (F::Previous, "Player.GoTo"),
+        ] {
+            assert_eq!(kodi_player_call(&function).unwrap().0, method);
+        }
+        assert_eq!(
+            kodi_player_call(&F::Previous).unwrap().1,
+            json!({"to":"previous"})
+        );
+        for function in [F::On, F::Off, F::PowerOn, F::PowerOff, F::Play, F::Pause] {
+            assert!(kodi_player_call(&function).is_none(), "{}", function.id());
+        }
+
+        // Sent to a Kodi box, such a command is unavailable (so infrared or
+        // Bluetooth may still carry it) and nothing reaches the box at all.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut config = Config::seed();
+        config.connections.push(couch_model::Connection {
+            id: "box".into(),
+            name: "box".into(),
+            provider: couch_model::Provider::Kodi {
+                host: "127.0.0.1".into(),
+                port,
+            },
+        });
+        config.rooms.first_mut().unwrap().devices.push(
+            couch_model::Device::new(
+                couch_model::Id::new("box"),
+                "box",
+                couch_model::DeviceKind::Tv,
+            )
+            .with_integration(Integration::Connection {
+                connection_id: "box".into(),
+                resource_id: String::new(),
+            }),
+        );
+        config.validate().unwrap();
+        for function in [F::On, F::PowerOn, F::PowerOff] {
+            let result = send_network(
+                &config,
+                device(&config, "box"),
+                &function,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &connections::MatterFleet::default(),
+                false,
+                &|| true,
+            );
+            assert!(
+                matches!(&result, Err(Failure::Unavailable(why)) if why.starts_with("Kodi has no ")),
+                "{}",
+                function.id()
+            );
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "nothing may be sent to the box"
+        );
     }
 
     #[test]
