@@ -288,6 +288,10 @@ not implemented puts a key on screen that silently does nothing, so the test
 harness checks every ID parses, is canonical, is unique, and is accepted by
 your own `supports`.
 
+`x:<id>` ids (a package's own button names) are part of protocol 3, which is
+unreleased and switched off: a manifest that declares one is refused. See the
+[protocol reference](development/protocol.md#protocol-3-unreleased-and-switched-off).
+
 Dynamic functions - `input:<id>` and `app:<id>` - are **not** listed here.
 Declare them by overriding `supports_input` / `supports_app`, which are asked
 about one specific ID. Constrain those IDs: they are persisted and read back by

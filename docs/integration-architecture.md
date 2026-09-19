@@ -86,6 +86,28 @@ prior state. Missing packages leave saved connection and activity configuration
 intact, with execution unavailable. A v2 package remains incompatible with an
 older host; existing v1 previous-slot fallback is unchanged.
 
+### Protocol 3 layer: unreleased
+
+Protocol 3 is unreleased and switched off; this describes groundwork that may
+change until it is switched on. The envelope gains one more optional layer,
+`integration_config_v3`, written only when the configuration holds something a
+protocol 2 core cannot read. Today that is a package-named button (`x:<id>`):
+as a declared capability, inside a command group or switch, or bound to a key, a
+step, an on/off sequence, a page button or a scene. The layers beneath it are
+computed from one another (`integration_config_v2` is the v3 document with
+those removed, `integration_config` is the v1 projection of that, the ordinary
+fields are the legacy projection of that), so they are exactly what a released
+core writes and checks. A configuration with nothing new in it produces the
+same bytes as before.
+
+A rolled-back protocol 2 core ignores the v3 key, loads the v2 layer, and
+validates it. If it saves, the v3 key is gone and that save is authoritative
+after re-upgrade: stripped bindings stay as explicitly disabled keys and do not
+return. A v3 layer that does not match the layers beneath it is refused rather
+than half-loaded. `tools/tests/config-crossload.sh` builds the model source of
+the last release beside the current one and exchanges real files in both
+directions; it runs in CI on every change to the model.
+
 Each payload is immutable by integration ID and manifest version. Any payload
 change needs a new manifest version and matching APK `pkgver`; changing only an
 APK revision such as `-r0` to `-r1` cannot replace an existing slot. Sideloading
