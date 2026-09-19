@@ -598,21 +598,23 @@ fn api_key_prefers_environment_then_file_then_built_in_then_placeholder() {
     let broken = resolve_key_with([None, None], Some("a\nb"));
     assert_eq!(broken.key, PLACEHOLDER_API_KEY);
     assert!(broken.rejected, "an unusable built-in key is reported");
-    if let Some(built_in) = BUILT_IN_API_KEY {
-        assert_eq!(resolve_key([None, None]).key, built_in.trim());
-    }
+    // What is left when nothing is configured: the compiled-in key if this
+    // build has one, else the placeholder. Compared with `assert!`, never
+    // `assert_eq!`, so a failure cannot print a real key into a build log.
+    let fallback = BUILT_IN_API_KEY
+        .map(str::trim)
+        .filter(|key| key_ok(key))
+        .unwrap_or(PLACEHOLDER_API_KEY);
+    assert!(resolve_key([None, None]).key == fallback);
     let directory = scratch();
     let file = directory.join(KEY_FILE);
     std::fs::write(&file, "from-file\n").unwrap();
     if std::env::var_os(KEY_ENV).is_none() {
         assert_eq!(api_key_at(&file), "from-file");
-        assert_eq!(
-            api_key_at(Path::new("/nonexistent/sonos-api-key")),
-            PLACEHOLDER_API_KEY
-        );
+        assert!(api_key_at(Path::new("/nonexistent/sonos-api-key")) == fallback);
         std::fs::write(&file, "one two\n").unwrap();
         let choice = api_key_choice_at(&file);
-        assert_eq!(choice.key, PLACEHOLDER_API_KEY);
+        assert!(choice.key == fallback);
         assert!(choice.rejected, "an unusable configured key is reported");
     }
     std::fs::remove_dir_all(&directory).ok();
