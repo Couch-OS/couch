@@ -12,13 +12,13 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc, Arc, Condvar, Mutex, OnceLock,
+        mpsc, Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
 };
 mod proxies;
 mod streaming;
-pub use proxies::{Denon, Kodi, WebOs};
+pub use proxies::{Kodi, WebOs};
 pub use streaming::{StreamingConnection, StreamingTv};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Error {
@@ -70,15 +70,6 @@ impl From<couch_tizen::Error> for Error {
         }
     }
 }
-impl From<couch_denon::Error> for Error {
-    fn from(e: couch_denon::Error) -> Self {
-        match e {
-            couch_denon::Error::Io(_) => Self::Transport,
-            couch_denon::Error::Timeout => Self::Timeout,
-            _ => Self::Remote(e.to_string()),
-        }
-    }
-}
 impl From<couch_kodi::Error> for Error {
     fn from(e: couch_kodi::Error) -> Self {
         match e {
@@ -100,7 +91,6 @@ enum Spec {
         timeout_ms: u64,
     },
     WebOs(couch_webos::Settings),
-    Denon(couch_denon::Settings),
     Streaming(StreamingConnection),
 }
 impl Spec {
@@ -108,7 +98,6 @@ impl Spec {
         match self {
             Self::Kodi { host, port, .. } => format!("kodi:{host}:{port}"),
             Self::WebOs(s) => format!("webos:{}", s.url),
-            Self::Denon(s) => format!("denon:{}:{}", s.host, s.port),
             Self::Streaming(s) => format!("{}:{}:{}", s.kind(), s.address(), s.port()),
         }
     }
@@ -130,10 +119,6 @@ enum Op {
     TvSubscribe(String),
     TvUnsubscribe(String),
     TvUpdate(u64),
-    AvrStatus,
-    AvrToggleMute,
-    AvrSources,
-    AvrCommand(couch_denon::Command),
     StreamingStatus,
     StreamingApps,
     StreamingCommand(String),
@@ -162,35 +147,16 @@ struct Lane {
     last_used: Instant,
     retirement: Arc<Retirement>,
 }
+/// An idle lane is asked to stop and stays listed until its socket is closed,
+/// so a request that arrives meanwhile cannot open a second one beside it.
 #[derive(Default)]
 struct Retirement {
     requested: AtomicBool,
     stopped: Mutex<bool>,
-    changed: Condvar,
-}
-impl Retirement {
-    fn wait(&self, timeout: Duration) -> Result<()> {
-        let (stopped, _) = self
-            .changed
-            .wait_timeout_while(self.stopped.lock().unwrap(), timeout, |done| !*done)
-            .unwrap();
-        if *stopped {
-            Ok(())
-        } else {
-            Err(Error::Remote(
-                "Native receiver is still stopping; migration was not activated".into(),
-            ))
-        }
-    }
-}
-struct BlockedEndpoint {
-    retirement: Arc<Retirement>,
-    resume_when_stopped: bool,
 }
 #[derive(Default)]
 struct PoolState {
     lanes: HashMap<String, Lane>,
-    blocked: HashMap<String, BlockedEndpoint>,
 }
 #[derive(Default)]
 struct Pool {
@@ -206,68 +172,9 @@ fn pool() -> &'static Pool {
     POOL.get_or_init(Pool::default)
 }
 impl Pool {
-    fn block(&self, key: String) -> Result<()> {
-        self.block_for(key, Duration::from_secs(16))
-    }
-    fn block_for(&self, key: String, timeout: Duration) -> Result<()> {
-        let retirement = {
-            let mut state = self.state.lock().unwrap();
-            if let Some(blocked) = state.blocked.get_mut(&key) {
-                blocked.resume_when_stopped = false;
-                blocked.retirement.clone()
-            } else {
-                let retirement = if let Some(lane) = state.lanes.remove(&key) {
-                    lane.retirement.requested.store(true, Ordering::SeqCst);
-                    lane.retirement.clone()
-                } else {
-                    Arc::new(Retirement {
-                        stopped: Mutex::new(true),
-                        ..Retirement::default()
-                    })
-                };
-                state.blocked.insert(
-                    key,
-                    BlockedEndpoint {
-                        retirement: retirement.clone(),
-                        resume_when_stopped: false,
-                    },
-                );
-                retirement
-            }
-        };
-        // Never hold the registry mutex while an already-issued command ends.
-        // A timeout leaves the native endpoint blocked until an explicit restore.
-        retirement.wait(timeout)
-    }
-    fn unblock(&self, key: &str) -> Result<()> {
-        let mut state = self.state.lock().unwrap();
-        if let Some(blocked) = state.blocked.get_mut(key) {
-            if !*blocked.retirement.stopped.lock().unwrap() {
-                // A failed handover still has native configuration. Restore
-                // admission automatically once the old socket closes, without
-                // permitting a replacement owner to overlap that socket.
-                blocked.resume_when_stopped = true;
-                return Ok(());
-            }
-        }
-        state.blocked.remove(key);
-        Ok(())
-    }
     fn call(&self, packet: Packet) -> Result<Value> {
         let (reply, rx) = mpsc::sync_channel(1);
         let mut state = self.state.lock().unwrap();
-        state.blocked.retain(|_, blocked| {
-            !(blocked.resume_when_stopped && *blocked.retirement.stopped.lock().unwrap())
-        });
-        if state.blocked.contains_key(&packet.spec.key()) {
-            return if matches!(packet.op, Op::Release) {
-                Ok(Value::Null)
-            } else {
-                Err(Error::Remote(
-                    "This receiver now uses its integration package; refresh the connection".into(),
-                ))
-            };
-        }
         let lanes = &mut state.lanes;
         lanes.retain(|_, lane| {
             if lane.last_used.elapsed() < Duration::from_secs(60) {
@@ -275,7 +182,6 @@ impl Pool {
             }
             lane.retirement.requested.store(true, Ordering::SeqCst);
             // Keep the retirement handle until socket closure is acknowledged.
-            // A migration arriving during eviction must still wait for it.
             !*lane.retirement.stopped.lock().unwrap()
         });
         if lanes
@@ -299,7 +205,6 @@ impl Pool {
                 run_lane(rx, metrics, &worker_retirement);
                 // run_lane has dropped its client/socket before acknowledging.
                 *worker_retirement.stopped.lock().unwrap() = true;
-                worker_retirement.changed.notify_all();
             });
             Lane {
                 tx,
@@ -328,22 +233,12 @@ impl Pool {
         })?
     }
 }
-/// Hand over a native Denon endpoint to a package. Local daemon use only;
-/// stale GUI leases are rejected at the shared broker after this returns.
-pub fn block_denon(host: &str, port: u16) -> Result<()> {
-    pool().block(format!("denon:{host}:{port}"))
-}
-/// Call only after the package worker has stopped and native config is durable.
-pub fn unblock_denon(host: &str, port: u16) -> Result<()> {
-    pool().unblock(&format!("denon:{host}:{port}"))
-}
 pub fn metrics() -> Value {
     Value::Array(pool().state.lock().unwrap().lanes.iter().map(|(key,l)|json!({"endpoint":key,"requests":l.stats.requests.load(Ordering::Relaxed),"dropped":l.stats.dropped.load(Ordering::Relaxed),"queue_us":l.stats.queue_us.load(Ordering::Relaxed),"max_queue_us":l.stats.max_queue_us.load(Ordering::Relaxed)})).collect())
 }
 enum Client {
     Kodi(couch_kodi::Kodi),
     Tv(couch_webos::Client),
-    Avr(couch_denon::Client),
     Streaming(streaming::Client),
 }
 impl Client {
@@ -365,7 +260,6 @@ impl Client {
                 .with_timeout(Duration::from_millis(*timeout_ms)),
             ),
             Spec::WebOs(s) => Self::Tv(couch_webos::Client::connect(s)?),
-            Spec::Denon(s) => Self::Avr(couch_denon::Client::connect(s)?),
             Spec::Streaming(s) => Self::Streaming(streaming::Client::open(s)?),
         })
     }
@@ -415,14 +309,6 @@ impl Client {
             (Self::Tv(c), Op::TvUpdate(ms)) => {
                 encode!(c.next_update(Duration::from_millis(ms.min(20))))
             }
-            (Self::Avr(c), Op::AvrStatus) => encode!(c.status()),
-            (Self::Avr(c), Op::AvrToggleMute) => {
-                let state = c.status()?;
-                let muted = state.muted.ok_or(Error::Protocol)?;
-                encode!(c.command(couch_denon::Command::Mute(!muted)))
-            }
-            (Self::Avr(c), Op::AvrSources) => encode!(c.sources()),
-            (Self::Avr(c), Op::AvrCommand(cmd)) => encode!(c.command(cmd)),
             _ => Err(Error::Protocol),
         }
     }
@@ -457,7 +343,7 @@ fn run_lane(rx: mpsc::Receiver<Job>, stats: Arc<Counters>, retirement: &Retireme
         if retirement.requested.load(Ordering::SeqCst) {
             let _ = job
                 .reply
-                .send(Err(Error::Remote("Native receiver is stopping".into())));
+                .send(Err(Error::Remote("Device connection is stopping".into())));
             return;
         }
         if matches!(job.packet.op, Op::Release) {
@@ -506,7 +392,7 @@ fn run_lane(rx: mpsc::Receiver<Job>, stats: Arc<Counters>, retirement: &Retireme
         if retirement.requested.load(Ordering::SeqCst) {
             let _ = job
                 .reply
-                .send(Err(Error::Remote("Native receiver is stopping".into())));
+                .send(Err(Error::Remote("Device connection is stopping".into())));
             return;
         }
         // Opening a replacement socket can take longer than the queue limit.
@@ -634,7 +520,11 @@ pub fn serve(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
-    fn receiver(
+    /// A Kodi that answers every JSON-RPC call with `"OK"` on one connection,
+    /// and can hold its first `Test.Block` until told to let go. The pool's
+    /// properties are the same for every client; raw-TCP Kodi is the one whose
+    /// wire a test can speak in a dozen lines.
+    fn player(
         block: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
     ) -> (u16, mpsc::Receiver<()>, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -644,69 +534,67 @@ mod tests {
             let (mut c, _) = listener.accept().unwrap();
             c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut block = block;
-            let mut line = Vec::new();
-            let mut b = [0];
+            let mut pending = Vec::new();
+            let mut chunk = [0; 512];
             loop {
-                match c.read(&mut b) {
+                match c.read(&mut chunk) {
                     Ok(0) | Err(_) => {
                         let _ = closed.send(());
                         return;
                     }
-                    Ok(_) => {
-                        if b[0] != b'\r' {
-                            line.push(b[0]);
-                            continue;
-                        }
-                        let q = String::from_utf8(std::mem::take(&mut line)).unwrap();
-                        if q == "MV?" {
-                            if let Some((entered, release)) = block.take() {
-                                entered.send(()).unwrap();
-                                release.recv().unwrap();
-                            }
-                        }
-                        let value = match q.as_str() {
-                            "ZM?" => "ZMON",
-                            "MU?" => "MUOFF",
-                            "SI?" => "SIBD",
-                            _ => "MV275",
-                        };
-                        c.write_all(format!("{value}\r").as_bytes()).unwrap();
+                    Ok(n) => pending.extend_from_slice(&chunk[..n]),
+                }
+                // One request is outstanding at a time, so whatever parses is
+                // the whole of it.
+                let Ok(request) = serde_json::from_slice::<Value>(&pending) else {
+                    continue;
+                };
+                pending.clear();
+                if request["method"] == "Test.Block" {
+                    if let Some((entered, release)) = block.take() {
+                        entered.send(()).unwrap();
+                        release.recv().unwrap();
                     }
                 }
+                let reply = json!({"jsonrpc":"2.0","id":request["id"],"result":"OK"});
+                c.write_all(reply.to_string().as_bytes()).unwrap();
             }
         });
         (port, rx, thread)
     }
     fn packet(port: u16, lease: u64, op: Op) -> Packet {
         Packet {
-            spec: Spec::Denon(couch_denon::Settings {
+            spec: Spec::Kodi {
                 host: "127.0.0.1".into(),
                 port,
-            }),
+                http: false,
+                user: String::new(),
+                password: String::new(),
+                timeout_ms: 5_000,
+            },
             lease,
             op,
         }
     }
+    fn ping() -> Op {
+        Op::KodiCall("JSONRPC.Ping".into(), Value::Null)
+    }
+    fn held() -> Op {
+        Op::KodiCall("Test.Block".into(), Value::Null)
+    }
     #[test]
-    fn blocked_receiver_does_not_delay_another_connection() {
+    fn blocked_device_does_not_delay_another_connection() {
         let pool = Arc::new(Pool::default());
         let (entered, waiting) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
-        let (slow, _, a) = receiver(Some((entered, blocked)));
-        let (fast, _, b) = receiver(None);
+        let (slow, _, a) = player(Some((entered, blocked)));
+        let (fast, _, b) = player(None);
         let p = pool.clone();
-        let slow_job = std::thread::spawn(move || p.call(packet(slow, 1, Op::AvrStatus)).unwrap());
+        let slow_job = std::thread::spawn(move || p.call(packet(slow, 1, held())).unwrap());
         waiting.recv_timeout(Duration::from_secs(2)).unwrap();
         let p = pool.clone();
         let (done, finished) = mpsc::channel();
-        std::thread::spawn(move || {
-            done.send(p.call(packet(
-                fast,
-                2,
-                Op::AvrCommand(couch_denon::Command::VolumeDown),
-            )))
-            .unwrap()
-        });
+        std::thread::spawn(move || done.send(p.call(packet(fast, 2, ping()))).unwrap());
         assert!(
             finished
                 .recv_timeout(Duration::from_millis(500))
@@ -724,26 +612,26 @@ mod tests {
     #[test]
     fn multiple_consumers_share_one_socket_until_the_last_lease_releases() {
         let pool = Pool::default();
-        let (port, closed, server) = receiver(None);
-        pool.call(packet(port, 11, Op::AvrStatus)).unwrap();
-        pool.call(packet(port, 12, Op::AvrStatus)).unwrap();
+        let (port, closed, server) = player(None);
+        pool.call(packet(port, 11, ping())).unwrap();
+        pool.call(packet(port, 12, ping())).unwrap();
         pool.call(packet(port, 11, Op::Release)).unwrap();
         assert!(closed.try_recv().is_err());
-        pool.call(packet(port, 12, Op::AvrStatus)).unwrap();
+        pool.call(packet(port, 12, ping())).unwrap();
         pool.call(packet(port, 12, Op::Release)).unwrap();
         closed.recv_timeout(Duration::from_secs(1)).unwrap();
         server.join().unwrap();
     }
     #[test]
-    fn migration_waits_for_inflight_work_and_rejects_stale_native_leases() {
+    fn an_idle_lane_with_work_in_flight_drains_before_anything_replaces_it() {
         let pool = Arc::new(Pool::default());
         let (entered, waiting) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
-        let (port, closed, server) = receiver(Some((entered, blocked)));
+        let (port, closed, server) = player(Some((entered, blocked)));
         let p = pool.clone();
-        let request = std::thread::spawn(move || p.call(packet(port, 71, Op::AvrStatus)));
+        let request = std::thread::spawn(move || p.call(packet(port, 71, held())));
         waiting.recv_timeout(Duration::from_secs(2)).unwrap();
-        let key = format!("denon:127.0.0.1:{port}");
+        let key = format!("kodi:127.0.0.1:{port}");
         pool.state
             .lock()
             .unwrap()
@@ -752,61 +640,17 @@ mod tests {
             .unwrap()
             .last_used = Instant::now() - Duration::from_secs(61);
         assert!(
-            pool.call(packet(port, 72, Op::AvrStatus)).is_err(),
+            pool.call(packet(port, 72, ping())).is_err(),
             "idle eviction must retain a draining lane"
         );
-        let p = pool.clone();
-        let takeover_key = key.clone();
-        let (done, finished) = mpsc::channel();
-        let takeover = std::thread::spawn(move || done.send(p.block(takeover_key)).unwrap());
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !pool.state.lock().unwrap().blocked.contains_key(&key) {
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
-        }
         assert!(
-            finished.try_recv().is_err(),
-            "takeover must wait for the issued request"
+            closed.try_recv().is_err(),
+            "the issued request still owns the socket"
         );
-        assert!(pool.call(packet(port, 72, Op::AvrStatus)).is_err());
-        release.send(()).unwrap();
-        request.join().unwrap().unwrap();
-        finished
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap()
-            .unwrap();
-        closed.recv_timeout(Duration::from_secs(2)).unwrap();
-        takeover.join().unwrap();
-        server.join().unwrap();
-        assert!(pool.call(packet(port, 71, Op::AvrStatus)).is_err());
-        pool.call(packet(port, 71, Op::Release)).unwrap();
-        pool.block(key.clone()).unwrap();
-        pool.unblock(&key).unwrap();
-        assert!(!pool.state.lock().unwrap().blocked.contains_key(&key));
-    }
-    #[test]
-    fn failed_takeover_resumes_native_only_after_the_old_socket_closes() {
-        let pool = Arc::new(Pool::default());
-        let (entered, waiting) = mpsc::channel();
-        let (release, blocked) = mpsc::channel();
-        let (port, closed, server) = receiver(Some((entered, blocked)));
-        let p = pool.clone();
-        let request = std::thread::spawn(move || p.call(packet(port, 81, Op::AvrStatus)));
-        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
-        let key = format!("denon:127.0.0.1:{port}");
-        assert!(pool
-            .block_for(key.clone(), Duration::from_millis(10))
-            .is_err());
-        pool.unblock(&key).unwrap();
-        assert!(pool.call(packet(port, 82, Op::AvrStatus)).is_err());
         release.send(()).unwrap();
         request.join().unwrap().unwrap();
         closed.recv_timeout(Duration::from_secs(2)).unwrap();
         server.join().unwrap();
-        let retirement = pool.state.lock().unwrap().blocked[&key].retirement.clone();
-        retirement.wait(Duration::from_secs(2)).unwrap();
-        pool.call(packet(port, 81, Op::Release)).unwrap();
-        assert!(!pool.state.lock().unwrap().blocked.contains_key(&key));
     }
     #[test]
     fn private_service_and_local_consumer_share_the_same_connection() {
@@ -817,7 +661,7 @@ mod tests {
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        let (port, closed, server) = receiver(None);
+        let (port, closed, server) = player(None);
         let remote = |lease, op| {
             let mut stream = UnixStream::connect(&path).unwrap();
             stream
@@ -826,8 +670,8 @@ mod tests {
             write_frame(&mut stream, &packet(port, lease, op)).unwrap();
             read_frame::<Result<Value>>(&mut stream).unwrap().unwrap()
         };
-        remote(21, Op::AvrStatus);
-        pool().call(packet(port, 22, Op::AvrStatus)).unwrap();
+        remote(21, ping());
+        pool().call(packet(port, 22, ping())).unwrap();
         remote(21, Op::Release);
         assert!(closed.try_recv().is_err());
         pool().call(packet(port, 22, Op::Release)).unwrap();
@@ -859,7 +703,7 @@ mod tests {
         assert!(!path.exists());
         assert!(dispatch_via(
             Some(&path),
-            packet(receiver.local_addr().unwrap().port(), 91, Op::AvrStatus)
+            packet(receiver.local_addr().unwrap().port(), 91, ping())
         )
         .is_err());
         assert!(matches!(receiver.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));

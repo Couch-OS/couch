@@ -92,7 +92,12 @@ impl Api {
                     Some(action)
                 };
                 return match manager.start(operation, action) {
-                    Ok(id) => Reply::json(202, &json!({"operation_id":id})),
+                    Ok(id) => {
+                        // A refresh or an install is also the moment to try
+                        // again for a connection still waiting for its package.
+                        self.legacy.kick();
+                        Reply::json(202, &json!({"operation_id":id}))
+                    }
                     Err(error) => {
                         Reply::error(if error.is_busy() { 409 } else { 400 }, error.to_string())
                     }

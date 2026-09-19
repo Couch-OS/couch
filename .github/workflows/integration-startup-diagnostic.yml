@@ -4,7 +4,7 @@ on:
     paths:
       - '.github/workflows/integration-startup-diagnostic.yml'
       - 'clients/couch-plugin/**'
-      - 'clients/couch-denon/tests/admission.rs'
+      - 'clients/couch-sonos/tests/admission.rs'
 permissions:
   contents: read
 jobs:
@@ -27,8 +27,8 @@ jobs:
       - name: Stress concurrent fixture startup
         run: |
           cd clients
-          cargo test --locked -p couch-denon --test admission --no-run
+          cargo test --locked -p couch-sonos --test admission --no-run
           for attempt in $(seq 1 40); do
             echo "Startup attempt $attempt"
-            cargo test --locked -p couch-denon --test admission concurrent_package_startup_is_offline_and_race_free -- --exact --nocapture
+            cargo test --locked -p couch-sonos --test admission concurrent_package_startup_is_offline_and_race_free -- --exact --nocapture
           done

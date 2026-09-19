@@ -45,7 +45,6 @@ impl std::error::Error for ValidationError {}
 impl Config {
     pub fn validate(&self) -> Result<(), ValidationError> {
         let mut problems = Vec::new();
-        self.validate_denon_migrations(&mut problems);
         self.validate_app_shortcuts(&mut problems);
         self.validate_shortcuts(&mut problems);
         if self.appearance.rgb().is_none() {
@@ -133,7 +132,7 @@ impl Config {
             );
             if let crate::Provider::Kodi { host, port }
             | crate::Provider::CoreElec { host, port }
-            | crate::Provider::Denon { host, port } = &c.provider
+            | crate::Provider::LegacyDenon { host, port } = &c.provider
             {
                 if host.trim().is_empty() || *port == 0 {
                     problems.push(Problem {
@@ -252,7 +251,7 @@ impl Config {
                     None=>problems.push(Problem{at,message:"This device refers to a missing connection; remove its devices before deleting the connection".into()}),
                     Some(c)=>{
                         let valid=match c.provider {
-                            crate::Provider::Kodi{..}|crate::Provider::CoreElec{..}|crate::Provider::Sonos{..}|crate::Provider::Denon{..}|crate::Provider::WebOs|crate::Provider::AndroidTv|crate::Provider::AppleTv|crate::Provider::Tizen|crate::Provider::BluetoothTv=>resource_id.is_empty(),
+                            crate::Provider::Kodi{..}|crate::Provider::CoreElec{..}|crate::Provider::Sonos{..}|crate::Provider::LegacyDenon{..}|crate::Provider::WebOs|crate::Provider::AndroidTv|crate::Provider::AppleTv|crate::Provider::Tizen|crate::Provider::BluetoothTv=>resource_id.is_empty(),
                             crate::Provider::UnifiProtect=>device.kind==crate::DeviceKind::Camera && !resource_id.is_empty() && resource_id.len()<=128 && resource_id.bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-' || b==b'_'),
                             crate::Provider::HomeAssistant=>valid_ha_resource(resource_id, device.kind),
                             crate::Provider::Matter=>valid_matter_resource(resource_id),

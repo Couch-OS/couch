@@ -191,7 +191,8 @@ from refresh failures so a failed observation does not invite replaying a write.
 
 `clients/couch-sonos/src/sdk.rs` implements `couch_sdk::DeviceClient` for
 `Client` and `couch_sdk::ClientSettings` for `Settings` (`FILE_PREFIX` `"sonos"`,
-so `sonos-connection.json`), following `clients/couch-denon/src/sdk.rs` and the
+so `sonos-connection.json`), following `couch-denon`'s `src/sdk.rs` (now in
+`Couch-OS/couch-integration-denon`) and the
 checklist in [docs/client-sdk.md](client-sdk.md). `KIND` is `"sonos"` and `LABEL`
 is `"Sonos"`, matching `Provider::kind()` and `Provider::label()`, and
 `capabilities()` is exactly

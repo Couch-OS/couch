@@ -19,11 +19,11 @@ not an admission identity.
 | `preview` | A real-device integration still under compatibility review. | May be `not-tested` when its limitations say so. |
 | `production` | Eligible for a production catalog once distribution exists. | Must have validated hardware evidence. |
 
-Echo TV is synthetic and test-only. Denon is a preview: its fake-receiver tests
-exercise the protocol implementation. Read-only status and input enumeration
-also passed against a physical receiver from the HA100 package host, but exact
-model/firmware evidence and physical command validation are still outstanding.
-Its complete hardware-validation status therefore remains `not-tested`. Sonos is
+Echo TV is synthetic and test-only. Denon is no longer in this catalog: its
+source moved to `Couch-OS/couch-integration-denon`, which carries the same
+identity in its own `integration.json` and runs the same cases; it remains a
+preview there, with read-only status and input enumeration validated on a
+physical receiver and command validation outstanding. Sonos is
 a preview whose cases run against a fake local Control API: the client behind it
 has been used against real players, but no packaged build has ever run on one,
 so its hardware validation is `not-tested` too. No tier here should be read as a
@@ -111,7 +111,8 @@ configuration surface instead, and say so in review.
 
 `MockHost` remains the default for line protocols. `ConformanceCase`,
 `FailureCase`, `TimeoutCase` and `SpikeCase` keep their fields and convert into
-the transport-agnostic cases, so `couch-denon` and `couch-echo` are unchanged.
+the transport-agnostic cases, so `couch-echo` here and `couch-denon` in its own
+repository are unchanged.
 
 ## Hardware evidence
 

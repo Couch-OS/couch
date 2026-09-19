@@ -189,7 +189,7 @@ impl Function {
                 Integration::WebOs => valid_id(id),
                 // Samsung source keys are fixed; there is no input list to discover.
                 Integration::Tizen => TIZEN_INPUTS.contains(&id.as_str()),
-                Integration::Denon { .. } => {
+                Integration::LegacyDenon { .. } => {
                     valid_input_id(id)
                         && id.len() <= 25
                         && id.bytes().all(|b| {
@@ -320,7 +320,7 @@ mod tests {
             let text = alloc::format!("input:{id}");
             let function = Function::parse(&text).unwrap();
             assert_eq!(function.id(), text);
-            assert!(function.supports(&Integration::Denon {
+            assert!(function.supports(&Integration::LegacyDenon {
                 host: "avr".into(),
                 port: 23
             }));
@@ -350,7 +350,7 @@ mod tests {
                 port: 9090,
             },
             Integration::WebOs,
-            Integration::Denon {
+            Integration::LegacyDenon {
                 host: "host".into(),
                 port: 23,
             },
@@ -381,7 +381,7 @@ mod tests {
             .supports(&Integration::WebOs));
         assert!(!Function::parse("input:HDMI_1")
             .unwrap()
-            .supports(&Integration::Denon {
+            .supports(&Integration::LegacyDenon {
                 host: "h".into(),
                 port: 23
             }));
@@ -523,7 +523,7 @@ mod tests {
             // Denon sets volume in dB, not percent, so there is nothing to send.
             (
                 Function::Volume(30),
-                Integration::Denon {
+                Integration::LegacyDenon {
                     host: "h".into(),
                     port: 23,
                 },

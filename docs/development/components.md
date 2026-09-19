@@ -105,4 +105,4 @@ an arbitrary layout through this API.
 
 - [`model/couch-model/src/connection.rs`](https://github.com/Couch-OS/couch/blob/main/model/couch-model/src/connection.rs)
 - [`clients/couch-plugin/src/manifest.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/manifest.rs)
-- [`clients/couch-denon/plugin.json`](https://github.com/Couch-OS/couch/blob/main/clients/couch-denon/plugin.json)
+- [`couch-integration-denon/plugin.json`](https://github.com/Couch-OS/couch-integration-denon/blob/main/plugin.json), a protocol-v2 manifest with every component kind

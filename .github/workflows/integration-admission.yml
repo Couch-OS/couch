@@ -68,14 +68,11 @@ jobs:
       - name: Run shared host protocol tests
         if: needs.changes.outputs.integration == 'true'
         run: cargo test --locked --manifest-path clients/Cargo.toml -p couch-plugin --test protocol
-      - name: Verify Denon protocol parity
-        if: needs.changes.outputs.integration == 'true'
-        run: cargo test --locked --manifest-path clients/Cargo.toml -p couch-denon --test parity
       - name: Run every required package case
         if: needs.changes.outputs.integration == 'true'
         run: |
           python3 tools/integrations/validate_catalog.py --run-tests
-          cargo test --locked --manifest-path clients/Cargo.toml -p couch-denon --test admission concurrent_package_startup_is_offline_and_race_free -- --exact
+          cargo test --locked --manifest-path clients/Cargo.toml -p couch-sonos --test admission concurrent_package_startup_is_offline_and_race_free -- --exact
 
   product-flow:
     needs: changes
@@ -96,7 +93,7 @@ jobs:
           cargo build --locked --manifest-path daemon/Cargo.toml -p couch-confd
       - name: Test package lifecycle library
         run: cargo test --locked --manifest-path daemon/Cargo.toml -p couch-integrations
-      - name: Test migration persistence and exclusive receiver ownership
+      - name: Test legacy connection conversion, config persistence and shared device connections
         run: |
           cargo test --locked --manifest-path model/Cargo.toml -p couch-model
           cargo test --locked --manifest-path clients/Cargo.toml -p couch-control

@@ -18,7 +18,8 @@ the TV. Connection settings and the room's TV card provide status, volume,
 mute, input selection and app launch controls. Input/app buttons change the TV
 only when clicked. Add a separately named connection for each TV. Pairings,
 certificates, wake addresses and native control sessions are isolated by connection ID. Removing a connection
-requires removing its room assignments first and retains credentials.
+requires removing its room assignments first and also removes its pairing key, pinned certificate, wake address
+and power settings from the remote; pair the TV again to use it again.
 
 Encrypted `wss://IP:3001/` is the default. Explicit pairing trusts and pins
 the TV's certificate. Normal connections require that same certificate.

@@ -29,12 +29,20 @@ struct Running {
     used: Instant,
 }
 
+/// Settings a package has accepted for a legacy connection, and the package
+/// selection they were accepted by.
+pub struct LegacyAdoption {
+    package: String,
+    generation: String,
+    manifest: Manifest,
+    settings: Value,
+}
+
 pub struct Runtime {
     home: PathBuf,
     packages: couch_integrations::Store,
     endpoints: Mutex<HashMap<String, Running>>,
     catalog_generations: Mutex<HashMap<String, String>>,
-    retired: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Runtime {
@@ -47,7 +55,6 @@ impl Runtime {
             packages: couch_integrations::Store::new(directory),
             endpoints: Mutex::new(HashMap::new()),
             catalog_generations: Mutex::new(HashMap::new()),
-            retired: Mutex::new(Default::default()),
         }
     }
 
@@ -103,41 +110,6 @@ impl Runtime {
         plugin: &str,
         patch: Value,
     ) -> Result<Value, String> {
-        self.save_settings_checked(connection, plugin, patch, |_| Ok(()))
-    }
-
-    /// Read only the persisted target; migration preflight must neither start
-    /// the package nor contact the receiver to find another configured owner.
-    pub fn denon_target(&self, connection: &str) -> Result<Option<couch_denon::Settings>, String> {
-        saved_denon_target(&self.home, connection)
-    }
-
-    pub fn save_denon_settings(
-        &self,
-        connection: &str,
-        patch: Value,
-        protected: impl Iterator<Item = couch_model::DenonMigration>,
-    ) -> Result<Value, String> {
-        self.save_settings_checked(connection, "denon", patch, |settings| {
-            let target: couch_denon::Settings =
-                serde_json::from_value(settings.clone()).map_err(|_| "Invalid Denon target")?;
-            if protected
-                .into_iter()
-                .any(|original| original.host == target.host && original.port == target.port)
-            {
-                return Err("This receiver already has a built-in or migrated Denon owner".into());
-            }
-            Ok(())
-        })
-    }
-
-    fn save_settings_checked(
-        &self,
-        connection: &str,
-        plugin: &str,
-        patch: Value,
-        check: impl FnOnce(&Value) -> Result<(), String>,
-    ) -> Result<Value, String> {
         // Admission validates every saved connection before activating a new
         // package. Keep its selection stable until these settings are durable,
         // so validation by an old child cannot race a package activation.
@@ -154,7 +126,6 @@ impl Runtime {
         let saved = load_settings(&path).map_err(|e| e.to_string())?;
         let settings =
             merge_settings(&manifest, saved.as_ref(), patch).map_err(|e| e.to_string())?;
-        check(&settings)?;
         // Configure validates the adapter's typed settings without requiring an
         // online TV. Do not save a schema-valid but unusable host/port.
         let mut host = couch_plugin::Host::spawn(&directory, &manifest, Duration::from_secs(3))
@@ -178,83 +149,74 @@ impl Runtime {
         Ok(redacted(&manifest, Some(&settings)))
     }
 
-    /// Keep package selection and connection settings stable through the atomic
-    /// config commit. Configure validates settings and does not contact an AVR.
-    pub fn migrate_denon<T>(
-        &self,
-        connection: &str,
-        settings: &couch_denon::Settings,
-        commit: impl FnOnce(&Manifest) -> Result<T, String>,
-    ) -> Result<T, String> {
-        settings.validate().map_err(|e| e.to_string())?;
+    /// First half of giving a connection whose built-in client has left the
+    /// OS to its installed package, and the slow half: start the package and
+    /// let it check the settings carried over from the old connection
+    /// (configure validates them and contacts no device). Nothing is written
+    /// and no configuration lock is needed.
+    pub fn prepare_legacy(&self, package: &str, settings: Value) -> Result<LegacyAdoption, String> {
         let _lease = self.packages.read_lease().map_err(|e| e.to_string())?;
         let (directory, manifest) = self
             .packages
-            .resolve_wait("denon", STORE_READ_WAIT)
+            .resolve_wait(package, STORE_READ_WAIT)
             .map_err(|e| e.to_string())?;
+        let generation = self
+            .packages
+            .generation(package)
+            .map_err(|e| e.to_string())?;
+        let settings = manifest
+            .with_defaults(settings)
+            .map_err(|e| e.to_string())?;
+        let mut host = couch_plugin::Host::spawn(&directory, &manifest, Duration::from_secs(3))
+            .map_err(|e| e.to_string())?;
+        host.configure(settings.clone())
+            .map_err(|e| e.to_string())?;
+        Ok(LegacyAdoption {
+            package: package.to_owned(),
+            generation,
+            manifest,
+            settings,
+        })
+    }
+
+    /// Second half, quick, for the caller to run with the configuration
+    /// locked: save the checked settings, then let `commit` switch the
+    /// configuration. The package selection is held still from here to the end
+    /// of the commit, and must be the one the settings were checked against;
+    /// if a package operation came in between, the caller prepares again. A
+    /// failed commit leaves an inert settings file the next attempt rewrites,
+    /// and the old configuration in charge.
+    pub fn adopt_legacy<T>(
+        &self,
+        connection: &str,
+        prepared: &LegacyAdoption,
+        commit: impl FnOnce(&Manifest) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _lease = self.packages.read_lease().map_err(|e| e.to_string())?;
+        if self.packages.generation(&prepared.package).ok().as_ref() != Some(&prepared.generation) {
+            return Err("The package changed while this connection was being prepared".into());
+        }
         let path = self.settings_path(connection).map_err(|e| e.to_string())?;
         let lock = crate::api::connections::lock_for(&path);
         let _guard = lock
             .try_lock()
             .map_err(|_| "Integration connection is busy")?;
-        let value = serde_json::to_value(settings).map_err(|e| e.to_string())?;
-        let value = manifest.with_defaults(value).map_err(|e| e.to_string())?;
-        let mut host = couch_plugin::Host::spawn(&directory, &manifest, Duration::from_secs(3))
-            .map_err(|e| e.to_string())?;
-        host.configure(value.clone()).map_err(|e| e.to_string())?;
-        drop(host);
-        let saved = load_settings(&path).map_err(|e| e.to_string())?;
-        // Never overwrite unrelated settings retained from an earlier package
-        // connection that happened to use this ID.
-        if saved.as_ref().is_some_and(|saved| saved != &value) {
-            return Err("Retained package settings differ from this built-in connection".into());
-        }
         let parent = path.parent().ok_or("Invalid settings path")?;
         fs::create_dir_all(parent).map_err(|_| "Cannot create connection settings directory")?;
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
             .map_err(|_| "Cannot protect connection settings directory")?;
-        couch_sdk::save_private(&path, &value).map_err(|_| "Cannot save integration settings")?;
-        // A failed config commit leaves an inert, reusable prepared settings
-        // file. Native config remains authoritative, including across reboot.
-        let result = commit(&manifest)?;
-        self.retired
+        // The address saved with the old connection is the one in use. A file
+        // already under this id is a leftover (an earlier trial of the
+        // package, a deleted connection) and gives way to it.
+        couch_sdk::save_private(&path, &prepared.settings)
+            .map_err(|_| "Cannot save integration settings")?;
+        let result = commit(&prepared.manifest)?;
+        self.endpoints
             .lock()
             .map_err(|_| "Integration registry lock failed")?
             .remove(connection);
         Ok(result)
-    }
-
-    /// Drain the child before native ownership can resume. Also reject a request
-    /// whose provider lookup raced the config switch and reaches execute later.
-    pub fn restore_denon<T>(
-        &self,
-        connection: &str,
-        commit: impl FnOnce() -> Result<T, String>,
-    ) -> Result<T, String> {
-        let path = self.settings_path(connection).map_err(|e| e.to_string())?;
-        let lock = crate::api::connections::lock_for(&path);
-        let _guard = lock
-            .try_lock()
-            .map_err(|_| "Integration connection is busy")?;
-        self.retired
-            .lock()
-            .map_err(|_| "Integration registry lock failed")?
-            .insert(connection.into());
-        let endpoint = self
-            .endpoints
-            .lock()
-            .map_err(|_| "Integration registry lock failed")?
-            .remove(connection);
-        drop(endpoint); // Endpoint joins its worker and reaps the child.
-        let result = commit();
-        if result.is_err() {
-            self.retired
-                .lock()
-                .map_err(|_| "Integration registry lock failed")?
-                .remove(connection);
-        }
-        result
     }
 
     pub fn execute(
@@ -274,14 +236,6 @@ impl Runtime {
         let path = self.settings_path(connection)?;
         let lock = crate::api::connections::lock_for(&path);
         let _guard = lock.try_lock().map_err(|_| Error::Busy)?;
-        if self
-            .retired
-            .lock()
-            .map_err(|_| Error::Transport)?
-            .contains(connection)
-        {
-            return Err(Error::Invalid);
-        }
         let generation = self
             .packages
             .generation(plugin)
@@ -339,6 +293,19 @@ impl Runtime {
         endpoint.request(request)
     }
 
+    /// Stop the package child of a connection that has just been deleted.
+    /// The caller holds the connection's settings lock, which `execute` holds
+    /// for a whole request, so nothing is in flight and the last reference
+    /// goes here: the child is killed and waited for before this returns.
+    pub fn retire(&self, connection: &str) {
+        let retired = self
+            .endpoints
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(connection);
+        drop(retired);
+    }
+
     pub fn reap(&self) {
         if let Ok(mut endpoints) = self.endpoints.lock() {
             endpoints.retain(|_, entry| {
@@ -346,61 +313,6 @@ impl Runtime {
             });
         }
     }
-}
-
-/// Native receivers remain protected before migration and after restoration.
-/// Include legacy inline integrations because they use the same native broker.
-pub(crate) fn protected_denon_targets(
-    config: &couch_model::Config,
-) -> impl Iterator<Item = couch_model::DenonMigration> + '_ {
-    config
-        .denon_migrations
-        .values()
-        .cloned()
-        .chain(
-            config
-                .connections
-                .iter()
-                .filter_map(|connection| match &connection.provider {
-                    couch_model::Provider::Denon { host, port } => {
-                        Some(couch_model::DenonMigration {
-                            host: host.clone(),
-                            port: *port,
-                        })
-                    }
-                    _ => None,
-                }),
-        )
-        .chain(
-            config
-                .rooms
-                .iter()
-                .flat_map(|room| &room.devices)
-                .filter_map(|device| match &device.integration {
-                    couch_model::Integration::Denon { host, port } => {
-                        Some(couch_model::DenonMigration {
-                            host: host.clone(),
-                            port: *port,
-                        })
-                    }
-                    _ => None,
-                }),
-        )
-}
-
-/// A filesystem-only ownership check shared by config imports and migrations.
-pub(crate) fn saved_denon_target(
-    home: &Path,
-    connection: &str,
-) -> Result<Option<couch_denon::Settings>, String> {
-    let path = couch_sdk::connection_file(home, connection, "plugin")
-        .map_err(|_| "Invalid Denon connection ID")?;
-    load_settings(&path)
-        .map_err(|_| "Cannot read saved Denon target")?
-        .map(|saved| {
-            serde_json::from_value(saved).map_err(|_| "Cannot read saved Denon target".into())
-        })
-        .transpose()
 }
 
 fn load_settings(path: &Path) -> Result<Option<Value>, Error> {
@@ -478,10 +390,14 @@ mod tests {
             .write(true)
             .open(runtime.packages.root().join(".lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        // Another test forking a child at the wrong moment leaves that child
+        // holding a copy of the descriptor `resolve` just closed, and with it
+        // the shared lock, until its exec. Wait that out rather than fail.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            assert!(Instant::now() < deadline, "the store lock never came free");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let error = runtime
             .packages
             .resolve_wait("sample", Duration::ZERO)

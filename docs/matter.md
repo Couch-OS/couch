@@ -48,7 +48,10 @@ remote forgets it, so the device stops advertising for a controller that no
 longer exists. If the device does not answer, it is forgotten locally and keeps
 a stale fabric entry until it is factory reset or the entry is removed from its
 own app. Deleting the connection while rooms still reference its devices is
-rejected, as for other connections.
+rejected, as for other connections. Unlike other connections, deleting a Matter
+connection does not remove its private folder: the fabric's keys stay on the
+remote (see [Removing a connection](connections.md#removing-a-connection)).
+Forget its devices first, or they keep listing a controller that is gone.
 
 ## Storage and security
 
