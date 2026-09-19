@@ -16,6 +16,7 @@ on:
       - 'integrations/**'
       - 'tools/integrations/**'
       - 'tools/tests/integrations-e2e.py'
+      - 'tools/tests/config-crossload.*'
       - '.github/workflows/integration-admission.yml'
   workflow_dispatch:
 
@@ -44,7 +45,8 @@ jobs:
           changed=true
           if [ "$EVENT_NAME" = pull_request ] && git diff --quiet "$BASE_SHA"...HEAD -- \
             clients daemon model web integrations tools/integrations \
-            tools/tests/integrations-e2e.py .github/workflows/integration-admission.yml; then
+            tools/tests/integrations-e2e.py tools/tests/config-crossload.sh \
+            tools/tests/config-crossload.rs .github/workflows/integration-admission.yml; then
               changed=false
           fi
           echo "integration=$changed" >> "$GITHUB_OUTPUT"
@@ -98,6 +100,11 @@ jobs:
           cargo test --locked --manifest-path model/Cargo.toml -p couch-model
           cargo test --locked --manifest-path clients/Cargo.toml -p couch-control
           cargo test --locked --manifest-path daemon/Cargo.toml -p couch-confd
+      # The last release's model source, built beside this one: it has to start
+      # on every file this tree saves, and this tree must not move a byte of
+      # the files it saved. Fetches the release tag itself.
+      - name: Exchange saved configurations with the last release
+        run: tools/tests/config-crossload.sh
       - name: Exercise daemon, package, HTTP, panel, and fake device together
         run: python3 tools/tests/integrations-e2e.py
 
