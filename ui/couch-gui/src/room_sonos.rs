@@ -465,7 +465,7 @@ fn run(
             // Say what we landed on, once the player has actually moved: the
             // track in bold, the artist as the caption, and its cover. A skip
             // that lands nowhere still gets its card.
-            match crate::media_player::now_playing_after_skip(client, before.as_ref())
+            match crate::sonos_player::now_playing_after_skip(client, before.as_ref())
                 .and_then(|n| n.current)
             {
                 Some(track) => {

@@ -1,14 +1,19 @@
-//! Sonos on the player screen: the same full-screen presentation the Kodi
-//! Cinema activity uses, driven by a Sonos group. Art, title, artist and
-//! album, a live progress line with seek, transport, and three sheets:
-//! sources, play modes and up next. Network I/O runs on one worker thread
-//! that keeps its connection to the player; the UI thread only ever sees
-//! events.
+//! A music player on the player screen: the same full-screen presentation the
+//! Kodi Cinema activity uses, driven by whatever is behind a [`Backend`]. Art,
+//! title, artist and album, a live progress line with seek, transport, and
+//! three sheets: sources, play modes and up next. Device I/O runs on one
+//! worker thread that owns the backend; the UI thread only ever sees events.
+//!
+//! Nothing in this file knows what kind of device it is showing. The built-in
+//! Sonos client is one backend (`sonos_player.rs`); an installed package that
+//! declares a media player is to be the other, and everything below the
+//! [`Backend`] trait is worded so protocol 3's `media`, `artwork`, `inputs`,
+//! `seek`, `set_mode` and percent volume can supply it
+//! (`docs/plans/media-player-component-design.md`). Because both feed this one
+//! controller, the two are the same screen.
 use crate::{activity_art, App, PlayerChoice};
-use couch_sonos::{Client, PlayModeChange, Snapshot, Source, SourceId};
 use slint::{ModelRc, VecModel};
 use std::{
-    net::Ipv4Addr,
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc, Arc,
@@ -33,40 +38,222 @@ struct View {
     at: Instant,
     serial: u64,
     presentation: crate::activity::Presentation,
-    snapshot: Option<Snapshot>,
+    media: Option<Media>,
     room: slint::SharedString,
 }
 
 /// What the screen was opened for.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Target {
+pub(crate) struct Target {
     pub device: String,
     pub name: String,
     pub room: String,
-    pub host: Ipv4Addr,
+    /// What this kind of device is called in a sentence: "Sonos". For a
+    /// package it is the manifest's label.
+    pub label: String,
 }
-enum Op {
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum PlayState {
+    Playing,
+    Buffering,
+    Paused,
+    #[default]
+    Idle,
+}
+/// What makes sense to ask for right now. The screen greys the seek line from
+/// `seek`; it does not hold a skip back on `next` or `previous`, because the
+/// built-in Sonos screen never has: it sends the skip and words the refusal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Can {
+    pub next: bool,
+    pub previous: bool,
+    pub seek: bool,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Modes {
+    pub shuffle: bool,
+    pub repeat: bool,
+    pub repeat_one: bool,
+    pub crossfade: bool,
+}
+/// A partial change to the play modes: `None` leaves a mode as it is. Leaving
+/// "repeat this track" clears two modes in one write, which is why this is not
+/// one mode and a flag.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ModeChange {
+    pub shuffle: Option<bool>,
+    pub repeat: Option<bool>,
+    pub repeat_one: Option<bool>,
+    pub crossfade: Option<bool>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NextItem {
+    pub title: String,
+    /// "Artist · Album", already joined.
+    pub detail: String,
+}
+/// What is playing: the controller's only view of the device. Nothing is made
+/// up: what the device did not say is `None`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Media {
+    /// Opaque identity of what is playing, when the device has one. It changes
+    /// when the item changes.
+    pub item: Option<String>,
+    pub state: PlayState,
+    /// `None` means nothing is loaded at all: the idle screen.
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    /// The second line when there is no artist or album: a station, a
+    /// playlist, the kind of input.
+    pub subtitle: Option<String>,
+    /// The service it is playing from. Not shown; part of what makes two items
+    /// differ.
+    pub source: Option<String>,
+    /// `None` with a position means a stream without an end: "LIVE".
+    pub duration_ms: Option<u64>,
+    /// Where playback was when this was read ([`Watched::age`] ago). `None`
+    /// means there is no item with a clock, and the clocks are left alone.
+    pub position_ms: Option<u64>,
+    /// How fast the position moves: 100 is normal speed, 0 stands still.
+    pub rate_percent: i16,
+    /// Opaque handle of the picture that goes with it, for
+    /// [`Backend::artwork`]. It changes when the picture does.
+    pub art: Option<String>,
+    pub can: Can,
+    pub modes: Modes,
+    pub next: Option<NextItem>,
+    /// This speaker plays what another one leads: that one's name. Transport,
+    /// seek, sources and modes are refused here, with "open that speaker".
+    pub follows: Option<String>,
+    /// What the device calls itself, for the idle sentence; the device's name
+    /// in Couch is used without it.
+    pub device_name: Option<String>,
+}
+impl Media {
+    /// Whether the Modes and Up next sheets would be built the same from
+    /// both: the item with a clock, the one after it and the modes. An open
+    /// sheet is rebuilt when they differ, and not for a position or a state.
+    fn same_listing(&self, other: &Media) -> bool {
+        let clocked = self.position_ms.is_some();
+        clocked == other.position_ms.is_some()
+            && (!clocked
+                || (self.item == other.item
+                    && self.title == other.title
+                    && self.artist == other.artist
+                    && self.album == other.album
+                    && self.art == other.art
+                    && self.duration_ms == other.duration_ms
+                    && self.source == other.source))
+            && self.next == other.next
+            && self.modes == other.modes
+    }
+}
+/// One read of the device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Watched {
+    /// Rises when anything but the position changed; handed back as `after`.
+    pub revision: u64,
+    /// How long ago `media.position_ms` was true. Zero for a direct read; a
+    /// cached copy says how old it is.
+    pub age: Duration,
+    pub media: Media,
+}
+/// One row of the Sources sheet.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Choice {
+    /// Opaque; handed back in [`Op::Source`].
+    pub id: String,
+    pub title: String,
+    /// Where it comes from ("Apple Music", "Sonos playlist · 12 tracks").
+    pub detail: String,
+    /// The one playing now, if the device says: the sheet opens on it.
+    pub current: bool,
+}
+/// Something to do to the device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Op {
     PlayPause,
-    Skip(bool),
-    Seek(u64),
-    Volume(i8),
+    Next,
+    Previous,
+    Seek {
+        position_ms: u64,
+    },
+    /// Relative percent volume, never zero; the device answers with where it
+    /// ended up.
+    StepVolume(i8),
     ToggleMute,
-    Sources,
-    Select(SourceId, String),
-    Modes(PlayModeChange),
+    /// Start a row of the Sources sheet.
+    Source {
+        id: String,
+        title: String,
+    },
+    Modes(ModeChange),
+}
+/// What a finished [`Op`] has to tell the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Done {
+    Nothing,
+    /// Where a volume step ended up, 0 to 100: shown on the volume card.
+    Volume(u8),
+    /// Whether the device is muted now.
+    Muted(bool),
+}
+/// Why the device did not do it. Couch words every one except `Message`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Failure {
+    /// No answer from the device. After a command the worker lets go of the
+    /// backend until the screen asks it to connect again.
+    Unreachable,
+    /// The worker has no open backend.
+    NotConnected,
+    /// This speaker follows `leader`; open that one.
+    Follows {
+        leader: String,
+    },
+    NothingToPlay,
+    /// The screen moved on before the request went out. Never shown.
+    Expired,
+    /// One line in the device's own words.
+    Message(String),
+}
+/// The device behind the screen. Every call blocks on device I/O and runs on
+/// the controller's worker thread, never on the UI thread.
+pub(crate) trait Backend: Send {
+    /// Reach the device. Called again after `close` when the screen asks to
+    /// reconnect.
+    fn open(&mut self) -> Result<(), Failure>;
+    /// Let go of the device: the screen closed, or a command could not reach
+    /// it.
+    fn close(&mut self);
+    /// What is playing. A backend that reads the device directly answers at
+    /// once; one in front of a cache may wait up to `wait` for a revision
+    /// above `after`. The controller asks with no wait, every [`REFRESH`] and
+    /// once after each command.
+    fn watch(&mut self, after: u64, wait: Duration) -> Result<Watched, Failure>;
+    /// Do it, unless `current` has turned false by the time it would go out.
+    fn perform(&mut self, op: &Op, current: &dyn Fn() -> bool) -> Result<Done, Failure>;
+    /// The rows of the Sources sheet.
+    fn sources(&mut self) -> Result<Vec<Choice>, Failure>;
+    /// The encoded bytes (JPEG, PNG) behind [`Media::art`].
+    fn artwork(&mut self, art: &str) -> Result<Vec<u8>, Failure>;
 }
 enum Request {
-    /// Connect to the player; the string is the artwork URL the UI already
-    /// shows, so it is not fetched again.
-    Open(Ipv4Addr, String),
+    /// Take this backend and open it; the string is the artwork the UI
+    /// already shows, so it is not fetched again.
+    Open(Box<dyn Backend>, String),
+    /// Open the same backend again, after a failure.
+    Reopen,
     Refresh,
     Command(Op),
+    Sources,
     Close,
 }
 enum Event {
-    State(Box<Result<Snapshot, String>>),
-    Done(Result<String, String>),
-    Sources(Result<Vec<Source>, String>),
+    State(Box<Result<Watched, Failure>>),
+    Done(Result<String, Failure>),
+    Sources(Result<Vec<Choice>, Failure>),
     Art(String, Option<activity_art::Pixels>),
 }
 pub struct Controller {
@@ -75,8 +262,8 @@ pub struct Controller {
     active: Arc<AtomicU64>,
     generation: u64,
     target: Option<Target>,
-    snapshot: Option<Snapshot>,
-    /// When the snapshot's position was read, for interpolation.
+    media: Option<Media>,
+    /// When the media's position was read, for interpolation.
     at: Instant,
     tick: Instant,
     refresh_at: Instant,
@@ -84,7 +271,7 @@ pub struct Controller {
     message_until: Option<Instant>,
     volume_until: Option<Instant>,
     art_key: String,
-    sources: Vec<Source>,
+    sources: Vec<Choice>,
     /// On-screen selection the D-pad moves: 1 seek, 2 previous, 3 play,
     /// 4 next, 5..=7 sheets.
     selected: i32,
@@ -104,7 +291,7 @@ impl Controller {
             active,
             generation: 0,
             target: None,
-            snapshot: None,
+            media: None,
             at: Instant::now(),
             tick: Instant::now(),
             refresh_at: Instant::now(),
@@ -130,7 +317,7 @@ impl Controller {
                     at: Instant::now(),
                     serial: Self::serial(),
                     presentation: crate::activity::Presentation::capture(app, &self.art_key),
-                    snapshot: self.snapshot.clone(),
+                    media: self.media.clone(),
                     room: app.get_player_room(),
                 },
             );
@@ -142,12 +329,12 @@ impl Controller {
     pub fn is_open(&self) -> bool {
         self.target.is_some()
     }
-    /// Take the player screen over for a Sonos device. The caller has already
-    /// released whatever the screen showed before.
-    pub fn open(&mut self, app: &App, target: Target) {
+    /// Take the player screen over for the device behind `backend`. The caller
+    /// has already released whatever the screen showed before.
+    pub fn open(&mut self, app: &App, target: Target, backend: Box<dyn Backend>) {
         self.generation += 1;
         self.active.store(self.generation, Ordering::SeqCst);
-        self.snapshot = None;
+        self.media = None;
         self.busy = false;
         self.art_key.clear();
         self.sources.clear();
@@ -182,13 +369,13 @@ impl Controller {
                 app.set_player_room(view.room);
                 self.art_key = view.presentation.art_key.clone();
                 known_art = self.art_key.clone();
-                self.snapshot = view.snapshot;
+                self.media = view.media;
                 self.at = view.at;
             }
             None => {
                 app.set_player_ready(false);
                 app.set_player_connected(false);
-                app.set_player_title("Connecting to Sonos…".into());
+                app.set_player_title(format!("Connecting to {}…", target.label).into());
                 app.set_player_metadata("".into());
                 app.set_player_elapsed("".into());
                 app.set_player_remaining("".into());
@@ -202,7 +389,7 @@ impl Controller {
         app.invoke_focus_player();
         if self
             .tx
-            .try_send((self.generation, Request::Open(target.host, known_art)))
+            .try_send((self.generation, Request::Open(backend, known_art)))
             .is_err()
         {
             self.notice(app, "Connection busy. Reopen the speaker.");
@@ -217,7 +404,7 @@ impl Controller {
         self.active.store(self.generation, Ordering::SeqCst);
         let _ = self.tx.try_send((self.generation, Request::Close));
         self.target = None;
-        self.snapshot = None;
+        self.media = None;
         self.busy = false;
         self.art_key.clear();
         app.set_player_music(false);
@@ -238,43 +425,38 @@ impl Controller {
         self.message_until = Some(Instant::now() + Duration::from_secs(4));
     }
     fn send(&mut self, app: &App, op: Op) {
+        self.request(app, Request::Command(op));
+    }
+    fn request(&mut self, app: &App, request: Request) {
         if self.busy {
             return;
         }
-        if self
-            .tx
-            .try_send((self.generation, Request::Command(op)))
-            .is_ok()
-        {
+        if self.tx.try_send((self.generation, request)).is_ok() {
             self.busy = true;
         } else {
             self.notice(app, "Connection busy. Try again.");
         }
     }
+    /// A failure in the screen's words.
+    fn describe(&self, failure: Failure) -> String {
+        describe(
+            failure,
+            self.target.as_ref().map_or("", |t| t.label.as_str()),
+        )
+    }
     fn coordinator(&self) -> bool {
-        self.snapshot
-            .as_ref()
-            .is_some_and(|s| s.status.coordinator == s.status.player.uuid)
+        self.media.as_ref().is_some_and(|m| m.follows.is_none())
     }
     /// Whether a transport command may go out now: a member's playback
     /// belongs to its coordinator, and the screen says so instead of sending.
     fn transport_allowed(&mut self, app: &App) -> bool {
-        if self.snapshot.is_none() {
+        let Some(media) = &self.media else {
             self.notice(app, "Still connecting to the speaker.");
             return false;
-        }
-        if !self.coordinator() {
-            let coordinator = self
-                .snapshot
-                .as_ref()
-                .map(|s| s.status.coordinator_name.clone())
-                .unwrap_or_default();
-            self.notice(
-                app,
-                &format!(
-                    "Playback is controlled by {coordinator}. Open that speaker to change it."
-                ),
-            );
+        };
+        if let Some(leader) = media.follows.clone() {
+            let refusal = self.describe(Failure::Follows { leader });
+            self.notice(app, &refusal);
             return false;
         }
         true
@@ -341,12 +523,10 @@ impl Controller {
             }
             "Input.Home" => return false,
             "retry" => {
-                if let Some(t) = &self.target {
-                    self.snapshot = None;
+                if self.target.is_some() {
+                    self.media = None;
                     self.busy = false;
-                    let _ = self
-                        .tx
-                        .try_send((self.generation, Request::Open(t.host, String::new())));
+                    let _ = self.tx.try_send((self.generation, Request::Reopen));
                 }
             }
             "play" => {
@@ -360,19 +540,15 @@ impl Controller {
                 }
                 let forward = action == "next" || (action == "chapter-step" && value > 0.);
                 if self.transport_allowed(app) {
-                    self.send(app, Op::Skip(forward));
+                    self.send(app, if forward { Op::Next } else { Op::Previous });
                 }
             }
             "seek" => {
-                let duration = self
-                    .snapshot
-                    .as_ref()
-                    .and_then(|s| s.now_playing.current.as_ref())
-                    .and_then(|t| t.duration_ms);
+                let duration = self.media.as_ref().and_then(|m| m.duration_ms);
                 if let Some(duration) = duration {
                     if self.transport_allowed(app) {
-                        let position = (duration as f64 * value.clamp(0., 100.) / 100.) as u64;
-                        self.send(app, Op::Seek(position));
+                        let position_ms = (duration as f64 * value.clamp(0., 100.) / 100.) as u64;
+                        self.send(app, Op::Seek { position_ms });
                     }
                 }
             }
@@ -380,7 +556,7 @@ impl Controller {
             "volume" => {
                 let delta = (value as i32).clamp(-20, 20) as i8;
                 let delta = if delta == 0 { VOLUME_STEP } else { delta };
-                self.send(app, Op::Volume(delta));
+                self.send(app, Op::StepVolume(delta));
             }
             "mute" => {
                 if !repeat {
@@ -408,24 +584,20 @@ impl Controller {
             1 => {
                 if self.sources.is_empty() {
                     detail = "Finding sources…".into();
-                    self.send(app, Op::Sources);
+                    self.request(app, Request::Sources);
                 } else {
                     rows = self
                         .sources
                         .iter()
                         .map(|s| PlayerChoice {
-                            title: s.name.as_str().into(),
+                            title: s.title.as_str().into(),
                             detail: s.detail.as_str().into(),
                         })
                         .collect();
                 }
             }
             2 => {
-                let modes = self
-                    .snapshot
-                    .as_ref()
-                    .map(|s| s.playback.modes)
-                    .unwrap_or_default();
+                let modes = self.media.as_ref().map(|m| m.modes).unwrap_or_default();
                 let on = |b: bool| if b { "On" } else { "Off" };
                 rows = vec![
                     PlayerChoice {
@@ -452,29 +624,25 @@ impl Controller {
                     detail = "Play modes belong to the group's coordinator.".into();
                 }
             }
-            3 => {
-                match self
-                    .snapshot
-                    .as_ref()
-                    .and_then(|s| s.now_playing.next.as_ref())
-                {
-                    Some(next) => rows.push(PlayerChoice {
-                        title: next.name.as_str().into(),
-                        detail: format!(
-                            "{} · Press to skip to it",
-                            line(&next.artist, &next.album)
-                        )
-                        .into(),
-                    }),
-                    None => detail = "Nothing is queued after this.".into(),
-                }
-            }
+            3 => match self.media.as_ref().and_then(|m| m.next.as_ref()) {
+                Some(next) => rows.push(PlayerChoice {
+                    title: next.title.as_str().into(),
+                    detail: format!("{} · Press to skip to it", next.detail).into(),
+                }),
+                None => detail = "Nothing is queued after this.".into(),
+            },
             _ => {}
         }
         app.set_player_choices(ModelRc::new(VecModel::from(rows)));
         app.set_player_panel_detail(detail.into());
         app.set_player_panel(panel);
-        app.invoke_set_player_choice(0);
+        // A list that marks the row playing now opens on it.
+        let current = if panel == 1 {
+            self.sources.iter().position(|s| s.current).unwrap_or(0)
+        } else {
+            0
+        };
+        app.invoke_set_player_choice(current as i32);
         app.invoke_focus_player();
     }
     fn choose(&mut self, app: &App, index: usize) {
@@ -482,45 +650,47 @@ impl Controller {
             1 => {
                 if let Some(source) = self.sources.get(index).cloned() {
                     if self.transport_allowed(app) {
-                        self.notice(app, &format!("Starting {}…", source.name));
-                        self.send(app, Op::Select(source.id, source.name));
+                        self.notice(app, &format!("Starting {}…", source.title));
+                        self.send(
+                            app,
+                            Op::Source {
+                                id: source.id,
+                                title: source.title,
+                            },
+                        );
                         app.set_player_panel(0);
                         app.invoke_focus_player();
                     }
                 }
             }
             2 => {
-                let modes = self
-                    .snapshot
-                    .as_ref()
-                    .map(|s| s.playback.modes)
-                    .unwrap_or_default();
+                let modes = self.media.as_ref().map(|m| m.modes).unwrap_or_default();
                 let change = match index {
-                    0 => PlayModeChange {
+                    0 => ModeChange {
                         shuffle: Some(!modes.shuffle),
                         ..Default::default()
                     },
                     // Off → all → this track → off.
                     1 => {
                         if modes.repeat_one {
-                            PlayModeChange {
+                            ModeChange {
                                 repeat: Some(false),
                                 repeat_one: Some(false),
                                 ..Default::default()
                             }
                         } else if modes.repeat {
-                            PlayModeChange {
+                            ModeChange {
                                 repeat_one: Some(true),
                                 ..Default::default()
                             }
                         } else {
-                            PlayModeChange {
+                            ModeChange {
                                 repeat: Some(true),
                                 ..Default::default()
                             }
                         }
                     }
-                    2 => PlayModeChange {
+                    2 => ModeChange {
                         crossfade: Some(!modes.crossfade),
                         ..Default::default()
                     },
@@ -531,64 +701,49 @@ impl Controller {
                 }
             }
             3 if self.transport_allowed(app) => {
-                self.send(app, Op::Skip(true));
+                self.send(app, Op::Next);
                 app.set_player_panel(0);
                 app.invoke_focus_player();
             }
             _ => {}
         }
     }
-    fn present(&mut self, app: &App, snapshot: &Snapshot) {
-        let playing = matches!(snapshot.playback.state.as_str(), "PLAYING" | "BUFFERING");
-        let member = snapshot.status.coordinator != snapshot.status.player.uuid;
-        let track = snapshot.now_playing.current.as_ref();
-        let has_content = track.is_some() || !snapshot.now_playing.container.is_empty();
+    /// `age` is how long ago the media's position was true.
+    fn present(&mut self, app: &App, media: &Media, age: f64) {
+        let playing = matches!(media.state, PlayState::Playing | PlayState::Buffering);
         app.set_player_connected(true);
-        app.set_player_ready(has_content);
+        app.set_player_ready(media.title.is_some());
         app.set_player_paused(!playing);
         if let Some(t) = &self.target {
             app.set_player_room(
-                if member {
-                    format!(
-                        "{} · Playing from {}",
-                        t.room, snapshot.status.coordinator_name
-                    )
-                } else {
-                    t.room.clone()
+                match &media.follows {
+                    Some(leader) => format!("{} · Playing from {}", t.room, leader),
+                    None => t.room.clone(),
                 }
                 .into(),
             );
         }
-        match track {
-            Some(track) => {
-                app.set_player_title(track.name.as_str().into());
-                let mut meta = line(&track.artist, &track.album);
+        match &media.title {
+            Some(title) => {
+                app.set_player_title(title.as_str().into());
+                let mut meta = line(
+                    media.artist.as_deref().unwrap_or(""),
+                    media.album.as_deref().unwrap_or(""),
+                );
                 if meta.is_empty() {
-                    meta = snapshot.now_playing.container.clone();
+                    meta = media.subtitle.clone().unwrap_or_default();
                 }
                 app.set_player_metadata(meta.into());
-                app.set_player_can_seek(
-                    snapshot.playback.can_seek && track.duration_ms.is_some() && !member,
-                );
-            }
-            None if has_content => {
-                app.set_player_title(snapshot.now_playing.container.as_str().into());
-                app.set_player_metadata(
-                    match snapshot.now_playing.container_type.as_str() {
-                        "" => String::new(),
-                        kind => kind.replace('_', " ").to_lowercase(),
-                    }
-                    .into(),
-                );
-                app.set_player_can_seek(false);
+                app.set_player_can_seek(media.can.seek);
             }
             None => {
+                let name = match (&media.device_name, &self.target) {
+                    (Some(name), _) => name.as_str(),
+                    (None, Some(t)) => t.name.as_str(),
+                    (None, None) => "",
+                };
                 app.set_player_title(
-                    format!(
-                        "{} is idle.\nPress Sources to play something.",
-                        snapshot.status.player.name
-                    )
-                    .into(),
+                    format!("{name} is idle.\nPress Sources to play something.").into(),
                 );
                 app.set_player_metadata("".into());
                 app.set_player_can_seek(false);
@@ -597,23 +752,22 @@ impl Controller {
                 app.set_player_progress(0.);
             }
         }
-        let key = track.map(|t| t.image_url.clone()).unwrap_or_default();
+        let key = media.art.as_deref().unwrap_or("");
         if key != self.art_key {
-            self.art_key = key;
+            self.art_key = key.to_owned();
             app.set_player_has_art(false);
             app.set_player_fanart(slint::Image::default());
         }
-        self.clock(app, snapshot, 0.);
+        self.clock(app, media, age);
     }
     /// The progress line, from the last read position plus the time since.
-    fn clock(&self, app: &App, snapshot: &Snapshot, elapsed_since: f64) {
-        let Some(track) = snapshot.now_playing.current.as_ref() else {
+    fn clock(&self, app: &App, media: &Media, elapsed_since: f64) {
+        let Some(position_ms) = media.position_ms else {
             return;
         };
-        let playing = matches!(snapshot.playback.state.as_str(), "PLAYING");
         let position =
-            snapshot.playback.position_ms as f64 / 1000. + if playing { elapsed_since } else { 0. };
-        match track.duration_ms {
+            position_ms as f64 / 1000. + elapsed_since * (f64::from(media.rate_percent) / 100.);
+        match media.duration_ms {
             Some(duration) => {
                 let total = duration as f64 / 1000.;
                 let position = position.clamp(0., total);
@@ -655,32 +809,23 @@ impl Controller {
             }
             match event {
                 Event::State(state) => match *state {
-                    Ok(snapshot) => {
-                        let changed = self.snapshot.as_ref().map(|s| {
-                            (
-                                &s.now_playing.current,
-                                &s.now_playing.next,
-                                s.playback.modes,
-                            )
-                        }) != Some((
-                            &snapshot.now_playing.current,
-                            &snapshot.now_playing.next,
-                            snapshot.playback.modes,
-                        ));
-                        self.at = Instant::now();
-                        self.present(app, &snapshot);
+                    Ok(Watched { age, media, .. }) => {
+                        let changed = !self.media.as_ref().is_some_and(|m| m.same_listing(&media));
+                        let now = Instant::now();
+                        self.at = now.checked_sub(age).unwrap_or(now);
+                        self.present(app, &media, age.as_secs_f64());
                         let panel = app.get_player_panel();
-                        self.snapshot = Some(snapshot);
+                        self.media = Some(media);
                         // A sheet built from the old state is rebuilt from the new one.
                         if changed && (panel == 2 || panel == 3) {
                             self.panel(app, panel);
                         }
                     }
                     Err(error) => {
-                        self.snapshot = None;
+                        self.media = None;
                         app.set_player_ready(false);
                         app.set_player_connected(false);
-                        app.set_player_title(error.into());
+                        app.set_player_title(self.describe(error).into());
                         app.set_player_has_art(false);
                         self.art_key.clear();
                     }
@@ -697,6 +842,7 @@ impl Controller {
                 }
                 Event::Done(Err(error)) => {
                     self.busy = false;
+                    let error = self.describe(error);
                     self.notice(app, &error);
                 }
                 Event::Sources(Ok(sources)) => {
@@ -705,7 +851,11 @@ impl Controller {
                     if app.get_player_panel() == 1 {
                         if self.sources.is_empty() {
                             app.set_player_panel_detail(
-                                "No sources: add favourites or playlists in the Sonos app.".into(),
+                                format!(
+                                    "No sources: add favourites or playlists in the {} app.",
+                                    self.target.as_ref().map_or("", |t| t.label.as_str())
+                                )
+                                .into(),
                             );
                         } else {
                             self.panel(app, 1);
@@ -715,7 +865,7 @@ impl Controller {
                 Event::Sources(Err(error)) => {
                     self.busy = false;
                     if app.get_player_panel() == 1 {
-                        app.set_player_panel_detail(error.into());
+                        app.set_player_panel_detail(self.describe(error).into());
                     }
                 }
                 Event::Art(key, pixels) => {
@@ -730,8 +880,8 @@ impl Controller {
         }
         if self.tick.elapsed() >= Duration::from_secs(1) {
             self.tick = Instant::now();
-            if let Some(snapshot) = &self.snapshot {
-                self.clock(app, snapshot, self.at.elapsed().as_secs_f64());
+            if let Some(media) = &self.media {
+                self.clock(app, media, self.at.elapsed().as_secs_f64());
             }
         }
         if Instant::now() >= self.refresh_at {
@@ -750,41 +900,8 @@ impl Controller {
         }
     }
 }
-/// The group's metadata once a skip has taken effect. A skip is acknowledged
-/// before the player switches tracks, so a read straight after it still shows
-/// the track being left; poll briefly until the current track differs from
-/// `before` (or until a second has passed and the read is what it is).
-pub(crate) fn now_playing_after_skip(
-    client: &Client,
-    before: Option<&couch_sonos::Track>,
-) -> Option<couch_sonos::NowPlaying> {
-    let same = |now: &couch_sonos::NowPlaying| match (before, now.current.as_ref()) {
-        (Some(b), Some(c)) => {
-            b.name == c.name && b.artist == c.artist && b.image_url == c.image_url
-        }
-        (None, None) => true,
-        _ => false,
-    };
-    let mut latest = None;
-    for attempt in 0..6 {
-        if attempt > 0 {
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        match client.now_playing() {
-            Ok(now) => {
-                let unchanged = same(&now);
-                latest = Some(now);
-                if !unchanged {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    latest
-}
 /// "Artist · Album", or whichever of the two the player gave.
-fn line(artist: &str, album: &str) -> String {
+pub(crate) fn line(artist: &str, album: &str) -> String {
     match (artist.is_empty(), album.is_empty()) {
         (false, false) if artist != album => format!("{artist} · {album}"),
         (false, _) => artist.to_owned(),
@@ -800,16 +917,18 @@ fn clock(t: f64) -> String {
         format!("{}:{:02}", t / 60, t % 60)
     }
 }
-fn describe(error: couch_sonos::Error) -> String {
-    match error {
-        couch_sonos::Error::NotCoordinator { coordinator } => {
-            format!("Playback is controlled by {coordinator}. Open that speaker to change it.")
+/// A failure in the screen's words. `label` is what this kind of device is
+/// called.
+pub(crate) fn describe(failure: Failure, label: &str) -> String {
+    match failure {
+        Failure::Follows { leader } => {
+            format!("Playback is controlled by {leader}. Open that speaker to change it.")
         }
-        couch_sonos::Error::Transport => "Cannot reach the speaker.".into(),
-        couch_sonos::Error::Api(code) if code == "ERROR_PLAYBACK_NO_CONTENT" => {
-            "Sonos found nothing to play there.".into()
-        }
-        other => other.to_string(),
+        Failure::Unreachable => "Cannot reach the speaker.".into(),
+        Failure::NotConnected => "Not connected to the speaker.".into(),
+        Failure::NothingToPlay => format!("{label} found nothing to play there."),
+        Failure::Expired => String::new(),
+        Failure::Message(text) => text,
     }
 }
 fn worker(
@@ -817,156 +936,236 @@ fn worker(
     events: mpsc::SyncSender<(u64, Event)>,
     active: Arc<AtomicU64>,
 ) {
-    let mut client: Option<Client> = None;
-    let mut art_sent = String::new();
+    let mut worker = Worker::default();
     while let Ok((generation, request)) = rx.recv() {
         if active.load(Ordering::SeqCst) != generation {
             continue;
         }
+        if !worker.handle(generation, request, &events, &active) {
+            return;
+        }
+    }
+}
+/// What the worker thread keeps between requests.
+#[derive(Default)]
+struct Worker {
+    backend: Option<Box<dyn Backend>>,
+    /// Whether `backend` is open. A command that could not reach the device
+    /// closes it, and it stays closed until the screen asks to reconnect.
+    connected: bool,
+    revision: u64,
+    art_sent: String,
+}
+impl Worker {
+    /// One request. Returns false when the UI has gone away.
+    fn handle(
+        &mut self,
+        generation: u64,
+        request: Request,
+        events: &mpsc::SyncSender<(u64, Event)>,
+        active: &AtomicU64,
+    ) -> bool {
         let current = || active.load(Ordering::SeqCst) == generation;
         let send = |event: Event| events.send((generation, event)).is_ok();
         match request {
             Request::Close => {
-                client = None;
-                art_sent.clear();
+                if let Some(mut backend) = self.backend.take() {
+                    backend.close();
+                }
+                self.connected = false;
+                self.art_sent.clear();
             }
-            Request::Open(host, known_art) => {
-                art_sent = known_art;
-                match Client::connect(host) {
-                    Ok(c) => {
-                        client = Some(c);
-                    }
-                    Err(e) => {
-                        client = None;
-                        if !send(Event::State(Box::new(Err(describe(e))))) {
-                            return;
-                        }
-                        continue;
-                    }
+            Request::Open(backend, known_art) => {
+                if let Some(mut old) = self.backend.replace(backend) {
+                    old.close();
                 }
-                if !refresh(client.as_ref(), &send, &mut art_sent, &current) {
-                    return;
-                }
+                self.art_sent = known_art;
+                return self.open(&send, &current);
             }
-            Request::Refresh => {
-                if !refresh(client.as_ref(), &send, &mut art_sent, &current) {
-                    return;
-                }
+            Request::Reopen => {
+                self.art_sent.clear();
+                return self.open(&send, &current);
+            }
+            Request::Refresh => return self.refresh(&send, &current),
+            Request::Sources => {
+                let result = match self.backend.as_mut().filter(|_| self.connected) {
+                    Some(backend) => backend.sources(),
+                    None => return send(Event::Done(Err(Failure::NotConnected))),
+                };
+                return send(Event::Sources(result));
             }
             Request::Command(op) => {
-                let Some(c) = client.as_ref() else {
-                    if !send(Event::Done(Err("Not connected to the speaker.".into()))) {
-                        return;
-                    }
-                    continue;
+                let Some(backend) = self.backend.as_mut().filter(|_| self.connected) else {
+                    return send(Event::Done(Err(Failure::NotConnected)));
                 };
-                let outcome = match &op {
-                    Op::Sources => {
-                        let result = c.sources().map_err(describe);
-                        if !send(Event::Sources(result)) {
-                            return;
-                        }
-                        continue;
+                let outcome = match backend.perform(&op, &current) {
+                    Ok(Done::Volume(volume)) => Ok(format!("volume:{volume}")),
+                    Ok(Done::Muted(muted)) => {
+                        Ok(if muted { "Muted" } else { "Unmuted" }.to_owned())
                     }
-                    Op::PlayPause => c
-                        .command_if_current("play-pause", &current)
-                        .map(|_| String::new()),
-                    Op::Skip(forward) => {
-                        let before = c.now_playing().ok().and_then(|n| n.current);
-                        c.command_if_current(if *forward { "next" } else { "previous" }, &current)
-                            .map(|_| {
-                                // Let the player switch before the refresh reads it.
-                                now_playing_after_skip(c, before.as_ref());
-                                String::new()
-                            })
-                    }
-                    Op::Seek(position) => c
-                        .seek_if_current(*position, &current)
-                        .map(|_| String::new()),
-                    Op::Volume(delta) => c
-                        .nudge_volume(*delta)
-                        .and_then(|_| c.volume())
-                        .map(|v| format!("volume:{v}")),
-                    Op::ToggleMute => c
-                        .muted()
-                        .and_then(|muted| c.set_muted(!muted).map(|_| muted))
-                        .map(|was| if was { "Unmuted" } else { "Muted" }.to_owned()),
-                    Op::Select(source, label) => c
-                        .select_source_if_current(source, &current)
-                        .map(|_| format!("Playing {label}")),
-                    Op::Modes(change) => c
-                        .set_play_modes_if_current(*change, &current)
-                        .map(|_| String::new()),
+                    Ok(Done::Nothing) => Ok(match &op {
+                        Op::Source { title, .. } => format!("Playing {title}"),
+                        _ => String::new(),
+                    }),
+                    Err(Failure::Expired) => Ok(String::new()),
+                    Err(other) => Err(other),
                 };
-                let outcome = match outcome {
-                    Err(couch_sonos::Error::Cancelled) => Ok(String::new()),
-                    other => other.map_err(describe),
-                };
-                let transport_failed =
-                    matches!(outcome, Err(ref e) if e == "Cannot reach the speaker.");
+                let transport_failed = matches!(outcome, Err(Failure::Unreachable));
                 if !send(Event::Done(outcome)) {
-                    return;
+                    return false;
                 }
                 if transport_failed {
-                    client = None;
-                    continue;
+                    backend.close();
+                    self.connected = false;
+                    return true;
                 }
                 // A source load settles over a second or two; read once now
                 // and let the periodic refresh catch up.
-                if matches!(op, Op::Select(..)) {
+                if matches!(op, Op::Source { .. }) {
                     std::thread::sleep(Duration::from_millis(600));
                 }
-                if !refresh(client.as_ref(), &send, &mut art_sent, &current) {
-                    return;
-                }
+                return self.refresh(&send, &current);
             }
+        }
+        true
+    }
+    fn open(&mut self, send: &dyn Fn(Event) -> bool, current: &dyn Fn() -> bool) -> bool {
+        self.connected = false;
+        self.revision = 0;
+        if let Some(backend) = self.backend.as_mut() {
+            if let Err(e) = backend.open() {
+                return send(Event::State(Box::new(Err(e))));
+            }
+            self.connected = true;
+        }
+        self.refresh(send, current)
+    }
+    /// One read to the UI, then the artwork for an item whose art has not been
+    /// sent yet. Returns false when the UI has gone away.
+    fn refresh(&mut self, send: &dyn Fn(Event) -> bool, current: &dyn Fn() -> bool) -> bool {
+        let Some(backend) = self.backend.as_mut().filter(|_| self.connected) else {
+            return send(Event::State(Box::new(Err(Failure::NotConnected))));
+        };
+        if !current() {
+            return true;
+        }
+        let watched = match backend.watch(self.revision, Duration::ZERO) {
+            Ok(w) => w,
+            Err(e) => return send(Event::State(Box::new(Err(e)))),
+        };
+        self.revision = watched.revision;
+        let art = watched.media.art.clone().unwrap_or_default();
+        if !send(Event::State(Box::new(Ok(watched)))) {
+            return false;
+        }
+        if !art.is_empty() && art != self.art_sent && current() {
+            let pixels = backend
+                .artwork(&art)
+                .ok()
+                .and_then(|bytes| activity_art::decode(&bytes, activity_art::Shape::Backdrop));
+            self.art_sent = art.clone();
+            return send(Event::Art(art, pixels));
+        }
+        if art.is_empty() {
+            self.art_sent.clear();
+        }
+        true
+    }
+}
+/// The speaker states the player screen's pictures are taken from, as the
+/// controller sees them. A backend's own tests hold the same states in the
+/// device's terms and check that they read as these, so the pictures stand for
+/// that backend too.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use super::*;
+    /// The Lounge speaker playing the second track of an album from a playlist.
+    pub fn playing() -> Media {
+        Media {
+            item: None,
+            state: PlayState::Playing,
+            title: Some("Weird Fishes / Arpeggi".into()),
+            artist: Some("Radiohead".into()),
+            album: Some("In Rainbows".into()),
+            subtitle: Some("Evening".into()),
+            source: Some("Apple Music".into()),
+            duration_ms: Some(318_000),
+            position_ms: Some(74_210),
+            rate_percent: 100,
+            art: Some("http://192.0.2.9:1400/getaa?s=1&u=weird-fishes".into()),
+            can: Can {
+                next: true,
+                previous: true,
+                seek: true,
+            },
+            modes: Modes::default(),
+            next: Some(NextItem {
+                title: "All I Need".into(),
+                detail: "Radiohead · In Rainbows".into(),
+            }),
+            follows: None,
+            device_name: Some("Lounge".into()),
+        }
+    }
+    pub fn paused() -> Media {
+        Media {
+            state: PlayState::Paused,
+            rate_percent: 0,
+            ..playing()
+        }
+    }
+    /// The same speaker as a member of the Kitchen's group.
+    pub fn following(media: Media) -> Media {
+        Media {
+            follows: Some("Kitchen".into()),
+            can: Can {
+                seek: false,
+                ..media.can
+            },
+            ..media
+        }
+    }
+    /// A station: one item without an end and nothing after it.
+    pub fn radio() -> Media {
+        Media {
+            title: Some("BBC Radio 6 Music".into()),
+            artist: None,
+            album: None,
+            subtitle: Some("BBC Radio 6 Music".into()),
+            duration_ms: None,
+            art: Some("http://192.0.2.9:1400/getaa?s=1&u=6music".into()),
+            can: Can {
+                seek: false,
+                ..paused().can
+            },
+            next: None,
+            ..paused()
+        }
+    }
+    /// The TV input: a name and a kind, no item and no clock.
+    pub fn tv_input() -> Media {
+        Media {
+            state: PlayState::Paused,
+            title: Some("TV".into()),
+            subtitle: Some("linein.hometheater".into()),
+            ..idle()
+        }
+    }
+    pub fn idle() -> Media {
+        Media {
+            state: PlayState::Idle,
+            can: Can {
+                seek: false,
+                ..paused().can
+            },
+            device_name: Some("Lounge".into()),
+            ..Media::default()
         }
     }
 }
-/// One snapshot to the UI, then the artwork for a track whose art has not been
-/// sent yet. Returns false when the UI has gone away.
-fn refresh(
-    client: Option<&Client>,
-    send: &dyn Fn(Event) -> bool,
-    art_sent: &mut String,
-    current: &dyn Fn() -> bool,
-) -> bool {
-    let Some(client) = client else {
-        return send(Event::State(Box::new(Err(
-            "Not connected to the speaker.".into()
-        ))));
-    };
-    if !current() {
-        return true;
-    }
-    let snapshot = match client.snapshot() {
-        Ok(s) => s,
-        Err(e) => return send(Event::State(Box::new(Err(describe(e))))),
-    };
-    let art = snapshot
-        .now_playing
-        .current
-        .as_ref()
-        .map(|t| t.image_url.clone())
-        .unwrap_or_default();
-    if !send(Event::State(Box::new(Ok(snapshot)))) {
-        return false;
-    }
-    if !art.is_empty() && art != *art_sent && current() {
-        let pixels = client
-            .artwork(&art)
-            .ok()
-            .and_then(|bytes| activity_art::decode(&bytes, activity_art::Shape::Backdrop));
-        *art_sent = art.clone();
-        return send(Event::Art(art, pixels));
-    }
-    if art.is_empty() {
-        art_sent.clear();
-    }
-    true
-}
 #[cfg(test)]
 mod tests {
+    use super::fixtures::{following, idle, paused, playing, radio, tv_input};
     use super::*;
     #[test]
     fn music_player_screen_renders_and_its_controls_dispatch() {
@@ -1078,24 +1277,74 @@ mod tests {
         );
         app.hide().unwrap();
     }
-    /// The speaker the pictures are taken of: one fixed Sonos player whose
-    /// answers the test chooses. It stands where the worker thread stands,
-    /// without a network: every request the screen makes is answered the way
-    /// `worker` answers it, from `now`, `answer` and `sources`.
+    /// The speaker the pictures are taken of: a backend whose answers the test
+    /// chooses. The rig stands where the worker thread stands and hands every
+    /// request the screen makes to the real [`Worker`], on this thread, so a
+    /// picture never waits on another thread.
+    #[derive(Clone)]
+    struct Speaker {
+        /// What the speaker reports when it is read.
+        now: Result<Media, Failure>,
+        /// What the next command comes back with.
+        answer: Result<Done, Failure>,
+        sources: Result<Vec<Choice>, Failure>,
+        /// Whether the speaker answers when the screen connects to it.
+        connect: Result<(), Failure>,
+        /// What reached the speaker, in order, in plain words.
+        sent: Vec<String>,
+    }
+    struct Fake(Arc<std::sync::Mutex<Speaker>>);
+    impl Backend for Fake {
+        fn open(&mut self) -> Result<(), Failure> {
+            self.0.lock().unwrap().connect.clone()
+        }
+        fn close(&mut self) {}
+        fn watch(&mut self, after: u64, _wait: Duration) -> Result<Watched, Failure> {
+            let mut speaker = self.0.lock().unwrap();
+            speaker.sent.push("read".into());
+            speaker.now.clone().map(|media| Watched {
+                revision: after + 1,
+                age: Duration::ZERO,
+                media,
+            })
+        }
+        fn perform(&mut self, op: &Op, _current: &dyn Fn() -> bool) -> Result<Done, Failure> {
+            let mut speaker = self.0.lock().unwrap();
+            speaker.sent.push(match op {
+                Op::PlayPause => "play-pause".into(),
+                Op::Next => "next".into(),
+                Op::Previous => "previous".into(),
+                Op::Seek { position_ms } => format!("seek to {position_ms} ms"),
+                Op::StepVolume(delta) => format!("volume {delta:+}"),
+                Op::ToggleMute => "mute".into(),
+                Op::Source { title, .. } => format!("source {title}"),
+                Op::Modes(change) => format!(
+                    "modes shuffle {:?} repeat {:?} repeat-one {:?} crossfade {:?}",
+                    change.shuffle, change.repeat, change.repeat_one, change.crossfade
+                ),
+            });
+            std::mem::replace(&mut speaker.answer, Ok(Done::Nothing))
+        }
+        fn sources(&mut self) -> Result<Vec<Choice>, Failure> {
+            let mut speaker = self.0.lock().unwrap();
+            speaker.sent.push("sources".into());
+            speaker.sources.clone()
+        }
+        fn artwork(&mut self, art: &str) -> Result<Vec<u8>, Failure> {
+            self.0.lock().unwrap().sent.push(format!("artwork {art}"));
+            Ok(cover())
+        }
+    }
     struct Rig {
         controller: Controller,
+        worker: Worker,
         requests: mpsc::Receiver<(u64, Request)>,
         events: mpsc::SyncSender<(u64, Event)>,
-        /// What the speaker reports when it is read.
-        now: Result<Snapshot, String>,
-        /// What the next command comes back with.
-        answer: Result<String, String>,
-        sources: Result<Vec<Source>, String>,
-        /// Whether the speaker answers when the screen connects to it.
-        connect: Result<(), String>,
-        connected: bool,
-        art_sent: String,
-        /// What reached the speaker, in order, in plain words.
+        speaker: Arc<std::sync::Mutex<Speaker>>,
+        now: Result<Media, Failure>,
+        answer: Result<Done, Failure>,
+        sources: Result<Vec<Choice>, Failure>,
+        connect: Result<(), Failure>,
         sent: Vec<String>,
     }
     impl Rig {
@@ -1108,7 +1357,7 @@ mod tests {
                 active: Arc::new(AtomicU64::new(0)),
                 generation: 0,
                 target: None,
-                snapshot: None,
+                media: None,
                 at: Instant::now(),
                 tick: Instant::now(),
                 refresh_at: Instant::now(),
@@ -1120,49 +1369,28 @@ mod tests {
                 selected: 3,
                 views: std::collections::HashMap::new(),
             };
-            Self {
-                controller,
-                requests,
-                events,
-                now: Err("Cannot reach the speaker.".into()),
-                answer: Ok(String::new()),
+            let speaker = Speaker {
+                now: Err(Failure::Unreachable),
+                answer: Ok(Done::Nothing),
                 sources: Ok(Vec::new()),
                 connect: Ok(()),
-                connected: false,
-                art_sent: String::new(),
                 sent: Vec::new(),
+            };
+            Self {
+                controller,
+                worker: Worker::default(),
+                requests,
+                events,
+                now: speaker.now.clone(),
+                answer: speaker.answer.clone(),
+                sources: speaker.sources.clone(),
+                connect: speaker.connect.clone(),
+                sent: Vec::new(),
+                speaker: Arc::new(std::sync::Mutex::new(speaker)),
             }
         }
-        fn read(&mut self) {
-            let generation = self.controller.generation;
-            if !self.connected {
-                let lost = Err("Not connected to the speaker.".to_owned());
-                self.events
-                    .send((generation, Event::State(Box::new(lost))))
-                    .unwrap();
-                return;
-            }
-            let art = self
-                .now
-                .as_ref()
-                .ok()
-                .and_then(|s| s.now_playing.current.as_ref())
-                .map(|t| t.image_url.clone())
-                .unwrap_or_default();
-            self.sent.push("read".into());
-            self.events
-                .send((generation, Event::State(Box::new(self.now.clone()))))
-                .unwrap();
-            if self.now.is_ok() && !art.is_empty() && art != self.art_sent {
-                self.sent.push(format!("artwork {art}"));
-                self.art_sent = art.clone();
-                let pixels = activity_art::decode(&cover(), activity_art::Shape::Backdrop);
-                self.events
-                    .send((generation, Event::Art(art, pixels)))
-                    .unwrap();
-            } else if art.is_empty() {
-                self.art_sent.clear();
-            }
+        fn backend(&self) -> Box<dyn Backend> {
+            Box::new(Fake(self.speaker.clone()))
         }
         /// Hold the one-second clock and the three-second re-read still, so a
         /// picture never depends on how long the test took to get here.
@@ -1181,61 +1409,30 @@ mod tests {
                 if generation != self.controller.generation {
                     continue;
                 }
-                match request {
-                    Request::Close => {
-                        self.sent.push("close".into());
-                        self.art_sent.clear();
-                    }
+                match &request {
                     Request::Open(_, known_art) => {
-                        self.sent.push(format!("open, showing art {known_art:?}"));
-                        self.art_sent = known_art;
-                        self.connected = self.connect.is_ok();
-                        match self.connect.clone() {
-                            Ok(()) => self.read(),
-                            Err(e) => self
-                                .events
-                                .send((generation, Event::State(Box::new(Err(e)))))
-                                .unwrap(),
-                        }
+                        self.sent.push(format!("open, showing art {known_art:?}"))
                     }
-                    Request::Refresh => self.read(),
-                    Request::Command(Op::Sources) => {
-                        self.sent.push("sources".into());
-                        self.events
-                            .send((generation, Event::Sources(self.sources.clone())))
-                            .unwrap();
-                    }
-                    Request::Command(_) if !self.connected => {
-                        let lost = Err("Not connected to the speaker.".to_owned());
-                        self.events.send((generation, Event::Done(lost))).unwrap();
-                    }
-                    Request::Command(op) => {
-                        self.sent.push(match &op {
-                            Op::PlayPause => "play-pause".into(),
-                            Op::Skip(true) => "next".into(),
-                            Op::Skip(false) => "previous".into(),
-                            Op::Seek(position) => format!("seek to {position} ms"),
-                            Op::Volume(delta) => format!("volume {delta:+}"),
-                            Op::ToggleMute => "mute".into(),
-                            Op::Select(_, name) => format!("source {name}"),
-                            Op::Modes(change) => format!(
-                                "modes shuffle {:?} repeat {:?} repeat-one {:?} crossfade {:?}",
-                                change.shuffle, change.repeat, change.repeat_one, change.crossfade
-                            ),
-                            Op::Sources => unreachable!(),
-                        });
-                        let answer = std::mem::replace(&mut self.answer, Ok(String::new()));
-                        let lost = answer
-                            .as_ref()
-                            .is_err_and(|e| e == "Cannot reach the speaker.");
-                        self.events.send((generation, Event::Done(answer))).unwrap();
-                        if lost {
-                            self.connected = false;
-                        } else {
-                            self.read();
-                        }
-                    }
+                    Request::Reopen => self.sent.push("open, showing art \"\"".into()),
+                    Request::Close => self.sent.push("close".into()),
+                    _ => {}
                 }
+                {
+                    let mut speaker = self.speaker.lock().unwrap();
+                    speaker.now = self.now.clone();
+                    if matches!(request, Request::Command(_)) {
+                        speaker.answer = std::mem::replace(&mut self.answer, Ok(Done::Nothing));
+                    }
+                    speaker.sources = self.sources.clone();
+                    speaker.connect = self.connect.clone();
+                }
+                assert!(self.worker.handle(
+                    generation,
+                    request,
+                    &self.events,
+                    &self.controller.active
+                ));
+                self.sent.append(&mut self.speaker.lock().unwrap().sent);
                 self.controller.poll(app);
             }
             self.hold();
@@ -1275,71 +1472,6 @@ mod tests {
             .write_to(&mut bytes, image::ImageFormat::Png)
             .unwrap();
         bytes.into_inner()
-    }
-    fn track(
-        name: &str,
-        artist: &str,
-        album: &str,
-        art: &str,
-        ms: Option<u64>,
-    ) -> couch_sonos::Track {
-        couch_sonos::Track {
-            name: name.into(),
-            artist: artist.into(),
-            album: album.into(),
-            image_url: art.into(),
-            duration_ms: ms,
-            service: "Apple Music".into(),
-        }
-    }
-    /// The Lounge speaker playing the second track of an album from a playlist.
-    fn playing() -> Snapshot {
-        Snapshot {
-            status: couch_sonos::Status {
-                player: couch_sonos::Player {
-                    uuid: "RINCON_LOUNGE".into(),
-                    name: "Lounge".into(),
-                    model: "Era 100".into(),
-                },
-                coordinator: "RINCON_LOUNGE".into(),
-                coordinator_name: "Lounge".into(),
-                transport: "PLAYING".into(),
-                volume: 18,
-                muted: false,
-            },
-            playback: couch_sonos::PlaybackStatus {
-                state: "PLAYING".into(),
-                position_ms: 74_210,
-                modes: couch_sonos::PlayModes::default(),
-                can_seek: true,
-                can_skip: true,
-                can_skip_back: true,
-            },
-            now_playing: couch_sonos::NowPlaying {
-                container: "Evening".into(),
-                container_type: "playlist".into(),
-                current: Some(track(
-                    "Weird Fishes / Arpeggi",
-                    "Radiohead",
-                    "In Rainbows",
-                    "http://192.0.2.9:1400/getaa?s=1&u=weird-fishes",
-                    Some(318_000),
-                )),
-                next: Some(track(
-                    "All I Need",
-                    "Radiohead",
-                    "In Rainbows",
-                    "http://192.0.2.9:1400/getaa?s=1&u=all-i-need",
-                    Some(229_000),
-                )),
-            },
-        }
-    }
-    fn paused() -> Snapshot {
-        let mut s = playing();
-        s.playback.state = "PAUSED".into();
-        s.status.transport = "PAUSED".into();
-        s
     }
     /// Everything on the screen that is not a pixel, as text, so a change
     /// shows up as a readable difference on any machine.
@@ -1400,7 +1532,9 @@ mod tests {
         }
         out
     }
-    /// The Sonos player screen, picture by picture, from one fixed speaker.
+    /// The player screen through the controller, picture by picture, from one
+    /// fixed speaker behind a fake backend. A second backend is held to the
+    /// same pictures by reading the same speaker states as [`fixtures`].
     ///
     /// Three records come out of one run. The words on the screen and what was
     /// sent to the speaker are compared with `tests/golden/player-screen.txt`
@@ -1485,13 +1619,13 @@ mod tests {
             device: "lounge-sonos".into(),
             name: "Lounge Sonos".into(),
             room: "Living room".into(),
-            host: Ipv4Addr::new(192, 0, 2, 9),
+            label: "Sonos".into(),
         };
         let mut rig = Rig::new();
         let rig = &mut rig;
 
         // Opening: the waiting screen, then the speaker's first answer.
-        rig.controller.open(&app, target.clone());
+        rig.controller.open(&app, target.clone(), rig.backend());
         picture(rig, "01-connecting");
         rig.now = Ok(paused());
         rig.pump(&app);
@@ -1515,20 +1649,23 @@ mod tests {
 
         // Sources: asked for once, listed, and one started.
         rig.sources = Ok(vec![
-            Source {
-                id: SourceId::HomeTheater,
-                name: "TV".into(),
+            Choice {
+                id: "tv".into(),
+                title: "TV".into(),
                 detail: "This player".into(),
+                current: false,
             },
-            Source {
-                id: SourceId::Favorite("4".into()),
-                name: "Morning Jazz".into(),
+            Choice {
+                id: "favorite.4".into(),
+                title: "Morning Jazz".into(),
                 detail: "Apple Music".into(),
+                current: false,
             },
-            Source {
-                id: SourceId::Playlist("0".into()),
-                name: "Evening".into(),
+            Choice {
+                id: "playlist.0".into(),
+                title: "Evening".into(),
                 detail: "Sonos playlist · 12 tracks".into(),
+                current: false,
             },
         ]);
         rig.act(&app, "Input.Down", 0.);
@@ -1536,7 +1673,6 @@ mod tests {
         picture(rig, "06-sources-finding");
         rig.pump(&app);
         picture(rig, "07-sources");
-        rig.answer = Ok("Playing Morning Jazz".into());
         rig.controller.action(&app, "choose", 1., false);
         picture(rig, "08-source-starting");
         rig.pump(&app);
@@ -1554,7 +1690,7 @@ mod tests {
             (1., "off"),
             (2., "crossfade"),
         ] {
-            let modes = &mut state.playback.modes;
+            let modes = &mut state.modes;
             match change {
                 "shuffle" => modes.shuffle = true,
                 "all" => modes.repeat = true,
@@ -1575,7 +1711,7 @@ mod tests {
         rig.act(&app, "subtitles", 0.);
         picture(rig, "13-up-next");
         rig.act(&app, "choose", 0.);
-        state.now_playing.next = None;
+        state.next = None;
         rig.now = Ok(state.clone());
         rig.act(&app, "subtitles", 0.);
         rig.refresh(&app);
@@ -1583,17 +1719,17 @@ mod tests {
         rig.act(&app, "Input.Back", 0.);
 
         // Volume and mute: the shared card, then a sentence.
-        rig.answer = Ok("volume:23".into());
+        rig.answer = Ok(Done::Volume(23));
         rig.act(&app, "volume", 5.);
         picture(rig, "15-volume-card");
         rig.expire(&app);
-        rig.answer = Ok("Muted".into());
+        rig.answer = Ok(Done::Muted(true));
         rig.act(&app, "mute", 0.);
         picture(rig, "16-muted");
         rig.expire(&app);
 
         // A command the speaker refuses, in the screen's words.
-        rig.answer = Err("Sonos found nothing to play there.".into());
+        rig.answer = Err(Failure::NothingToPlay);
         rig.act(&app, "previous", 0.);
         picture(rig, "17-refused");
         rig.expire(&app);
@@ -1602,21 +1738,15 @@ mod tests {
         rig.controller.close(&app);
         rig.pump(&app);
         app.set_player_shown(false);
-        rig.controller.open(&app, target.clone());
+        rig.controller.open(&app, target.clone(), rig.backend());
         picture(rig, "18-reopened-before-the-speaker-answers");
         rig.pump(&app);
 
         // A speaker that follows another one.
-        let mut member = playing();
-        member.status.coordinator = "RINCON_KITCHEN".into();
-        member.status.coordinator_name = "Kitchen".into();
-        rig.now = Ok(member);
+        rig.now = Ok(following(playing()));
         rig.refresh(&app);
         picture(rig, "19-follows-kitchen");
-        let mut member = paused();
-        member.status.coordinator = "RINCON_KITCHEN".into();
-        member.status.coordinator_name = "Kitchen".into();
-        rig.now = Ok(member);
+        rig.now = Ok(following(paused()));
         rig.refresh(&app);
         rig.act(&app, "play", 0.);
         picture(rig, "20-follows-kitchen-refuses-play");
@@ -1628,40 +1758,19 @@ mod tests {
         rig.expire(&app);
 
         // A radio stream, the TV input, and nothing at all.
-        let mut radio = paused();
-        radio.now_playing.container = "BBC Radio 6 Music".into();
-        radio.now_playing.container_type = "station".into();
-        radio.now_playing.current = Some(track(
-            "BBC Radio 6 Music",
-            "",
-            "",
-            "http://192.0.2.9:1400/getaa?s=1&u=6music",
-            None,
-        ));
-        radio.now_playing.next = None;
-        rig.now = Ok(radio);
+        rig.now = Ok(radio());
         rig.refresh(&app);
         picture(rig, "22-radio");
-        let mut tv = paused();
-        tv.now_playing = couch_sonos::NowPlaying {
-            container: "TV".into(),
-            container_type: "linein.homeTheater".into(),
-            current: None,
-            next: None,
-        };
-        rig.now = Ok(tv.clone());
+        rig.now = Ok(tv_input());
         rig.refresh(&app);
         picture(rig, "23-tv-input");
-        tv.now_playing.container.clear();
-        tv.now_playing.container_type.clear();
-        tv.playback.state = "IDLE".into();
-        rig.now = Ok(tv);
+        rig.now = Ok(idle());
         rig.refresh(&app);
         picture(rig, "24-idle");
         rig.act(&app, "play", 0.);
 
         // A read that fails says so and the next one recovers by itself.
-        rig.now = Err("Cannot reach the speaker.".into());
+        rig.now = Err(Failure::Unreachable);
         rig.refresh(&app);
         picture(rig, "25-read-cannot-reach");
         rig.now = Ok(paused());
@@ -1669,7 +1778,7 @@ mod tests {
         // A command that cannot reach the speaker drops the connection: the
         // next read says so, a command says so, and Reconnect asks again,
         // first in vain.
-        rig.answer = Err("Cannot reach the speaker.".into());
+        rig.answer = Err(Failure::Unreachable);
         rig.act(&app, "play", 0.);
         picture(rig, "26-command-cannot-reach");
         rig.expire(&app);
@@ -1677,7 +1786,7 @@ mod tests {
         rig.act(&app, "volume", -5.);
         picture(rig, "27-not-connected");
         rig.expire(&app);
-        rig.connect = Err("Cannot reach the speaker.".into());
+        rig.connect = Err(Failure::Unreachable);
         rig.act(&app, "retry", 0.);
         picture(rig, "28-reconnect-failed");
         rig.connect = Ok(());
@@ -1755,18 +1864,5 @@ mod tests {
         assert_eq!(clock(0.), "0:00");
         assert_eq!(clock(182.), "3:02");
         assert_eq!(clock(3725.), "1:02:05");
-    }
-    #[test]
-    fn errors_are_sentences_for_the_screen() {
-        assert_eq!(
-            describe(couch_sonos::Error::NotCoordinator {
-                coordinator: "Kitchen".into()
-            }),
-            "Playback is controlled by Kitchen. Open that speaker to change it."
-        );
-        assert_eq!(
-            describe(couch_sonos::Error::Transport),
-            "Cannot reach the speaker."
-        );
     }
 }

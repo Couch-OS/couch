@@ -34,6 +34,7 @@ mod qr;
 mod room_sonos;
 mod scenes;
 mod shortcuts;
+mod sonos_player;
 mod system;
 mod thermostat;
 mod touch;
