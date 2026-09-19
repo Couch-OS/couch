@@ -71,9 +71,16 @@ fn target(config: &Config, id: &str) -> Result<Target, String> {
     }
 }
 /// A Sonos speaker behind this id, if that is what it is: the device itself,
-/// or an activity whose source device is one. Sonos takes the player screen
-/// over instead of the Kodi worker.
-fn sonos_target(config: &Config, id: &str) -> Option<crate::sonos_player::Target> {
+/// or an activity whose source device is one, with the built-in client as the
+/// player screen's backend. Sonos takes the player screen over instead of the
+/// Kodi worker.
+fn sonos_target(
+    config: &Config,
+    id: &str,
+) -> Option<(
+    crate::media_player::Target,
+    Box<dyn crate::media_player::Backend>,
+)> {
     let (device, name, room) = if let Some(id) = id.strip_prefix("device:") {
         let room = config
             .rooms
@@ -92,12 +99,15 @@ fn sonos_target(config: &Config, id: &str) -> Option<crate::sonos_player::Target
         (device, activity.name.clone(), room.name.clone())
     };
     match config.resolve_integration(&device.integration) {
-        Some(Integration::Sonos { host }) => Some(crate::sonos_player::Target {
-            device: device.id.to_string(),
-            name,
-            room,
-            host: host.parse().ok()?,
-        }),
+        Some(Integration::Sonos { host }) => Some((
+            crate::media_player::Target {
+                device: device.id.to_string(),
+                name,
+                room,
+                label: "Sonos".into(),
+            },
+            Box::new(crate::sonos_player::BuiltIn::new(host.parse().ok()?)),
+        )),
         _ => None,
     }
 }
@@ -383,8 +393,9 @@ pub struct Controller {
     cache: cache::Cache,
     cache_key: Option<cache::Key>,
     presentation_at: Option<Instant>,
-    /// The Sonos presentation of the same screen; open when a speaker is.
-    sonos: crate::sonos_player::Controller,
+    /// The music presentation of the same screen; open when a speaker is.
+    /// Sonos is the only device behind it so far.
+    sonos: crate::media_player::Controller,
 }
 impl Controller {
     pub fn new(app: &App) -> Self {
@@ -432,7 +443,7 @@ impl Controller {
             cache: cache::Cache::default(),
             cache_key: None,
             presentation_at: None,
-            sonos: crate::sonos_player::Controller::new(),
+            sonos: crate::media_player::Controller::new(),
         }
     }
     /// Hand the player screen back from Sonos before something else takes it.
@@ -523,7 +534,7 @@ impl Controller {
         self.pages.close(app);
         app.set_custom_activity_available(false);
         if let Some(config) = crate::connections::config() {
-            if let Some(target) = sonos_target(&config, id) {
+            if let Some((target, backend)) = sonos_target(&config, id) {
                 // Release the Kodi side entirely; the Sonos controller owns the
                 // screen until it is closed or something else opens.
                 self.generation += 1;
@@ -540,7 +551,7 @@ impl Controller {
                 }
                 app.set_player_has_logo(false);
                 app.set_player_logo(slint::Image::default());
-                self.sonos.open(app, target);
+                self.sonos.open(app, target, backend);
                 return;
             }
             if let Some(target) = plugin_target(&config, id) {

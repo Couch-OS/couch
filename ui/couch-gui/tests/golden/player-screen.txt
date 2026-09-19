@@ -1,0 +1,286 @@
+== 01-connecting
+  heading: Lounge Sonos / Living room
+  title: "Connecting to Sonos…"
+  line: ""
+  clock: "" "" 0.00%
+  flags: shown music paused
+  selected: 3
+  sheets: Sources, Modes, Up next
+== 02-paused
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sent: open, showing art ""; read; artwork http://192.0.2.9:1400/getaa?s=1&u=weird-fishes
+== 03-playing
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready can-seek art
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sent: play-pause; read
+== 04-seek-line-selected
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 1
+  sheets: Sources, Modes, Up next
+  sent: play-pause; read
+== 05-previous-selected
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 2
+  sheets: Sources, Modes, Up next
+  sent: seek to 159000 ms; read; previous; read; next; read
+== 06-sources-finding
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  sheet 1: "Finding sources…"
+== 07-sources
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  sheet 1: ""
+    "TV" / "This player"
+    "Morning Jazz" / "Apple Music"
+    "Evening" / "Sonos playlist · 12 tracks"
+  sent: sources
+== 08-source-starting
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  notice: "Starting Morning Jazz…"
+== 09-source-started
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  notice: "Playing Morning Jazz"
+  sent: source Morning Jazz; read
+== 10-modes
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  sheet 2: ""
+    "Shuffle" / "Off"
+    "Repeat" / "Off"
+    "Crossfade" / "Off"
+== 11-modes-shuffled-repeating-this-track
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  sheet 2: ""
+    "Shuffle" / "On"
+    "Repeat" / "This track"
+    "Crossfade" / "Off"
+  sent: modes shuffle Some(true) repeat None repeat-one None crossfade None; read; modes shuffle None repeat Some(true) repeat-one None crossfade None; read; modes shuffle None repeat None repeat-one Some(true) crossfade None; read
+== 12-modes-shuffle-and-crossfade
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  sheet 2: ""
+    "Shuffle" / "On"
+    "Repeat" / "Off"
+    "Crossfade" / "On"
+  sent: modes shuffle None repeat Some(false) repeat-one Some(false) crossfade None; read; modes shuffle None repeat None repeat-one None crossfade Some(true); read
+== 13-up-next
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  sheet 3: ""
+    "All I Need" / "Radiohead · In Rainbows · Press to skip to it"
+== 14-up-next-empty
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  sheet 3: "Nothing is queued after this."
+  sent: next; read; read
+== 15-volume-card
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  volume card: Volume 23 for "Lounge Sonos"
+  sent: volume +5; read
+== 16-muted
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  notice: "Muted"
+  sent: mute; read
+== 17-refused
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 5
+  sheets: Sources, Modes, Up next
+  notice: "Sonos found nothing to play there."
+  sent: previous; read
+== 18-reopened-before-the-speaker-answers
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sent: close
+== 19-follows-kitchen
+  heading: Lounge Sonos / Living room · Playing from Kitchen
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready art
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sent: open, showing art "http://192.0.2.9:1400/getaa?s=1&u=weird-fishes"; read; read
+== 20-follows-kitchen-refuses-play
+  heading: Lounge Sonos / Living room · Playing from Kitchen
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused art
+  selected: 3
+  sheets: Sources, Modes, Up next
+  notice: "Playback is controlled by Kitchen. Open that speaker to change it."
+  sent: read
+== 21-follows-kitchen-modes
+  heading: Lounge Sonos / Living room · Playing from Kitchen
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused art
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sheet 2: "Play modes belong to the group's coordinator."
+    "Shuffle" / "Off"
+    "Repeat" / "Off"
+    "Crossfade" / "Off"
+== 22-radio
+  heading: Lounge Sonos / Living room
+  title: "BBC Radio 6 Music"
+  line: "BBC Radio 6 Music"
+  clock: "1:14" "LIVE" 0.00%
+  flags: shown music connected ready paused art
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sent: read; artwork http://192.0.2.9:1400/getaa?s=1&u=6music
+== 23-tv-input
+  heading: Lounge Sonos / Living room
+  title: "TV"
+  line: "linein.hometheater"
+  clock: "1:14" "LIVE" 0.00%
+  flags: shown music connected ready paused
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sent: read
+== 24-idle
+  heading: Lounge Sonos / Living room
+  title: "Lounge is idle.\nPress Sources to play something."
+  line: ""
+  clock: "" "" 0.00%
+  flags: shown music connected paused
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sent: read
+== 25-read-cannot-reach
+  heading: Lounge Sonos / Living room
+  title: "Cannot reach the speaker."
+  line: ""
+  clock: "" "" 0.00%
+  flags: shown music paused
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sent: play-pause; read; read
+== 26-command-cannot-reach
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 3
+  sheets: Sources, Modes, Up next
+  notice: "Cannot reach the speaker."
+  sent: read; artwork http://192.0.2.9:1400/getaa?s=1&u=weird-fishes; play-pause
+== 27-not-connected
+  heading: Lounge Sonos / Living room
+  title: "Not connected to the speaker."
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music paused can-seek
+  selected: 3
+  sheets: Sources, Modes, Up next
+  notice: "Not connected to the speaker."
+== 28-reconnect-failed
+  heading: Lounge Sonos / Living room
+  title: "Cannot reach the speaker."
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music paused can-seek
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sent: open, showing art ""
+== 29-reconnected
+  heading: Lounge Sonos / Living room
+  title: "Weird Fishes / Arpeggi"
+  line: "Radiohead · In Rainbows"
+  clock: "1:14" "−4:03" 23.34%
+  flags: shown music connected ready paused can-seek art
+  selected: 3
+  sheets: Sources, Modes, Up next
+  sent: open, showing art ""; read; artwork http://192.0.2.9:1400/getaa?s=1&u=weird-fishes

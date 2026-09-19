@@ -22,6 +22,7 @@ mod home;
 mod input;
 mod keypad;
 mod lights;
+mod media_player;
 mod mic;
 mod motion;
 mod navigation;
