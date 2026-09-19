@@ -289,8 +289,13 @@ harness checks every ID parses, is canonical, is unique, and is accepted by
 your own `supports`.
 
 `x:<id>` ids (a package's own button names) are part of protocol 3, which is
-unreleased and switched off: a manifest that declares one is refused. See the
+unreleased and switched off: a protocol 1 or 2 manifest that declares one is
+invalid, and a protocol 3 manifest is refused. See the
 [protocol reference](development/protocol.md#protocol-3-unreleased-and-switched-off).
+The same goes for `Error::Unpaired`, `Error::because` and
+`DeviceClient::execute_phased`: they compile, and a protocol 1 or 2 package that
+uses them still sends exactly the bytes it always sent (`Unpaired` leaves as
+`rejected`, the reason is dropped, every key is a tap).
 
 Dynamic functions - `input:<id>` and `app:<id>` - are **not** listed here.
 Declare them by overriding `supports_input` / `supports_app`, which are asked
