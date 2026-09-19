@@ -57,18 +57,40 @@ fn wait_after(failures: u32, unreachable: bool) -> u64 {
 
 /// The official repository to install `package` from, given the package
 /// manager's catalog. A repository the owner added is never chosen here, even
-/// when it is the only one that offers the package.
+/// when it is the only one that offers the package. Nor is an offer this Couch
+/// cannot run (the feed's signed metadata says so before any download).
 fn official_source(catalog: &Value, package: &str) -> Option<&'static str> {
-    let offered: Vec<&str> = catalog["available"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|entry| entry["id"] == package)
+    let offered: Vec<&str> = offers(catalog, package)
+        .filter(|entry| entry["installable"] != false)
         .filter_map(|entry| entry["repository"].as_str())
         .collect();
     OFFICIAL_REPOSITORIES
         .into_iter()
         .find(|official| offered.contains(official))
+}
+
+/// Why the official feed's `package` cannot be installed here, when it offers
+/// one that cannot: "Needs a newer Couch". The connection then waits with
+/// that reason; a Couch update is what ends the wait.
+fn official_obstacle(catalog: &Value, package: &str) -> Option<String> {
+    OFFICIAL_REPOSITORIES.into_iter().find_map(|official| {
+        offers(catalog, package)
+            .find(|entry| entry["repository"] == official && entry["installable"] == false)
+            .map(|entry| {
+                entry["reason"]
+                    .as_str()
+                    .unwrap_or("It cannot be installed on this remote")
+                    .to_owned()
+            })
+    })
+}
+
+fn offers<'a>(catalog: &'a Value, package: &'a str) -> impl Iterator<Item = &'a Value> {
+    catalog["available"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(move |entry| entry["id"] == package)
 }
 
 #[derive(Default)]
@@ -354,6 +376,12 @@ impl Api {
             .catalog(&[])
             .map_err(|e| Install::Failed(e.to_string()))?;
         let Some(repository) = official_source(&catalog, row.package) else {
+            if let Some(reason) = official_obstacle(&catalog, row.package) {
+                return Err(Install::Failed(format!(
+                    "The {} package cannot be installed yet: {reason}. Update Couch on this remote and the connection converts by itself",
+                    row.name
+                )));
+            }
             return Err(match refreshed {
                 Err(Install::Failed(error) | Install::Unreachable(error)) => {
                     Install::Unreachable(format!(
@@ -809,6 +837,40 @@ mod tests {
         );
         assert_eq!(official_source(&json!({"available":[]}), "denon"), None);
         assert_eq!(official_source(&json!({}), "denon"), None);
+    }
+
+    #[test]
+    fn an_official_package_this_couch_cannot_run_is_waited_for_with_its_reason() {
+        let offer = |entries: &[(&str, bool)]| {
+            json!({"available": entries.iter().map(|(repository, installable)| {
+                let mut entry = json!({"id":"denon","version":"9.9.9","repository":repository,
+                    "installable":installable});
+                if !installable {
+                    entry["reason"] = "Needs a newer Couch".into();
+                }
+                entry
+            }).collect::<Vec<_>>()})
+        };
+        // Stable still carries a version this Couch runs; preview has moved on.
+        let mixed = offer(&[("official-preview", false), ("official-stable", true)]);
+        assert_eq!(official_source(&mixed, "denon"), Some("official-stable"));
+        let mixed = offer(&[("official-preview", true), ("official-stable", false)]);
+        assert_eq!(official_source(&mixed, "denon"), Some("official-preview"));
+        // Nothing official can be installed: not chosen, and the reason is the feed's.
+        let newer = offer(&[("official-preview", false), ("living-room", true)]);
+        assert_eq!(official_source(&newer, "denon"), None);
+        assert_eq!(
+            official_obstacle(&newer, "denon").as_deref(),
+            Some("Needs a newer Couch")
+        );
+        // An obstacle in the owner's own repository is not the official feed's.
+        let theirs = offer(&[("living-room", false)]);
+        assert_eq!(official_obstacle(&theirs, "denon"), None);
+        assert_eq!(official_obstacle(&mixed, "kodi"), None);
+        // A catalog from before feeds said so: everything is installable.
+        let before = json!({"available":[{"id":"denon","repository":"official-preview"}]});
+        assert_eq!(official_source(&before, "denon"), Some("official-preview"));
+        assert_eq!(official_obstacle(&before, "denon"), None);
     }
 
     #[test]

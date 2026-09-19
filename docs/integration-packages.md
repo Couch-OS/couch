@@ -35,6 +35,60 @@ Only regular files and directories are admitted. Links, devices, FIFOs, sockets,
 set-id/world-writable files, excess files/bytes, and paths outside the payload
 are rejected.
 
+## Why it works this way
+
+An integration is an Alpine package, and yet Couch never runs `apk add` on the
+remote's own system to install one. Both halves are deliberate.
+
+The package format is Alpine's because the hard parts are already solved
+there: a signed package, a signed index of what a repository offers, version
+comparison, and a verifier (`apk`) that is already in the OS image. Couch
+writes none of that; it calls `apk verify`, `apk fetch` and `apk version`, and
+anyone can build and host a repository with stock Alpine tools.
+
+The package is not installed into the OS, because:
+
+- **The OS is outside Couch's updates and rollback.** The Alpine root comes
+  from the OS image the installer writes over USB. Couch updates itself in
+  runtime slots under `/opt/couch/runtime` and can step back to the previous
+  slot; nothing does that for `/usr` or Alpine's package database. A package
+  installed there would be a change no Couch update carries and no rollback
+  undoes.
+- **Install scripts and triggers run as root.** Repositories added by the
+  owner exist, so packages are third-party code. `apk add` would run whatever
+  a package's scripts say, as root, on the real system. Couch unpacks with
+  `--no-scripts` and `--no-network` into an empty private root made for that
+  one package, and keeps only the payload directory from it.
+- **Trust has to stay separate.** The feed's key must not be able to sign an
+  OS package, and Alpine's keys must not be able to sign an integration. Each
+  repository has its own key directory, passed with `--keys-dir`; nothing is
+  ever added to `/etc/apk/keys`, and keys do not cross repositories.
+- **Versions need slots.** Couch keeps each version in its own immutable
+  directory (`slots/ID/VERSION`) with an active and a previous selection,
+  rechecks the selected tree's hash every time it is used, falls back to the
+  previous version when the active one fails, and rolls back on request. `apk`
+  keeps one installed version and has no way back.
+- **Dependencies could move the OS.** A real `apk add` resolves dependencies,
+  and may install or upgrade system libraries to satisfy them. The private
+  root has no repositories and no network, so a package that depends on
+  anything cannot be unpacked at all.
+
+This has a price. Couch carries code that a plain `apk add` would not need
+(the archive preflight, the payload audit, slots, the handshake before
+activation), and every integration has to be a self-contained static program:
+it cannot lean on a shared library from the OS.
+
+Bluetooth is the one place Couch does run a plain `apk add` on the OS, and the
+contrast is the point. Switching Bluetooth on for the first time adds `dbus`,
+`bluez` and `bluez-deprecated`: official Alpine packages, from the image's own
+Alpine repositories, checked with the Alpine keys the image shipped with. They
+are OS packages, so the OS is where they belong. Even so, the step first runs
+`apk add --simulate` and goes ahead only if the plan is nothing but new
+installs; if it would upgrade or remove anything the image shipped with, it
+stops.
+
+## Building and installing
+
 Build the supplied plugin binaries with:
 
 ```sh
@@ -202,10 +256,12 @@ https://packages.couch-os.dev/stable
 Runtimes up to `.175.dev` read the official feeds only from
 `dangerouslaser.github.io/couch-integrations`. Later runtimes try the address
 above first and that one second, so they work before and after the feed
-repository moves to the Couch-OS organization. Indexes are fetched with
-redirects off, so the old address cannot simply forward: the feed must not
-move, and the custom domain must not be attached, until remotes that use
-integrations run a runtime with both addresses.
+repository moves to the Couch-OS organization. Runtimes from before
+[feed metadata](#feed-metadata) fetch indexes with redirects off, so for them
+the old address cannot simply forward: the feed must not move, and the custom
+domain must not be attached, until remotes that use integrations run a runtime
+with both addresses. Later runtimes follow [redirects](#redirects) to HTTPS
+addresses, and still try both addresses.
 
 The installer appends `armv7`. Preview initially contains Denon. Stable serves
 a valid signed empty index and has no installable packages until a
@@ -239,6 +295,107 @@ No manual key provisioning is needed for this official preview install:
 
 The released `.170` runtime predates the package host and cannot run this
 command. Install an integration-capable runtime first.
+
+## Feed metadata
+
+A signed index proves who made it. It does not say when, and it has no order.
+Someone between a remote and a feed could serve an old, validly signed index
+for ever, or an older one than the remote has already seen, and so hide a
+package that was fixed. A remote would also learn that a package needs a newer
+Couch only after downloading and unpacking it.
+
+So a feed publishes two more files beside each index:
+
+```text
+CHANNEL/armv7/feed.json       what the feed offers right now
+CHANNEL/armv7/feed.json.sig   a signature over exactly those bytes
+```
+
+`feed.json` carries a `sequence` number that only goes up, the times it was
+`issued` and `expires` (30 days; the feed signs again at least weekly), the
+size and SHA-256 of the one `APKINDEX.tar.gz` it describes, and for every
+package its file name, size, SHA-256 and the protocol versions from its
+manifest. The signature is RSA PKCS#1 v1.5 with SHA-256, made with the same
+key that signs the index and the packages:
+
+```sh
+openssl dgst -sha256 -sign KEY -out feed.json.sig feed.json
+openssl dgst -sha256 -verify PUB -signature feed.json.sig feed.json
+```
+
+On every refresh, and again just before an install, the remote downloads the
+index, then the two files, and checks, in this order:
+
+1. The signature is valid for that repository's trusted key (the key the owner
+   confirmed, or the built-in official key). Metadata that is there but
+   unsigned, or signed by anyone else, is refused.
+2. It is a format this Couch reads (`schema` 1). A later format counts as no
+   metadata; see below for what that means.
+3. For an official repository, `channel` is the channel the repository is
+   (preview metadata cannot be served as stable).
+4. `sequence` is not lower than the highest one this remote has accepted from
+   that repository. The same number again is fine. A lower one is refused:
+   "The package feed is older than one this remote has already seen".
+5. It has not expired.
+6. The downloaded index is byte for byte the one the metadata names.
+
+A repository that fails any of these offers nothing on that refresh, and the
+Integrations page says which repository and why. The other repositories still
+load. A feed being republished at the moment of a refresh can fail check 6
+once; the next refresh reads a consistent pair.
+
+**The clock.** A remote can start with its clock unset. If the clock reads
+more than a day before the metadata was issued, it is not believed: the expiry
+check is skipped, the log says so, and everything else still applies. A clock
+later than `expires` is the expiry case, and refuses.
+
+**When metadata is required.** What a remote remembers is kept per repository
+in `integrations/management/feed-state.json`: the highest sequence accepted,
+and that metadata has been seen. A repository that has never published
+metadata works as it always did. Once a remote has accepted metadata from a
+repository, that repository must keep providing it: missing metadata, or a
+format this Couch cannot read, is then refused. Removing a repository and
+adding it again starts over. The record belongs to the repository, not to an
+address, so the official feed's previous address cannot serve something older
+than the current one did. The official repositories follow the same rule for
+now, because the official feed does not publish metadata yet; a later Couch
+will require it of them from the start.
+
+**Refusing before the download.** A package whose `min_core_protocol_version`
+is higher than this Couch speaks is listed as not installable, "Needs a newer
+Couch". The Integrations page shows the reason and disables Install or Update
+for it, and the remote refuses the request without downloading anything. A
+connection waiting for its package (see
+[built-in integrations that became packages](integration-migration.md)) keeps
+waiting with that reason instead of trying an install that cannot work.
+
+**After the download.** The file `apk fetch` produced must have the name, size
+and SHA-256 the metadata promised, before `apk` is asked to open it. `apk`
+still verifies the package's signature afterwards.
+
+### Redirects
+
+The index and the metadata may be redirected up to three times, and only to an
+`https://` address. A redirect to plain HTTP, or to anything else, is a failed
+download. Following a redirect cannot make a bad feed acceptable: what arrives
+is checked against the key, the sequence and the hash whatever address served
+it. Plain HTTP is still refused, because it would show everyone on the network
+which packages a remote asks for.
+
+The package itself is downloaded by `apk fetch`, which does its own HTTP.
+Couch does not change that. In Alpine 3.21 (`apk-tools` 2.14.6, its bundled
+`libfetch/http.c`, confirmed by running it against a redirecting server):
+
+- 301, 302 and 303 are followed, for the index `apk` reads and for the package;
+  307 and 308 are not, and fail the download.
+- At most four redirects per file (`MAX_REDIRECT 5` counts requests).
+- The scheme is not checked. A redirect from HTTPS to plain HTTP is followed
+  without a warning, and so is one to another host.
+
+So a feed that redirects package downloads must use 301, 302 or 303. A
+redirect cannot get another package installed: `apk` verifies the package
+against the repository's key, and with feed metadata the file must also match
+the size and hash the feed signed.
 
 ## Core rollback and saved configuration
 
