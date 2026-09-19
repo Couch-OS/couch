@@ -1,119 +1,212 @@
-//! Explicit migration pilot; package installation alone never changes a connection.
+//! Connections saved while their integration was built into the OS.
+//!
+//! The remote hands such a connection to its package by itself (it installs
+//! the package from the feed if it has to); this page only says where that
+//! stands. Until it is done the connection reads "Needs the Denon package",
+//! with the reason the last attempt gave and a way to try again now.
 use crate::{api, App};
 use leptos::{prelude::*, task::spawn_local};
 use serde::Deserialize;
-use serde_json::json;
 
-#[derive(Clone, Default, Deserialize)]
-struct MigrationList {
-    revision: u64,
-    connections: Vec<MigrationConnection>,
-    package_available: bool,
+#[derive(Clone, Default, PartialEq, Deserialize)]
+pub(super) struct Waiting {
     #[serde(default)]
-    supports_volume_db: bool,
+    pub connections: Vec<WaitingConnection>,
     #[serde(default)]
-    supports_absolute_volume: bool,
-}
-#[derive(Clone, Deserialize)]
-struct MigrationConnection {
-    id: String,
-    name: String,
-    state: String,
+    pub working: bool,
+    #[serde(default)]
+    pub retry_in_seconds: Option<u64>,
 }
 
-fn load(app: App, list: RwSignal<MigrationList>, error: RwSignal<String>) {
-    spawn_local(async move {
-        match api::ha("GET", "/api/integrations/migrations/denon", None).await {
-            Ok(value) => match serde_json::from_value(value) {
-                Ok(next) => list.set(next),
-                Err(_) => error.set("The remote sent an unreadable migration status.".into()),
-            },
-            Err(next) => {
-                if next.unauthorized {
-                    app.paired.set(Some(false));
-                }
-                error.set(next.message);
-            }
-        }
-    });
+#[derive(Clone, Default, PartialEq, Deserialize)]
+pub(super) struct WaitingConnection {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub package_name: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
-pub(super) fn section(app: App, busy: RwSignal<bool>) -> AnyView {
-    let list = RwSignal::new(MigrationList::default());
-    let error = RwSignal::new(String::new());
-    let result = RwSignal::new(String::new());
-    let pending = RwSignal::new(None::<MigrationConnection>);
-    Effect::new(move |_| {
-        if !busy.get() {
-            load(app, list, error);
+/// When the remote will next try by itself, in words.
+pub(super) fn retry_text(waiting: &Waiting) -> String {
+    if waiting.working {
+        return "Trying now…".into();
+    }
+    match waiting.retry_in_seconds {
+        None | Some(0) => "The remote is about to try again.".into(),
+        Some(seconds) if seconds < 90 => {
+            format!("The remote tries again by itself in {seconds} s.")
         }
-    });
-    let confirm = move || {
-        if busy.get_untracked() {
-            return;
-        }
-        let Some(connection) = pending.get_untracked() else {
-            return;
-        };
-        let restore = connection.state == "migrated";
-        let revision = list.get_untracked().revision;
-        busy.set(true);
-        error.set(String::new());
-        result.set(String::new());
-        pending.set(None);
+        Some(seconds) => format!(
+            "The remote tries again by itself in about {} min.",
+            (seconds + 30) / 60
+        ),
+    }
+}
+
+/// What one waiting connection says under its name.
+pub(super) fn reason_text(connection: &WaitingConnection) -> String {
+    match connection.reason.as_deref() {
+        Some(reason) if !reason.is_empty() => format!("Last attempt: {reason}"),
+        _ => "Couch installs the package from the package feed and switches this connection over by itself; rooms, activities and buttons stay attached.".into(),
+    }
+}
+
+/// Keeps `waiting` current while the view that owns it is alive. A connection
+/// that stops waiting was converted by the daemon, so the configuration this
+/// page holds is out of date: reload it.
+pub(super) fn watch(app: App, waiting: RwSignal<Waiting>, error: RwSignal<String>) {
+    let load = move || {
         spawn_local(async move {
-            let path = format!("/api/integrations/migrations/denon/{}", connection.id);
-            match api::ha("POST", &path, Some(json!({
-                "action": if restore { "restore-native" } else { "migrate" }, "revision":revision,
-            }))).await {
-                Ok(_) => {
-                    result.set(if restore { "Built-in Denon control restored." } else { "This connection now uses the Denon package." }.into());
-                    match api::load().await {
-                        Ok(config) => app.config.set(Some(config)),
-                        Err(next) => {
-                            if next.unauthorized { app.paired.set(Some(false)); }
-                            error.set(format!("Connection changed, but configuration could not be refreshed: {}", next.message));
+            match api::ha("GET", "/api/integrations/legacy", None).await {
+                Ok(value) => {
+                    let next: Waiting = serde_json::from_value(value).unwrap_or_default();
+                    let before = waiting.get_untracked().connections.len();
+                    let converted = next.connections.len() < before;
+                    if waiting.get_untracked() != next {
+                        waiting.set(next);
+                    }
+                    if converted {
+                        if let Ok(config) = api::load().await {
+                            app.config.set(Some(config));
                         }
                     }
                 }
                 Err(next) => {
-                    if next.unauthorized { app.paired.set(Some(false)); }
-                    error.set(next.message);
+                    if next.unauthorized {
+                        app.paired.set(Some(false));
+                    } else {
+                        error.set(next.message);
+                    }
                 }
             }
-            busy.set(false);
         });
     };
+    load();
+    let timer = set_interval_with_handle(
+        move || {
+            // Nothing waits on most remotes; do not poll for them.
+            if !waiting.get_untracked().connections.is_empty() {
+                load();
+            }
+        },
+        std::time::Duration::from_secs(2),
+    )
+    .ok();
+    on_cleanup(move || {
+        if let Some(timer) = timer {
+            timer.clear();
+        }
+    });
+}
+
+pub(super) fn try_again(app: App, waiting: RwSignal<Waiting>, error: RwSignal<String>) {
+    error.set(String::new());
+    waiting.update(|waiting| waiting.working = true);
+    spawn_local(async move {
+        if let Err(next) = api::ha("POST", "/api/integrations/legacy/retry", None).await {
+            if next.unauthorized {
+                app.paired.set(Some(false));
+            }
+            error.set(next.message);
+        }
+    });
+}
+
+/// The Integrations page: nothing at all unless something is waiting.
+pub(super) fn section(app: App, busy: RwSignal<bool>) -> AnyView {
+    let waiting = RwSignal::new(Waiting::default());
+    let error = RwSignal::new(String::new());
+    watch(app, waiting, error);
     view! {
-        <section class="card integration-migration">
-            <h2>"Denon migration pilot"</h2>
-            <p>"Try the package with an existing named Denon connection. Your devices, activities and button assignments stay attached. You can restore built-in control here."</p>
-            {move || (!(list.get().supports_volume_db && list.get().supports_absolute_volume)).then(|| view! {<p class="notice">"Preview limitation: this package does not provide full dB reading and absolute-volume support. Keep built-in control if you need either feature."</p>})}
+        {move || (!waiting.get().connections.is_empty()).then(|| view! {
+            <section class="card integration-legacy">
+                <h2>"Connections waiting for a package"</h2>
+                <p>"These connections were set up when their integration was part of Couch. It is now a package, and the remote installs it and switches them over by itself."</p>
+                <p role="alert">{move || error.get()}</p>
+                <div class="integration-grid">{move || waiting.get().connections.into_iter().map(|connection| {
+                    let reason = reason_text(&connection);
+                    view! { <article class="card integration-card">
+                        <h3>{connection.name}</h3>
+                        <p class="notice small">{connection.message}</p>
+                        <p class="dim">{reason}</p>
+                    </article> }
+                }).collect_view()}</div>
+                <p class="dim" role="status" aria-live="polite">{move || retry_text(&waiting.get())}</p>
+                <button class="primary" disabled=move || busy.get() || waiting.get().working on:click=move |_| try_again(app, waiting, error)>"Try again"</button>
+            </section>
+        })}
+    }
+    .into_any()
+}
+
+/// The same state on the connection's own page and on its devices' cards.
+pub(super) fn connection_notice(app: App, id: String, package_name: String) -> AnyView {
+    let waiting = RwSignal::new(Waiting::default());
+    let error = RwSignal::new(String::new());
+    watch(app, waiting, error);
+    let key = StoredValue::new(id);
+    let mine = Memo::new(move |_| {
+        waiting.with(|waiting| {
+            key.with_value(|id| waiting.connections.iter().find(|c| &c.id == id).cloned())
+        })
+    });
+    let heading = format!("Needs the {package_name} package");
+    view! {
+        <section class="card integration-legacy">
+            <h2>{heading}</h2>
+            <p>{format!("This connection was set up when {package_name} support was part of Couch. It is now an integration package. The remote installs it from the package feed and switches this connection over by itself; its rooms, activities and buttons stay attached and its address is carried over.")}</p>
+            <p class="dim">{move || mine.get().map(|connection| reason_text(&connection))}</p>
             <p role="alert">{move || error.get()}</p>
-            <p role="status" aria-live="polite">{move || result.get()}</p>
-            {move || (!list.get().package_available).then(|| view! { <p class="dim">"Install the Denon package before switching a connection."</p> })}
-            {move || list.get().connections.is_empty().then(|| view! { <p class="dim">"No named Denon connections are available for this pilot."</p> })}
-            <div class="integration-grid">{move || list.get().connections.into_iter().map(|connection| {
-                let restored = connection.state == "migrated";
-                let name = connection.name.clone();
-                view! { <article class="integration-package">
-                    <h3>{name}</h3>
-                    <p>{if restored { "Using the Denon package" } else { "Using built-in Denon control" }}</p>
-                    <button class="ghost" disabled=move || busy.get() || (!restored && !list.get().package_available)
-                        on:click=move |_| pending.set(Some(connection.clone()))>
-                        {if restored { "Restore built-in control" } else { "Switch to Denon package" }}
-                    </button>
-                </article> }
-            }).collect_view()}</div>
-            {move || pending.get().map(|connection| {
-                let restore = connection.state == "migrated";
-                view! { <div class="notice" role="alert">
-                    <strong>{format!("{} for {}?", if restore { "Restore built-in control" } else { "Use the preview package" }, connection.name)}</strong>
-                    <p>{if restore { "The package connection will stop before built-in control resumes. The installed package remains available." } else { "The current connection will stop before the package takes over. Review any limitations above. Existing settings are retained for restoration." }}</p>
-                    <button class="primary" disabled=move || busy.get() on:click=move |_| confirm()>{if restore { "Confirm restore" } else { "Confirm switch" }}</button>
-                    <button class="ghost" disabled=move || busy.get() on:click=move |_| pending.set(None)>"Cancel"</button>
-                </div> }
-            })}
+            <p class="dim" role="status" aria-live="polite">{move || retry_text(&waiting.get())}</p>
+            <button class="primary" disabled=move || waiting.get().working on:click=move |_| try_again(app, waiting, error)>"Try again"</button>
         </section>
-    }.into_any()
+    }
+    .into_any()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wait_is_said_in_words_and_the_reason_is_never_hidden() {
+        let mut waiting = Waiting::default();
+        assert_eq!(retry_text(&waiting), "The remote is about to try again.");
+        waiting.retry_in_seconds = Some(28);
+        assert_eq!(
+            retry_text(&waiting),
+            "The remote tries again by itself in 28 s."
+        );
+        waiting.retry_in_seconds = Some(870);
+        assert_eq!(
+            retry_text(&waiting),
+            "The remote tries again by itself in about 15 min."
+        );
+        waiting.working = true;
+        assert_eq!(retry_text(&waiting), "Trying now…");
+        let mut connection = WaitingConnection::default();
+        assert!(reason_text(&connection).contains("by itself"));
+        connection.reason = Some("cannot download repository index over HTTPS".into());
+        assert_eq!(
+            reason_text(&connection),
+            "Last attempt: cannot download repository index over HTTPS"
+        );
+    }
+
+    #[test]
+    fn the_status_the_remote_sends_is_read() {
+        let waiting: Waiting = serde_json::from_value(serde_json::json!({
+            "connections":[{"id":"receiver","name":"Receiver","kind":"denon","package":"denon",
+                "package_name":"Denon","message":"Needs the Denon package","reason":null}],
+            "working":false,"retry_in_seconds":30}))
+        .unwrap();
+        assert_eq!(waiting.connections[0].message, "Needs the Denon package");
+        assert_eq!(waiting.connections[0].reason, None);
+        assert_eq!(waiting.retry_in_seconds, Some(30));
+    }
 }

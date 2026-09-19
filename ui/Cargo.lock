@@ -1014,22 +1014,11 @@ version = "0.1.0"
 dependencies = [
  "couch-androidtv",
  "couch-appletv",
- "couch-denon",
  "couch-kodi",
  "couch-sdk",
  "couch-tizen",
  "couch-webos",
  "libc",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "couch-denon"
-version = "0.1.0"
-dependencies = [
- "couch-plugin",
- "couch-sdk",
  "serde",
  "serde_json",
 ]
@@ -1043,7 +1032,6 @@ dependencies = [
  "couch-appletv",
  "couch-bt-hid",
  "couch-control",
- "couch-denon",
  "couch-ha",
  "couch-hue",
  "couch-ir",

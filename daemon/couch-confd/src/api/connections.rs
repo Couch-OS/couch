@@ -112,19 +112,6 @@ impl Api {
                 None => Reply::error(404, "CoreELEC connection not found"),
             };
         }
-        if let [id, "denon", rest @ ..] = path {
-            let settings = self.with(|s| match &s.config().connection(&Id::new(*id))?.provider {
-                Provider::Denon { host, port } => Some(couch_denon::Settings {
-                    host: host.clone(),
-                    port: *port,
-                }),
-                _ => None,
-            });
-            return match settings {
-                Some(settings) => super::denon::route(method, rest, body, settings),
-                None => Reply::error(404, "Denon connection not found"),
-            };
-        }
         if let [id, kind @ ("protect" | "hue" | "ha" | "webos" | "kodi" | "androidtv" | "appletv"
         | "tizen"), rest @ ..] = path
         {
@@ -185,6 +172,17 @@ impl Api {
                     Ok(v) => v,
                     Err(r) => return r,
                 };
+                // A built-in that left the OS is only ever read from an older
+                // file; a new connection of that kind belongs to its package.
+                if let ("POST", Some(row)) = (method, input.provider.legacy_builtin()) {
+                    return Reply::error(
+                        400,
+                        format!(
+                            "{} is now an integration package: install it from Integrations, then add the connection",
+                            row.name
+                        ),
+                    );
+                }
                 if let Provider::Plugin {
                     id,
                     label,

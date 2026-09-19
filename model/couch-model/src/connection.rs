@@ -81,7 +81,13 @@ pub enum Provider {
         host: String,
         port: u16,
     },
-    Denon {
+    /// A Denon connection saved while the receiver client was built into the
+    /// OS. The client now ships as the `denon` package, so nothing drives this
+    /// variant: it exists to read an older file, keep its rooms and activities
+    /// valid, and hand the address to the package
+    /// ([`crate::LEGACY_BUILTINS`]). New connections never take this shape.
+    #[serde(rename = "denon")]
+    LegacyDenon {
         host: String,
         port: u16,
     },
@@ -119,7 +125,7 @@ impl Provider {
             Self::Kodi { .. } => "kodi",
             Self::CoreElec { .. } => "core-elec",
             Self::Sonos { .. } => "sonos",
-            Self::Denon { .. } => "denon",
+            Self::LegacyDenon { .. } => "denon",
             Self::HomeAssistant => "home-assistant",
             Self::Hue => "hue",
             Self::WebOs => "web-os",
@@ -138,7 +144,7 @@ impl Provider {
             Self::Kodi { .. } => "Kodi",
             Self::CoreElec { .. } => "CoreELEC",
             Self::Sonos { .. } => "Sonos",
-            Self::Denon { .. } => "Denon AVR",
+            Self::LegacyDenon { .. } => "Denon AVR",
             Self::HomeAssistant => "Home Assistant",
             Self::Hue => "Philips Hue",
             Self::WebOs => "LG webOS",
@@ -190,7 +196,7 @@ impl Config {
                     port: *port,
                 }
             }
-            Provider::Denon { host, port } => Integration::Denon {
+            Provider::LegacyDenon { host, port } => Integration::LegacyDenon {
                 host: host.clone(),
                 port: *port,
             },

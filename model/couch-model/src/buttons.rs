@@ -264,7 +264,7 @@ pub fn functions(integration: &Integration) -> &'static [(&'static str, &'static
             ("rewind", "Rewind"),
             ("fast-forward", "Fast forward"),
         ],
-        Integration::Denon { .. } => &[
+        Integration::LegacyDenon { .. } => &[
             ("power-on", "Main zone on"),
             ("power-off", "Main zone off"),
             ("volume-up", "Volume up (0.5 dB)"),

@@ -355,7 +355,11 @@ pub enum Integration {
     Sonos {
         host: String,
     },
-    Denon {
+    /// What a [`crate::Provider::LegacyDenon`] connection resolves to, and
+    /// the inline shape from before named connections. Nothing drives it; it
+    /// keeps an unconverted file readable and its saved commands valid.
+    #[serde(rename = "denon")]
+    LegacyDenon {
         host: String,
         port: u16,
     },
@@ -447,7 +451,7 @@ impl Integration {
             Integration::Plugin { .. } => "plugin",
             Integration::HomeAssistant { .. } => "home-assistant",
             Integration::Ir { .. } => "ir",
-            Integration::Denon { .. } => "denon",
+            Integration::LegacyDenon { .. } => "denon",
             Integration::Sonos { .. } => "sonos",
         }
     }

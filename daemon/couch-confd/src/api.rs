@@ -22,7 +22,6 @@
 
 pub(crate) mod connections;
 mod coreelec;
-mod denon;
 mod device_ir;
 mod ha;
 mod hue;
@@ -66,6 +65,7 @@ pub struct Api {
     auth: Arc<Auth>,
     plugins: crate::plugins::Runtime,
     integration_packages: couch_integrations::management::Manager,
+    legacy: integration_migrations::LegacyConversion,
 }
 
 /// What a `POST` to a collection needs: everything else is defaulted and then
@@ -243,6 +243,7 @@ impl Api {
                 ),
             ),
             plugins: crate::plugins::Runtime::new(home),
+            legacy: Default::default(),
         }
     }
 
@@ -366,8 +367,8 @@ impl Api {
         if rest.first() == Some(&"connections") {
             return self.connection_route(&method, &rest[1..], &body, if_match);
         }
-        if rest.starts_with(&["integrations", "migrations", "denon"]) {
-            return self.denon_migration_route(&method, &rest[3..], &body);
+        if rest.starts_with(&["integrations", "legacy"]) {
+            return self.legacy_conversion_route(&method, &rest[2..]);
         }
         if rest.first() == Some(&"integrations") {
             return self.integration_route(&method, &rest[1..], &body);
@@ -689,7 +690,7 @@ impl Api {
                 "schema_version": SCHEMA_VERSION,
                 "icons": ALL_ICONS.iter().map(|i| i.name()).collect::<Vec<_>>(),
                 "device_kinds": ALL_DEVICE_KINDS.iter().map(|k| k.name()).collect::<Vec<_>>(),
-                "integrations": ["none", "kodi", "home-assistant", "hue", "web-os", "android-tv", "apple-tv", "tizen", "denon", "sonos", "matter", "unifi-protect", "ir"],
+                "integrations": ["none", "kodi", "home-assistant", "hue", "web-os", "android-tv", "apple-tv", "tizen", "sonos", "matter", "unifi-protect", "ir"],
                 "transports": couch_model::ALL_TRANSPORTS.iter().map(|t| t.name()).collect::<Vec<_>>(),
                 "activity_kinds": ["audio", "video"],
             }),

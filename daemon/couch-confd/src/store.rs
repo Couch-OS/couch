@@ -306,24 +306,6 @@ impl Store {
         if_match: Option<u64>,
         f: impl FnOnce(&mut Config) -> T,
     ) -> Result<T, Error> {
-        self.mutate_inner(if_match, false, f)
-    }
-
-    /// Only the explicit migration route may transfer a receiver's owner.
-    pub(crate) fn mutate_migration<T>(
-        &mut self,
-        if_match: Option<u64>,
-        f: impl FnOnce(&mut Config) -> T,
-    ) -> Result<T, Error> {
-        self.mutate_inner(if_match, true, f)
-    }
-
-    fn mutate_inner<T>(
-        &mut self,
-        if_match: Option<u64>,
-        migration: bool,
-        f: impl FnOnce(&mut Config) -> T,
-    ) -> Result<T, Error> {
         if let Some(expected) = if_match {
             if expected != self.config.revision {
                 return Err(Error::Stale {
@@ -334,43 +316,11 @@ impl Store {
         }
         let mut next = self.config.clone();
         let out = f(&mut next);
-        if !migration && next.denon_migrations != self.config.denon_migrations {
-            return Err(Error::Compatibility(
-                "Use the explicit Denon migration or restore action before changing migration receipts".into(),
-            ));
-        }
         // An edit may carry the old shape (a whole-config PUT of an export,
         // a device set to the old integration); it lands in the current one.
         next.migrate();
         next.revision = self.config.revision.wrapping_add(1);
         next.validate().map_err(Error::Invalid)?;
-        let protected_denon = crate::plugins::protected_denon_targets(&next).collect::<Vec<_>>();
-        if !protected_denon.is_empty() {
-            // An import can attach retained private settings to a newly added
-            // package connection without using the settings API. Protect the
-            // pilot's ownership boundary on that path too.
-            let home = self.path.parent().unwrap_or(Path::new("."));
-            for connection in &next.connections {
-                if next.migrated_denon(&connection.id).is_some()
-                    || !matches!(&connection.provider, couch_model::Provider::Plugin { id, .. } if id == "denon")
-                {
-                    continue;
-                }
-                let target = crate::plugins::saved_denon_target(home, connection.id.as_str())
-                    .map_err(Error::Compatibility)?;
-                if target.is_some_and(|target| {
-                    protected_denon.iter().any(|original| {
-                        original.host == target.host && original.port == target.port
-                    })
-                }) {
-                    return Err(Error::Compatibility(
-                        "A Denon package connection overlaps a built-in or migrated receiver"
-                            .into(),
-                    ));
-                }
-            }
-        }
-
         let previous = std::mem::replace(&mut self.config, next);
         if let Err(e) = self.write() {
             // The file is the source of truth; if it did not take, neither did

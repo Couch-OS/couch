@@ -41,7 +41,6 @@ fn execute_sequence(
     generation: &AtomicU64,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<(), String> {
-    let mut denon = HashMap::new();
     let mut tv = HashMap::new();
     let mut streaming = HashMap::new();
     let mut sonos = HashMap::new();
@@ -50,7 +49,6 @@ fn execute_sequence(
         crate::activity_buttons::execute(
             &job.config,
             action,
-            &mut denon,
             &mut tv,
             &mut streaming,
             &mut sonos,

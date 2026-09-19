@@ -1413,6 +1413,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             screen.snapshot();
         }
         light_controls.poll(&app);
+        if let Some(message) = light_controls.take_notice() {
+            toast(message, 3);
+        }
         // Before the intent is performed below, so a source list opens its
         // chooser in this same iteration.
         if sonos_room.poll(&app) {

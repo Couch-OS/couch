@@ -209,15 +209,13 @@ impl Pages {
                 work,
                 reply,
                 current,
-                |request,
-                 caches: &mut (HashMap<_, _>, HashMap<_, _>, HashMap<_, _>, HashMap<_, _>)| {
+                |request, caches: &mut (HashMap<_, _>, HashMap<_, _>, HashMap<_, _>)| {
                     crate::activity_buttons::execute(
                         &request.config,
                         &request.action,
                         &mut caches.0,
                         &mut caches.1,
                         &mut caches.2,
-                        &mut caches.3,
                         &crate::connections::matter(),
                     )
                 },

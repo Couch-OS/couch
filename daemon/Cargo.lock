@@ -379,7 +379,6 @@ dependencies = [
  "couch-appletv",
  "couch-control",
  "couch-coreelec",
- "couch-denon",
  "couch-ha",
  "couch-hue",
  "couch-integrations",
@@ -410,7 +409,6 @@ version = "0.1.0"
 dependencies = [
  "couch-androidtv",
  "couch-appletv",
- "couch-denon",
  "couch-kodi",
  "couch-sdk",
  "couch-tizen",
@@ -425,16 +423,6 @@ name = "couch-coreelec"
 version = "0.1.0"
 dependencies = [
  "couch-kodi",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "couch-denon"
-version = "0.1.0"
-dependencies = [
- "couch-plugin",
- "couch-sdk",
  "serde",
  "serde_json",
 ]
