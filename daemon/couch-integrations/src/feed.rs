@@ -596,10 +596,16 @@ pub(crate) mod tests {
 
     #[test]
     fn signatures_agree_with_openssl_in_both_directions() {
-        let key = TestKey::new(2048);
+        // 4096 bits is what the official feed signs with: a 512-byte signature.
+        for bits in [2048, 4096] {
+            signatures_agree(bits);
+        }
+    }
+    fn signatures_agree(bits: u32) {
+        let key = TestKey::new(bits);
         let message = br#"{"schema":1}"#;
         let signature = key.sign(message);
-        assert_eq!(signature.len(), 256);
+        assert_eq!(signature.len(), bits as usize / 8);
         // What openssl signed, this verifies; and openssl agrees with each
         // refusal below, so the two are interchangeable for a feed.
         assert!(key.openssl_verifies(message, &signature));
@@ -617,8 +623,8 @@ pub(crate) mod tests {
         assert!(!other.openssl_verifies(message, &signature));
         assert!(verify(&other.public_pem, message, &signature).is_err());
         assert!(verify(OFFICIAL_KEY, message, &signature).is_err());
-        // Base64 or PEM of a signature is not a signature.
-        assert!(verify(&key.public_pem, message, &signature[..255]).is_err());
+        // A signature a byte short is not one.
+        assert!(verify(&key.public_pem, message, &signature[..signature.len() - 1]).is_err());
     }
 
     #[test]
@@ -802,6 +808,15 @@ pub(crate) mod tests {
         assert!(check(served(&bytes, Some(&signature)), &input)
             .unwrap()
             .is_some());
+        // The bytes that were signed are the bytes checked, however they are
+        // laid out: a feed writes indented JSON with a final newline.
+        let mut pretty = serde_json::to_vec_pretty(&document(10, &index)).unwrap();
+        pretty.push(b'\n');
+        let pretty_signature = key.sign(&pretty);
+        assert!(check(served(&pretty, Some(&pretty_signature)), &input)
+            .unwrap()
+            .is_some());
+        assert!(check(served(&pretty, Some(&signature)), &input).is_err());
         let not_valid = "The package feed's metadata signature is not valid";
         // Even a repository that has never published metadata: what is there
         // has to be the feed's own.
