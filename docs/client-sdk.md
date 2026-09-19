@@ -16,8 +16,14 @@ behaves as you assumed; that boundary is spelled out at the end.
 
 Existing clients remain directly linked into the configuration daemon and
 device GUI. New network integrations can also implement `DeviceClient` and
-run through `clients/couch-plugin` as independent executables. Echo and Denon
-provide both forms. The SDK is maintained in this repository rather than
+run through `clients/couch-plugin` as independent executables, and that is
+where integrations are headed: they live in their own repositories and the OS
+carries only the host. Echo provides both forms here. `couch-denon`, the first
+real client written against this SDK, has moved to
+[`Couch-OS/couch-integration-denon`](https://github.com/Couch-OS/couch-integration-denon)
+and is no longer linked into the daemon or the GUI; where this document
+mentions it as a worked example or records results measured on it, that
+repository is where to look. The SDK is maintained in this repository rather than
 crates.io; an external integration pins the Couch Git repository at a full
 commit. The installation boundary is a versioned JSON protocol, not a Rust ABI.
 
@@ -51,7 +57,7 @@ root:
 
 ```sh
 cargo build --manifest-path clients/Cargo.toml -p couch-echo --bin couch-plugin-echo
-cargo test --manifest-path clients/Cargo.toml -p couch-plugin -p couch-echo -p couch-denon
+cargo test --manifest-path clients/Cargo.toml -p couch-plugin -p couch-echo
 ```
 
 Copy and rename the crate for your integration, change `DeviceClient::KIND`,
@@ -129,8 +135,9 @@ For example, a receiver can declare:
 
 Declarations are limited to sixteen components with bounded plain-text labels.
 Undeclared commands, unsupported input selectors, and toggles bound to nonboolean
-state are rejected during package validation. `clients/couch-denon/plugin.json`
-and `clients/couch-echo/plugin.json` contain working examples. Use only state
+state are rejected during package validation. `clients/couch-echo/plugin.json`
+and, in its own repository, `couch-integration-denon`'s `plugin.json` contain
+working examples. Use only state
 your device actually reports: Denon's decibel scale must not appear as a
 percentage volume reading.
 
@@ -155,7 +162,7 @@ config.json ──────────► model/couch-model ◄────�
         Private Unix socket, mode 0600, beside config.json.
                    │
                    ▼
-   clients/couch-kodi   couch-webos   couch-denon   couch-ha   couch-hue
+   clients/couch-kodi   couch-webos   couch-sonos   couch-ha   couch-hue
    couch-androidtv      couch-appletv couch-tizen   couch-ir     couch-voice
                    ▲
                    └── clients/couch-sdk: the contract they share
@@ -204,8 +211,7 @@ cd clients
 cargo test -p couch-sdk --features testing     # the SDK's own tests
 cargo test -p couch-echo                       # the example client's contract tests
 cargo run -p couch-echo --example demo         # a whole session against a fake TV
-cargo test -p couch-denon                      # a real client, through the SDK
-cargo test -p couch-sonos                      # a second one, over HTTPS
+cargo test -p couch-sonos                      # a real client, through the SDK, over HTTPS
 cargo doc -p couch-sdk --features testing --no-deps   # rustdoc, harness included
 ```
 

@@ -16,7 +16,11 @@ package has production-tier hardware evidence.
 
 Choose **Install** beside a catalog entry. After installation, create a
 connection on **Connections** and enter that integration's settings. Installing
-a package alone does not create a device connection or convert a built-in one.
+a package does not create a device connection. The one connection it does
+change is one saved while that integration was still built into Couch (Denon):
+the remote hands it to the package by itself, installing the package if it has
+to, and lists it under **Connections waiting for a package** until that is
+done. See [Built-in integrations that became packages](integration-migration.md).
 The web API accepts catalog selections by integration and repository ID, never
 an arbitrary APK URL. A signed index is checked again before download, and the
 selected identity/version must still match. The downloaded package is verified,
@@ -110,6 +114,8 @@ All management routes require the existing paired session:
 | `DELETE /api/integrations/repositories/ID` | Remove a custom repository without deleting packages |
 | `GET /api/integrations/recovery` | Distinguish confirmed recovery and pending candidate paths |
 | `GET /api/integrations/recovery/config` | Read the confirmed whole-config recovery export |
+| `GET /api/integrations/legacy` | Connections saved while their integration was built in, still waiting for its package, with the reason of the last attempt and the time to the next |
+| `POST /api/integrations/legacy/retry` | Make the next conversion attempt now instead of after its backoff |
 
 `GET /api/integrations` remains the installed manifest catalog used by connection
 editors. Management does not replace that endpoint or the separate core updater.

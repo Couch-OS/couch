@@ -141,6 +141,25 @@ adopt a later feed snapshot, review its new immutable archive, advance the
 tested-set manifest deliberately and regenerate the receipt. Never loosen the
 verifier to accept an unreviewed mutable index.
 
+## After built-in Denon left the OS
+
+Everything below describes the pilot, in which nothing was installed or
+converted unless the owner asked. One thing changed when the built-in Denon
+client was removed: a core that finds a Denon connection saved by an earlier
+release installs the `denon` package from a trusted repository and converts
+that connection by itself, retrying while the feed is unreachable
+([Built-in integrations that became packages](integration-migration.md)). A
+remote without such a connection still installs nothing by itself, and neither
+a runtime archive nor an installer image carries an APK, a package slot or
+connection settings.
+
+`tested-integrations.json` still records `automatic_install` and
+`automatic_configuration_migration` as `false`, and the verifier still requires
+it. For a remote with a saved built-in Denon connection that is no longer what
+the core does. Whether those two fields should say so is a decision for the
+next renewal of the tested set, which the removal requires anyway because it
+changed the frozen contract paths.
+
 ## Existing-device pilot
 
 1. Build, sign and publish a normal floor-compatible core runtime from the

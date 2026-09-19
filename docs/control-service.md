@@ -1,6 +1,8 @@
 # Shared media control and GUI configuration
 
-`couch-control` owns Kodi, webOS and Denon control transports. The configuration
+`couch-control` owns Kodi, webOS and streaming-TV control transports. (It owned
+the built-in Denon transport until that client became a package, which the
+integration host runs instead.) The configuration
 daemon runs the service; the GUI calls it over `control.sock` beside `config.json`.
 The daemon's HTTP handlers use the same pool directly. Explicit webOS pairing
 still uses the registration client. Hue and Home Assistant retain their HTTP

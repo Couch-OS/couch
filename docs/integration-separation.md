@@ -11,6 +11,23 @@ not answer.
 This is a planning document. It has no deadline and authorizes no code change
 by itself.
 
+## The rule (decided 2026-09-19)
+
+Integrations live in their own repositories and are installed and updated
+through the package feed, independently of the OS. The OS carries only the
+host: the plugin protocol and SDK, package management, and the screens that
+draw what a package declares. A built-in integration is retired by moving its
+source to its own repository, publishing it in the feed, and then removing the
+built-in client, with every saved connection converting by itself
+([Built-in integrations that became packages](integration-migration.md)).
+
+Denon was retired this way first. Sonos stays built in until a package can
+drive the full player screen (artwork, track, seek, groups); its package ships
+as a preview beside it. The rest of this document is the assessment that led
+here, kept because the capability gaps and the retirement rules it lists still
+decide the order of what follows. Where it describes built-in Denon or the
+reversible pilot, read it as history.
+
 ## What exists today
 
 An integration reaches a device one of two ways:
@@ -69,7 +86,7 @@ integration and `Plugin` (the package escape hatch) is a variant of it.
 
 | Integration | Crate | Transport | Core-only capability it uses today | Verdict |
 | --- | --- | --- | --- | --- |
-| Denon | `clients/couch-denon` | line-oriented TCP | none beyond the protocol itself | Shipped as the v1 pilot package (preview tier, `couch-integration-denon` 0.1.1). Known gaps: no dB volume readout, no absolute-dB command, no bindable source tokens containing spaces (`docs/integration-migration.md`). |
+| Denon | `Couch-OS/couch-integration-denon` (was `clients/couch-denon`) | line-oriented TCP | none beyond the protocol itself | **Retired from the OS.** Shipped as a package since 0.1.1 (protocol v1), with dB readout and absolute-dB volume since 0.2.0 (protocol v2). Saved built-in connections convert automatically (`docs/integration-migration.md`). |
 | Sonos | `clients/couch-sonos` | HTTPS/TLS on port 1443 | an API key resolved from env/file/build-time constant (`clients/couch-sonos/src/lib.rs:22-40`) | Next candidate once the harness above lands; blocked only on that, per the source material. |
 | Kodi | `clients/couch-kodi` | line-oriented TCP, holds the socket open | unsolicited push notifications (`next_notification`, `clients/couch-kodi/src/lib.rs:150-162`) | Needs an events capability first. |
 | CoreELEC | `clients/couch-coreelec` | wraps Kodi's TCP plus SSH, host-key verified | privileged OS management over SSH (`clients/couch-coreelec/src/lib.rs:1-2`) | Not assessed by the source material; flagged here because its filename is one of the two hard-pinned entries in the deployed-updater allowlist (see Retirement below). Needs pairing/credential write-back for host-key trust at minimum. |
@@ -182,9 +199,13 @@ are proposed here, not implemented.
 
 ## Migration mechanics
 
-Denon is again the only implemented case
-(`docs/integration-migration.md`; `model/couch-model/src/integration_migration.rs`;
-`daemon/couch-confd/src/plugins.rs`). The pattern:
+What is implemented now is the automatic, one-way conversion described in
+[Built-in integrations that became packages](integration-migration.md):
+`couch_model::LEGACY_BUILTINS` names the package and the settings mapping for
+each departed built-in, and `couch-confd` installs the package and converts the
+connection in place. The list below is the reversible pilot that preceded it
+(`v0.1.0-alpha.20260916.171` until built-in Denon was removed), kept for the
+reasoning about ownership and rollback, which carried over:
 
 - **Explicit and per-connection.** Installing a package does not convert any
   existing connection. A user opens **Integrations → Denon migration pilot**
@@ -274,7 +295,7 @@ not twelve — is a scope recommendation, not something derivable from the
 code; treat it as an estimate someone made, not a fact this document confirms.
 What *is* grounded is the dependency order the capability gaps impose:
 
-1. **Denon** — done.
+1. **Denon** — done, and retired from the OS.
 2. **Sonos** — blocked only on the pluggable-fixture harness landing; no new
    protocol capability needed.
 3. **Kodi** — blocked on an events capability.
@@ -292,12 +313,18 @@ What *is* grounded is the dependency order the capability gaps impose:
 
 ## User-facing configuration migration, and its reversibility
 
-Today's only implemented migration (Denon, described above) is reversible
+**Settled on 2026-09-19 with the second option below:** a retired built-in's
+variant stays so the file parses (`Provider::LegacyDenon`), its code is
+deleted, and the conversion is automatic and one way. There is no "restore
+built-in control"; an unconverted connection says what it needs instead. The
+original framing follows.
+
+The pilot's migration (Denon, described above) was reversible
 because "restore" means "switch the `Provider` back to a variant whose
 built-in implementation is still linked into the core." That holds as long as
 retirement rule 2 is followed — the variant and its code stay.
 
-**Open question, not settled by the current design:** does migration stay
+**The question as it stood:** does migration stay
 reversible once a built-in implementation is *retired* — i.e., once its
 `Provider` variant is kept for deserialization compatibility (rule 2) but its
 actual device-control code is deleted or reduced to a stub? Two options exist
@@ -358,7 +385,7 @@ neither is written down anywhere today.
 
 - [Integration architecture](integration-architecture.md)
 - [Integration packages](integration-packages.md)
-- [External integration migration](integration-migration.md)
+- [Built-in integrations that became packages](integration-migration.md)
 - [Integration release rollout](integration-release-rollout.md)
 - [Connections and private settings](connections.md)
 - [Build an integration](development/index.md)
