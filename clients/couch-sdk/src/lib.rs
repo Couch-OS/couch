@@ -92,7 +92,7 @@ pub mod wol;
 
 pub use client::{catalog_differences, Capability, DeviceClient};
 pub use discovery::{Discover, Discovered};
-pub use error::{Error, Result};
+pub use error::{Error, Reason, Result};
 pub use settings::{
     connection_file, load_private, save_private, save_private_bytes, ClientSettings,
 };
@@ -102,4 +102,4 @@ pub use status::{Selectable, Status};
 /// command vocabulary.
 pub use couch_model;
 
-pub use couch_model::{PluginActionSchema, TypedAction, VolumeDb};
+pub use couch_model::{ActionKind, KeyPhase, PluginActionSchema, TypedAction, VolumeDb};

@@ -48,6 +48,15 @@ jobs:
           - id: clients
             workspace: clients
             command: cargo test --locked
+          # Protocol 3 is unreleased and switched off in every shipped build.
+          # This leg is the only place its switch is on: the whole clients
+          # workspace again, with couch-plugin's `protocol-3-preview` feature
+          # and the echo fixture that needs it. The legs above and below run
+          # with it off, and couch-confd and couch-integrations each carry a
+          # test that fails if anything in daemon/ ever turns it on.
+          - id: clients-protocol-3-preview
+            workspace: clients
+            command: cargo test --locked --features couch-plugin/protocol-3-preview,couch-echo/protocol-3-preview
           # couch-confd's build.rs treats a missing web/couch-web/dist as the
           # normal state of a fresh clone, so the daemon tests need no trunk
           # build first; they compile against the placeholder asset table.

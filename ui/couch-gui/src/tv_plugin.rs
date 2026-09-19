@@ -193,7 +193,7 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     let connection = connection_id.as_str();
     let read = || match ask(connection, Request::Status)? {
         Response::Status { status } => Ok(status),
-        Response::Error { code } => Err(code.to_string()),
+        Response::Error { code, .. } => Err(code.to_string()),
         _ => Err("The integration returned an invalid status".to_string()),
     };
     // Power is decided against what the device says now, not what the screen
@@ -205,9 +205,9 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         if !current() {
             return Ok(None);
         }
-        match ask(connection, Request::Command { function })? {
+        match ask(connection, Request::command(function))? {
             Response::Ok => {}
-            Response::Error { code } => return Err(code.to_string()),
+            Response::Error { code, .. } => return Err(code.to_string()),
             _ => return Err("The integration returned an invalid response".into()),
         }
     }

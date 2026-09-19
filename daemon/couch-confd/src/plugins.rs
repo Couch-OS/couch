@@ -408,6 +408,23 @@ mod tests {
         let _ = fs::remove_dir_all(home);
     }
 
+    /// Protocol 3 is unreleased. Its only switch is couch-plugin's
+    /// `protocol-3-preview` feature, and Cargo unifies features across a
+    /// build, so one dependency (or dev-dependency) anywhere in this workspace
+    /// that enabled it would switch it on in the daemon that ships. This runs
+    /// with the daemon's own feature set and fails if that ever happens.
+    #[test]
+    fn the_daemon_is_never_built_with_the_protocol_3_preview() {
+        assert_eq!(
+            couch_plugin::accepted_protocol_version(),
+            couch_plugin::PROTOCOL_VERSION
+        );
+        let mut next = manifest();
+        next.protocol_version = couch_plugin::NEXT_PROTOCOL_VERSION;
+        next.min_core_protocol_version = couch_plugin::NEXT_PROTOCOL_VERSION;
+        assert_eq!(next.validate(), Err(Error::Incompatible));
+    }
+
     fn manifest() -> Manifest {
         serde_json::from_value(json!({
             "protocol_version":1,"id":"sample","label":"Sample","version":"1.0.0","executable":"plugin",

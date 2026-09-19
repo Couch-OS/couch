@@ -189,7 +189,9 @@ this section may change until the step that switches it on. Do not write a
 package against it yet.
 
 What exists so far is vocabulary in `couch-model`, so that a Couch which later
-saves protocol 3 content can always be rolled back:
+saves protocol 3 content can always be rolled back, and the wire types and host
+gate in `couch-plugin` and `couch-sdk`, described under
+[On the wire](#on-the-wire) below. The vocabulary:
 
 - **Package-named buttons.** A capability id of the form `x:<id>`, where `<id>`
   is 1 to 48 bytes of lowercase letters, digits, `-` and `_`
@@ -201,8 +203,9 @@ saves protocol 3 content can always be rolled back:
   A protocol 1 or 2 manifest that declares one is invalid.
 - **Key phase.** `KeyPhase` is `tap`, `repeat` or `long_press`, default `tap`,
   and `tap` is never written. `couch_model::buttons::key_phase(gesture, repeat)`
-  maps a panel key event to it. No request carries it yet; when one does, a
-  protocol 1 or 2 package will keep receiving the bytes it receives today.
+  maps a panel key event to it. The `command` request can carry it (below);
+  nothing in Couch sends one yet, and a protocol 1 or 2 package keeps receiving
+  the bytes it receives today.
 - **More than one typed action.** A saved package snapshot may hold up to eight
   action schemas of distinct kinds, and a request finds its schema by kind
   (`PluginActionSchema::find`). `set_volume_db` is still the only kind, so
@@ -210,6 +213,105 @@ saves protocol 3 content can always be rolled back:
 - **`integration_config_v3`.** The saved configuration gains a third layer for
   whatever a protocol 2 core cannot read; see
   [Compatibility and independent source](https://github.com/Couch-OS/couch/blob/main/docs/integration-architecture.md#protocol-3-layer-unreleased).
+
+### On the wire
+
+Four additions, each of which is absent from the bytes whenever it says nothing
+new, because every protocol 1 and 2 package refuses unknown fields:
+
+```json
+{"method":"command","function":"x:info","phase":"long_press"}
+{"type":"error","code":"unpaired","reason":{"kind":"message","text":"Pair this TV again"}}
+{"type":"error","code":"invalid","reason":{"kind":"invalid_setting","field":"port","text":"The port must not be 0"}}
+```
+
+- **`phase`** on `command`: `repeat` or `long_press`. A tap is never written,
+  and a frame without the field is a tap. `Request::command(id)` builds a tap
+  and `Request::key(id, phase)` anything else. `Request::Command` is no longer
+  built as a struct literal.
+- **`reason`** on `error`: `message` (text) or `invalid_setting` (the id of a
+  setting the manifest declares, and text). The text is at most 160 bytes with
+  no control characters and is written for the person holding the remote. An
+  error without a reason is written exactly as before.
+- **`unpaired`**, a tenth error code: the device wants pairing again.
+- **`x:` functions**, declared as capabilities like any other.
+
+In the SDK a client says these with `Error::Unpaired`,
+`Error::Invalid.because(Reason::InvalidSetting { .. })` and
+`DeviceClient::execute_phased`, whose default ignores the phase.
+`Host::request_detailed`, `Endpoint::request_detailed` and
+`local_request_detailed` return a `Failure { code, reason }`; `request` and
+`local_request` keep their signatures and return the code alone.
+
+### What a protocol 1 or 2 package never sees
+
+The host decides what to send from the protocol version in the package's
+manifest, in one place (`Host::request_detailed`), before any I/O:
+
+- a key phase is **downgraded to a tap**, not refused: the key still works and
+  the frame is the one the package has always received;
+- an `x:` function is `unsupported`, as is one a protocol 3 package did not
+  declare, and a protocol 1 or 2 manifest that declares one is invalid;
+- `requires(&Request)` names the oldest protocol a request can be sent to, and
+  anything newer than the package is `unsupported` without a round trip.
+
+In the other direction, a `reason` or the `unpaired` code from a protocol 1 or
+2 package is a protocol error and retires the child, as a `volume_db` reading
+from a protocol 1 package always has. From a protocol 3 package, a reason whose
+text is too long or has control characters, or whose `field` is not a declared
+setting, does the same. The SDK's `serve` follows the manifest as well, not the
+SDK it was built with: a protocol 1 or 2 package built with a newer SDK drops a
+reason its client attached, reports `Error::Unpaired` as `rejected`, and only
+ever tells its client of taps; a protocol 3 package drops a reason the host
+would refuse and keeps the code.
+
+This is tested three ways: golden bytes for every protocol 1 and 2 request,
+response and manifest, captured from the SDK revision the published packages
+were built from (`clients/couch-plugin/tests/golden/`); frozen copies of that
+revision's types, which refuse unknown fields, on both sides of the host's own
+gate; and `tools/tests/old-package-wire.sh`, which builds `couch-plugin-echo`
+and `couch-plugin-sonos` from that revision and runs this tree's admission and
+subprocess suites against those executables.
+
+### The switch
+
+`couch-plugin` has one Cargo feature, `protocol-3-preview`. It is off by
+default, adds no dependency, and changes one function:
+
+```rust
+pub const PROTOCOL_VERSION: u32 = 2;          // what a release supports
+pub const NEXT_PROTOCOL_VERSION: u32 = 3;
+pub const fn accepted_protocol_version() -> u32; // 2, or 3 with the feature
+```
+
+`Manifest::validate` accepts `1..=accepted_protocol_version()`. With the feature
+off, which is every build that ships, a manifest that says 3 is `incompatible`
+(a package that needs a newer Couch) on the host and in `serve`, and nothing is
+executed. Only tests turn it on:
+
+```sh
+cd clients
+cargo test --features couch-plugin/protocol-3-preview,couch-echo/protocol-3-preview
+```
+
+`couch-echo` has a fixture for it, `couch-plugin-echo-v3` (`src/v3.rs`,
+`tests/protocol3.rs`), built only with the feature: it declares `x:info`, passes
+the key phase to its fake television, and explains its refusals.
+
+Cargo unifies features across a build, so a single dependency that enabled the
+feature, even a dev-dependency, would enable it for everything built with it.
+Two tests keep that from reaching a remote: `couch-confd` and
+`couch-integrations` each assert
+`accepted_protocol_version() == PROTOCOL_VERSION`, run with the `daemon`
+workspace's own feature set in the `daemon` and `product-flow` CI jobs, and fail
+the moment anything in that workspace turns the feature on. To look by hand:
+
+```sh
+cargo tree --manifest-path daemon/Cargo.toml -e features -i couch-plugin | grep protocol-3
+cargo tree --manifest-path ui/Cargo.toml -e features -i couch-plugin | grep protocol-3
+```
+
+Both print nothing.
 
 ## Source references
 

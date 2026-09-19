@@ -13,7 +13,7 @@
 //! [`DeviceClient::command`], which is the boundary.
 
 use couch_model::buttons;
-use couch_model::commands::Function;
+use couch_model::commands::{Function, KeyPhase};
 use couch_model::Integration;
 
 use crate::{ClientSettings, Error, Result, Selectable, Status};
@@ -56,9 +56,11 @@ pub trait DeviceClient: Sized {
         &[]
     }
 
-    /// Refuse unsupported or out-of-range values before transport I/O.
+    /// Refuse unsupported or out-of-range values before transport I/O. The
+    /// schema is found by the action's kind, so a client may declare several.
     fn validate_action(action: crate::TypedAction) -> Result<()> {
-        let schema = Self::actions().first().ok_or(Error::Unsupported)?;
+        let schema = crate::PluginActionSchema::find(Self::actions(), action.kind())
+            .ok_or(Error::Unsupported)?;
         if !schema.accepts(action) {
             return Err(Error::Invalid);
         }
@@ -82,6 +84,15 @@ pub trait DeviceClient: Sized {
     /// Never retry inside this method. A lost reply does not prove a lost
     /// command, and the broker above deliberately does not retry either.
     fn execute(&mut self, function: &Function) -> Result<()>;
+
+    /// Perform one function, knowing how the key was pressed: a tap, a repeat
+    /// while the key is held, or a long press. Protocol 3, which is unreleased
+    /// and switched off. A package whose manifest says protocol 1 or 2 is only
+    /// ever told [`KeyPhase::Tap`], so the default, which ignores the phase, is
+    /// exactly what such a client did before this method existed.
+    fn execute_phased(&mut self, function: &Function, _phase: KeyPhase) -> Result<()> {
+        self.execute(function)
+    }
 
     /// Observe the device. [`Error::Unsupported`] if it cannot be asked.
     fn status(&mut self) -> Result<Status> {
@@ -135,6 +146,21 @@ pub trait DeviceClient: Sized {
             return Err(Error::Unsupported);
         }
         self.execute(&function)
+    }
+
+    /// [`DeviceClient::command`] with the key phase. A tap is handed to
+    /// `command` itself, so a client that overrides `command` and has never
+    /// heard of phases behaves as it always did. Anything else passes the same
+    /// gate and reaches [`DeviceClient::execute_phased`].
+    fn command_phased(&mut self, command: &str, phase: KeyPhase) -> Result<()> {
+        if phase.is_tap() {
+            return self.command(command);
+        }
+        let function = Function::parse(command).ok_or(Error::Unsupported)?;
+        if !Self::supports(&function) {
+            return Err(Error::Unsupported);
+        }
+        self.execute_phased(&function, phase)
     }
 }
 

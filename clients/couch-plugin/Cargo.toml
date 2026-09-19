@@ -7,6 +7,13 @@ description = "Versioned subprocess integration protocol and bounded Couch host"
 
 [features]
 testing = ["couch-sdk/testing"]
+# Protocol 3 is unreleased. This is its only switch, and all it changes is
+# `accepted_protocol_version()`: with it off (the default, and every shipped
+# build) a manifest that says protocol 3 is refused as needing a newer Couch.
+# It adds no dependency. Nothing under daemon/ or ui/ may enable it, not even a
+# dev-dependency: couch-confd and couch-integrations each carry a test that
+# fails if it is on. Tests here opt in with `--features protocol-3-preview`.
+protocol-3-preview = []
 
 [dependencies]
 couch-sdk = { path = "../couch-sdk" }

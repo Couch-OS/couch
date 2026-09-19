@@ -17,6 +17,7 @@ on:
       - 'tools/integrations/**'
       - 'tools/tests/integrations-e2e.py'
       - 'tools/tests/config-crossload.*'
+      - 'tools/tests/old-package-wire.sh'
       - '.github/workflows/integration-admission.yml'
   workflow_dispatch:
 
@@ -46,7 +47,8 @@ jobs:
           if [ "$EVENT_NAME" = pull_request ] && git diff --quiet "$BASE_SHA"...HEAD -- \
             clients daemon model web integrations tools/integrations \
             tools/tests/integrations-e2e.py tools/tests/config-crossload.sh \
-            tools/tests/config-crossload.rs .github/workflows/integration-admission.yml; then
+            tools/tests/config-crossload.rs tools/tests/old-package-wire.sh \
+            .github/workflows/integration-admission.yml; then
               changed=false
           fi
           echo "integration=$changed" >> "$GITHUB_OUTPUT"
@@ -105,6 +107,16 @@ jobs:
       # the files it saved. Fetches the release tag itself.
       - name: Exchange saved configurations with the last release
         run: tools/tests/config-crossload.sh
+      # The packages already in the feed were built from an older couch-plugin
+      # whose every wire type refuses unknown fields. Build echo and Sonos from
+      # that source and run this tree's admission and subprocess suites against
+      # those executables. This tree's side reuses clients/target, which this
+      # job has already cached; the old side is a cold build of two small
+      # crates in a temporary directory.
+      - name: Drive packages built from the published SDK with this host
+        env:
+          COUCH_OLD_WIRE_REUSE_TARGET: 1
+        run: tools/tests/old-package-wire.sh
       - name: Exercise daemon, package, HTTP, panel, and fake device together
         run: python3 tools/tests/integrations-e2e.py
 

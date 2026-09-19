@@ -19,6 +19,9 @@
 //! Run `cargo run -p couch-echo --example demo` to watch a session, including
 //! the failures.
 
+#[cfg(feature = "protocol-3-preview")]
+pub mod v3;
+
 use std::{
     io::{Read, Write},
     net::{TcpStream, ToSocketAddrs},

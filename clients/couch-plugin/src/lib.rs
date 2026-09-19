@@ -12,15 +12,23 @@ mod protocol;
 mod server;
 #[cfg(feature = "testing")]
 pub mod testing;
+#[cfg(test)]
+mod wire_golden;
+#[cfg(test)]
+mod wire_mirror;
 
 pub use couch_sdk::couch_model::{PluginComponent as Component, PluginStatusField as StatusField};
-pub use couch_sdk::{PluginActionSchema, Selectable, Status, TypedAction, VolumeDb};
+pub use couch_sdk::{
+    ActionKind, KeyPhase, PluginActionSchema, Reason, Selectable, Status, TypedAction, VolumeDb,
+};
 pub use host::{
-    local_request, read_frame_timeout, write_frame_timeout, Endpoint, Host, HostPolicy,
-    LocalRequest, QUEUE_CAPACITY, QUEUE_TTL, REQUEST_TIMEOUT, STARTUP_TIMEOUT,
+    local_request, local_request_detailed, read_frame_timeout, requires, write_frame_timeout,
+    Endpoint, Host, HostPolicy, LocalRequest, QUEUE_CAPACITY, QUEUE_TTL, REQUEST_TIMEOUT,
+    STARTUP_TIMEOUT,
 };
 pub use manifest::{Capability, FieldKind, Manifest, SettingField};
 pub use protocol::{
-    read_frame, write_frame, Error, Request, Response, Result, MAX_FRAME, PROTOCOL_VERSION,
+    accepted_protocol_version, read_frame, write_frame, Error, Failure, Request, Response, Result,
+    MAX_FRAME, NEXT_PROTOCOL_VERSION, PROTOCOL_VERSION,
 };
 pub use server::serve;
