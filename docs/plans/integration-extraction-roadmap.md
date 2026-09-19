@@ -66,11 +66,12 @@ Then the packages:
 "this exact core was tested with this exact Denon package". That record freezes
 the files that define the package boundary. Any change to them means the record
 must be renewed before the next release: about 30 minutes, simulated on the build
-host, no remote or speaker needed. The record is checked **when a release is cut,
-not on every pull request**. So the whole train costs **one renewal** if no Couch
-release is cut from the middle of it. If a release is needed mid-train, it still
-works (protocol 3 stays switched off until T7) and costs one extra renewal, not an
-extra protocol version.
+host, no remote or speaker needed. The record is checked **whenever a build is
+made for a remote (a release or a dev build), not on every pull request**. So the
+whole train costs **one renewal** only if nothing is built for a remote from the
+middle of it. Each build made mid-train (a dev build to try something on the test
+remote, or an urgent release) still works (protocol 3 stays switched off until T7)
+and costs one extra renewal, not an extra protocol version.
 
 **Two rules that must never be broken** (both have already cost reinstalls):
 
@@ -522,9 +523,17 @@ What that means in practice:
 - **Every protocol addition touches frozen paths** (protocol, manifest, host,
   SDK, model, daemon bridge). So does removing a built-in (`main.rs`,
   `connections.rs`, `connection.rs`), and so does the converter.
-- The verifier runs **when a release is cut** (`runtime_inventory.py` takes the
-  receipt), not in pull-request CI. So the cost is **one renewal per release that
-  contains any contract change**, however many pull requests made it.
+- The verifier runs **whenever a runtime is staged** (`runtime_inventory.py` takes
+  the receipt): every release and every dev build for the test remote. In
+  pull-request CI it runs only through `tools/release/test_verify_integration_set.py`
+  (`test_committed_manifest_matches_current_contract_and_limits_claims`), and the
+  `runtime-os-compatibility` workflow that runs it is filtered to pull requests that
+  touch `tools/release/**`. So a contract change does not turn its own pull request
+  red, but it blocks the next dev build, the next release, and the next pull request
+  that touches `tools/release`, until the evidence is renewed. The cost is **one
+  renewal per staged build that contains a new contract change**: a train that wants
+  one renewal must also do without dev builds on the remote until it ends, or accept
+  a renewal per dev build (they are cheap and need no hardware).
 - A renewal is the simulated host-compatibility run on the build host in an ARM
   Alpine container (about 30 minutes, no remote), against the exact signed APKs in
   the feed snapshot. The tested commit must stay in the release's ancestry:
