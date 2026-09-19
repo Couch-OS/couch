@@ -89,8 +89,28 @@ try {
   const connectionId=(await config()).connections[0].id;
   assert.equal((await context.request.delete(`${origin}/api/connections/${connectionId}`)).status(),422);
   assert.equal((await config()).connections.length,1);
+  // Removing says what happens to the keys the remote saved, before and at
+  // the confirming click; only Matter keeps its keys, and says so.
+  await page.getByText('also removes everything the remote saved for it').waitFor();
+  assert.equal(await page.getByText(/retained/i).count(),0);
   await page.getByRole('button',{name:'Back to list',exact:true}).click();
   await page.getByRole('heading',{name:'Connections',exact:true}).waitFor();
+  for (const [name,provider,note,confirm] of [
+    ['Spare player',{kind:'kodi',host:'192.168.1.22',port:9090},'also removes everything the remote saved for it','Confirm: remove it and its saved keys'],
+    ['Spare fabric',{kind:'matter'},'Matter keys for this connection are kept on the remote','Confirm: remove connection'],
+  ]) {
+    const created=await context.request.post(`${origin}/api/connections`,{data:{name,provider}});
+    assert(created.ok(),await created.text());
+    const spare=(await config()).connections.find(c=>c.name===name).id;
+    await page.goto(`${origin}/connections/${spare}`);
+    await page.getByRole('heading',{name,exact:true}).waitFor();
+    await page.getByText(note).waitFor();
+    await noOverflow();
+    await page.getByRole('button',{name:'Remove connection',exact:true}).click();
+    await saved(()=>page.getByRole('button',{name:confirm,exact:true}).click());
+    await page.getByRole('heading',{name:'Connections',exact:true}).waitFor();
+    assert(!(await config()).connections.some(c=>c.id===spare));
+  }
   // Infrared needs no connection any more: it is configured per device, so the
   // type list offers none.
   assert.equal(await page.getByLabel('Connection type',{exact:true}).locator('option[value=ir]').count(),0);
@@ -176,5 +196,5 @@ try {
     await navigate(label); await noOverflow();
   }
   assert.deepEqual(errors,[]);
-  console.log('PASS: empty setup, keyboard creation, validation, device draft/save/discard and failed-save preservation, screen membership/preview/unlink/order, activity source, scene command, connection list and pages, stale-write rejection, seed routes, mobile overflow; no browser exceptions.');
+  console.log('PASS: empty setup, keyboard creation, validation, device draft/save/discard and failed-save preservation, screen membership/preview/unlink/order, activity source, scene command, connection list and pages, connection removal wording, stale-write rejection, seed routes, mobile overflow; no browser exceptions.');
 } finally { await browser.close(); }

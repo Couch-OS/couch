@@ -561,9 +561,24 @@ impl Api {
         if_match: Option<u64>,
         f: impl FnOnce(&mut Config) -> Option<()>,
     ) -> Reply {
+        self.edit_found_then(if_match, f, || ())
+    }
+
+    /// The same again, with something to do once the edit is on disk and
+    /// before any other edit can follow it. `saved` never runs for an edit
+    /// that was refused, was stale or found nothing.
+    fn edit_found_then(
+        &self,
+        if_match: Option<u64>,
+        f: impl FnOnce(&mut Config) -> Option<()>,
+        saved: impl FnOnce(),
+    ) -> Reply {
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
         match store.mutate(if_match, f) {
-            Ok(Some(())) => Reply::json(200, store.config()).at(store.revision()),
+            Ok(Some(())) => {
+                saved();
+                Reply::json(200, store.config()).at(store.revision())
+            }
             // The realistic cause is not a typed URL but a second phone that
             // deleted the thing already, so the message says so rather than
             // leaving a bare "not found" on a screen still showing it.

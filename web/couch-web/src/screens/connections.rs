@@ -251,6 +251,19 @@ fn page(app: App, id: Id) -> AnyView {
     // rejected save must not lose what was typed and a pairing under way must
     // not be torn down. A connection never changes provider, so this is safe.
     let label = c.provider.label().to_string();
+    // What the remote stored for a connection goes with it: nobody should have
+    // to wonder whether a token outlived the thing it was for. The one
+    // exception is the remote's own Matter identity, which cannot be reissued.
+    let (removal_note, removal_confirm) = match c.provider {
+        Provider::Matter => (
+            "Remove its assigned devices first. The remote's Matter keys for this connection are kept on the remote, not removed. To release a paired device, use Forget device above before removing the connection.",
+            "Confirm: remove connection",
+        ),
+        _ => (
+            "Remove its assigned devices first. Removing the connection also removes everything the remote saved for it: its pairing, keys and passwords. To use it again you will pair or sign in again.",
+            "Confirm: remove it and its saved keys",
+        ),
+    };
     let settings = match c.provider {
         Provider::Sonos { .. } => view!{{titled("Connection",super::sonos::form(app,Some(c.clone())))}{super::sonos::controls(app,c.id.to_string())}}.into_any(),
         Provider::CoreElec { .. } => view!{{titled("Connection",super::coreelec::form(app,Some(c.clone())))}{super::kodi::setup(app,&c)}{super::coreelec::setup(app,&c)}}.into_any(),
@@ -293,8 +306,8 @@ fn page(app: App, id: Id) -> AnyView {
 
         <section class="card danger-zone">
             <h2>"Remove connection"</h2>
-            <p class="dim">"Removing a connection requires removing its assigned devices first. Bridge credentials are retained for reconnecting."</p>
-            {ui::danger_button("Remove connection",move ||app.run_then(api::delete(format!("/api/connections/{}", key.get_value())), move |_| app.go(Route::Connections)))}
+            <p class="dim">{removal_note}</p>
+            {ui::confirm_button("Remove connection",removal_confirm,move ||app.run_then(api::delete(format!("/api/connections/{}", key.get_value())), move |_| app.go(Route::Connections)))}
         </section>
     }.into_any()
 }

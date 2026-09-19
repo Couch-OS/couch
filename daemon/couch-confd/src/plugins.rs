@@ -293,6 +293,19 @@ impl Runtime {
         endpoint.request(request)
     }
 
+    /// Stop the package child of a connection that has just been deleted.
+    /// The caller holds the connection's settings lock, which `execute` holds
+    /// for a whole request, so nothing is in flight and the last reference
+    /// goes here: the child is killed and waited for before this returns.
+    pub fn retire(&self, connection: &str) {
+        let retired = self
+            .endpoints
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(connection);
+        drop(retired);
+    }
+
     pub fn reap(&self) {
         if let Ok(mut endpoints) = self.endpoints.lock() {
             endpoints.retain(|_, entry| {

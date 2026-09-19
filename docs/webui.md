@@ -645,9 +645,10 @@ room creation flow.
 
 Connections are non-secret records in `config.json`. New devices reference a
 connection ID and resource ID; changing a Kodi connection updates all references.
-The model rejects deleting an in-use connection. Removing a connection retains
-private HA/Hue credentials so **Use saved connection** can restore it without
-another pairing. Existing inline device configurations remain readable. On first
+The model rejects deleting an in-use connection. Removing a connection also
+removes its private credentials from the remote (the remote's Matter keys are
+the exception); see [Removing a connection](connections.md#removing-a-connection).
+Existing inline device configurations remain readable. On first
 upgrade, existing HA/Hue private settings are adopted as saved connections.
 External connections similarly keep a public snapshot of their label and
 capabilities, so uninstalling a package leaves rooms and mappings intact. Their
