@@ -1,7 +1,3 @@
-Title: Media player component (design)
-Description: Proposed protocol 3 addition that lets an installed package drive Couch's full player screen.
-Order: 21
-
 # Media player component: design
 
 Status: **proposal, nothing here is implemented.** It is the "media" part of the

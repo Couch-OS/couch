@@ -270,7 +270,7 @@ Beyond those two:
 ## Wave ordering
 
 > Superseded on 2026-09-19 by the
-> [integration extraction roadmap](development/integration-extraction-roadmap.md),
+> [integration extraction roadmap](plans/integration-extraction-roadmap.md),
 > which replaces the per-wave protocol additions below with one protocol 3
 > effort. The retirement criteria above still stand.
 

@@ -1,7 +1,3 @@
-Title: Integration extraction roadmap
-Description: Planning document. Which built-in integrations can become packages, in what order, and the single protocol 3 effort that unblocks them.
-Order: 20
-
 # Integration extraction roadmap
 
 Status: **plan, not a schedule.** Written against `dev` at `94f8a3d`
@@ -630,5 +626,5 @@ backends (built-in and packaged), one fake device, identical screenshots.
 - [Media player component design](media-player-component-design.md) - wave 1 in detail.
 - [Integration separation](../integration-separation.md) - the earlier assessment; its retirement rules still stand.
 - [Integration architecture](../integration-architecture.md), [packages](../integration-packages.md), [migration](../integration-migration.md), [release rollout](../integration-release-rollout.md).
-- [Protocol](protocol.md), [components](components.md), [admission](admission.md).
+- [Protocol](../development/protocol.md), [components](../development/components.md), [admission](../development/admission.md).
 - [Connections and private settings](../connections.md), [runtime updates](../runtime-updates.md).
