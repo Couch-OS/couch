@@ -146,19 +146,29 @@ verifier to accept an unreviewed mutable index.
 Everything below describes the pilot, in which nothing was installed or
 converted unless the owner asked. One thing changed when the built-in Denon
 client was removed: a core that finds a Denon connection saved by an earlier
-release installs the `denon` package from a trusted repository and converts
-that connection by itself, retrying while the feed is unreachable
-([Built-in integrations that became packages](integration-migration.md)). A
-remote without such a connection still installs nothing by itself, and neither
-a runtime archive nor an installer image carries an APK, a package slot or
-connection settings.
+release installs the `denon` package and converts that connection by itself,
+retrying while the feed is unreachable
+([Built-in integrations that became packages](integration-migration.md)).
 
-`tested-integrations.json` still records `automatic_install` and
-`automatic_configuration_migration` as `false`, and the verifier still requires
-it. For a remote with a saved built-in Denon connection that is no longer what
-the core does. Whether those two fields should say so is a decision for the
-next renewal of the tested set, which the removal requires anyway because it
-changed the frozen contract paths.
+That is the whole of what is automatic, and it is narrow on purpose:
+
+- it applies only to converting a connection saved while its integration was
+  built into Couch (the rows of `couch_model::LEGACY_BUILTINS`);
+- the package is taken only from an official repository, `official-stable` and
+  then `official-preview`. A repository the owner added is never used for an
+  install nobody asked for, even if it is the only one offering the package; a
+  package the owner installed from it by hand is used as it is;
+- nothing else installs, updates or converts by itself. A remote without such
+  a connection installs nothing, and a new connection is always made by hand;
+- packages are still not bundled: neither a runtime archive nor an installer
+  image carries an APK, a package slot or connection settings.
+
+`tested-integrations.json` records this in `rollout`. The verifier requires all
+four fields to be booleans and the two `bundle_packages_in_*` fields to be
+`false`; `automatic_install` and `automatic_configuration_migration` may be
+`true`, and say what the tested core does within the limits above. They are set
+when the tested set is renewed for the core that removed built-in Denon, which
+that removal requires anyway because it changed the frozen contract paths.
 
 ## Existing-device pilot
 

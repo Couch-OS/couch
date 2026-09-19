@@ -14,10 +14,14 @@ assignments. Nothing drives it until it belongs to the package, and the remote
 makes that happen by itself:
 
 1. shortly after `couch-confd` starts, it looks for such connections;
-2. if the package is not installed, it refreshes the trusted repositories and
-   installs it, exactly as **Integrations → Install** would (official stable
-   first, then official preview, then any other trusted repository that offers
-   it);
+2. if the package is not installed, it refreshes the repository indexes and
+   installs it through the same package manager as **Integrations → Install**,
+   but only from an official repository: official stable first, then official
+   preview. Nobody asked for this install, so a repository the owner added is
+   never used for it, even when it is the only one offering the package; the
+   connection then keeps waiting and says that the official feed does not
+   offer the package yet. A package the owner installed by hand, from any
+   repository they trust, is used as it is;
 3. it gives the package the address the connection carried, lets the package
    validate it, and switches the connection over in place.
 
@@ -36,10 +40,26 @@ While a connection is still waiting it reads **Needs the Denon package**:
   mute or power keys is pressed. A device that also has infrared codes or a
   Bluetooth bond keeps working over those.
 
-The remote retries by itself after 30 s, 1, 2, 5 and 15 minutes and then
-hourly, and at once when the Integrations page refreshes or installs anything
-or when **Try again** is pressed. The usual cause of a wait is a first boot
-without internet.
+The usual cause of a wait is a first boot on which Wi-Fi is not up yet when
+the daemon first looks, about a second after it starts. While the feed cannot
+be reached the remote therefore looks again after 5, 10 and 20 seconds, and
+only then settles into 30 s, 1, 2, 5 and 15 minutes and hourly; any other
+failure starts at 30 s. It also tries when the Integrations page refreshes or
+installs anything and when **Try again** is pressed, but never more often than
+once in five seconds, however often it is asked.
+
+Known limits:
+
+- Two saved connections to the same receiver (an old-style one and a package
+  connection made by hand, or two old-style ones) both end up as package
+  connections. The receiver accepts one control connection at a time, so
+  whichever is used second waits for the other to go idle. Remove the spare.
+- A receiver named directly on a device, from before named connections, is
+  given a connection first and then converts like any other. One saved without
+  an address or with port 0 never worked and has nothing to hand to a package;
+  it is left exactly as it is, reads **Needs the Denon package**, and does not
+  stop the rest of the file loading. Delete the device, or add the receiver
+  again as a package connection.
 
 Adding a receiver afterwards is an ordinary package connection: the connection
 picker keeps a **Denon AVR · integration package** entry that leads to
@@ -60,15 +80,20 @@ connection's fields into package settings. Denon's row maps `host` and `port`.
   no fallback, and a file that does not parse is a daemon that does not start.
 - **`Config::migrate`** gives a receiver named inline on a device (the shape
   from before named connections) a connection of its own, so that everything
-  waiting for a package is a connection.
+  waiting for a package is a connection. An inline receiver without a usable
+  address is skipped: a connection is validated for one, and a connection made
+  from it would make the whole file invalid.
 - **`Config::convert_legacy`** switches one connection to the package's
   `Provider::Plugin` snapshot and validates the whole document, so a package
   that lacks a saved command refuses the conversion and leaves the file as it
   was.
 - **`couch-confd`** (`daemon/couch-confd/src/api/integration_migrations.rs`)
   runs the attempt on its own thread, through the same package manager and the
-  same settings validation as the web UI, and commits one configuration write
-  per connection. `GET /api/integrations/legacy` reports what is waiting and
+  same settings validation as the web UI. Starting the package and letting it
+  check the address happens with the configuration unlocked; the lock is then
+  taken only to confirm that the connection and the package selection are
+  still the ones that were checked, save the settings and commit one
+  configuration write per connection. `GET /api/integrations/legacy` reports what is waiting and
   why; `POST /api/integrations/legacy/retry` makes the next attempt immediate.
 
 Adding the next built-in to the table takes a row, a `Legacy*` variant kept for
@@ -114,8 +139,11 @@ bindable by a protocol-v2 core, which writes it in the v2 envelope
 Host tests cover loading a built-in-era file, the inline and pilot shapes, the
 in-place conversion with an installed package fixture (same id, rooms and
 activities still resolving, address moved into private settings, no receiver
-I/O), an unreachable feed with its backoff and **Try again**, a package that
-fails verification, and a failed configuration write. The browser tests cover
+I/O), an unreachable feed with its quick first retries, **Try again** and its
+five-second floor, the choice of repository (an owner's repository offering
+the package is not chosen), a package that fails verification or changes
+between the check and the commit, an inline receiver without an address, and a
+failed configuration write. The browser tests cover
 the waiting state on the Integrations page. None of this establishes behaviour
 on a remote: the first conversion on hardware, including the package install
 inside the Alpine root, is validated separately with a development build.

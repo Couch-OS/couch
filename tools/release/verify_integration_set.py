@@ -20,6 +20,10 @@ HOST_HARNESS = REPO / "tools/tests/denon-v1-host-compatibility.py"
 HEX40 = re.compile(r"[0-9a-f]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 LEGACY_EVIDENCE_COMMIT = "b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb"
+# Integrations whose source left this repository for their own, and so have no
+# entry in integrations/catalog.json. Only these may be absent from it: any
+# other id without an entry is a typo or an integration nobody admitted.
+OUT_OF_TREE = frozenset({"denon"})
 # Schema 2 cannot drop a changed contract path to retain stale evidence. The
 # SDK and new model types affect the wire contract even outside couch-plugin.
 CONTRACT_PATHS = (
@@ -352,10 +356,12 @@ def validate_manifest(path=DEFAULT):
                     "full receiver command behavior", "receiver model and firmware compatibility"],
                 f"{where} overstates or changes the Denon pilot evidence")
         # The catalog lists only integrations whose source is still in this
-        # repository. One that lives in its own repository (Denon) has no entry,
-        # and its tier is the tested set's own, checked above; one that is
-        # listed must not claim more there than the tested set does here.
+        # repository. One named in OUT_OF_TREE lives in its own repository and
+        # needs no entry: its tier is the tested set's own, checked above. One
+        # that is listed must not claim more there than the tested set does here.
         entry = catalog_by_id.get(item["id"])
+        require(entry is not None or item["id"] in OUT_OF_TREE,
+                f"{where} has no catalog entry and is not a known out-of-tree integration")
         require(entry is None
                 or entry["tier"] == "preview" and entry["hardware_validation"]["status"] == "not-tested",
                 f"{where} is not a not-tested preview catalog entry")
@@ -380,7 +386,14 @@ def validate_manifest(path=DEFAULT):
     rollout = manifest["rollout"]
     exact(rollout, ("bundle_packages_in_runtime", "bundle_packages_in_installer",
                     "automatic_install", "automatic_configuration_migration"), "rollout")
-    require(all(value is False for value in rollout.values()), "Pilot rollout must remain explicit and unbundled")
+    # A package never travels inside a runtime archive or an installer image.
+    # The two automatic fields may be true: a core may install the package for,
+    # and convert, a connection saved while that integration was built in, from
+    # an official repository. They say what the tested core does; nothing here
+    # makes either mean that anything else installs by itself.
+    require(all(type(value) is bool for value in rollout.values()), "Rollout fields must be booleans")
+    require(rollout["bundle_packages_in_runtime"] is False and rollout["bundle_packages_in_installer"] is False,
+            "Packages must not be bundled in the runtime or the installer")
     if schema == 2:
         evidence_pin = manifest["host_compatibility"]
         exact(evidence_pin, ("file", "size", "sha256"), "host_compatibility")

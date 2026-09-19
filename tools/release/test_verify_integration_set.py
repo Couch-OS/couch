@@ -144,6 +144,10 @@ class TestedIntegrationSetTests(unittest.TestCase):
                 self.assertEqual(verify.receipt(path)["integration_versions"], {"denon": "0.1.1"})
             with catalog_with([listed]):
                 verify.receipt(path)
+            # Only a named out-of-tree integration may be absent from the catalog.
+            with catalog_with([]), mock.patch.object(verify, "OUT_OF_TREE", frozenset({"kodi"})), \
+                    self.assertRaisesRegex(ValueError, "not a known out-of-tree integration"):
+                verify.receipt(path)
             for claim in ({"tier": "production"}, {"hardware_validation": {"status": "validated"}}):
                 with self.subTest(claim=claim), catalog_with([{**listed, **claim}]), \
                         self.assertRaisesRegex(ValueError, "not a not-tested preview catalog entry"):
@@ -316,7 +320,11 @@ class TestedIntegrationSetTests(unittest.TestCase):
             receipt = verify.receipt()
         self.assertEqual(receipt["integration_versions"], {"denon": "0.1.1"})
         self.assertFalse(receipt["artifact_bytes_verified"])
-        self.assertTrue(all(value is False for value in receipt["rollout"].values()))
+        # Whatever the committed set says about automatic conversion, it never
+        # bundles a package.
+        self.assertTrue(all(type(value) is bool for value in receipt["rollout"].values()))
+        self.assertIs(receipt["rollout"]["bundle_packages_in_runtime"], False)
+        self.assertIs(receipt["rollout"]["bundle_packages_in_installer"], False)
         # The committed set exempts the admission harness and nothing else.
         self.assertEqual(set(receipt["core_harness_paths"]), {self.HARNESS})
 
@@ -335,15 +343,35 @@ class TestedIntegrationSetTests(unittest.TestCase):
                         verify.validate_manifest(self.write_manifest(root))
                     self.manifest[section]["repository"] = original
 
-    def test_rejects_automatic_or_bundled_rollout(self):
+    def test_rollout_may_be_automatic_but_never_bundled_and_is_always_boolean(self):
+        automatic = ("automatic_install", "automatic_configuration_migration")
+        bundled = ("bundle_packages_in_runtime", "bundle_packages_in_installer")
+        self.assertEqual(set(self.manifest["rollout"]), set(automatic + bundled))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for field in self.manifest["rollout"]:
+            for field in bundled:
                 with self.subTest(field=field):
                     self.manifest["rollout"][field] = True
-                    with self.assertRaisesRegex(ValueError, "explicit and unbundled"):
+                    with self.assertRaisesRegex(ValueError, "must not be bundled"):
                         verify.receipt(self.write_manifest(root))
                     self.manifest["rollout"][field] = False
+            # A core that converts a saved built-in connection by itself says so.
+            for value in (True, False):
+                for field in automatic:
+                    self.manifest["rollout"][field] = value
+                receipt = verify.receipt(self.write_manifest(root))
+                self.assertEqual([receipt["rollout"][field] for field in automatic], [value, value])
+            for field in automatic + bundled:
+                for invalid in (0, 1, "false", None):
+                    with self.subTest(field=field, invalid=invalid):
+                        original = self.manifest["rollout"][field]
+                        self.manifest["rollout"][field] = invalid
+                        with self.assertRaisesRegex(ValueError, "must be booleans"):
+                            verify.receipt(self.write_manifest(root))
+                        self.manifest["rollout"][field] = original
+            del self.manifest["rollout"]["automatic_install"]
+            with self.assertRaisesRegex(ValueError, "missing or unexpected fields"):
+                verify.receipt(self.write_manifest(root))
 
     def test_feed_bytes_and_provenance_are_bound_into_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
