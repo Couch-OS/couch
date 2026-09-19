@@ -976,7 +976,7 @@ mod tests {
             let out = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "sonos_player::tests::music_player_screen_renders_and_its_controls_dispatch",
+                    "media_player::tests::music_player_screen_renders_and_its_controls_dispatch",
                 ])
                 .env("COUCH_TEST_SONOS_PLAYER", "1")
                 .output()
@@ -1415,7 +1415,7 @@ mod tests {
             let out = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "sonos_player::tests::the_player_screen_is_the_same_picture_for_the_same_speaker",
+                    "media_player::tests::the_player_screen_is_the_same_picture_for_the_same_speaker",
                 ])
                 .env("COUCH_TEST_PLAYER_PICTURES", "1")
                 .output()
