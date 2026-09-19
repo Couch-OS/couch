@@ -82,7 +82,28 @@ and costs one extra renewal, not an extra protocol version.
    connection, even after the code that drives it is gone. If it cannot, the
    settings service does not start at all.
 
-**What you have to decide.**
+**Decided (Bryan, 2026-09-19).** Every recommendation below was accepted:
+
+1. **One protocol 3 train**, T1-T7, switched on once at the end.
+2. **Release now, then hold**: an alpha is cut from `dev` just before T1 (it
+   carries the Denon removal); no alpha until T7; an urgent fix goes out from a
+   branch off the pre-train commit. Dev builds for the test remote continue.
+3. **Matter stays built in**; revisit after it has worked on hardware.
+4. **Voice gets its own "assistant address and token" setting**, so Home
+   Assistant is free to become a package in wave 3.
+5. **CoreELEC**: the Kodi half converts to the Kodi package; the SSH
+   reboot/shutdown actions stay a small built-in Couch feature.
+6. **A built-in is removed in the first release after its package passed a
+   hands-on check on a real device**, with automatic conversion. Tizen and Apple
+   TV, never proven on hardware, may convert as soon as their package exists.
+7. **Power by infrared becomes a Couch feature above any package.**
+8. **Stable opens on evidence**: each integration repository carries an evidence
+   file and the feed refuses a stable package without one.
+9. **One user id per package**, in T3, before any package stores a secret.
+
+The questions as they were put:
+
+**What had to be decided.**
 
 1. **One train or three?** Recommended: one protocol 3 covering Sonos, Kodi, Hue
    and the TVs, landed in the order T1-T7, one renewal. The alternative (media

@@ -45,7 +45,15 @@ and Kodi can follow with a small amount of extra work.
 - When something cannot be done, the package can now say *why* in a way the
   screen can act on: "this speaker is following Kitchen - open Kitchen".
 
-**What you have to decide.**
+**Decided (Bryan, 2026-09-19).** All six recommendations below were accepted:
+protocol 3; pictures travel through the package; the built-in Sonos screen moves
+onto the shared player code first; Kodi's chapter, audio and subtitle lists go
+into protocol 3 now; a package may name a few extra buttons of its own; a package
+may show one line of its own error wording (160 characters at most).
+
+The questions as they were put:
+
+**What had to be decided.**
 
 1. **Call it protocol 3** (recommended), rather than squeezing it into protocol 2
    as an optional extra. Old Couch versions then refuse the new package cleanly
