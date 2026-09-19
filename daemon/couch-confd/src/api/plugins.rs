@@ -140,9 +140,7 @@ impl Api {
                     Ok(value) => value,
                     Err(reply) => return reply,
                 };
-                Request::Command {
-                    function: input.command,
-                }
+                Request::command(input.command)
             }
             _ => return Reply::error(404, "Unknown integration operation"),
         };
@@ -204,8 +202,8 @@ impl Api {
                             ) {
                                 Ok(request) => api
                                     .plugin_request(&request.connection_id, request.request)
-                                    .unwrap_or_else(|code| Response::Error { code }),
-                                Err(code) => Response::Error { code },
+                                    .unwrap_or_else(Response::error),
+                                Err(code) => Response::error(code),
                             };
                             let _ = couch_plugin::write_frame_timeout(
                                 &mut stream,

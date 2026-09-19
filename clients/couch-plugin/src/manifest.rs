@@ -1,7 +1,7 @@
-use crate::{Error, Result, PROTOCOL_VERSION};
+use crate::{accepted_protocol_version, Error, Reason, Result, NEXT_PROTOCOL_VERSION};
 use couch_sdk::couch_model::{
-    commands::{valid_input_id, Function},
-    PluginActionSchema, PluginComponent, PluginStatusField, TypedAction,
+    commands::{valid_input_id, Function, MAX_CUSTOM_FUNCTIONS},
+    ActionKind, PluginActionSchema, PluginComponent, PluginStatusField, TypedAction,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -92,7 +92,9 @@ impl SettingField {
 }
 impl Manifest {
     pub fn validate(&self) -> Result<()> {
-        if !(1..=PROTOCOL_VERSION).contains(&self.protocol_version)
+        // The one place the protocol 3 switch is read. A release build accepts
+        // 1 and 2; `protocol-3-preview` test builds also accept 3.
+        if !(1..=accepted_protocol_version()).contains(&self.protocol_version)
             || self.min_core_protocol_version != self.protocol_version
         {
             return Err(Error::Incompatible);
@@ -114,24 +116,33 @@ impl Manifest {
             || self.capabilities.len() > 128
             || self.settings.len() > 32
             || self.presentation.len() > 16
-            || self.actions.len() > 1
-            || self.actions.iter().any(|action| !action.is_valid())
+            // At most eight valid schemas of distinct kinds; before protocol
+            // 3, at most one.
+            || !PluginActionSchema::valid_set(&self.actions)
+            || (self.protocol_version < NEXT_PROTOCOL_VERSION && self.actions.len() > 1)
             || (self.protocol_version == 1 && !self.actions.is_empty())
         {
             return Err(Error::Invalid);
         }
         let mut seen = HashSet::new();
+        let mut named = 0;
         for cap in &self.capabilities {
+            let function = Function::parse(&cap.id);
+            // A button the package names itself (`x:`) belongs to protocol 3.
+            // A protocol 1 or 2 manifest declaring one is invalid, as it was
+            // before couch-model learnt to parse them.
+            if matches!(function, Some(Function::Custom(_))) {
+                named += 1;
+                if self.protocol_version < NEXT_PROTOCOL_VERSION || named > MAX_CUSTOM_FUNCTIONS {
+                    return Err(Error::Invalid);
+                }
+            }
             if !label(&cap.label)
                 || !seen.insert(&cap.id)
                 || cap.id.len() > 128
-                || Function::parse(&cap.id).is_none()
+                || function.is_none()
                 || cap.id.starts_with("input:")
                 || cap.id.starts_with("app:")
-                // couch-model now parses `x:` (protocol 3, unreleased) so that
-                // it can read every file it writes. No protocol this host
-                // accepts may declare one.
-                || cap.id.starts_with("x:")
             {
                 return Err(Error::Invalid);
             }
@@ -162,7 +173,10 @@ impl Manifest {
                         && (*field != PluginStatusField::VolumeDb || self.protocol_version >= 2)
                 }
                 PluginComponent::VolumeDbControl { label: text } => {
-                    label(text) && self.protocol_version >= 2 && self.actions.len() == 1
+                    label(text)
+                        && self.protocol_version >= 2
+                        && PluginActionSchema::find(&self.actions, ActionKind::SetVolumeDb)
+                            .is_some()
                 }
                 PluginComponent::Toggle {
                     label: text,
@@ -218,16 +232,32 @@ impl Manifest {
         if self.protocol_version < 2 {
             return Err(Error::Unsupported);
         }
-        let schema = self.actions.first().ok_or(Error::Unsupported)?;
+        let schema =
+            PluginActionSchema::find(&self.actions, action.kind()).ok_or(Error::Unsupported)?;
         if !schema.accepts(action) {
             return Err(Error::Invalid);
         }
         Ok(())
     }
 
+    /// Whether a reason may name this setting, and whether its text is fit to
+    /// show. Only a protocol 3 package may send a reason at all; the host
+    /// checks that first.
+    pub fn accepts_reason(&self, reason: &Reason) -> bool {
+        reason.is_well_formed()
+            && reason
+                .field()
+                .is_none_or(|id| self.settings.iter().any(|field| field.id == id))
+    }
+
     pub fn supports(&self, function: &str) -> bool {
-        if Function::parse(function).is_none() {
-            return false;
+        match Function::parse(function) {
+            None => return false,
+            // Never sent to a protocol 1 or 2 package, whatever it declares.
+            Some(Function::Custom(_)) if self.protocol_version < NEXT_PROTOCOL_VERSION => {
+                return false
+            }
+            Some(_) => (),
         }
         self.capabilities.iter().any(|c| c.id == function)
             || (self.supports_inputs

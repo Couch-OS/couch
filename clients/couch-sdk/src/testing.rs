@@ -281,7 +281,20 @@ pub fn contract_findings<C: DeviceClient>(settings: &C::Settings, host: &MockHos
             )),
         }
     }
-    if C::actions().len() > 1 || C::actions().iter().any(|schema| !schema.is_valid()) {
+    // Buttons a package names itself (`x:`, protocol 3) are ordinary fixed
+    // capabilities here: they parse, they are canonical and supports() finds
+    // them in the declared list. Only their number is limited.
+    let named = C::capabilities()
+        .iter()
+        .filter(|(id, _)| matches!(Function::parse(id), Some(Function::Custom(_))))
+        .count();
+    if named > couch_model::commands::MAX_CUSTOM_FUNCTIONS {
+        findings.push(format!(
+            "{named} package-named `x:` capabilities are declared; the limit is {}",
+            couch_model::commands::MAX_CUSTOM_FUNCTIONS
+        ));
+    }
+    if !crate::PluginActionSchema::valid_set(C::actions()) {
         findings.push("typed action declarations are invalid or duplicated".into());
     }
     if let Err(e) = settings.validate() {

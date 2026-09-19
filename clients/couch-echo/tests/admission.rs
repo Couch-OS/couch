@@ -4,11 +4,27 @@ use couch_plugin::{
 };
 use couch_sdk::testing::{MockHost, Reply, Script};
 use serde_json::json;
-use std::path::Path;
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
+
+/// This tree's package executable, or the one `COUCH_ADMISSION_BINARY_ECHO`
+/// names. `tools/tests/old-package-wire.sh` sets it to an executable built
+/// from the source the published packages were built from, so that this
+/// tree's host is proved against a child that refuses every unknown field.
+fn binary() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(|| {
+        std::env::var_os("COUCH_ADMISSION_BINARY_ECHO")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_couch-plugin-echo")))
+    })
+}
 
 fn adapter() -> Adapter<'static> {
     Adapter {
-        binary: Path::new(env!("CARGO_BIN_EXE_couch-plugin-echo")),
+        binary: binary(),
         manifest_json: include_str!("../plugin.json"),
     }
 }
@@ -55,9 +71,7 @@ fn failure() {
         FailureCase {
             device_settings: settings,
             unknown_command: "mute-on",
-            request: Request::Command {
-                function: "volume-up".into(),
-            },
+            request: Request::command("volume-up"),
             malformed_requests: &["CMD volume-up"],
             disconnected_requests: &["CMD volume-up"],
             malformed: Script::new()

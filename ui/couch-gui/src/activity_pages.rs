@@ -181,7 +181,7 @@ fn plugin_worker(
         let event = if is_action {
             PluginEvent::ActionDone(match response {
                 Ok(PluginResponse::Ok) => Ok(()),
-                Ok(PluginResponse::Error { code }) => Err(code.to_string()),
+                Ok(PluginResponse::Error { code, .. }) => Err(code.to_string()),
                 Err(error) => Err(error.to_string()),
                 _ => Err("The integration sent an unexpected reply".into()),
             })
@@ -189,7 +189,7 @@ fn plugin_worker(
             match response {
                 Ok(PluginResponse::Status { status }) => PluginEvent::Status(status),
                 Ok(PluginResponse::Inputs { inputs }) => PluginEvent::Inputs(inputs),
-                Ok(PluginResponse::Error { code }) => PluginEvent::Error(code.to_string()),
+                Ok(PluginResponse::Error { code, .. }) => PluginEvent::Error(code.to_string()),
                 Ok(_) => PluginEvent::Error("The integration sent an unexpected reply".into()),
                 Err(error) => PluginEvent::Error(error.to_string()),
             }

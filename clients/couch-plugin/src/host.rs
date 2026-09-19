@@ -1,6 +1,8 @@
 use crate::{
-    protocol::Envelope, read_frame, write_frame, Error, Manifest, Request, Response, Result,
+    protocol::Envelope, read_frame, write_frame, Error, Failure, Manifest, Request, Response,
+    Result, NEXT_PROTOCOL_VERSION,
 };
+use couch_sdk::{couch_model::commands::Function, KeyPhase};
 use std::{
     io::{Read, Write},
     os::{
@@ -224,9 +226,7 @@ impl Host {
         }
     }
     pub fn command(&mut self, function: &str) -> Result<()> {
-        match self.request(Request::Command {
-            function: function.into(),
-        })? {
+        match self.request(Request::command(function))? {
             Response::Ok => Ok(()),
             _ => Err(Error::Protocol),
         }
@@ -249,19 +249,27 @@ impl Host {
             _ => Err(Error::Protocol),
         }
     }
+    /// A key press with its phase. A protocol 1 or 2 package is sent a tap.
+    pub fn key(&mut self, function: &str, phase: KeyPhase) -> Result<()> {
+        match self.request(Request::key(function, phase))? {
+            Response::Ok => Ok(()),
+            _ => Err(Error::Protocol),
+        }
+    }
     pub fn request(&mut self, request: Request) -> Result<Response> {
+        self.request_detailed(request)
+            .map_err(|failure| failure.code)
+    }
+    /// [`Host::request`], keeping a protocol 3 package's reason for an error.
+    ///
+    /// This is the one place that decides what a package of a given protocol
+    /// may be sent and may answer. The version is the one in its manifest,
+    /// which the handshake has already matched against the package's own.
+    pub fn request_detailed(&mut self, request: Request) -> std::result::Result<Response, Failure> {
         if !self.alive {
-            return Err(Error::Transport);
+            return Err(Error::Transport.into());
         }
-        match &request {
-            Request::Command { function } if !self.manifest.supports(function) => {
-                return Err(Error::Unsupported)
-            }
-            Request::Inputs if !self.manifest.supports_inputs => return Err(Error::Unsupported),
-            Request::Configure { settings } => self.manifest.validate_settings(settings)?,
-            Request::Action { action } => self.manifest.validate_action(*action)?,
-            _ => (),
-        }
+        let request = admit(&self.manifest, request)?;
         self.next_id = self.next_id.checked_add(1).ok_or(Error::Protocol)?;
         let result = (|| {
             let mut stream = DeadlineStream {
@@ -279,12 +287,7 @@ impl Host {
             if response.id != self.next_id {
                 return Err(Error::Protocol);
             }
-            validate_response(&request, &response.body)?;
-            if self.manifest.protocol_version == 1
-                && matches!(&response.body, Response::Status { status } if status.volume_db.is_some())
-            {
-                return Err(Error::Protocol);
-            }
+            accept(&self.manifest, &request, &response.body)?;
             Ok(response.body)
         })();
         // Protocol/transport failures retire the stream: never consume a late
@@ -293,7 +296,7 @@ impl Host {
             self.terminate();
         }
         match result? {
-            Response::Error { code } => Err(code),
+            Response::Error { code, reason } => Err(Failure { code, reason }),
             response => Ok(response),
         }
     }
@@ -313,6 +316,73 @@ impl Host {
 impl Drop for Host {
     fn drop(&mut self) {
         self.terminate();
+    }
+}
+
+/// The gate, before any I/O: what a package of this manifest's protocol may be
+/// sent. Returns the request as it will be written.
+pub(crate) fn admit(manifest: &Manifest, mut request: Request) -> Result<Request> {
+    let version = manifest.protocol_version;
+    // A phase the package cannot read is dropped rather than refused: the key
+    // still works, as a tap, and the bytes are the ones a protocol 1 or 2
+    // package has always been sent.
+    if let Request::Command { phase, .. } = &mut request {
+        if version < NEXT_PROTOCOL_VERSION {
+            *phase = KeyPhase::Tap;
+        }
+    }
+    if requires(&request) > version {
+        return Err(Error::Unsupported);
+    }
+    match &request {
+        Request::Command { function, .. } if !manifest.supports(function) => {
+            return Err(Error::Unsupported)
+        }
+        Request::Inputs if !manifest.supports_inputs => return Err(Error::Unsupported),
+        Request::Configure { settings } => manifest.validate_settings(settings)?,
+        Request::Action { action } => manifest.validate_action(*action)?,
+        _ => (),
+    }
+    Ok(request)
+}
+
+/// The gate, after I/O: what a package of this manifest's protocol may answer.
+/// Any error here retires the child.
+pub(crate) fn accept(manifest: &Manifest, request: &Request, response: &Response) -> Result<()> {
+    validate_response(request, response)?;
+    let version = manifest.protocol_version;
+    if version == 1 && matches!(response, Response::Status { status } if status.volume_db.is_some())
+    {
+        return Err(Error::Protocol);
+    }
+    if let Response::Error { code, reason } = response {
+        // Protocol 3 vocabulary from a package that did not declare protocol 3
+        // is a broken package, not a newer one.
+        if version < NEXT_PROTOCOL_VERSION && (reason.is_some() || *code == Error::Unpaired) {
+            return Err(Error::Protocol);
+        }
+        if reason
+            .as_ref()
+            .is_some_and(|reason| !manifest.accepts_reason(reason))
+        {
+            return Err(Error::Protocol);
+        }
+    }
+    Ok(())
+}
+
+/// The oldest manifest protocol whose package can be sent this request. A key
+/// phase is not counted: the host drops it for an older package instead of
+/// refusing the key.
+pub fn requires(request: &Request) -> u32 {
+    match request {
+        Request::Action { .. } => 2,
+        Request::Command { function, .. }
+            if matches!(Function::parse(function), Some(Function::Custom(_))) =>
+        {
+            NEXT_PROTOCOL_VERSION
+        }
+        _ => 1,
     }
 }
 
@@ -351,7 +421,7 @@ fn validate_response(request: &Request, response: &Response) -> Result<()> {
 struct Pending {
     request: Request,
     queued: Instant,
-    reply: SyncSender<Result<Response>>,
+    reply: SyncSender<std::result::Result<Response, Failure>>,
 }
 /// Cloneable handle to one persistent endpoint owner and a bounded queue.
 /// A failed request is never replayed. Only a subsequent explicit request may
@@ -397,7 +467,7 @@ impl Endpoint {
             .spawn(move || {
                 while let Ok(pending) = receiver.recv() {
                     if pending.queued.elapsed() >= QUEUE_TTL {
-                        let _ = pending.reply.send(Err(Error::Expired));
+                        let _ = pending.reply.send(Err(Error::Expired.into()));
                         continue;
                     }
                     if !host.is_alive() {
@@ -410,16 +480,16 @@ impl Endpoint {
                         match replacement {
                             Ok(replacement) => host = replacement,
                             Err(error) => {
-                                let _ = pending.reply.send(Err(error));
+                                let _ = pending.reply.send(Err(error.into()));
                                 continue;
                             }
                         }
                         if pending.queued.elapsed() >= QUEUE_TTL {
-                            let _ = pending.reply.send(Err(Error::Expired));
+                            let _ = pending.reply.send(Err(Error::Expired.into()));
                             continue;
                         }
                     }
-                    let result = host.request(pending.request);
+                    let result = host.request_detailed(pending.request);
                     let _ = pending.reply.send(result);
                 }
             })
@@ -432,26 +502,33 @@ impl Endpoint {
         })
     }
     pub fn request(&self, request: Request) -> Result<Response> {
+        self.request_detailed(request)
+            .map_err(|failure| failure.code)
+    }
+    /// [`Endpoint::request`], keeping a protocol 3 package's reason.
+    pub fn request_detailed(&self, request: Request) -> std::result::Result<Response, Failure> {
         // Endpoint identity/settings remain fixed for the lifetime of its owner.
         if matches!(request, Request::Hello { .. } | Request::Configure { .. }) {
-            return Err(Error::Unsupported);
+            return Err(Error::Unsupported.into());
         }
         let (reply, receiver) = mpsc::sync_channel(1);
         match self
             .inner
             .sender
             .as_ref()
-            .ok_or(Error::Transport)?
+            .ok_or(Failure::from(Error::Transport))?
             .try_send(Pending {
                 request,
                 queued: Instant::now(),
                 reply,
             }) {
             Ok(()) => (),
-            Err(TrySendError::Full(_)) => return Err(Error::Busy),
-            Err(TrySendError::Disconnected(_)) => return Err(Error::Transport),
+            Err(TrySendError::Full(_)) => return Err(Error::Busy.into()),
+            Err(TrySendError::Disconnected(_)) => return Err(Error::Transport.into()),
         }
-        receiver.recv().map_err(|_| Error::Transport)?
+        receiver
+            .recv()
+            .map_err(|_| Failure::from(Error::Transport))?
     }
 }
 
@@ -501,14 +578,25 @@ pub fn local_request(
     request: Request,
     timeout: Duration,
 ) -> Result<Response> {
+    local_request_detailed(socket, connection_id, request, timeout).map_err(|failure| failure.code)
+}
+
+/// [`local_request`], keeping the reason the daemon relayed. The frames are
+/// the same ones; `LocalRequest` is unchanged.
+pub fn local_request_detailed(
+    socket: &Path,
+    connection_id: &str,
+    request: Request,
+    timeout: Duration,
+) -> std::result::Result<Response, Failure> {
     if connection_id.is_empty()
         || connection_id.len() > 128
         || connection_id.chars().any(char::is_control)
         || timeout.is_zero()
     {
-        return Err(Error::Invalid);
+        return Err(Error::Invalid.into());
     }
-    let mut stream = UnixStream::connect(socket)?;
+    let mut stream = UnixStream::connect(socket).map_err(Error::from)?;
     let mut stream = DeadlineStream {
         stream: &mut stream,
         deadline: Instant::now() + timeout,
@@ -523,7 +611,11 @@ pub fn local_request(
     let response = read_frame(&mut stream)?;
     validate_response(&request, &response)?;
     match response {
-        Response::Error { code } => Err(code),
+        Response::Error {
+            reason: Some(reason),
+            ..
+        } if !reason.is_well_formed() => Err(Error::Protocol.into()),
+        Response::Error { code, reason } => Err(Failure { code, reason }),
         response => Ok(response),
     }
 }

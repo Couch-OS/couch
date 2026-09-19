@@ -1,0 +1,135 @@
+{
+  "protocol_version": 3,
+  "min_core_protocol_version": 3,
+  "id": "echo-v3",
+  "label": "Echo TV (protocol 3 fixture)",
+  "version": "0.1.0",
+  "executable": "bin/couch-plugin-echo-v3",
+  "capabilities": [
+    {
+      "id": "up",
+      "label": "Up"
+    },
+    {
+      "id": "down",
+      "label": "Down"
+    },
+    {
+      "id": "left",
+      "label": "Left"
+    },
+    {
+      "id": "right",
+      "label": "Right"
+    },
+    {
+      "id": "ok",
+      "label": "OK / select"
+    },
+    {
+      "id": "back",
+      "label": "Back"
+    },
+    {
+      "id": "home",
+      "label": "Home"
+    },
+    {
+      "id": "power-on",
+      "label": "Power on"
+    },
+    {
+      "id": "power-off",
+      "label": "Power off"
+    },
+    {
+      "id": "volume-up",
+      "label": "Volume up"
+    },
+    {
+      "id": "volume-down",
+      "label": "Volume down"
+    },
+    {
+      "id": "mute",
+      "label": "Toggle mute"
+    },
+    {
+      "id": "play-pause",
+      "label": "Play / pause"
+    },
+    {
+      "id": "x:info",
+      "label": "Info"
+    }
+  ],
+  "settings": [
+    {
+      "id": "host",
+      "label": "Device address",
+      "kind": "text",
+      "required": true
+    },
+    {
+      "id": "port",
+      "label": "Port",
+      "kind": "integer",
+      "required": true,
+      "default": 9299
+    },
+    {
+      "id": "token",
+      "label": "Pairing token",
+      "kind": "secret",
+      "required": false
+    }
+  ],
+  "supports_inputs": true,
+  "presentation": [
+    {
+      "kind": "toggle",
+      "label": "Power",
+      "state": "on",
+      "on": "power-on",
+      "off": "power-off"
+    },
+    {
+      "kind": "command_group",
+      "title": "Navigation",
+      "commands": [
+        "up",
+        "down",
+        "left",
+        "right",
+        "ok",
+        "back",
+        "home"
+      ]
+    },
+    {
+      "kind": "command_group",
+      "title": "Sound",
+      "commands": [
+        "volume-up",
+        "volume-down",
+        "mute"
+      ]
+    },
+    {
+      "kind": "status_text",
+      "label": "Volume",
+      "field": "volume"
+    },
+    {
+      "kind": "input_selector",
+      "label": "Source"
+    },
+    {
+      "kind": "command_group",
+      "title": "More",
+      "commands": [
+        "x:info"
+      ]
+    }
+  ]
+}

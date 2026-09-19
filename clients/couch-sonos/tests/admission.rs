@@ -14,11 +14,26 @@ use couch_plugin::{
 };
 use fake::{Answer, FakeSonos, Plan, GROUP, PLAYER};
 use serde_json::json;
-use std::path::Path;
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
+
+/// This tree's package executable, or the one `COUCH_ADMISSION_BINARY_SONOS`
+/// names. `tools/tests/old-package-wire.sh` sets it to an executable built
+/// from the source the published Sonos package was built from.
+fn binary() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(|| {
+        std::env::var_os("COUCH_ADMISSION_BINARY_SONOS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_couch-plugin-sonos")))
+    })
+}
 
 fn adapter() -> Adapter<'static> {
     Adapter {
-        binary: Path::new(env!("CARGO_BIN_EXE_couch-plugin-sonos")),
+        binary: binary(),
         manifest_json: include_str!("../plugin.json"),
     }
 }
@@ -113,9 +128,7 @@ fn failure() {
             // A Sonos player has no power state, so this is never declared and
             // the manifest gate owes the household silence.
             unknown_command: "power-off",
-            request: Request::Command {
-                function: "play".into(),
-            },
+            request: Request::command("play"),
             malformed: after_identity(Answer::ok("not a Control API document")),
             malformed_requests: &[INFO, GROUPS],
             disconnected: after_identity(Answer::Close),

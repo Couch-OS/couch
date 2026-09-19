@@ -199,7 +199,7 @@ fn manifest_settings_reject_unknowns_types_and_secrets_in_defaults() {
 }
 
 #[test]
-fn no_accepted_protocol_lets_a_package_name_buttons_of_its_own() {
+fn only_a_protocol_3_manifest_may_name_buttons_of_its_own() {
     let p = Package::new();
     for manifest in [p.manifest.clone(), v2_manifest(p.manifest.clone())] {
         assert!(manifest.validate().is_ok());
@@ -215,7 +215,382 @@ fn no_accepted_protocol_lets_a_package_name_buttons_of_its_own() {
             "protocol {}",
             manifest.protocol_version
         );
+        // Even a manifest that slipped through is never sent one.
+        assert!(!named.supports("x:info"));
     }
+}
+
+/// Protocol 3 is unreleased. Without the `protocol-3-preview` feature, which
+/// no shipped crate enables, its manifest is a package that needs a newer
+/// Couch, whatever else it says, and nothing is executed.
+#[cfg(not(feature = "protocol-3-preview"))]
+#[test]
+fn a_protocol_3_manifest_is_refused_as_needing_a_newer_couch() {
+    assert_eq!(
+        couch_plugin::accepted_protocol_version(),
+        couch_plugin::PROTOCOL_VERSION
+    );
+    assert_eq!(couch_plugin::PROTOCOL_VERSION, 2);
+    let mut p = Package::new();
+    p.manifest = v3_manifest(p.manifest.clone());
+    assert_eq!(p.manifest.validate(), Err(Error::Incompatible));
+    let mut plain = v2_manifest(p.manifest.clone());
+    plain.capabilities.pop();
+    plain.protocol_version = 3;
+    plain.min_core_protocol_version = 3;
+    assert_eq!(plain.validate(), Err(Error::Incompatible));
+    let marker = p.root.join("ran");
+    p.script(&format!(": > {}\nexec /bin/sleep 10", marker.display()));
+    assert!(matches!(
+        Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)),
+        Err(Error::Incompatible)
+    ));
+    assert!(matches!(
+        couch_plugin::Endpoint::start(&p.root, p.manifest.clone(), json!({"host":"example"})),
+        Err(Error::Incompatible)
+    ));
+    assert!(!marker.exists(), "a refused package was executed");
+}
+
+#[cfg(feature = "protocol-3-preview")]
+#[test]
+fn the_preview_switch_admits_protocol_3_and_nothing_newer() {
+    assert_eq!(couch_plugin::accepted_protocol_version(), 3);
+    assert_eq!(
+        couch_plugin::PROTOCOL_VERSION,
+        2,
+        "the release constant never moves"
+    );
+    let p = Package::new();
+    let manifest = v3_manifest(p.manifest.clone());
+    assert_eq!(manifest.validate(), Ok(()));
+    assert!(manifest.supports("x:info"));
+    assert!(!manifest.supports("x:other"));
+    let wire = serde_json::to_value(&manifest).unwrap();
+    assert_eq!(wire["protocol_version"], 3);
+    assert_eq!(wire["min_core_protocol_version"], 3);
+
+    let mut next = manifest.clone();
+    next.protocol_version = 4;
+    next.min_core_protocol_version = 4;
+    assert_eq!(next.validate(), Err(Error::Incompatible));
+
+    for id in ["x:", "x:Info", "x:in fo", "x:info!"] {
+        let mut bad = manifest.clone();
+        bad.capabilities[1].id = id.into();
+        assert_eq!(bad.validate(), Err(Error::Invalid), "{id}");
+    }
+    let mut many = manifest.clone();
+    many.capabilities.truncate(1);
+    for index in 0..32 {
+        many.capabilities.push(couch_plugin::Capability {
+            id: format!("x:button-{index}"),
+            label: format!("Button {index}"),
+        });
+    }
+    assert_eq!(many.validate(), Ok(()));
+    many.capabilities.push(couch_plugin::Capability {
+        id: "x:one-too-many".into(),
+        label: "One too many".into(),
+    });
+    assert_eq!(many.validate(), Err(Error::Invalid));
+
+    // Schemas are found by kind and no kind is declared twice. Only one kind
+    // exists, so a second schema is still a duplicate.
+    let mut twice = manifest.clone();
+    twice.actions.push(twice.actions[0]);
+    assert_eq!(twice.validate(), Err(Error::Invalid));
+    let mut grouped = manifest.clone();
+    grouped.presentation = vec![couch_plugin::Component::CommandGroup {
+        title: "More".into(),
+        commands: vec!["x:info".into()],
+    }];
+    assert_eq!(grouped.validate(), Ok(()));
+}
+
+/// What a scripted child saw on its stdin: the hello frame and `requests`
+/// more, read by exact length so the child can answer in between.
+fn seen(p: &Package) -> Vec<u8> {
+    std::fs::read(p.root.join("seen")).unwrap_or_default()
+}
+fn read_exactly(p: &Package, bytes: usize) -> String {
+    format!(
+        "/bin/dd bs=1 count={bytes} >> {} 2>/dev/null\n",
+        p.root.join("seen").display()
+    )
+}
+/// The exact text, in the host's own field order: `json!` would sort it.
+fn frame_bytes(text: &str) -> Vec<u8> {
+    let mut bytes = (text.len() as u32).to_be_bytes().to_vec();
+    bytes.extend_from_slice(text.as_bytes());
+    bytes
+}
+fn hello_frame(manifest: &Manifest) -> Vec<u8> {
+    frame_bytes(&format!(
+        r#"{{"id":1,"body":{{"method":"hello","protocol_version":{}}}}}"#,
+        manifest.protocol_version
+    ))
+}
+
+#[test]
+fn a_key_phase_never_reaches_a_protocol_1_or_2_package() {
+    use couch_plugin::KeyPhase;
+    // The bytes 00ab4da writes for a tap; see src/wire_golden.rs.
+    let tap = frame_bytes(r#"{"id":2,"body":{"method":"command","function":"power-on"}}"#);
+    for use_v2 in [false, true] {
+        for phase in [KeyPhase::Tap, KeyPhase::Repeat, KeyPhase::LongPress] {
+            let mut p = Package::new();
+            if use_v2 {
+                p.manifest = v2_manifest(p.manifest.clone());
+            }
+            let hello = hello_frame(&p.manifest);
+            p.script(&format!(
+                "{}{}{}exec /bin/sleep 10",
+                p.hello(),
+                read_exactly(&p, hello.len() + tap.len()),
+                print_frame(&json!({"id":2,"body":{"type":"ok"}}))
+            ));
+            let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+            assert_eq!(host.key("power-on", phase), Ok(()), "{phase:?}");
+            assert_eq!(seen(&p), [hello, tap.clone()].concat(), "{phase:?}");
+        }
+    }
+}
+
+#[cfg(feature = "protocol-3-preview")]
+#[test]
+fn a_protocol_3_package_is_told_the_phase_and_a_tap_is_still_not_written() {
+    use couch_plugin::KeyPhase;
+    for (function, phase, body) in [
+        (
+            "power-on",
+            KeyPhase::Tap,
+            r#"{"method":"command","function":"power-on"}"#,
+        ),
+        (
+            "power-on",
+            KeyPhase::Repeat,
+            r#"{"method":"command","function":"power-on","phase":"repeat"}"#,
+        ),
+        (
+            "x:info",
+            KeyPhase::LongPress,
+            r#"{"method":"command","function":"x:info","phase":"long_press"}"#,
+        ),
+    ] {
+        let mut p = Package::new();
+        p.manifest = v3_manifest(p.manifest.clone());
+        let hello = hello_frame(&p.manifest);
+        let expected = frame_bytes(&format!(r#"{{"id":2,"body":{body}}}"#));
+        p.script(&format!(
+            "{}{}{}exec /bin/sleep 10",
+            p.hello(),
+            read_exactly(&p, hello.len() + expected.len()),
+            print_frame(&json!({"id":2,"body":{"type":"ok"}}))
+        ));
+        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        assert_eq!(host.key(function, phase), Ok(()));
+        assert_eq!(
+            String::from_utf8_lossy(&seen(&p)),
+            String::from_utf8_lossy(&[hello, expected].concat())
+        );
+    }
+}
+
+#[test]
+fn a_package_named_button_is_refused_before_any_io_unless_declared() {
+    let mut manifests = vec![Package::new().manifest.clone()];
+    manifests.push(v2_manifest(manifests[0].clone()));
+    #[cfg(feature = "protocol-3-preview")]
+    manifests.push(v3_manifest(manifests[0].clone()));
+    for manifest in manifests {
+        let mut p = Package::new();
+        p.manifest = manifest;
+        // The child answers exactly one request after hello, with id 2. A
+        // refused command that had reached it would have used that id up.
+        p.script(&format!(
+            "{}{}exec /bin/sleep 10",
+            p.hello(),
+            print_frame(&json!({"id":2,"body":{"type":"status","status":{"on":true}}}))
+        ));
+        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        let declared = p.manifest.protocol_version >= 3;
+        for function in ["x:undeclared", "x:Bad", "x:"] {
+            assert_eq!(host.command(function), Err(Error::Unsupported));
+        }
+        if !declared {
+            assert_eq!(host.command("x:info"), Err(Error::Unsupported));
+            assert_eq!(couch_plugin::requires(&Request::command("x:info")), 3);
+        }
+        assert!(host.is_alive());
+        assert_eq!(host.status().unwrap().on, Some(true));
+    }
+    assert_eq!(couch_plugin::requires(&Request::command("power-on")), 1);
+    assert_eq!(couch_plugin::requires(&Request::Status), 1);
+    assert_eq!(
+        couch_plugin::requires(&Request::Action {
+            action: couch_plugin::TypedAction::SetVolumeDb { tenths: 0 }
+        }),
+        2
+    );
+}
+
+#[test]
+fn a_reason_or_unpaired_from_a_protocol_1_or_2_package_retires_it() {
+    for use_v2 in [false, true] {
+        for body in [
+            json!({"type":"error","code":"unpaired"}),
+            json!({"type":"error","code":"rejected","reason":{"kind":"message","text":"Pair again"}}),
+            json!({"type":"error","code":"invalid","reason":{"kind":"invalid_setting","field":"host","text":"No"}}),
+        ] {
+            let mut p = Package::new();
+            if use_v2 {
+                p.manifest = v2_manifest(p.manifest.clone());
+            }
+            p.script(&format!(
+                "{}{}exec /bin/sleep 10",
+                p.hello(),
+                print_frame(&json!({"id":2,"body":body}))
+            ));
+            let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+            let pid = host.pid();
+            assert_eq!(
+                host.request_detailed(Request::Status),
+                Err(Error::Protocol.into()),
+                "{body}"
+            );
+            assert!(!host.is_alive());
+            assert_eq!(
+                unsafe { libc::kill(pid as i32, 0) },
+                -1,
+                "child must be reaped"
+            );
+        }
+        // The nine codes it has always been allowed still arrive as they are.
+        let mut p = Package::new();
+        if use_v2 {
+            p.manifest = v2_manifest(p.manifest.clone());
+        }
+        p.script(&format!(
+            "{}{}exec /bin/sleep 10",
+            p.hello(),
+            print_frame(&json!({"id":2,"body":{"type":"error","code":"rejected"}}))
+        ));
+        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            host.request_detailed(Request::Status),
+            Err(couch_plugin::Failure {
+                code: Error::Rejected,
+                reason: None
+            })
+        );
+        assert!(host.is_alive());
+    }
+}
+
+#[cfg(feature = "protocol-3-preview")]
+#[test]
+fn a_protocol_3_reason_is_kept_and_one_couch_cannot_show_retires_the_package() {
+    use couch_plugin::{Failure, Reason};
+    for (body, expected) in [
+        (
+            json!({"type":"error","code":"unpaired","reason":{"kind":"message","text":"Pair this TV again"}}),
+            Some(Failure {
+                code: Error::Unpaired,
+                reason: Some(Reason::Message {
+                    text: "Pair this TV again".into(),
+                }),
+            }),
+        ),
+        (
+            json!({"type":"error","code":"invalid","reason":{"kind":"invalid_setting","field":"host","text":"Not an address"}}),
+            Some(Failure {
+                code: Error::Invalid,
+                reason: Some(Reason::InvalidSetting {
+                    field: "host".into(),
+                    text: "Not an address".into(),
+                }),
+            }),
+        ),
+        (
+            json!({"type":"error","code":"unpaired"}),
+            Some(Error::Unpaired.into()),
+        ),
+        (
+            json!({"type":"error","code":"rejected","reason":{"kind":"message","text":"a".repeat(161)}}),
+            None,
+        ),
+        (
+            json!({"type":"error","code":"rejected","reason":{"kind":"message","text":"two\nlines"}}),
+            None,
+        ),
+        (
+            json!({"type":"error","code":"invalid","reason":{"kind":"invalid_setting","field":"undeclared","text":"No"}}),
+            None,
+        ),
+        (
+            json!({"type":"error","code":"rejected","reason":{"kind":"link","text":"No"}}),
+            None,
+        ),
+        (
+            json!({"type":"error","code":"rejected","reason":{"kind":"message","text":"No","more":1}}),
+            None,
+        ),
+    ] {
+        let mut p = Package::new();
+        p.manifest = v3_manifest(p.manifest.clone());
+        p.script(&format!(
+            "{}{}exec /bin/sleep 10",
+            p.hello(),
+            print_frame(&json!({"id":2,"body":body}))
+        ));
+        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        let pid = host.pid();
+        match expected {
+            Some(failure) => {
+                assert_eq!(
+                    host.request_detailed(Request::Status),
+                    Err(failure),
+                    "{body}"
+                );
+                assert!(host.is_alive(), "{body}");
+            }
+            None => {
+                assert_eq!(
+                    host.request_detailed(Request::Status),
+                    Err(Error::Protocol.into()),
+                    "{body}"
+                );
+                assert!(!host.is_alive(), "{body}");
+                assert_eq!(
+                    unsafe { libc::kill(pid as i32, 0) },
+                    -1,
+                    "child must be reaped"
+                );
+            }
+        }
+    }
+    // The plain call still answers with the code alone.
+    let mut p = Package::new();
+    p.manifest = v3_manifest(p.manifest.clone());
+    p.script(&format!(
+        "{}{}{}exec /bin/sleep 10",
+        p.hello(),
+        print_frame(&json!({"id":2,"body":{"type":"ok"}})),
+        print_frame(&json!({"id":3,"body":{"type":"error","code":"unpaired","reason":{"kind":"message","text":"Pair again"}}}))
+    ));
+    let endpoint =
+        couch_plugin::Endpoint::start(&p.root, p.manifest.clone(), json!({"host":"example"}))
+            .unwrap();
+    assert_eq!(
+        endpoint.request_detailed(Request::Status),
+        Err(Failure {
+            code: Error::Unpaired,
+            reason: Some(Reason::Message {
+                text: "Pair again".into()
+            })
+        })
+    );
 }
 
 #[test]
@@ -450,6 +825,17 @@ printf '%s' "$body"
     )
 }
 
+fn v3_manifest(manifest: Manifest) -> Manifest {
+    let mut manifest = v2_manifest(manifest);
+    manifest.protocol_version = 3;
+    manifest.min_core_protocol_version = 3;
+    manifest.capabilities.push(couch_plugin::Capability {
+        id: "x:info".into(),
+        label: "Info".into(),
+    });
+    manifest
+}
+
 fn v2_manifest(mut manifest: Manifest) -> Manifest {
     manifest.protocol_version = 2;
     manifest.min_core_protocol_version = 2;
@@ -512,7 +898,10 @@ fn v2_is_explicit_and_headless_actions_do_not_depend_on_presentation() {
         Err(Error::Invalid),
         "no v2 controls in v1"
     );
-    for (version, minimum) in [(0, 0), (1, 2), (2, 1), (2, 3), (3, 3)] {
+    // (3, 3) unless the protocol 3 preview is switched on, which no shipped
+    // build does; then (4, 4).
+    let next = couch_plugin::accepted_protocol_version() + 1;
+    for (version, minimum) in [(0, 0), (1, 2), (2, 1), (2, 3), (next, next)] {
         let mut manifest = v2_manifest(v1.clone());
         manifest.protocol_version = version;
         manifest.min_core_protocol_version = minimum;

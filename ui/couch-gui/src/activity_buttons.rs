@@ -659,7 +659,7 @@ pub(crate) fn execute_with_input(
                 settle: true,
                 ..Outcome::default()
             }),
-            Ok(couch_plugin::Response::Error { code }) => Err(code.to_string()),
+            Ok(couch_plugin::Response::Error { code, .. }) => Err(code.to_string()),
             Ok(_) => Err("The integration returned an invalid response".into()),
             Err(error) => Err(error.to_string()),
         };
@@ -766,7 +766,7 @@ fn power_toggle(
                     couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
                 ) {
                     Ok(couch_plugin::Response::Status { status }) => Plan::Observed(status.on),
-                    Ok(couch_plugin::Response::Error { code }) => return Err(code.to_string()),
+                    Ok(couch_plugin::Response::Error { code, .. }) => return Err(code.to_string()),
                     Ok(_) => return Err("The integration returned an invalid status".into()),
                     Err(error) => return Err(error.to_string()),
                 }
@@ -1187,9 +1187,7 @@ fn send_network(
             let result = couch_plugin::local_request(
                 &crate::home::path("plugin.sock"),
                 connection_id.as_str(),
-                couch_plugin::Request::Command {
-                    function: command.id(),
-                },
+                couch_plugin::Request::command(command.id()),
                 timeout,
             );
             match result {
@@ -1211,7 +1209,7 @@ fn send_network(
                         ..Outcome::default()
                     })
                 }
-                Ok(couch_plugin::Response::Error { code }) => {
+                Ok(couch_plugin::Response::Error { code, .. }) => {
                     Err(plugin_failure(code, code.to_string()))
                 }
                 Ok(_) => Err(Failure::Command(
