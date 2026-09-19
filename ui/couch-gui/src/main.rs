@@ -1804,6 +1804,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(message) = shortcut_controls.poll() {
             toast(message, 2);
         }
+        button_controls.set_screen_device(tv_controls.packaged_device(&app));
         match button_controls.poll(&app) {
             Some(activity_buttons::Feedback::Error(error)) => toast(error, 3),
             Some(activity_buttons::Feedback::Notice(notice)) => {
@@ -1820,6 +1821,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(activity_buttons::Feedback::Volume(reading)) => {
                 // The same card the room list shows for a highlighted speaker.
                 app.set_volume_caption("Volume".into());
+                // The core control screen shows the level too; keep it the
+                // figure the card is showing rather than the last status read.
+                if app.get_tv_shown() && app.get_tv_generic() && !reading.text.is_empty() {
+                    app.set_tv_picture(reading.text.as_str().into());
+                }
                 app.set_volume_target(reading.target.as_str().into());
                 app.set_volume(reading.level.max(0));
                 app.set_volume_text(reading.text.as_str().into());

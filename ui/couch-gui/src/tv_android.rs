@@ -15,6 +15,7 @@ pub(super) fn current(work: &Work, active: &AtomicU64) -> bool {
 fn function(action: &Command, state: &Value) -> Result<Option<&'static str>, String> {
     Ok(Some(match action {
         Command::IrFunction(_) => return Err("IR commands are unavailable on Android TV".into()),
+        Command::Function(_) => return Err("Package commands are unavailable on Android TV".into()),
         Command::Retry => return Ok(None),
         Command::Key(key) => match key {
             Button::Up => "up",

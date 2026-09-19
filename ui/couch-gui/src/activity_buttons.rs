@@ -140,6 +140,9 @@ pub struct Controller {
     activity_running: bool,
     // Bumped when a key is released; see `Request::hold`.
     hold: Arc<AtomicU64>,
+    // The packaged device on the core control screen, which has no activity
+    // and so no bindings of its own: its keys mean what they mean on its row.
+    screen_device: Option<String>,
 }
 impl Controller {
     pub fn new() -> Self {
@@ -162,6 +165,7 @@ impl Controller {
             dropped: false,
             activity_running: false,
             hold,
+            screen_device: None,
         }
     }
     fn binding(&self, button: Button, gesture: Gesture) -> Option<&Binding> {
@@ -241,6 +245,9 @@ impl Controller {
         }
         self.fire(button, Gesture::Short, press.repeat)
     }
+    pub fn set_screen_device(&mut self, device: Option<String>) {
+        self.screen_device = device;
+    }
     fn sync_context(&mut self, app: &App) {
         self.activity_running = app.get_activity_running();
         let config = connections::config();
@@ -248,9 +255,10 @@ impl Controller {
             // A device's own screen (`device:<id>`) has no activity bindings to
             // read; the keys mean there what they mean on its row.
             let active = app.get_active_activity().to_string();
-            match active.strip_prefix("device:") {
-                Some(id) => format!("{ROW}{id}"),
-                None => active,
+            match (active.strip_prefix("device:"), &self.screen_device) {
+                (Some(id), _) => format!("{ROW}{id}"),
+                (None, Some(id)) if active.is_empty() => format!("{ROW}{id}"),
+                _ => active,
             }
         } else if app.get_light_shown() && !app.get_chooser_shown() {
             // The highlighted row of the open room, when it is a device these
@@ -1966,6 +1974,7 @@ mod tests {
                 dropped: false,
                 activity_running: false,
                 hold: Arc::new(AtomicU64::new(0)),
+                screen_device: None,
             },
             rx,
         )

@@ -188,6 +188,13 @@ export component App inherits Window {
     in-out property <bool> tv-tizen: false;
     in-out property <bool> tv-ir: false;
     in-out property <bool> tv-sonos: false;
+    // The core control screen for a device described by what it declares.
+    in-out property <bool> tv-generic: false;
+    in-out property <string> tv-kind-label;
+    in-out property <bool> tv-can-power: false;
+    in-out property <bool> tv-can-input: false;
+    in-out property <bool> tv-can-command: false;
+    in-out property <int> tv-tray-selected: 0;
     in-out property <bool> tv-media-active: false;
     in-out property <string> tv-media-title;
     in-out property <string> tv-media-subtitle;
@@ -560,7 +567,7 @@ export component App inherits Window {
     }
 
     television := Television {
-        visible:root.tv-shown;shown:root.tv-shown;android-tv:root.tv-android;apple-tv:root.tv-apple;tizen:root.tv-tizen;infrared:root.tv-ir;sonos:root.tv-sonos;
+        visible:root.tv-shown;shown:root.tv-shown;android-tv:root.tv-android;apple-tv:root.tv-apple;tizen:root.tv-tizen;infrared:root.tv-ir;sonos:root.tv-sonos;generic:root.tv-generic;kind-label:root.tv-kind-label;can-power:root.tv-can-power;can-input:root.tv-can-input;can-command:root.tv-can-command;tray-selected<=>root.tv-tray-selected;
         width:parent.width;height:parent.height;
         title:root.tv-title;status:root.tv-status;error:root.tv-error;
         source-name:root.tv-source;sound:root.tv-sound;picture:root.tv-picture;panel:root.tv-panel;choices:root.tv-choices;
