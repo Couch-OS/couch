@@ -175,8 +175,8 @@ impl Config {
     /// A device that named its receiver inline, from before named connections,
     /// gets a legacy connection of its own (or shares one with the same
     /// address), so that everything waiting for a package is a connection and
-    /// converts the same way. Pilot receipts are dropped: see
-    /// [`DenonMigration`].
+    /// converts the same way. One without a usable address is left alone.
+    /// Pilot receipts are dropped: see [`DenonMigration`].
     pub(crate) fn migrate_legacy_builtins(&mut self) -> bool {
         let mut changed = !self.denon_migrations.is_empty();
         self.denon_migrations.clear();
@@ -187,6 +187,14 @@ impl Config {
                 else {
                     continue;
                 };
+                // An inline receiver was never checked for an address, so a
+                // file can hold one with none. A connection is, and one made
+                // from that would stop the whole file loading. It never worked
+                // and there is nothing to hand to a package: it stays as it
+                // is, inert and readable.
+                if host.trim().is_empty() || port == 0 {
+                    continue;
+                }
                 let provider = Provider::LegacyDenon { host, port };
                 let connection_id = match self.connections.iter().find(|c| c.provider == provider) {
                     Some(existing) => existing.id.clone(),
@@ -384,6 +392,46 @@ mod tests {
         }
         assert_eq!(config.legacy_connections().count(), 2);
         assert!(!config.migrate());
+    }
+
+    #[test]
+    fn an_inline_receiver_without_an_address_stays_inert_and_the_file_keeps_loading() {
+        // All three were accepted by the release with the built-in client,
+        // which never validated an inline receiver's address.
+        for (host, port) in [("", 23), ("  \t", 23), ("avr.invalid", 0)] {
+            let mut config = built_in_era();
+            config.connections.clear();
+            config.rooms[0].devices.remove(0);
+            config.activities[0].source = None;
+            config.activities[0].steps.remove(0);
+            config.activities[0].buttons.clear();
+            config.rooms[0].devices[0].integration = Integration::LegacyDenon {
+                host: host.into(),
+                port,
+            };
+            config.validate().unwrap();
+            let before = config.clone();
+            assert!(!config.migrate(), "{host:?}:{port}");
+            assert_eq!(config, before);
+            config.validate().unwrap();
+            assert_eq!(config.legacy_connections().count(), 0);
+            // It still says what it is to whoever draws it.
+            assert!(config.rooms[0].devices[0]
+                .integration
+                .legacy_builtin()
+                .is_some());
+            // And what is saved next loads again, here and in an older release.
+            let bytes = serde_json::to_vec(&StoredConfig::new(&config)).unwrap();
+            let mut again = serde_json::from_slice::<StoredConfig>(&bytes)
+                .unwrap()
+                .into_config()
+                .unwrap();
+            again.migrate();
+            again.validate().unwrap();
+            assert_eq!(again, config);
+            let older: Config = serde_json::from_slice(&bytes).unwrap();
+            older.validate().unwrap();
+        }
     }
 
     #[test]

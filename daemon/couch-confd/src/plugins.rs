@@ -29,6 +29,15 @@ struct Running {
     used: Instant,
 }
 
+/// Settings a package has accepted for a legacy connection, and the package
+/// selection they were accepted by.
+pub struct LegacyAdoption {
+    package: String,
+    generation: String,
+    manifest: Manifest,
+    settings: Value,
+}
+
 pub struct Runtime {
     home: PathBuf,
     packages: couch_integrations::Store,
@@ -140,37 +149,58 @@ impl Runtime {
         Ok(redacted(&manifest, Some(&settings)))
     }
 
-    /// Give a connection whose built-in client has left the OS to its
-    /// installed package. The settings carried over from the old connection
-    /// are checked by the package itself (configure validates them and
-    /// contacts no device) and saved before `commit` switches the
-    /// configuration; package selection and this connection's settings stay
-    /// stable until it returns. A failed commit leaves an inert settings file
-    /// the next attempt rewrites, and the old configuration in charge.
-    pub fn adopt_legacy<T>(
-        &self,
-        connection: &str,
-        package: &str,
-        settings: Value,
-        commit: impl FnOnce(&Manifest) -> Result<T, String>,
-    ) -> Result<T, String> {
+    /// First half of giving a connection whose built-in client has left the
+    /// OS to its installed package, and the slow half: start the package and
+    /// let it check the settings carried over from the old connection
+    /// (configure validates them and contacts no device). Nothing is written
+    /// and no configuration lock is needed.
+    pub fn prepare_legacy(&self, package: &str, settings: Value) -> Result<LegacyAdoption, String> {
         let _lease = self.packages.read_lease().map_err(|e| e.to_string())?;
         let (directory, manifest) = self
             .packages
             .resolve_wait(package, STORE_READ_WAIT)
             .map_err(|e| e.to_string())?;
+        let generation = self
+            .packages
+            .generation(package)
+            .map_err(|e| e.to_string())?;
+        let settings = manifest
+            .with_defaults(settings)
+            .map_err(|e| e.to_string())?;
+        let mut host = couch_plugin::Host::spawn(&directory, &manifest, Duration::from_secs(3))
+            .map_err(|e| e.to_string())?;
+        host.configure(settings.clone())
+            .map_err(|e| e.to_string())?;
+        Ok(LegacyAdoption {
+            package: package.to_owned(),
+            generation,
+            manifest,
+            settings,
+        })
+    }
+
+    /// Second half, quick, for the caller to run with the configuration
+    /// locked: save the checked settings, then let `commit` switch the
+    /// configuration. The package selection is held still from here to the end
+    /// of the commit, and must be the one the settings were checked against;
+    /// if a package operation came in between, the caller prepares again. A
+    /// failed commit leaves an inert settings file the next attempt rewrites,
+    /// and the old configuration in charge.
+    pub fn adopt_legacy<T>(
+        &self,
+        connection: &str,
+        prepared: &LegacyAdoption,
+        commit: impl FnOnce(&Manifest) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _lease = self.packages.read_lease().map_err(|e| e.to_string())?;
+        if self.packages.generation(&prepared.package).ok().as_ref() != Some(&prepared.generation) {
+            return Err("The package changed while this connection was being prepared".into());
+        }
         let path = self.settings_path(connection).map_err(|e| e.to_string())?;
         let lock = crate::api::connections::lock_for(&path);
         let _guard = lock
             .try_lock()
             .map_err(|_| "Integration connection is busy")?;
-        let value = manifest
-            .with_defaults(settings)
-            .map_err(|e| e.to_string())?;
-        let mut host = couch_plugin::Host::spawn(&directory, &manifest, Duration::from_secs(3))
-            .map_err(|e| e.to_string())?;
-        host.configure(value.clone()).map_err(|e| e.to_string())?;
-        drop(host);
         let parent = path.parent().ok_or("Invalid settings path")?;
         fs::create_dir_all(parent).map_err(|_| "Cannot create connection settings directory")?;
         use std::os::unix::fs::PermissionsExt;
@@ -179,8 +209,9 @@ impl Runtime {
         // The address saved with the old connection is the one in use. A file
         // already under this id is a leftover (an earlier trial of the
         // package, a deleted connection) and gives way to it.
-        couch_sdk::save_private(&path, &value).map_err(|_| "Cannot save integration settings")?;
-        let result = commit(&manifest)?;
+        couch_sdk::save_private(&path, &prepared.settings)
+            .map_err(|_| "Cannot save integration settings")?;
+        let result = commit(&prepared.manifest)?;
         self.endpoints
             .lock()
             .map_err(|_| "Integration registry lock failed")?
@@ -346,10 +377,14 @@ mod tests {
             .write(true)
             .open(runtime.packages.root().join(".lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        // Another test forking a child at the wrong moment leaves that child
+        // holding a copy of the descriptor `resolve` just closed, and with it
+        // the shared lock, until its exec. Wait that out rather than fail.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            assert!(Instant::now() < deadline, "the store lock never came free");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let error = runtime
             .packages
             .resolve_wait("sample", Duration::ZERO)

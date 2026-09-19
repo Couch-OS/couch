@@ -10,9 +10,14 @@
 //!
 //! An attempt runs shortly after start, again on a backoff while anything is
 //! still waiting (no internet on the first boot after an update is the usual
-//! reason), whenever the Integrations page refreshes or installs, and when
-//! someone presses "Try again". Until it succeeds the connection reads "Needs
-//! the Denon package" everywhere, with the reason kept here for the web UI.
+//! reason, so those first retries are quick), whenever the Integrations page
+//! refreshes or installs, and when someone presses "Try again". Until it
+//! succeeds the connection reads "Needs the Denon package" everywhere, with the
+//! reason kept here for the web UI.
+//!
+//! Nobody asked for this install, so it only ever takes the package from an
+//! official repository. A package the owner installed by hand, from any
+//! repository they trust, is used as it is.
 use super::{Api, Reply};
 use couch_integrations::management::Action;
 use couch_model::{Id, LegacyBuiltin, LegacySetting, Provider};
@@ -25,11 +30,46 @@ use std::{
 
 /// Waits after the first, second, ... failed attempt. The last one repeats.
 const BACKOFF: [u64; 6] = [30, 60, 120, 300, 900, 3600];
+/// The waits that come first while the feed cannot be reached. The attempt a
+/// second after start usually finds Wi-Fi still coming up, and until the
+/// conversion an activity stops at its receiver step.
+const UNREACHABLE_FIRST: [u64; 3] = [5, 10, 20];
 /// A package operation somebody else started is not a failure; look again soon.
 const BUSY_RETRY: Duration = Duration::from_secs(5);
+/// However often "Try again" or a refresh asks, attempts (each of which may
+/// refresh the feed) start at least this far apart.
+const MIN_INTERVAL: Duration = Duration::from_secs(5);
 const OPERATION_DEADLINE: Duration = Duration::from_secs(600);
+/// The only repositories an install nobody asked for may use, in order.
+const OFFICIAL_REPOSITORIES: [&str; 2] = ["official-stable", "official-preview"];
 
-type Installer = Box<dyn Fn(&LegacyBuiltin) -> Result<(), String> + Send>;
+type Installer = Box<dyn Fn(&LegacyBuiltin) -> Result<(), Install> + Send>;
+
+fn wait_after(failures: u32, unreachable: bool) -> u64 {
+    let quick: &[u64] = if unreachable { &UNREACHABLE_FIRST } else { &[] };
+    let at = failures as usize;
+    quick
+        .get(at)
+        .or_else(|| BACKOFF.get(at - quick.len().min(at)))
+        .copied()
+        .unwrap_or(BACKOFF[BACKOFF.len() - 1])
+}
+
+/// The official repository to install `package` from, given the package
+/// manager's catalog. A repository the owner added is never chosen here, even
+/// when it is the only one that offers the package.
+fn official_source(catalog: &Value, package: &str) -> Option<&'static str> {
+    let offered: Vec<&str> = catalog["available"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry["id"] == package)
+        .filter_map(|entry| entry["repository"].as_str())
+        .collect();
+    OFFICIAL_REPOSITORIES
+        .into_iter()
+        .find(|official| offered.contains(official))
+}
 
 #[derive(Default)]
 struct State {
@@ -37,6 +77,8 @@ struct State {
     failures: u32,
     /// When the next automatic attempt may start; `None` is "now".
     retry_at: Option<Instant>,
+    /// When the last attempt started, which `MIN_INTERVAL` counts from.
+    last_attempt: Option<Instant>,
     /// Why each connection is still waiting, by connection id.
     reasons: BTreeMap<String, String>,
 }
@@ -138,7 +180,10 @@ impl Api {
                 *state = State::default();
                 return;
             }
-            if state.running || state.retry_at.is_some_and(|at| now < at) {
+            if state.running
+                || state.retry_at.is_some_and(|at| now < at)
+                || state.last_attempt.is_some_and(|at| now < at + MIN_INTERVAL)
+            {
                 return;
             }
             // Somebody is refreshing or installing by hand. Their operation
@@ -151,15 +196,19 @@ impl Api {
                 return;
             }
             state.running = true;
+            state.last_attempt = Some(now);
         }
         let outcome = self.convert_legacy_connections();
         let mut state = self.legacy.state();
         state.running = false;
         match outcome {
             Attempt::Busy => state.retry_at = Some(now + BUSY_RETRY),
-            Attempt::Done(reasons) if reasons.is_empty() => *state = State::default(),
-            Attempt::Done(reasons) => {
-                let wait = BACKOFF[(state.failures as usize).min(BACKOFF.len() - 1)];
+            Attempt::Done { reasons, .. } if reasons.is_empty() => *state = State::default(),
+            Attempt::Done {
+                reasons,
+                unreachable,
+            } => {
+                let wait = wait_after(state.failures, unreachable);
                 state.failures = state.failures.saturating_add(1);
                 state.retry_at = Some(now + Duration::from_secs(wait));
                 for (id, reason) in &reasons {
@@ -182,6 +231,8 @@ impl Api {
         });
         let mut reasons = BTreeMap::new();
         let mut unavailable = BTreeMap::<&str, String>::new();
+        // Whether the feed being out of reach is all that went wrong.
+        let (mut unreachable, mut other) = (false, false);
         for (id, row) in waiting {
             if let Some(reason) = unavailable.get(row.package) {
                 reasons.insert(id.to_string(), reason.clone());
@@ -194,7 +245,18 @@ impl Api {
                         row.name
                     ),
                     Err(Install::Busy) => return Attempt::Busy,
-                    Err(Install::Failed(reason)) => {
+                    Err(failure) => {
+                        let reason = match failure {
+                            Install::Unreachable(reason) => {
+                                unreachable = true;
+                                reason
+                            }
+                            Install::Failed(reason) => {
+                                other = true;
+                                reason
+                            }
+                            Install::Busy => unreachable!("handled above"),
+                        };
                         unavailable.insert(row.package, reason.clone());
                         reasons.insert(id.to_string(), reason);
                         continue;
@@ -207,29 +269,45 @@ impl Api {
                     row.name
                 ),
                 Err(reason) => {
+                    other = true;
                     reasons.insert(id.to_string(), reason);
                 }
             }
         }
-        Attempt::Done(reasons)
+        Attempt::Done {
+            reasons,
+            unreachable: unreachable && !other,
+        }
     }
 
     /// The same checks, settings hand-over and single config write the package
     /// connection form goes through, for a connection that already exists.
     fn convert_legacy_connection(&self, id: &Id, row: &LegacyBuiltin) -> Result<(), String> {
-        // Config readers and writers wait here through verification and the
-        // commit, so nothing edits the connection between the two.
-        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        let mut next = store.config().clone();
-        let Some(provider) = next.connection(id).map(|c| c.provider.clone()) else {
+        let snapshot = self.with(|store| store.config().connection(id).map(|c| c.provider.clone()));
+        let Some(provider) = snapshot else {
             return Ok(());
         };
         let Some(settings) = settings_value(row, &provider) else {
             return Ok(());
         };
+        // The slow part, with the configuration unlocked: start the package
+        // and let it check the carried-over address (it contacts no device).
+        let prepared = self.plugins.prepare_legacy(row.package, settings)?;
+        // Config readers and writers wait from here to the commit, so nothing
+        // edits the connection in between. What was checked above has to be
+        // what is converted: an address edited meanwhile goes round again.
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next = store.config().clone();
+        match next.connection(id).map(|c| &c.provider) {
+            None => return Ok(()),
+            Some(current) if *current != provider => {
+                return Err("The connection changed while its package was being prepared".into())
+            }
+            Some(_) => {}
+        }
         let revision = store.revision();
         self.plugins
-            .adopt_legacy(id.as_str(), row.package, settings, |manifest| {
+            .adopt_legacy(id.as_str(), &prepared, |manifest| {
                 next.convert_legacy(
                     id,
                     Provider::Plugin {
@@ -262,10 +340,11 @@ impl Api {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
         {
-            return installer(row).map_err(Install::Failed);
+            return installer(row);
         }
-        // Exactly what the Integrations page does: refresh the signed indexes,
-        // then install the package from the repository that offers it.
+        // What the Integrations page does - refresh the signed indexes, then
+        // install - except that the owner chose nothing here, so only an
+        // official repository will do.
         let refreshed = self.package_operation("refresh", None);
         if let Err(Install::Busy) = refreshed {
             return Err(Install::Busy);
@@ -274,24 +353,18 @@ impl Api {
             .integration_packages
             .catalog(&[])
             .map_err(|e| Install::Failed(e.to_string()))?;
-        let offered: Vec<&str> = catalog["available"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|package| package["id"] == row.package)
-            .filter_map(|package| package["repository"].as_str())
-            .collect();
-        let repository = ["official-stable", "official-preview"]
-            .into_iter()
-            .find(|official| offered.contains(official))
-            .or(offered.first().copied());
-        let Some(repository) = repository else {
-            return Err(Install::Failed(match refreshed {
-                Err(Install::Failed(error)) => format!(
+        let Some(repository) = official_source(&catalog, row.package) else {
+            return Err(match refreshed {
+                Err(Install::Failed(error) | Install::Unreachable(error)) => {
+                    Install::Unreachable(format!(
                     "The package feed could not be read ({error}). Check the remote's internet connection."
-                ),
-                _ => format!("No trusted repository offers the {} package", row.name),
-            }));
+                ))
+                }
+                _ => Install::Failed(format!(
+                    "The official package feed does not offer the {} package yet",
+                    row.name
+                )),
+            });
         };
         self.package_operation(
             "install",
@@ -333,12 +406,18 @@ impl Api {
 
 enum Attempt {
     Busy,
-    /// Why each connection that is still waiting could not be converted.
-    Done(BTreeMap<String, String>),
+    Done {
+        /// Why each connection that is still waiting could not be converted.
+        reasons: BTreeMap<String, String>,
+        /// Nothing went wrong except that the feed could not be reached.
+        unreachable: bool,
+    },
 }
 
 enum Install {
     Busy,
+    /// The feed could not be read: the network is not up, or not there.
+    Unreachable(String),
     Failed(String),
 }
 
@@ -406,7 +485,7 @@ mod tests {
             self.api.with(|store| store.config().clone())
         }
         /// The feed, as far as the converter is concerned.
-        fn feed(&self, installer: impl Fn(&LegacyBuiltin) -> Result<(), String> + Send + 'static) {
+        fn feed(&self, installer: impl Fn(&LegacyBuiltin) -> Result<(), Install> + Send + 'static) {
             *self.api.legacy.installer.lock().unwrap() = Some(Box::new(installer));
         }
     }
@@ -512,7 +591,9 @@ mod tests {
         let seen = calls.clone();
         fixture.feed(move |_| {
             seen.fetch_add(1, Ordering::SeqCst);
-            Err("the feed must not be asked for an installed package".into())
+            Err(Install::Failed(
+                "the feed must not be asked for an installed package".into(),
+            ))
         });
         let before = fixture.config();
 
@@ -582,21 +663,24 @@ mod tests {
     }
 
     #[test]
-    fn an_unreachable_feed_leaves_it_waiting_and_is_tried_again_on_a_backoff() {
+    fn an_unreachable_feed_leaves_it_waiting_and_is_tried_again_quickly_at_first() {
         let fixture = Fixture::new("offline", &built_in_era("avr.invalid", 23));
         let before = fs::read(fixture.home.join("config.json")).unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let (seen, home) = (calls.clone(), fixture.home.clone());
         fixture.feed(move |row| {
             assert_eq!(row.package, "denon");
-            // Offline twice, then the feed answers.
-            if seen.fetch_add(1, Ordering::SeqCst) < 2 {
-                return Err("cannot download repository index over HTTPS".into());
+            // Wi-Fi is still coming up for the first three looks.
+            if seen.fetch_add(1, Ordering::SeqCst) < 3 {
+                return Err(Install::Unreachable(
+                    "cannot download repository index over HTTPS".into(),
+                ));
             }
             install_package_fixture(&home);
             Ok(())
         });
         let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
 
         fixture.api.legacy_conversion_pass_at(start);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -614,33 +698,23 @@ mod tests {
         assert_eq!(fs::read(fixture.home.join("config.json")).unwrap(), before);
         assert!(!fixture.home.join("connections/receiver").exists());
 
-        // Not before its time, however often the daemon looks.
-        fixture
-            .api
-            .legacy_conversion_pass_at(start + Duration::from_secs(BACKOFF[0] - 1));
+        // 5 s, then 10 s, then 20 s: not before its time, however often the
+        // daemon looks, and then again.
+        fixture.api.legacy_conversion_pass_at(at(4));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        // Then again, and the wait grows.
-        let second = start + Duration::from_secs(BACKOFF[0]);
-        fixture.api.legacy_conversion_pass_at(second);
+        fixture.api.legacy_conversion_pass_at(at(5));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        fixture
-            .api
-            .legacy_conversion_pass_at(second + Duration::from_secs(BACKOFF[1] - 1));
+        fixture.api.legacy_conversion_pass_at(at(14));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(fs::read(fixture.home.join("config.json")).unwrap(), before);
-
-        // "Try again" does not wait for the backoff.
-        assert_eq!(
-            fixture
-                .api
-                .legacy_conversion_route("POST", &["retry"])
-                .status,
-            202
-        );
-        fixture
-            .api
-            .legacy_conversion_pass_at(second + Duration::from_secs(1));
+        fixture.api.legacy_conversion_pass_at(at(15));
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(fs::read(fixture.home.join("config.json")).unwrap(), before);
+        fixture.api.legacy_conversion_pass_at(at(34));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        // The feed answers on the next look; the connection converts.
+        fixture.api.legacy_conversion_pass_at(at(35));
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
         let after = fixture.config();
         assert!(matches!(
             &after.connections[0].provider,
@@ -653,6 +727,159 @@ mod tests {
     }
 
     #[test]
+    fn the_waits_are_quick_only_while_the_feed_is_out_of_reach() {
+        let unreachable: Vec<u64> = (0..11).map(|n| wait_after(n, true)).collect();
+        assert_eq!(
+            unreachable,
+            [5, 10, 20, 30, 60, 120, 300, 900, 3600, 3600, 3600]
+        );
+        let other: Vec<u64> = (0..8).map(|n| wait_after(n, false)).collect();
+        assert_eq!(other, [30, 60, 120, 300, 900, 3600, 3600, 3600]);
+        assert_eq!(wait_after(u32::MAX, true), 3600);
+    }
+
+    #[test]
+    fn try_again_skips_the_backoff_but_cannot_hammer_the_feed() {
+        let fixture = Fixture::new("try-again", &built_in_era("avr.invalid", 23));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        fixture.feed(move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            // Not a network problem, so the long ladder: 30 s to the next.
+            Err(Install::Failed(
+                "The official package feed does not offer the Denon package yet".into(),
+            ))
+        });
+        let start = Instant::now();
+        let at = |millis: u64| start + Duration::from_millis(millis);
+        let retry = || {
+            assert_eq!(
+                fixture
+                    .api
+                    .legacy_conversion_route("POST", &["retry"])
+                    .status,
+                202
+            );
+        };
+        fixture.api.legacy_conversion_pass_at(start);
+        fixture.api.legacy_conversion_pass_at(at(29_000));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "its backoff is 30 s");
+        // A client that posts as fast as it can gets one attempt per 5 s.
+        for millis in (29_000..41_000).step_by(250) {
+            retry();
+            fixture.api.legacy_conversion_pass_at(at(millis));
+        }
+        // 29.0 s (the first post), 34.0 s and 39.0 s.
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        // The last post is still owed an attempt, 5 s after the one before;
+        // left alone after that, it is back on its ladder.
+        fixture.api.legacy_conversion_pass_at(at(43_900));
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        fixture.api.legacy_conversion_pass_at(at(44_000));
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        fixture.api.legacy_conversion_pass_at(at(60_000));
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn an_install_nobody_asked_for_only_comes_from_an_official_repository() {
+        let offer = |repositories: &[&str]| {
+            json!({"available": repositories.iter().map(|repository| json!({
+                "id":"denon","name":"Denon AVR","version":"9.9.9","repository":repository,
+            })).chain([json!({"id":"echo","repository":"official-stable"})]).collect::<Vec<_>>()})
+        };
+        // The owner trusts a repository of their own that offers `denon`.
+        // That is theirs to install from, by hand; it is never picked here.
+        assert_eq!(official_source(&offer(&["living-room"]), "denon"), None);
+        assert_eq!(
+            official_source(&offer(&["living-room", "official-preview"]), "denon"),
+            Some("official-preview")
+        );
+        assert_eq!(
+            official_source(
+                &offer(&["official-preview", "living-room", "official-stable"]),
+                "denon"
+            ),
+            Some("official-stable")
+        );
+        // A look-alike id is not official, and nothing offered is nothing chosen.
+        assert_eq!(
+            official_source(&offer(&["official-previews"]), "denon"),
+            None
+        );
+        assert_eq!(official_source(&json!({"available":[]}), "denon"), None);
+        assert_eq!(official_source(&json!({}), "denon"), None);
+    }
+
+    #[test]
+    fn a_package_installed_by_hand_from_any_repository_is_used_as_it_is() {
+        // However it got there (the owner's own repository, a sideload), an
+        // installed package means the feed is never consulted.
+        let fixture = Fixture::new("by-hand", &built_in_era("avr.invalid", 23));
+        install_package_fixture(&fixture.home);
+        fixture.feed(|_| panic!("an installed package needs no feed"));
+        fixture.api.legacy_conversion_pass();
+        assert!(fixture.config().legacy_connections().next().is_none());
+    }
+
+    #[test]
+    fn a_package_swapped_between_the_check_and_the_commit_converts_nothing() {
+        let fixture = Fixture::new("swapped", &built_in_era("avr.invalid", 23));
+        let packages = install_package_fixture(&fixture.home);
+        let prepared = fixture
+            .api
+            .plugins
+            .prepare_legacy("denon", json!({"host":"avr.invalid","port":23}))
+            .unwrap();
+        packages.remove("denon").unwrap();
+        let committed = std::cell::Cell::new(false);
+        let result = fixture
+            .api
+            .plugins
+            .adopt_legacy("receiver", &prepared, |_| {
+                committed.set(true);
+                Ok(())
+            });
+        assert!(result.is_err());
+        assert!(!committed.get());
+        assert!(
+            !couch_sdk::connection_file(&fixture.home, "receiver", "plugin")
+                .unwrap()
+                .exists()
+        );
+    }
+
+    #[test]
+    fn an_inline_receiver_without_an_address_does_not_stop_the_daemon_starting() {
+        for (name, host, port) in [
+            ("blank", "", 23),
+            ("space", " \t", 23),
+            ("port", "avr.invalid", 0),
+        ] {
+            let mut inline = built_in_era("avr.invalid", 23);
+            inline["connections"] = json!([]);
+            inline["rooms"][0]["devices"][0]["integration"] =
+                json!({"via":"denon","host":host,"port":port});
+            let fixture = Fixture::new(&format!("inert-{name}"), &inline);
+            let loaded = fixture.config();
+            assert!(loaded.connections.is_empty(), "{name}");
+            loaded.validate().unwrap();
+            fixture.feed(|_| panic!("nothing waits for a package"));
+            fixture.api.legacy_conversion_pass();
+            // An edit saves, and what it saved opens again.
+            fixture
+                .api
+                .store
+                .lock()
+                .unwrap()
+                .mutate(None, |config| config.rooms[0].name = "Study".into())
+                .unwrap();
+            let reopened = Store::open(fixture.home.join("config.json")).unwrap();
+            assert_eq!(reopened.config().rooms[0].name, "Study");
+        }
+    }
+
+    #[test]
     fn a_package_that_cannot_be_verified_converts_nothing() {
         let fixture = Fixture::new("tampered", &built_in_era("avr.invalid", 23));
         let packages = install_package_fixture(&fixture.home);
@@ -661,7 +888,7 @@ mod tests {
         let mut bytes = fs::read(&executable).unwrap();
         bytes.extend_from_slice(b"\n# modified after admission\n");
         fs::write(executable, bytes).unwrap();
-        fixture.feed(|_| Err("offline".into()));
+        fixture.feed(|_| Err(Install::Unreachable("offline".into())));
         let before = fixture.config();
         fixture.api.legacy_conversion_pass();
         assert_eq!(fixture.config(), before);
