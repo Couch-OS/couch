@@ -53,7 +53,9 @@ fn conformance() {
                     Reply::Lines(vec!["SSFUNBD Blu-ray".into(), "SSFUN END".into()]),
                 ),
             command: "mute-on",
-            expected_requests: &["MUON", "MU?", "ZM?", "MV?", "MU?", "SI?", "SSFUN ?"],
+            // The command ends by observing mute, so the status that follows
+            // asks for the three values it has not seen and not for mute again.
+            expected_requests: &["MUON", "MU?", "ZM?", "MV?", "SI?", "SSFUN ?"],
             check: |status, inputs| {
                 assert_eq!(status.on, Some(true));
                 assert_eq!(status.muted, Some(true));

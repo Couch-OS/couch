@@ -50,6 +50,6 @@ fn real_denon_subprocess_controls_fake_avr_with_sdk_confirmation_and_capability_
     assert_eq!(host.inputs().unwrap()[0].id, "BD");
     assert_eq!(
         device.requests(),
-        ["MUON", "MU?", "ZM?", "MV?", "MU?", "SI?", "SSFUN ?"]
+        ["MUON", "MU?", "ZM?", "MV?", "SI?", "SSFUN ?"]
     );
 }

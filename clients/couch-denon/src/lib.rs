@@ -185,11 +185,22 @@ pub fn apply(state: &mut State, line: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+/// The four values a status reports, by the prefix the receiver answers with.
+const STATUS_KEYS: [&str; 4] = ["ZM", "MV", "MU", "SI"];
+/// How long an observed value is taken as current without asking again. The
+/// receiver reports every change to these on the open connection, and a lost
+/// connection discards the client and everything it observed, so this is a
+/// guard against a model that stays silent about a change, not the mechanism.
+const FRESH: Duration = Duration::from_secs(10);
+
 pub struct Client {
     socket: TcpStream,
     buffer: Vec<u8>,
     pub state: State,
     send_after: Instant,
+    /// When each of `STATUS_KEYS` was last observed, from a reply or an event.
+    observed: [Option<Instant>; 4],
+    fresh: Duration,
 }
 impl Client {
     pub fn connect(settings: &Settings) -> Result<Self> {
@@ -214,6 +225,8 @@ impl Client {
             buffer: Vec::new(),
             state: State::default(),
             send_after: Instant::now(),
+            observed: [None; 4],
+            fresh: FRESH,
         })
     }
     fn send(&mut self, line: &str) -> Result<()> {
@@ -255,12 +268,20 @@ impl Client {
             self.buffer.extend_from_slice(&bytes[..n]);
         }
     }
+    /// Apply a line from the receiver and remember when its value was seen.
+    fn note(&mut self, line: &str) -> Option<&'static str> {
+        let key = apply(&mut self.state, line)?;
+        if let Some(at) = STATUS_KEYS.iter().position(|k| *k == key) {
+            self.observed[at] = Some(Instant::now());
+        }
+        Some(key)
+    }
     fn drain(&mut self) -> Result<()> {
         let until = Instant::now() + Duration::from_millis(10);
         loop {
             match self.line(until) {
                 Ok(line) => {
-                    apply(&mut self.state, &line);
+                    self.note(&line);
                 }
                 Err(Error::Timeout) => return Ok(()),
                 Err(e) => return Err(e),
@@ -273,7 +294,7 @@ impl Client {
         let until = Instant::now() + TIMEOUT;
         loop {
             let line = self.line(until)?;
-            if apply(&mut self.state, &line) == Some(prefix) {
+            if self.note(&line) == Some(prefix) {
                 return Ok(());
             }
         }
@@ -286,7 +307,7 @@ impl Client {
         let mut sources = Vec::new();
         loop {
             let line = self.line(until)?;
-            apply(&mut self.state, &line);
+            self.note(&line);
             if line == "SSFUN END" {
                 return Ok(sources);
             }
@@ -302,9 +323,20 @@ impl Client {
             }
         }
     }
+    /// The receiver's state, asking only for what has not been seen lately.
+    ///
+    /// Each question costs a paced round trip, four of them a quarter of a
+    /// second, and most are answered already: a command ends by observing its
+    /// own value, and the receiver reports every other change as it happens.
+    /// Events waiting on the connection are taken first, so a value changed at
+    /// the receiver itself is current here without a question.
     pub fn status(&mut self) -> Result<State> {
-        for key in ["ZM", "MV", "MU", "SI"] {
-            self.query(key)?;
+        self.drain()?;
+        for (at, key) in STATUS_KEYS.iter().enumerate() {
+            let fresh = self.observed[at].is_some_and(|seen| seen.elapsed() < self.fresh);
+            if !fresh {
+                self.query(key)?;
+            }
         }
         Ok(self.state.clone())
     }
@@ -339,7 +371,7 @@ impl Client {
         loop {
             match self.line(until) {
                 Ok(line) => {
-                    if apply(&mut self.state, &line).is_some() {
+                    if self.note(&line).is_some() {
                         return Ok(Some(self.state.clone()));
                     }
                 }
@@ -485,9 +517,11 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             let mut b = [0; 1];
+            // The volume arrives as an event beside the first answer, in
+            // pieces and next to a line that only looks like it (MVMAX), so
+            // the client has it and does not ask.
             for (request, response) in [
-                ("ZM?", "MV455\rZMON\r"),
-                ("MV?", "MVMAX 91\rMV455\r"),
+                ("ZM?", "MVMAX 91\rMV455\rZMON\r"),
                 ("MU?", "MUOFF\r"),
                 ("SI?", "SIBD\r"),
             ] {
@@ -515,5 +549,134 @@ mod tests {
         assert_eq!(s.volume_db, Some(-34.5));
         assert_eq!(s.on, Some(true));
         server.join().unwrap();
+    }
+    /// A scripted receiver: answers each expected request in order, and can
+    /// push lines nobody asked for. Returns what it was actually asked.
+    fn receiver(
+        script: Vec<(&'static str, &'static str)>,
+    ) -> (u16, std::thread::JoinHandle<Vec<String>>) {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_millis(1500)))
+                .unwrap();
+            let mut asked = Vec::new();
+            for (request, response) in script {
+                if !request.is_empty() {
+                    let mut line = Vec::new();
+                    let mut b = [0; 1];
+                    loop {
+                        if socket.read_exact(&mut b).is_err() {
+                            return asked;
+                        }
+                        if b[0] == b'\r' {
+                            break;
+                        }
+                        line.push(b[0]);
+                    }
+                    asked.push(String::from_utf8(line).unwrap());
+                }
+                socket.write_all(response.as_bytes()).unwrap();
+            }
+            // Anything further is a question the script did not expect.
+            let mut extra = Vec::new();
+            let mut b = [0; 1];
+            while socket.read_exact(&mut b).is_ok() {
+                extra.push(b[0]);
+            }
+            if !extra.is_empty() {
+                asked.push(format!("UNEXPECTED {}", String::from_utf8_lossy(&extra)));
+            }
+            asked
+        });
+        (port, server)
+    }
+
+    #[test]
+    fn status_asks_only_for_what_it_has_not_seen_lately() {
+        let (port, server) = receiver(vec![
+            ("ZM?", "ZMON\r"),
+            ("MV?", "MV455\r"),
+            ("MU?", "MUOFF\r"),
+            ("SI?", "SIBD\r"),
+            // A volume step ends by observing the volume...
+            ("MVUP", ""),
+            ("MV?", "MV46\r"),
+            // ...then only a value that went stale is asked for again.
+            ("MU?", "MUON\r"),
+        ]);
+        let mut client = Client::connect(&Settings {
+            host: "127.0.0.1".into(),
+            port,
+        })
+        .unwrap();
+        assert_eq!(client.status().unwrap().volume_db, Some(-34.5));
+        // Everything was just observed: a second status asks nothing at all.
+        assert_eq!(client.status().unwrap().input.as_deref(), Some("BD"));
+        assert_eq!(
+            client.command(Command::VolumeUp).unwrap().volume_db,
+            Some(-34.0)
+        );
+        assert_eq!(client.status().unwrap().volume_db, Some(-34.0));
+        // Age one value out; the others stay current.
+        client.observed[2] = Some(Instant::now() - FRESH - Duration::from_millis(1));
+        assert_eq!(client.status().unwrap().muted, Some(true));
+        drop(client);
+        assert_eq!(
+            server.join().unwrap(),
+            ["ZM?", "MV?", "MU?", "SI?", "MVUP", "MV?", "MU?"]
+        );
+    }
+
+    #[test]
+    fn a_change_made_at_the_receiver_is_current_without_a_question() {
+        let (port, server) = receiver(vec![
+            ("ZM?", "ZMON\r"),
+            ("MV?", "MV455\r"),
+            ("MU?", "MUOFF\r"),
+            // Someone turns the knob and changes the source on the receiver
+            // itself: it reports both, unasked, right after the last answer.
+            ("SI?", "SIBD\rMV50\rSITV\r"),
+        ]);
+        let mut client = Client::connect(&Settings {
+            host: "127.0.0.1".into(),
+            port,
+        })
+        .unwrap();
+        client.status().unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let state = client.status().unwrap();
+        assert_eq!(state.volume_db, Some(-30.0));
+        assert_eq!(state.input.as_deref(), Some("TV"));
+        drop(client);
+        assert_eq!(server.join().unwrap(), ["ZM?", "MV?", "MU?", "SI?"]);
+    }
+
+    #[test]
+    fn a_new_connection_has_observed_nothing_and_a_short_window_asks_again() {
+        let (port, server) = receiver(vec![
+            ("ZM?", "ZMON\r"),
+            ("MV?", "MV455\r"),
+            ("MU?", "MUOFF\r"),
+            ("SI?", "SIBD\r"),
+            ("ZM?", "ZMOFF\r"),
+            ("MV?", "MV455\r"),
+            ("MU?", "MUOFF\r"),
+            ("SI?", "SIBD\r"),
+        ]);
+        let mut client = Client::connect(&Settings {
+            host: "127.0.0.1".into(),
+            port,
+        })
+        .unwrap();
+        assert!(client.observed.iter().all(Option::is_none));
+        client.fresh = Duration::ZERO;
+        assert_eq!(client.status().unwrap().on, Some(true));
+        assert_eq!(client.status().unwrap().on, Some(false));
+        drop(client);
+        assert_eq!(server.join().unwrap().len(), 8);
     }
 }
