@@ -24,6 +24,39 @@ use crate::lock_order::{self, level, RankedMutex};
 #[cfg(test)]
 use std::sync::Mutex;
 
+/// The stand-in for `apk` a test installs a package with: it unpacks the
+/// tarball the test built rather than verifying a signature.
+#[cfg(test)]
+pub(crate) const FIXTURE_APK: &[u8] = b"#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n";
+
+/// Writes an executable a test is about to run, without this process ever
+/// holding a descriptor open for writing it.
+///
+/// Linux refuses `execve` with ETXTBSY (errno 26) while anyone has the file
+/// open for writing. Spawning forks first, and the fork inherits every
+/// descriptor this process had open at that moment until its own exec closes
+/// it, so one test thread writing a package script or a fake `apk` is still a
+/// writer of that file from the point of view of another test thread's fork.
+/// A short-lived child holds the writing descriptor instead: nothing this
+/// process forks can inherit it.
+#[cfg(test)]
+pub(crate) fn write_executable(path: &Path, bytes: &[u8]) {
+    use std::{
+        io::Write,
+        os::unix::fs::PermissionsExt,
+        process::{Command, Stdio},
+    };
+    let mut writer = Command::new("/bin/sh")
+        .args(["-c", r#"exec /bin/cat > "$1""#, "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer.stdin.take().unwrap().write_all(bytes).unwrap();
+    assert!(writer.wait().unwrap().success(), "write {}", path.display());
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 const IDLE: Duration = Duration::from_secs(60);
 const MAX_ENDPOINTS: usize = 64;
 const STORE_READ_WAIT: Duration = Duration::from_millis(250);
@@ -2322,8 +2355,7 @@ mod tests {
         }
         script.push_str("sleep 5\n");
         let executable = directory.join("plugin");
-        fs::write(&executable, script).unwrap();
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&executable, script.as_bytes());
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
         (directory, manifest)
     }
@@ -2440,8 +2472,7 @@ mod tests {
             .unwrap()
             .success());
         let apk = home.join("fixture-apk");
-        fs::write(&apk, "#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n").unwrap();
-        fs::set_permissions(&apk, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&apk, FIXTURE_APK);
         couch_integrations::Store::new(home.join("integrations"))
             .with_apk(apk)
             .install(&package)
@@ -2605,8 +2636,7 @@ mod tests {
             .unwrap()
             .success());
         let apk = home.join("fixture-apk");
-        fs::write(&apk, "#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n").unwrap();
-        fs::set_permissions(&apk, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&apk, FIXTURE_APK);
         couch_integrations::Store::new(home.join("integrations"))
             .with_apk(apk)
             .install(&package)

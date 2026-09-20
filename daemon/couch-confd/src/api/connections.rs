@@ -566,7 +566,12 @@ mod app_tests {
 #[cfg(test)]
 mod delete_tests {
     use super::*;
-    use crate::{assets::Assets, auth::Auth, store::Store};
+    use crate::{
+        assets::Assets,
+        auth::Auth,
+        plugins::{write_executable, FIXTURE_APK},
+        store::Store,
+    };
     use serde_json::{json, Value};
     use std::{
         fs,
@@ -842,8 +847,7 @@ mod delete_tests {
             .unwrap()
             .success());
         let apk = home.join("fixture-apk");
-        fs::write(&apk, "#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n").unwrap();
-        fs::set_permissions(&apk, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&apk, FIXTURE_APK);
         couch_integrations::Store::new(home.join("integrations"))
             .with_apk(apk)
             .install(&package)
