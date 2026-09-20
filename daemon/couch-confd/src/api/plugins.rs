@@ -493,11 +493,12 @@ impl Api {
             return match (method, rest) {
                 ("GET", []) => self.children_route(connection, &id, false),
                 ("POST", ["refresh"]) => self.children_route(connection, &id, true),
-                (_, [_, _, ..]) => {
-                    let (verb, segments) = rest.split_last().expect("at least two segments");
-                    self.child_route(method, connection, &id, &segments.join("/"), verb, body)
-                }
-                _ => Reply::error(404, "Unknown integration operation"),
+                _ => match rest.split_last() {
+                    Some((verb, segments)) if !segments.is_empty() => {
+                        self.child_route(method, connection, &id, &segments.join("/"), verb, body)
+                    }
+                    _ => Reply::error(404, "Unknown integration operation"),
+                },
             };
         }
         let request = match (method, path) {
