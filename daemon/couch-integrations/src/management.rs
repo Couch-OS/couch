@@ -12,23 +12,30 @@ use std::{
 const OFFICIAL_KEY: &str = include_str!("official.rsa.pub");
 /// Where the official feed is published, and where it was published before
 /// the feed repository moved owners. A GitHub Pages address follows its
-/// owner and is not forwarded, so the official repositories try the current
-/// address and then the previous one. Both serve the same feed, verified with
-/// the same key; whichever is live answers, before and after the move. What a
-/// remote remembers about a feed (`feed::Seen`) belongs to the repository,
-/// not to either address: the previous address cannot serve an older feed
-/// than the current one already did.
+/// owner and is not forwarded, so a repository that has not yet been held to
+/// `OFFICIAL_METADATA_REQUIRED` tries the current address and then the
+/// previous one: both served the same feed, verified with the same key, in
+/// the window around the move. What a remote remembers about a feed
+/// (`feed::Seen`) belongs to the repository, not to either address: the
+/// previous address cannot serve an older feed than the current one already
+/// did. Once metadata is required, `Manager::sources` stops trying the
+/// previous address at all: it is known to never carry signed metadata (the
+/// repository that served it moved away, and Pages does not forward), so
+/// trying it could only turn a real outage of the current address into a
+/// confusing refusal instead of a plain "unreachable", never a way to install
+/// something the current feed has not signed.
 const OFFICIAL_FEED: &str = "https://packages.couch-os.dev";
 const PREVIOUS_OFFICIAL_FEED: &str = "https://dangerouslaser.github.io/couch-integrations";
 /// Whether an official repository must come with valid signed metadata even
-/// on a remote that has never seen any from it. False while the official feed
-/// does not publish `feed.json` yet: until then an official repository is
-/// trusted on first use like any other, which is what lets this Couch read
-/// the feed before and after it starts publishing. It becomes true in a
-/// follow-up, once the feed publishes metadata and a remote running this code
-/// has been seen to accept it; from that build on, a missing `feed.json` is a
-/// refused official feed.
-const OFFICIAL_METADATA_REQUIRED: bool = false;
+/// on a remote that has never seen any from it. Verified true: the official
+/// feed has published signed `feed.json`/`feed.json.sig` weekly since
+/// 2026-09-19, and a remote running this code recorded both official
+/// channels' metadata as seen, with every package installable, against the
+/// live feed. A missing or invalid `feed.json` now refuses an official
+/// repository from its very first refresh, the same as any repository this
+/// remote has already seen metadata from; a custom repository is still
+/// trusted on first use.
+const OFFICIAL_METADATA_REQUIRED: bool = true;
 const UNREACHABLE: &str = "cannot download repository index over HTTPS";
 const MAX_INDEX: u64 = 4 * 1024 * 1024;
 const MAX_EXPANDED_INDEX: u64 = 32 * 1024 * 1024;
@@ -574,10 +581,15 @@ impl Manager {
         Ok(latest.into_values().collect())
     }
     /// The addresses to try for a repository, in order. Only an official
-    /// repository at its built-in address has a second one.
-    fn sources(repository: &Repository) -> Vec<String> {
+    /// repository at its built-in address has a second one, and only while
+    /// `required` is false for it: once signed metadata is required, the
+    /// previous address is never tried, because it can never carry any (see
+    /// the comment on `PREVIOUS_OFFICIAL_FEED`) and trying it anyway would
+    /// let a feed that only answers there turn a real outage of the current
+    /// address into a refusal instead of a plain "unreachable".
+    fn sources(repository: &Repository, required: bool) -> Vec<String> {
         let mut sources = vec![repository.url.clone()];
-        if repository.official {
+        if repository.official && !required {
             if let Some(channel) = repository.url.strip_prefix(OFFICIAL_FEED) {
                 sources.push(format!("{PREVIOUS_OFFICIAL_FEED}{channel}"));
             }
@@ -593,9 +605,10 @@ impl Manager {
     ) -> Result<(Vec<Available>, String)> {
         let mut state = self.feed_state();
         let seen = state.get(&repository.id).copied().unwrap_or_default();
+        let required = feed::required(repository.official, seen, OFFICIAL_METADATA_REQUIRED);
         let (mut unreachable, mut refused) = (err(UNREACHABLE), None);
-        for source in Self::sources(repository) {
-            match self.fetch_index_from(repository, &source, keys, seen) {
+        for source in Self::sources(repository, required) {
+            match self.fetch_index_from(repository, &source, keys, seen, required) {
                 Ok((available, verified)) => {
                     if let Some(verified) = verified {
                         if verified.clock_unreliable {
@@ -629,6 +642,7 @@ impl Manager {
         source: &str,
         keys: &Path,
         seen: feed::Seen,
+        required: bool,
     ) -> std::result::Result<(Vec<Available>, Option<feed::Verified>), Failure> {
         // Redirects are followed here, one at a time, so that each can be
         // held to `feed::redirect`; and a status is read, not raised, so that
@@ -677,7 +691,7 @@ impl Manager {
             &feed::Check {
                 public_key: &repository.public_key,
                 seen,
-                required: feed::required(repository.official, seen, OFFICIAL_METADATA_REQUIRED),
+                required,
                 // Only an official repository's address names its channel.
                 channel: repository
                     .official
@@ -1042,26 +1056,34 @@ mod tests {
         }
     }
     #[test]
-    fn only_official_repositories_fall_back_to_the_previous_feed_address() {
+    fn only_official_repositories_fall_back_and_only_while_metadata_is_not_required() {
         let official = Manager::official();
         assert_eq!(official.len(), 2);
         for (repository, channel) in official.iter().zip(["stable", "preview"]) {
             assert_eq!(
-                Manager::sources(repository),
+                Manager::sources(repository, false),
                 [
                     format!("https://packages.couch-os.dev/{channel}"),
                     format!("https://dangerouslaser.github.io/couch-integrations/{channel}"),
                 ]
+            );
+            // Required, which every official repository now always is: the
+            // previous address is not tried, since it can never carry signed
+            // metadata and trying it would only turn a real outage of the
+            // current address into a confusing refusal.
+            assert_eq!(
+                Manager::sources(repository, true),
+                [format!("https://packages.couch-os.dev/{channel}")]
             );
         }
         // A user's repository is fetched from its own address only, even one
         // that claims the official host, and so is anything not marked official.
         let mut theirs = official[0].clone();
         theirs.official = false;
-        assert_eq!(Manager::sources(&theirs), [theirs.url.clone()]);
+        assert_eq!(Manager::sources(&theirs, false), [theirs.url.clone()]);
         let mut elsewhere = official[0].clone();
         elsewhere.url = "https://example.com/feed".into();
-        assert_eq!(Manager::sources(&elsewhere), [elsewhere.url.clone()]);
+        assert_eq!(Manager::sources(&elsewhere, false), [elsewhere.url.clone()]);
     }
     #[test]
     fn trust_requires_exact_review_and_survives_restart() {
@@ -1616,15 +1638,47 @@ esac
         // Anybody's own repository calls its channel what it likes.
         stable.official = false;
         remote.refresh(&[&preview, &stable]).0.unwrap();
-        // Until OFFICIAL_METADATA_REQUIRED, an official feed without metadata
-        // (the official feed today) is read like any other...
-        let mut fresh = repository("fresh", &feed, &key);
-        fresh.official = true;
-        feed.publish("fresh", &DENON, &key, None);
-        remote.refresh(&[&fresh]).0.unwrap();
-        // ...and one that has published is held to it from then on.
+    }
+
+    #[test]
+    fn an_official_repository_is_refused_without_metadata_from_the_first_refresh() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        // `document` names the channel "preview", so this id, matching the
+        // channel an official repository is held to, is the one that keeps
+        // its otherwise-valid metadata from being refused for the wrong
+        // reason.
+        let (mut official, custom) = (
+            repository("preview", &feed, &key),
+            repository("mine", &feed, &key),
+        );
+        official.official = true;
+        // Official, and this remote has never seen metadata from it: no
+        // trust on first use any more, unlike a custom repository.
         feed.publish("preview", &DENON, &key, None);
-        assert!(remote.refresh(&[&preview]).0.is_err());
+        // A custom repository is unaffected: still trusted the first time.
+        feed.publish("mine", &DENON, &key, None);
+        let (result, offered) = remote.refresh(&[&official, &custom]);
+        assert_eq!(
+            result.unwrap_err().0,
+            "Feed preview: The package feed's signed metadata is missing"
+        );
+        // The custom repository still loads, with no metadata at all.
+        assert_eq!(offered, ["denon 0.2.1 from mine"]);
+        assert_eq!(remote.seen("preview"), None);
+        assert_eq!(remote.seen("mine"), None);
+        // Invalid metadata (signed by somebody else) is refused the same
+        // way, still on the very first refresh.
+        feed.publish("preview", &DENON, &TestKey::new(2048), Some(&sequence(10)));
+        let error = remote.refresh(&[&official]).0.unwrap_err();
+        assert!(
+            error.0.contains("metadata signature is not valid"),
+            "{error}"
+        );
+        assert_eq!(remote.seen("preview"), None);
+        // Once it publishes something valid, it is accepted like any other.
+        feed.publish("preview", &DENON, &key, Some(&sequence(10)));
+        remote.refresh(&[&official]).0.unwrap();
+        assert_eq!(remote.seen("preview").unwrap().sequence, 10);
     }
 
     #[test]
