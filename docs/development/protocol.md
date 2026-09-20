@@ -447,13 +447,13 @@ verb is always the last segment. Empty segments never reach the router and the
 resource grammar refuses `.` and `..`, so an id cannot climb out of its
 connection.
 
-| Route | Answers |
-| --- | --- |
-| `GET …/plugin/children` | the listing, from the cache if it is fresh |
-| `POST …/plugin/children/refresh` | the same, always read from the package |
-| `GET …/plugin/children/<id…>/status` | a status read of that child |
-| `POST …/plugin/children/<id…>/action` | `{"command":"toggle"}` |
-| `POST …/plugin/children/<id…>/typed-action` | a `TypedAction`, as the connection's own route takes one |
+| Route | Body | Answers |
+| --- | --- | --- |
+| `GET …/plugin/children` | - | the listing, from the cache if it is fresh |
+| `POST …/plugin/children/refresh` | - | the same, always read from the package |
+| `GET …/plugin/children/<id…>/status` | - | that child's `status` |
+| `POST …/plugin/children/<id…>/action` | `{"command":"toggle"}` | `{"accepted":true}`, or the state the write left |
+| `POST …/plugin/children/<id…>/typed-action` | a `TypedAction`, as the connection's own route takes one | the same |
 
 The listing:
 
@@ -478,7 +478,7 @@ The listing:
 - `missing` is the other direction: a device or scene made from a child the
   connection has stopped listing. Nothing is ever deleted or altered because of
   it - the device, its keys and its scenes stay as they are - it is named so
-  the page can badge it and offer a manual Remove. `kind` is absent for a
+  the page can badge it and offer a manual Remove. `kind` is `null` for a
   device a rollback stripped that has not healed yet.
 - `fetched_ms` is how long ago the package was asked, in milliseconds.
 
