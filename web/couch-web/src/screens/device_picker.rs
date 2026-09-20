@@ -32,6 +32,7 @@ impl State {
 
 pub fn picker(app: App, config: &Config, room: &Id) -> AnyView {
     let picking = expect_context::<State>();
+    let children = expect_context::<super::plugin_children::State>();
     // The discovered list is redrawn on every keystroke in its filter box, and
     // each card asks whether its resource is already in the house. One shared
     // snapshot, rather than a copy of the document per card.
@@ -56,12 +57,18 @@ pub fn picker(app: App, config: &Config, room: &Id) -> AnyView {
     }
     let options = connections.clone();
     view!{<section class="creation device-picker"><h2>"Add to this room"</h2><p class="dim">"Choose a connected device, or add a device controlled by infrared. You can also add IR commands to any device already in this room."</p>
-        <label class="field">"Device source"<select aria-label="From connection" prop:value=move ||picking.source.get() on:change=move |e|{picking.filter.set(String::new());picking.source.set(event_target_value(&e));}>
+        <label class="field">"Device source"<select aria-label="From connection" prop:value=move ||picking.source.get() on:change=move |e|{picking.filter.set(String::new());children.reset();picking.source.set(event_target_value(&e));}>
             <option value="">"Choose a device source"</option>{options.into_iter().map(|c|view!{<option value=c.id.to_string()>{super::connections::label(&c)}</option>}).collect_view()}
             <option value="manual-ir">"Manual / infrared"</option>
         </select></label>
         {move ||if picking.source.get()=="manual-ir" {super::infrared::device_setup(app,room.get_value(),None)}else{
-            connections.iter().find(|c|c.id.as_str()==picking.source.get()).map(|c|match c.provider{Provider::UnifiProtect|Provider::Hue|Provider::HomeAssistant|Provider::Matter=>discover(app,house.clone(),c.clone(),room.get_value()),_=>manual(app,&house,c.clone(),room.get_value())}).unwrap_or_else(||view!{<p class="dim">"Need a server or bridge first?" <button class="ghost" on:click=move |_|app.go(Route::Connections)>"Manage connections"</button></p>}.into_any())
+            connections.iter().find(|c|c.id.as_str()==picking.source.get()).map(|c|match c.provider{
+                Provider::UnifiProtect|Provider::Hue|Provider::HomeAssistant|Provider::Matter=>discover(app,house.clone(),c.clone(),room.get_value()),
+                // Protocol 3 (unreleased): a package that lists devices of its
+                // own. No manifest a shipped build accepts declares any, so
+                // this arm is never taken and the picker is what it was.
+                Provider::Plugin{ref children,..} if !children.is_empty()=>super::plugin_children::picker(app,house.clone(),c.clone(),room.get_value()),
+                _=>manual(app,&house,c.clone(),room.get_value())}).unwrap_or_else(||view!{<p class="dim">"Need a server or bridge first?" <button class="ghost" on:click=move |_|app.go(Route::Connections)>"Manage connections"</button></p>}.into_any())
         }}
     </section>}.into_any()
 }
@@ -269,6 +276,15 @@ fn manual(app: App, cfg: &Config, connection: Connection, room: Id) -> AnyView {
 }
 
 pub fn controls(app: App, config: &Config, device: &Device) -> AnyView {
+    // Protocol 3 (unreleased): one child of a packaged connection - one lamp
+    // of a bridge - is drawn from what the package said it was. No connection
+    // a shipped build loads has children, so this is never taken.
+    if matches!(
+        &device.integration,
+        Integration::Connection { child: Some(_), .. }
+    ) {
+        return super::plugin_children::controls(app, config, device);
+    }
     let (prefix, id) = match config.resolve_integration(&device.integration) {
         Some(Integration::Sonos { .. }) => {
             return match &device.integration {
