@@ -12,6 +12,7 @@ use couch_model::{
     PluginActionSchema, PluginCapability, PluginComponent, PluginStatusField, Provider,
     SequenceStep, StoredConfig,
 };
+use serde_json::json;
 use std::{env, fs, process::exit};
 
 const ENVELOPE: [(&str, &str); 3] = [
@@ -23,6 +24,14 @@ const ENVELOPE: [(&str, &str); 3] = [
 fn fail(message: impl AsRef<str>) -> ! {
     eprintln!("{}", message.as_ref());
     exit(1)
+}
+
+/// The three types a later protocol adds fields to are built from JSON, not
+/// from struct literals: this one source has to compile against the released
+/// model and against this tree's, and a literal stops compiling the moment
+/// either side has a field the other lacks.
+fn built<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
+    serde_json::from_value(value).unwrap_or_else(|e| fail(format!("a state does not parse: {e}")))
 }
 
 fn capability(id: &str, label: &str) -> PluginCapability {
@@ -110,14 +119,16 @@ fn state(name: &str) -> Config {
         });
     }
     let connection = Id::new("receiver");
-    let plugin = Provider::Plugin {
-        id: if denon { "denon" } else { "echo" }.into(),
-        label: if denon { "Denon" } else { "Echo" }.into(),
-        capabilities: capabilities.clone(),
-        supports_inputs: level == 2,
-        presentation: presentation.clone(),
-        actions: actions.clone(),
-    };
+    let package = if denon { "denon" } else { "echo" };
+    let plugin: Provider = built(json!({
+        "kind": "plugin",
+        "id": package,
+        "label": if denon { "Denon" } else { "Echo" },
+        "capabilities": capabilities,
+        "supports_inputs": level == 2,
+        "presentation": presentation,
+        "actions": actions,
+    }));
     config.connections.push(Connection {
         id: connection.clone(),
         name: "Receiver".into(),
@@ -133,22 +144,24 @@ fn state(name: &str) -> Config {
         );
     }
     let device = config.rooms[0].devices[0].id.clone();
-    config.rooms[0].devices[0].integration = Integration::Connection {
-        connection_id: connection.clone(),
+    config.rooms[0].devices[0].integration = built(json!({
+        "via": "connection",
+        "connection_id": connection,
         // A converted Denon connection keeps the empty resource it always had.
-        resource_id: if denon { "" } else { "zone1" }.into(),
-    };
+        "resource_id": if denon { "" } else { "zone1" },
+    }));
     // The resolved form saved straight on a device takes the same path.
     let direct = config.rooms[0].devices[1].id.clone();
-    config.rooms[0].devices[1].integration = Integration::Plugin {
-        id: if denon { "denon" } else { "echo" }.into(),
-        connection_id: connection,
-        resource_id: "zone2".into(),
-        capabilities,
-        supports_inputs: level == 2,
-        presentation,
-        actions,
-    };
+    config.rooms[0].devices[1].integration = built(json!({
+        "via": "plugin",
+        "id": package,
+        "connection_id": connection,
+        "resource_id": "zone2",
+        "capabilities": capabilities,
+        "supports_inputs": level == 2,
+        "presentation": presentation,
+        "actions": actions,
+    }));
 
     let mut commands = vec!["power-on"];
     if level == 2 {
