@@ -119,7 +119,7 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
             &mut Default::default(),
             &mut Default::default(),
             &crate::connections::matter(),
-            work.repeat,
+            couch_model::buttons::key_phase(couch_model::buttons::Gesture::Short, work.repeat),
             &current,
         )?;
         if !current() {
