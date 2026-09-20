@@ -47,6 +47,34 @@ async fn status(app: App, value: RwSignal<Status>, error: RwSignal<String>) {
         }
     }
 }
+/// Whether an installed version names a protocol 3 preview build: a `p3`
+/// identifier among the dot-separated parts of its prerelease, as in
+/// `...<N>.p3.dev`. The update publisher signs a runtime with protocol 3
+/// switched on under such a version and no other, and refuses the label to
+/// every other runtime, so the version is a true statement about the daemon.
+pub fn is_protocol_3_preview(version: &str) -> bool {
+    let version = version.split('+').next().unwrap_or_default();
+    version
+        .split_once('-')
+        .is_some_and(|(_, pre)| pre.split('.').any(|part| part == "p3"))
+}
+pub const PREVIEW_NOTICE: &str = "Protocol 3 preview build. Development remote only.";
+fn preview_view(version: &str) -> Option<impl IntoView> {
+    is_protocol_3_preview(version).then(|| {
+        view! {<div class="notice preview-build" role="alert"><strong>{PREVIEW_NOTICE}</strong></div>}
+    })
+}
+/// The same red notice for a page that does not otherwise read the update
+/// status: one request when the page opens, and silence if it fails.
+pub fn preview_notice() -> AnyView {
+    let installed = RwSignal::new(String::new());
+    spawn_local(async move {
+        if let Ok(v) = api::ha("GET", "/api/updates", None).await {
+            installed.set(v["installed"].as_str().unwrap_or_default().to_owned());
+        }
+    });
+    view! { {move || preview_view(&installed.get())} }.into_any()
+}
 fn request(
     app: App,
     value: RwSignal<Status>,
@@ -151,6 +179,7 @@ pub fn screen(app: App) -> AnyView {
     view! {
         {ui::page_header(app,"Software updates",None)}
         <p class="lead">"Review new Couch builds and choose when to install them."</p>
+        {move ||preview_view(&value.get().installed)}
         <section class="card"><h2>"What is installed"</h2>
         <p>"Software "{move ||value.get().installed}</p>
         {move ||{let v=value.get(); (!v.boot_release.is_empty()).then(||{
@@ -240,6 +269,38 @@ mod tests {
         assert_eq!(
             boot_state(&s),
             "The kernel that belongs with this software is not installed yet."
+        );
+    }
+
+    #[test]
+    fn a_p3_identifier_in_the_installed_version_is_a_protocol_3_preview_build() {
+        for version in [
+            "v0.1.0-alpha.20260920.191.p3.dev",
+            "0.1.0-alpha.20260920.191.p3.dev",
+            "v0.1.0-alpha.20260920.191.p3",
+            "v0.1.0-alpha.20260920.191.p3.dev+local",
+        ] {
+            assert!(is_protocol_3_preview(version), "{version}");
+        }
+        for version in [
+            "v0.1.0-alpha.20260920.191.dev",
+            "v0.1.0-alpha.20260920.191",
+            "v0.2.0",
+            "development",
+            "",
+            // Whole identifiers only, and only in the prerelease.
+            "v0.1.0-alpha.20260920.191p3.dev",
+            "v0.1.0-alpha.20260920.191.p30.dev",
+            "v0.1.0-alpha.20260920.191.xp3.dev",
+            "v0.1.0-alpha.20260920.191.dev+p3",
+            "p3",
+            "v0.1.0.p3",
+        ] {
+            assert!(!is_protocol_3_preview(version), "{version}");
+        }
+        assert_eq!(
+            PREVIEW_NOTICE,
+            "Protocol 3 preview build. Development remote only."
         );
     }
 

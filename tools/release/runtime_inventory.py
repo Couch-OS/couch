@@ -17,6 +17,7 @@ from verify_integration_set import receipt as integration_receipt
 from verify_integration_set import verify_receipt as verify_integration_receipt
 
 from clean_stage import REPO, archive_name, build, require, secret_path
+from update_floor import preview_features
 
 # What the runtime bundle carries. Every name here is published in the signed
 # update and must therefore be a name the OLDEST DEPLOYED UPDATER accepts:
@@ -217,6 +218,16 @@ def audit(root=REPO, vendor=None, boot='build/couch-board-init-fixed.img', recov
     except ValueError as error:
         blockers.append(str(error))
     clean_runtime_ready = not blockers
+    # A daemon built with protocol 3 switched on says so in its own bytes, and
+    # nothing else in a tree does: tested-integrations.json compares sources,
+    # and a Cargo feature is not a source change. Recorded whichever way it
+    # is, so an inventory always answers the question. It does not stop the
+    # staging spec - the one development remote needs one - but it is a
+    # release blocker, and couch_updates::bundle signs it only as `.p3.dev`.
+    preview = preview_features(binaries.get('couch-confd'))
+    if preview:
+        blockers.append(f'couch-confd is a preview build ({", ".join(preview)} switched on): '
+                        'development remote only, .p3.dev version, never a release')
     # The boot ramdisk's /extra, inventoried separately from the runtime tree
     # because none of it is published in the runtime bundle. Missing pieces are
     # release blockers, not clean-runtime blockers: the runtime is complete
@@ -267,6 +278,7 @@ def audit(root=REPO, vendor=None, boot='build/couch-board-init-fixed.img', recov
     blockers.append('Boot/recovery kernel, DTB/header, BusyBox source provenance and complete partition sizing pending')
     return {'schema': 1, 'kind': 'couch-runtime-payload-inventory', 'installable': False,
             'clean_runtime_ready': clean_runtime_ready, 'payload_complete': False,
+            'preview_features': preview,
             'artifacts': artifacts, 'embedded': embedded, 'boot_images': boot_images,
             'boot_payload_binaries': boot_extra,
             'boot_sources': sources, 'vendor': {'files': sorted(vendor_files, key=lambda f: f['source']),
@@ -332,6 +344,9 @@ def main():
     if result['clean_runtime_ready']:
         (args.output / 'staging-input.json').write_text(json.dumps(spec, indent=2, sort_keys=True) + '\n')
     print(f"Clean runtime ready: {result['clean_runtime_ready']}; release blockers: {len(result['blockers'])}")
+    if result['preview_features']:
+        print(f"PREVIEW BUILD ({', '.join(result['preview_features'])} switched on): "
+              'development remote only, .p3.dev version, never Alpha')
 
 
 if __name__ == '__main__':

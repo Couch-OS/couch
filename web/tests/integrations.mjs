@@ -43,6 +43,8 @@ let catalogReads = 0;
 const waitingReason = "The package feed could not be read (Couch preview: cannot download repository index over HTTPS). Check the remote's internet connection.";
 let legacy = 'waiting';
 let configReads = 0;
+// What GET /api/updates says is installed; the last step makes it a preview build.
+let installedVersion = 'test';
 function operation(message) {
   const id = `op-${++sequence}`;
   operations.set(id, {polls: 0, message});
@@ -66,7 +68,7 @@ await page.route('**/api/**', async route => {
     return json({schema_version: 1, revision: 7, areas: [], rooms: [], scenes: [], activities: []});
   }
   if (request.method() === 'POST' && path === '/api/updates/check') return json({});
-  if (request.method() === 'GET' && path === '/api/updates') return json({installed: 'test', channel: 'stable', available: null, notes: '', phase: 'idle', message: '', can_install: false, automatic_checks: false});
+  if (request.method() === 'GET' && path === '/api/updates') return json({installed: installedVersion, channel: 'stable', available: null, notes: '', phase: 'idle', message: '', can_install: false, automatic_checks: false});
   if (request.method() === 'GET' && path === '/api/integrations/catalog') {
     catalogReads += 1;
     if (catalogReads === 1) return route.fulfill({status: 409, contentType: 'application/json', body: JSON.stringify({error: 'package store is busy'})});
@@ -113,11 +115,13 @@ await page.route('**/api/**', async route => {
   throw new Error(`Unexpected integration request: ${request.method()} ${path}`);
 });
 
+const previewNotice = page.getByRole('alert').filter({hasText: 'Protocol 3 preview build. Development remote only.'});
 try {
   await page.goto(origin);
   await page.getByRole('navigation').getByRole('button', {name: 'Integrations', exact: true}).click();
   await page.getByRole('heading', {name: 'Integrations', exact: true}).waitFor();
   await page.getByText('Saved integration configuration found').waitFor();
+  assert.equal(await previewNotice.count(), 0, 'an ordinary build shows no protocol 3 preview notice');
   await page.getByRole('link', {name: 'Download saved integration configuration', exact: true}).waitFor();
   await page.getByText('Package operation complete.').waitFor();
   assert(catalogReads >= 2, 'a transient catalog lock reloads after the resumed operation completes');
@@ -186,6 +190,14 @@ try {
   await page.setViewportSize({width: 1280, height: 900});
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Integrations page overflows a desktop viewport');
   await page.screenshot({path: process.env.COUCH_DESKTOP_SCREENSHOT ?? 'build/webui-review/integrations-desktop.png', fullPage: true});
+  // A build with protocol 3 switched on is only ever signed as `.p3.dev`; on
+  // this page, where its packages are installed, it says so in red.
+  installedVersion = 'v0.1.0-alpha.20260916.174.p3.dev';
+  await page.getByRole('navigation').getByRole('button', {name: 'Updates', exact: true}).click();
+  await page.getByRole('heading', {name: 'Software updates', exact: true}).waitFor();
+  await page.getByRole('navigation').getByRole('button', {name: 'Integrations', exact: true}).click();
+  await page.getByRole('heading', {name: 'Integrations', exact: true}).waitFor();
+  await previewNotice.waitFor();
   assert.deepEqual(errors, []);
   console.log('PASS: integration catalog actions use IDs, a package that needs a newer Couch says so and cannot be installed or updated, package operations report progress, connection settings survive removal, a connection waiting for its package says why and can be retried, and custom repositories require key fingerprint confirmation.');
 } finally {

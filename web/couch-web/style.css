@@ -325,6 +325,14 @@ textarea {
 .notice p {
   margin:5px 0 0;
 }
+/* A build with protocol 3 switched on: for one development remote, and red
+   so that nobody looking at the page can take it for an ordinary build. */
+.notice.preview-build {
+  background:#fbe9e7;
+  border:2px solid var(--danger);
+  color:var(--danger);
+  margin-bottom:16px;
+}
 .creation {
   border:1px solid var(--line);
   border-radius:14px;

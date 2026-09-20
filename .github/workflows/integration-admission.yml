@@ -200,6 +200,7 @@ jobs:
             build/webui-review/plugin-pairing-banner.png
             build/webui-review/updates-installed-mobile.png
             build/webui-review/updates-installed-desktop.png
+            build/webui-review/updates-preview-build-mobile.png
             ${{ runner.temp }}/couch-web.log
             ${{ runner.temp }}/couch-web-updates.log
           if-no-files-found: warn

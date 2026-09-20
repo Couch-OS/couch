@@ -4,8 +4,12 @@ import tempfile
 import unittest
 
 import runtime_inventory
-from update_floor import (allowed, bundle_names, FLOOR_RELEASE, inventory_files,
-                          must_be_executable, problems, REQUIRED, tree_files)
+import contextlib
+import io
+
+from update_floor import (allowed, bundle_names, FLOOR_RELEASE, inventory_files, main,
+                          must_be_executable, problems, REQUIRED, tree_files,
+                          tree_preview_features)
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -131,6 +135,44 @@ class FloorTests(unittest.TestCase):
             self.assertIn('couch-bt-hid', bundle_names(tree))
             self.assertEqual(problems(tree_files(tree)),
                              [f'couch-bt-hid: not on the {FLOOR_RELEASE} allowlist'])
+
+    def test_a_tree_with_a_protocol_3_preview_daemon_is_refused_unless_asked_for(self):
+        def check(*arguments):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main([*arguments])
+            return status, output.getvalue()
+
+        with tempfile.TemporaryDirectory() as scratch:
+            tree = Path(scratch)
+            for name in REQUIRED:
+                (tree / name).write_bytes(b'x')
+            self.assertEqual(tree_preview_features(tree), [])
+            status, output = check('--tree', str(tree))
+            self.assertEqual(status, 0)
+            self.assertNotIn('PREVIEW', output)
+            # An ordinary tree passes with the flag as well: it allows, it does not claim.
+            self.assertEqual(check('--tree', str(tree), '--allow-preview')[0], 0)
+            (tree / 'couch-confd').write_bytes(b'\x7fELF\x00\xffCOUCH-PREVIEW-BUILD protocol-3\n\x00')
+            self.assertEqual(tree_preview_features(tree), ['protocol-3'])
+            status, output = check('--tree', str(tree))
+            self.assertEqual(status, 1)
+            self.assertIn('OK: installable by', output)
+            self.assertIn('PREVIEW BUILD', output)
+            self.assertIn('REFUSED: pass --allow-preview', output)
+            status, output = check('--tree', str(tree), '--allow-preview')
+            self.assertEqual(status, 0)
+            self.assertIn('PREVIEW BUILD', output)
+            self.assertNotIn('REFUSED', output)
+            # The flag forgives the preview and nothing else.
+            (tree / 'couch-bt-hid').write_bytes(b'x')
+            self.assertEqual(check('--tree', str(tree), '--allow-preview')[0], 1)
+            (tree / 'couch-bt-hid').unlink()
+            # No daemon: nothing to mark, and the floor reports it missing as before.
+            (tree / 'couch-confd').unlink()
+            self.assertEqual(tree_preview_features(tree), [])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            main(['--inventory', '--allow-preview'])
 
 
 if __name__ == '__main__':
