@@ -72,9 +72,18 @@ impl Store {
             Ok(bytes) => {
                 let stored: StoredConfig = serde_json::from_slice(&bytes).map_err(Error::Parse)?;
                 let enveloped = stored.has_integrations();
-                let config = stored
+                let mut config = stored
                     .into_config()
                     .map_err(|e| Error::Compatibility(e.into()))?;
+                // A command word an old release could save but the executor
+                // never ran (`"bright"`, before levels existed) has to be
+                // rewritten before the very first validate below, which would
+                // otherwise refuse the file outright and never reach the
+                // general `migrate` further down.
+                let commands_migrated = config.migrate_commands();
+                if commands_migrated {
+                    config.revision = config.revision.wrapping_add(1);
+                }
                 config.validate().map_err(Error::Invalid)?;
                 let legacy = serde_json::from_slice::<serde_json::Value>(&bytes)
                     .ok()
@@ -86,7 +95,7 @@ impl Store {
                 if enveloped {
                     store.confirm_recovery();
                 }
-                if needs_envelope {
+                if needs_envelope || commands_migrated {
                     store.write()?;
                 }
                 if legacy {
@@ -546,6 +555,26 @@ mod tests {
             store.config().rooms[0].devices[0].integration,
             couch_model::Integration::None
         );
+    }
+
+    #[test]
+    fn a_legacy_bright_command_loads_and_is_rewritten_once() {
+        // The shape of a `.130`-era file (`build/webui-review-empty.json`):
+        // `Store::open` used to validate this before it ever reached
+        // `migrate`, so it refused to start at all.
+        let path = scratch("bright-migrate");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, br#"{"schema_version":1,"revision":22,"connections":[],
+            "rooms":[{"id":"kitchen","name":"Kitchen","devices":[{"id":"kitchen-hue","name":"Kitchen light","kind":"light","integration":{"via":"hue","light_id":"1"}}]}],
+            "scenes":[{"id":"dinner","name":"Dinner","steps":[{"device":"kitchen-hue","command":"bright"}]}]}"#).unwrap();
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.config().scenes[0].steps[0].command, "dim:100");
+        assert_eq!(store.revision(), 23, "rewritten once, with a new revision");
+        assert!(!fs::read_to_string(&path).unwrap().contains("bright"));
+        // The file on disk is already in the new shape: a second open leaves
+        // the revision alone.
+        let again = Store::open(&path).unwrap();
+        assert_eq!(again.revision(), 23);
     }
 
     #[test]
