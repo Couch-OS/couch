@@ -1,5 +1,7 @@
 # Protocol 3, step T3 "Pairing and sessions" + per-package uid: implementation plan (approved 2026-09-19)
 
+Status: complete (couch #245, #251, #256, #257, #258). The per-package user change was checked on hardware with dev build .189.
+
 Studied at origin/dev 7437ed5 (T1 complete). Dev remote 192.168.1.127 was read (read-only) for kernel facts.
 
 ## Owner decisions (Bryan, 2026-09-19)

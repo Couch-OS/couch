@@ -346,8 +346,8 @@ as a protocol 2 core.
 
 The first three steps each have a full implementation plan: [T1 groundwork](protocol-3-t1-groundwork.md),
 [T2 children and domain controls](protocol-3-t2-children-and-domain-controls.md), and
-[T3 pairing and isolation](protocol-3-t3-pairing-and-isolation.md). T1 is complete; T2 and T3 are in
-progress.
+[T3 pairing and isolation](protocol-3-t3-pairing-and-isolation.md). T1, T2 and T3 are complete on
+`dev` (2026-09-20), switched off; T4 (media) has not started.
 
 Rules for running it:
 
