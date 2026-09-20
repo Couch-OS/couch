@@ -2358,7 +2358,9 @@ mod tests {
                 stream.write_all(reply.as_bytes()).unwrap();
                 open.push(stream);
             }
-            seen
+            // Handed back, not dropped here: the last press may still be
+            // reading its answer when this loop ends.
+            (seen, open)
         });
         let config = room();
         let matter = connections::MatterFleet::default();
@@ -2398,8 +2400,9 @@ mod tests {
             )
         };
         let read = r#"{"connection_id":"avr-package","request":{"method":"status"}}"#;
+        let (seen, open) = daemon.join().unwrap();
         assert_eq!(
-            daemon.join().unwrap(),
+            seen,
             [
                 command("volume-up", ""),
                 read.into(),
@@ -2411,6 +2414,7 @@ mod tests {
                 command("power-on", ""),
             ]
         );
+        drop(open);
     }
 
     /// A refusal with a package's line under it has to read well on the toast
