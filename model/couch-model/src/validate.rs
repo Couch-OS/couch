@@ -276,8 +276,17 @@ impl Config {
                 ..
             } = &device.integration
             {
-                if let Some(message) =
-                    self.child_problem(connection_id, resource_id, child, device.kind)
+                // The resolved form of a child is what `resolve_integration`
+                // makes of one: no inputs and no screen of its own.
+                let resolved_as_a_whole_connection = matches!(
+                    &device.integration,
+                    crate::Integration::Plugin { supports_inputs, presentation, .. }
+                        if *supports_inputs || !presentation.is_empty()
+                );
+                if let Some(message) = self
+                    .child_problem(connection_id, resource_id, child, device.kind)
+                    .or(resolved_as_a_whole_connection
+                        .then_some("A device of an integration has no inputs or screen of its own"))
                 {
                     problems.push(Problem {
                         at: alloc::format!("rooms.{}.devices.{}.child", room.id, device.id),
@@ -1620,9 +1629,20 @@ mod child_tests {
             *resource_id = LAMP.into();
         }
         assert_eq!(problem(&config), "");
-        if let Integration::Plugin { connection_id, .. } =
-            &mut config.rooms[0].devices[4].integration
+        if let Integration::Plugin {
+            supports_inputs, ..
+        } = &mut config.rooms[0].devices[4].integration
         {
+            *supports_inputs = true;
+        }
+        assert!(problem(&config).contains("no inputs or screen of its own"));
+        if let Integration::Plugin {
+            connection_id,
+            supports_inputs,
+            ..
+        } = &mut config.rooms[0].devices[4].integration
+        {
+            *supports_inputs = false;
             *connection_id = Id::new("nowhere");
         }
         assert!(problem(&config).contains("missing connection"));
