@@ -252,6 +252,74 @@ fn the_protocol_3_fixture_manifest_is_refused_while_the_switch_is_off() {
     );
 }
 
+/// The host is holding a key for this connection and the package is a
+/// protocol 1 one. Run against the published SDK's executable by
+/// `tools/tests/old-package-wire.sh`, this is the proof that the key never
+/// leaves the host: that child refuses unknown fields, so a `configure`
+/// carrying one would make it exit without answering, and everything below
+/// would fail.
+#[test]
+fn a_credential_held_by_the_host_never_reaches_a_protocol_1_package() {
+    use couch_plugin::Credential;
+    let device = MockHost::start(
+        Script::new()
+            .terminator(b'\n')
+            .on("CMD volume-up", Reply::line("OK"))
+            .on("GET STATUS", Reply::line("STATUS power=on;volume=31")),
+    );
+    let key = Credential::new(json!({"key": "0f1e2d", "issued": 7})).unwrap();
+    let p = Package::new();
+    assert_eq!(p.manifest.protocol_version, 1);
+    assert!(p.manifest.pairing.is_none());
+    let mut host = p.host();
+    // The same call the daemon makes for a paired connection. The gate strips
+    // the key, so the child is configured with the bytes it has always read.
+    host.configure_with(
+        json!({"host":device.host(),"port":device.port()}),
+        Some(&key),
+    )
+    .unwrap();
+    assert!(host.is_alive());
+    host.command("volume-up").unwrap();
+    assert_eq!(host.status().unwrap().volume, Some(31));
+    assert_eq!(device.requests(), ["CMD volume-up", "GET STATUS"]);
+    // And an endpoint started for a paired connection is the same story: every
+    // child of it, including a replacement after a failure, is configured
+    // without the key.
+    let endpoint = couch_plugin::Endpoint::start_paired(
+        &p.root,
+        p.manifest.clone(),
+        json!({"host":device.host(),"port":device.port()}),
+        Some(&key),
+        Duration::from_secs(5),
+        couch_plugin::HostPolicy::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        endpoint.request(Request::status()),
+        Ok(Response::Status { .. }) | Err(Error::Transport)
+    ));
+    // Nothing the host will send such a package may be asked to pair, either.
+    let mut host = p.host();
+    host.configure(json!({"host":device.host(),"port":device.port()}))
+        .unwrap();
+    for request in [
+        Request::pair_start(json!({"host":"127.0.0.1","port":1}), Some(&key)),
+        Request::pair_continue("p1", None),
+        Request::pair_cancel("p1"),
+    ] {
+        assert_eq!(
+            host.request(request.clone()),
+            Err(Error::Unsupported),
+            "{request:?}"
+        );
+    }
+    assert!(
+        host.is_alive(),
+        "a refused pairing request cost the child its life"
+    );
+}
+
 /// Not a test of this tree: a control for `tools/tests/old-package-wire.sh`,
 /// which runs it against an executable built from the published SDK. That child
 /// refuses unknown fields, so a frame with a key phase, which this tree's host
@@ -319,7 +387,7 @@ fn control_a_child_built_from_the_published_sdk_exits_on_a_key_phase() {
 /// the same reason: run against THIS tree's executable it would prove nothing.
 #[test]
 #[ignore = "run by tools/tests/old-package-wire.sh against an old executable"]
-fn control_a_child_built_from_the_published_sdk_exits_on_a_child_of_a_connection() {
+fn control_a_child_built_from_the_published_sdk_exits_on_a_child_or_a_key() {
     use std::process::{Command, Stdio};
     for (index, body) in [
         json!({"method":"command","function":"volume-up","resource":"lamp-01"}),
@@ -329,6 +397,12 @@ fn control_a_child_built_from_the_published_sdk_exits_on_a_child_of_a_connection
         json!({"method":"action","action":{"action":"set_climate","target_tenths":215}}),
         json!({"method":"children"}),
         json!({"method":"children","cursor":"lamp-32"}),
+        // Protocol 3, step T3: a key on a configure, and the three pairing
+        // requests. None of them is a word an old child has.
+        json!({"method":"configure","settings":{"host":"127.0.0.1","port":1},"credential":{"key":"0f1e2d"}}),
+        json!({"method":"pair_start","settings":{"host":"127.0.0.1","port":1}}),
+        json!({"method":"pair_continue","session":"p1"}),
+        json!({"method":"pair_cancel","session":"p1"}),
     ]
     .into_iter()
     .enumerate()

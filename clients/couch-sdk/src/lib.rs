@@ -83,6 +83,7 @@ pub mod children;
 pub mod client;
 pub mod discovery;
 pub mod error;
+pub mod pairing;
 pub mod settings;
 pub mod status;
 #[cfg(feature = "testing")]
@@ -95,6 +96,11 @@ pub use children::{Child, ChildPage, MAX_CHILD_LABEL, MAX_CURSOR, MAX_PAGE, MAX_
 pub use client::{catalog_differences, Capability, DeviceClient};
 pub use discovery::{Discover, Discovered};
 pub use error::{Error, Reason, Result};
+pub use pairing::{
+    valid_session, CodeAlphabet, Credential, PairFailure, PairFlow, PairInput, PairPrompt,
+    PairStep, MAX_CODE_LENGTH, MAX_CREDENTIAL_BYTES, MAX_PAIR_TEXT, MAX_POLL_MS, MAX_SESSION,
+    MIN_POLL_MS,
+};
 pub use settings::{
     connection_file, load_private, save_private, save_private_bytes, ClientSettings,
 };

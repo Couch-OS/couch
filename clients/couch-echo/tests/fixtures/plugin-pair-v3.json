@@ -1,0 +1,52 @@
+{
+  "protocol_version": 3,
+  "min_core_protocol_version": 3,
+  "id": "echo-pair",
+  "label": "Echo TV that pairs (protocol 3 fixture)",
+  "version": "0.1.0",
+  "executable": "bin/couch-plugin-echo-pair",
+  "capabilities": [
+    {
+      "id": "power-on",
+      "label": "Power on"
+    },
+    {
+      "id": "power-off",
+      "label": "Power off"
+    }
+  ],
+  "settings": [
+    {
+      "id": "host",
+      "label": "Device address",
+      "kind": "text",
+      "required": true
+    },
+    {
+      "id": "port",
+      "label": "Port",
+      "kind": "integer",
+      "required": true,
+      "default": 9299
+    },
+    {
+      "id": "mode",
+      "label": "How this set pairs",
+      "kind": "text",
+      "required": true,
+      "default": "button"
+    },
+    {
+      "id": "rotate",
+      "label": "Issue a new key on the next reading",
+      "kind": "boolean",
+      "required": false,
+      "default": false
+    }
+  ],
+  "pairing": {
+    "required": true,
+    "max_seconds": 120
+  },
+  "keep_alive": true
+}

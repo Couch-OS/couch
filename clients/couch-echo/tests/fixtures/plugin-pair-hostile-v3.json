@@ -1,0 +1,27 @@
+{
+  "protocol_version": 3,
+  "min_core_protocol_version": 3,
+  "id": "echo-pair-hostile",
+  "label": "Echo set that answers nonsense (protocol 3 fixture)",
+  "version": "0.1.0",
+  "executable": "bin/couch-plugin-echo-pair-hostile",
+  "capabilities": [
+    {
+      "id": "power-on",
+      "label": "Power on"
+    }
+  ],
+  "settings": [
+    {
+      "id": "hostile",
+      "label": "How this package misbehaves",
+      "kind": "text",
+      "required": true,
+      "default": "none"
+    }
+  ],
+  "pairing": {
+    "required": true,
+    "max_seconds": 60
+  }
+}

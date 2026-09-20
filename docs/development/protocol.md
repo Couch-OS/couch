@@ -257,6 +257,14 @@ gate in `couch-plugin` and `couch-sdk`, described under
   `children` itself are all invalid in a protocol 1 or 2 manifest, so no
   package Couch can already run is ever asked to list a child or told about
   one.
+- **Pairing.** A manifest may say `"pairing": {"required": true, "max_seconds": 120}`
+  (10 to 300 seconds) and `"keep_alive": true`. Only a protocol 3 manifest may:
+  an older one that declares either is invalid, so no package Couch can already
+  run is ever sent a pairing request, told a key, or exempted from the idle
+  reaper. The package describes the steps; Couch draws the dialog and keeps the
+  key. Nothing about pairing is written to `config.json`: "paired" is derived
+  from the key file's existence and the rules come from the live manifest, so
+  a Couch rolled back to protocol 2 needs no new projection rule.
 - **`integration_config_v3`.** The saved configuration gains a third layer for
   whatever a protocol 2 core cannot read; see
   [Compatibility and independent source](https://github.com/Couch-OS/couch/blob/main/docs/integration-architecture.md#protocol-3-layer-unreleased).
@@ -275,6 +283,13 @@ every protocol 1 and 2 package refuses unknown fields:
 {"method":"status","resource":"5f0c9a52"}
 {"method":"action","action":{"action":"set_light","brightness":30},"resource":"5f0c9a52"}
 {"type":"status","status":{"light":{"on":true,"brightness":30,"mirek":366}}}
+{"method":"configure","settings":{"host":"bridge.local"},"credential":{"application_key":"…"}}
+{"method":"pair_start","settings":{"host":"bridge.local"}}
+{"type":"pairing","session":"p1","step":{"step":"waiting","prompt":{"kind":"press_button","message":"The button is on top"},"poll_after_ms":2000}}
+{"method":"pair_continue","session":"p1","input":{"kind":"code","code":"0417"}}
+{"type":"pairing","session":"p1","step":{"step":"done","credential":{"application_key":"…"},"summary":"Paired with the hall bridge"}}
+{"method":"pair_cancel","session":"p1"}
+{"id":7,"body":{"type":"status","status":{"on":true}},"store_credential":{"application_key":"…"}}
 ```
 
 - **`phase`** on `command`: `repeat` or `long_press`. A tap is never written,
@@ -309,6 +324,61 @@ every protocol 1 and 2 package refuses unknown fields:
   the state the child is in afterwards (`status` instead of `ok`), which saves
   the panel a second round trip after a slider; a plain `ok` stays legal and
   the caller then reads.
+- **`credential`** on `configure` and on `pair_start`: the key Couch is
+  holding for this connection, an opaque JSON object of at most 16 KiB. Absent
+  whenever there is none. Couch never looks inside it, never sends it over
+  HTTP and never exports it.
+- **`pair_start`, `pair_continue` and `pair_cancel`**, and the `pairing`
+  answer to the first two. A package names the session on its first step and
+  repeats it on every one after; `pair_cancel` is answered `ok`. A step is
+  `waiting` with a prompt and how long to wait, `done` with the key, an
+  optional corrected `settings` and a one-line `summary`, or `failed` with
+  `unreachable`, `refused`, `wrong_code`, `timed_out` or `unsupported` and an
+  optional message. The three prompts are `press_button`, `approve_on_device`
+  and `enter_code` (a length of 1 to 16 and an alphabet of `digits`, `hex` or
+  `alphanumeric`); Couch writes its own headline for each and the package's
+  `message` goes under it.
+- **`store_credential`** beside a reply, which is the only thing that travels
+  with one. It is a key the device rotated, and it is legal only from a
+  protocol 3 package that declares `pairing`, and only on the answer to a
+  `command`, `action`, `status`, `inputs` or `children` request - never to a
+  `hello`, a `configure` or any `pair_*`, each of which has its own way of
+  saying what it means. It is surfaced only through
+  `Host::request_full(..) -> Result<(Response, Option<Credential>), Failure>`;
+  every other signature drops it, so no existing caller can store one by
+  accident and no log line can carry one.
+
+Every limit is the host's, checked before the bytes are written or as soon as
+they are read, and a package that breaks one is answering nonsense: the reply
+is a protocol error and the child is retired.
+
+| | |
+| --- | --- |
+| credential | a JSON object, at most 16 KiB serialized |
+| session | 1 to 64 bytes of `[A-Za-z0-9._-]`, and equal to the one the host is holding |
+| `poll_after_ms` | 0 only with `enter_code`, otherwise 500 to 10 000 |
+| summary, prompt and failure message | at most 160 bytes, no control characters |
+| `done.settings` | passes the package's own `manifest.validate_settings` |
+| `enter_code.length` | 1 to 16 |
+| `pairing.max_seconds` | 10 to 300 |
+
+A code the person typed is measured against the prompt that asked for it -
+its length and its alphabet - **before** anything is sent, so a mistyped code
+costs no round trip and the package is never asked. A prompt that asked for
+nothing is never given anything, and a prompt waiting for typed input is never
+polled.
+
+A package that declares `pairing` must also have made itself undumpable. The
+SDK's `serve` calls `prctl(PR_SET_DUMPABLE, 0)` as its first act, which has to
+happen in the child because `execve` puts the flag back for a program the new
+user can read, and every package slot is. The host checks it after the
+handshake: when Couch runs as root and the child's `/proc/<pid>/environ` still
+belongs to the package's own user rather than to root, a manifest that declares
+`pairing` is refused `incompatible` and nothing is executed. An unprivileged
+host - a developer's machine, CI, every host test - shares its user with its
+children, where that ownership says nothing, and skips the check. Packages
+published before that SDK stay dumpable and are unaffected, because they
+declare no pairing and hold no key.
 
 A level is the one thing that changes shape on the way out. `dim:30`,
 `position:40` and `mode:heat` are ordinary commands in a button map, in a scene
@@ -350,6 +420,14 @@ manifest, in one place (`Host::request_detailed`), before any I/O:
   3 for a listing, for any request that names a child, and for the three child
   actions, which is what keeps `resource` and `children` out of the bytes a
   published package reads;
+- a **key is stripped, not refused**, the same way and for the same reason as a
+  phase: `Configure.credential` is set to `None` for any manifest below
+  protocol 3 **or** without `pairing`, even when Couch is holding one, so a
+  package rolled back from protocol 3 to 2 with a key file beside it is still
+  configured, with today's exact bytes. That is the only place a key can leave
+  the host;
+- `pair_start`, `pair_continue` and `pair_cancel` `require` protocol 3, and are
+  then `unsupported` again unless the manifest declares `pairing`;
 - a `status` **with** a resource is the one frame an old package would not
   refuse. Its `Status` was a unit variant, and serde lets a unit variant ignore
   the fields of an internally tagged frame even with `deny_unknown_fields`, so
@@ -357,8 +435,11 @@ manifest, in one place (`Host::request_detailed`), before any I/O:
   been named. Nothing on the package's side can prevent that; the host's gate
   is the only thing that does, and `wire_mirror` asserts it.
 
-In the other direction, a `reason` or the `unpaired` code from a protocol 1 or
-2 package is a protocol error and retires the child, as a `volume_db` reading
+In the other direction, a `pairing` answer or a `store_credential` from a
+protocol 1 or 2 package, or from a protocol 3 one that never declared
+`pairing`, is a protocol error and retires the child. So is a `reason` or the
+`unpaired` code from a protocol 1 or
+2 package, as a `volume_db` reading
 from a protocol 1 package always has. So is a listing, a light, cover or
 climate reading, and a `status` as the answer to a write - the last needs no
 version rule of its own, because only a request that named a child may be
@@ -602,8 +683,22 @@ write is acknowledged with the state it left behind. Its `hostile` setting
 picks one of four ways a bridge can fail to end a listing (a cursor that comes
 round again, an oversized page, a kind it never declared, the same child on two
 pages); each one is a protocol error and costs the package its process.
-`couch_plugin::testing_v3::children` is the admission case a real package with
-children will use.
+`couch-plugin-echo-pair` is a television that has to be paired: all three
+prompts, an approve that takes several polls, a wrong code, an expiry, a `done`
+that corrects the settings, and a key the set rotates on the next reading.
+`couch-plugin-echo-pair-hostile` is a package written by hand rather than
+through `serve`, because `serve` cannot emit any of what it does - its
+constructors clamp a step, it mints the session itself and it never attaches a
+key to a reply that may not carry one. Its `hostile` setting picks one of five
+ways to answer nonsense about a key: `oversized`, `wrong_session`, `bad_poll`
+and `credential_on_configure`, each of which the host sees in the single answer
+and retires the child for, and `leaks_credential`, which copies the key into a
+later reading - something the host cannot see at all, and only someone who
+knows the key can.
+
+`couch_plugin::testing_v3::children` and `couch_plugin::testing_v3::pairing`
+are the admission cases a real package with children, or with pairing, will
+use.
 
 Cargo unifies features across a build, so a single dependency that enabled the
 feature, even a dev-dependency, would enable it for everything built with it.
@@ -625,6 +720,7 @@ Both print nothing.
 - [`clients/couch-plugin/src/protocol.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/protocol.rs)
 - [`clients/couch-plugin/src/manifest.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/manifest.rs)
 - [`clients/couch-sdk/src/client.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-sdk/src/client.rs)
+- [`clients/couch-sdk/src/pairing.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-sdk/src/pairing.rs)
 - [`clients/couch-sdk/src/children.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-sdk/src/children.rs)
 - [`model/couch-model/src/domain.rs`](https://github.com/Couch-OS/couch/blob/main/model/couch-model/src/domain.rs)
 - [`model/couch-model/src/commands.rs`](https://github.com/Couch-OS/couch/blob/main/model/couch-model/src/commands.rs)

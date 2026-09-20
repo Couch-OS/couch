@@ -389,6 +389,105 @@ compares, checks the paging ends where the count says it should, refuses an
 unknown resource, and proves a write's acknowledgement agrees with the next
 read and that a kind never answers for another.
 
+### Pairing, and the key Couch keeps
+
+Protocol 3, unreleased and switched off. A package that needs a key from the
+device - a Hue hub's application key, a webOS client key, an Android TV
+certificate - never draws a dialog and never stores anything. It describes one
+step at a time; Couch draws its own headline, collects what the person types,
+and keeps the key in `connections/<id>/plugin-credential.json` (root, mode
+0600). A client that needs no key implements nothing here.
+
+Declare it in the manifest, and only a protocol 3 manifest may:
+
+```json
+"pairing": { "required": true, "max_seconds": 120 },
+"keep_alive": true
+```
+
+`required` means the connection is unusable until Couch holds a key, so the
+daemon answers `unpaired` without starting you. `max_seconds` is how long you
+want one attempt to last, from 10 to 300; Couch gives you that and never more.
+`keep_alive` asks for your child not to be reaped when the connection goes
+idle, for a device that costs seconds to reconnect to.
+
+Three methods on `DeviceClient`, all defaulted:
+
+```rust
+fn connect_with(settings: &Self::Settings, credential: Option<&Credential>) -> Result<Self>;
+fn pair_start(settings: &Self::Settings, existing: Option<&Credential>)
+    -> Result<Box<dyn PairFlow>>;
+fn take_credential(&mut self) -> Option<Credential>;
+```
+
+`connect_with` is the only way you ever see the key: it is not in the settings,
+not in the environment, and not on disk anywhere you can read. `take_credential`
+is for a device that rotates its key under you - return it once, and Couch
+stores it beside the answer to the request that discovered it. `existing` on
+`pair_start` is the key Couch already holds, for a device that issues a second
+one against the first.
+
+A `PairFlow` is the conversation:
+
+```rust
+use couch_sdk::{CodeAlphabet, Credential, PairFailure, PairFlow, PairInput, PairPrompt, PairStep, Result};
+
+struct BridgePairing { bridge: Bridge }
+
+impl PairFlow for BridgePairing {
+    fn step(&mut self, input: Option<PairInput>) -> Result<PairStep> {
+        // Whatever the person typed for the last prompt, if it asked for
+        // anything. Couch has already checked it against that prompt.
+        if let Some(PairInput::Code { code }) = input {
+            return Ok(match self.bridge.submit(&code)? {
+                Some(key) => PairStep::done(Credential::new(key)?, "Paired with the hall bridge"),
+                None => PairStep::failed(PairFailure::WrongCode).because("That was not the code shown"),
+            });
+        }
+        match self.bridge.poll()? {
+            Pairing::Pressed(key) => Ok(PairStep::done(Credential::new(key)?, "Paired with the hall bridge")
+                .with_settings(self.bridge.corrected_settings())),
+            Pairing::NeedsCode => Ok(PairStep::waiting(PairPrompt::enter_code(6, CodeAlphabet::Hex), 0)),
+            Pairing::Waiting => Ok(PairStep::waiting(
+                PairPrompt::press_button().saying("The button is on top of the bridge"), 2000)),
+            Pairing::Expired => Ok(PairStep::failed(PairFailure::TimedOut)),
+        }
+    }
+
+    fn cancel(&mut self) { self.bridge.give_up(); }
+}
+```
+
+`step` is called once to begin, and again for every poll or every submitted
+code, and it must return well inside the host's twelve second request timeout:
+**describe** a wait with `PairStep::waiting`, do not sleep through one. `serve`
+owns at most one flow, names the session (`p1`, `p2`, …), refuses a step for
+any other session, and drops the flow the moment a step is `done` or `failed`
+or the person cancels. A second `pair_start` replaces the first.
+
+Three prompts, and Couch writes the headline for each: `press_button` ("Press
+the button on the device"), `approve_on_device` ("Approve on the device") and
+`enter_code` ("Enter the code shown on the device"). `saying(..)` adds your one
+line under it. `poll_after_ms` is how long Couch waits before asking you again:
+500 to 10 000 milliseconds, or 0 for a code prompt, which means "come back when
+they have typed it". `with_settings` on a `done` step hands back settings the
+device would rather Couch saved - a corrected port, the address it answered on
+- and they have to pass your own manifest.
+
+Every bound is enforced by the host, and a step that breaks one is a protocol
+error that costs you your child process. The constructors above clamp, so an
+author using them cannot emit one: `PairStep::waiting` clamps the delay,
+`PairPrompt::enter_code` clamps the length to 1..=16, and `saying`, `because`
+and `done`'s summary clamp text to 160 printable bytes. A `Credential` is a
+JSON object of at most 16 KiB, prints as `Credential(..)` and has no `Display`,
+so nothing that formats a value containing one can leak it. Never put a key in
+a `Reason`, a summary or a status field: those are shown to a person and
+written to logs.
+
+`couch_plugin::testing_v3::pairing` is the admission case: it pairs, checks
+every step's bounds, proves the key reaches you and is never echoed back in an
+answer, and drives a refusal, an expiry and a cancellation.
+
 ### 4. Tests, with no device
 
 `couch_sdk::testing` (feature `testing`, enable it in `[dev-dependencies]`)

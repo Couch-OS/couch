@@ -30,7 +30,7 @@
 use crate::{
     list_children,
     testing::{Adapter, FakeDevice, Package},
-    Child, Endpoint, Error, Request, Response, Status, TypedAction, MAX_PAGE,
+    Child, Endpoint, Error, Host, Request, Response, Status, TypedAction, MAX_PAGE,
 };
 use std::time::Duration;
 
@@ -192,5 +192,338 @@ pub fn children(adapter: Adapter<'_>, case: ChildrenCase) {
             .map_err(|failure| failure.code),
         Err(Error::Invalid),
         "a resource with no kind must not reach the package"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Pairing.
+// ---------------------------------------------------------------------------
+
+use crate::{
+    host::accept, Credential, Error as WireError, PairFailure, PairInput, PairPrompt, PairStep,
+    Response as R, MAX_CODE_LENGTH, MAX_PAIR_TEXT, MAX_POLL_MS, MIN_POLL_MS,
+};
+
+/// The most steps one conversation may take before the harness gives up. A
+/// real dialog is bounded by a deadline; this is bounded by patience.
+const MAX_STEPS: usize = 40;
+
+/// One pairing conversation, and how it ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PairingScenario {
+    /// It works: the package hands over a key.
+    Paired,
+    /// The device says no.
+    Refused,
+    /// The device's own window closes first.
+    TimedOut,
+    /// The person closes the dialog.
+    Cancelled,
+}
+
+impl PairingScenario {
+    pub const ALL: [Self; 4] = [Self::Paired, Self::Refused, Self::TimedOut, Self::Cancelled];
+}
+
+/// What a package with pairing has to survive.
+///
+/// The harness never sleeps between polls: the delay a step asks for is the
+/// browser's business and the daemon's, and a package must be able to answer
+/// the next poll whenever it arrives.
+pub struct PairingCase {
+    /// A fresh fake device, arranged to end one scenario the way that
+    /// scenario says. `None` for a scenario this package genuinely cannot be
+    /// made to reach; the harness then prints what it did not check rather
+    /// than passing quietly.
+    pub device: fn(PairingScenario) -> Option<Box<dyn FakeDevice>>,
+    /// The settings that address it, for that scenario.
+    pub settings: fn(&dyn FakeDevice, PairingScenario) -> serde_json::Value,
+    /// What to type when the package asks for a code, in the scenario that
+    /// pairs. Whatever a code prompt asks for in another scenario, this is
+    /// still what is typed, so a case that wants a wrong code answers with a
+    /// wrong one there.
+    pub code: &'static str,
+    /// An ordinary request the harness makes once the key is stored, to prove
+    /// the key is never echoed back in an answer.
+    pub after: Request,
+}
+
+fn shown(text: &str) -> bool {
+    text.len() <= MAX_PAIR_TEXT && !text.chars().any(char::is_control)
+}
+
+/// Every bound a step carries, asserted by the harness rather than trusted:
+/// the host refuses a step that breaks one, and a package that has to be
+/// retired to be stopped is a package that will one day be retired on a
+/// person's sofa.
+fn bounded(step: &PairStep, manifest: &crate::Manifest) {
+    assert!(step.is_well_formed(), "a step outside its bounds: {step:?}");
+    match step {
+        PairStep::Waiting {
+            prompt,
+            poll_after_ms,
+        } => {
+            if let Some(message) = prompt.message() {
+                assert!(shown(message), "a prompt line too long or unprintable");
+            }
+            if let PairPrompt::EnterCode { length, .. } = prompt {
+                assert!(
+                    (1..=MAX_CODE_LENGTH).contains(length),
+                    "a code of {length} characters"
+                );
+            }
+            match *poll_after_ms {
+                0 => assert!(
+                    prompt.is_code(),
+                    "only a code prompt may ask to be polled at once"
+                ),
+                ms => assert!(
+                    (MIN_POLL_MS..=MAX_POLL_MS).contains(&ms),
+                    "a poll of {ms} ms"
+                ),
+            }
+        }
+        PairStep::Done {
+            credential,
+            settings,
+            summary,
+        } => {
+            assert!(shown(summary), "a summary too long or unprintable");
+            assert!(credential.fits(), "a key Couch will not store");
+            if let Some(settings) = settings {
+                assert_eq!(
+                    manifest.validate_settings(settings),
+                    Ok(()),
+                    "a Done whose settings the manifest refuses"
+                );
+            }
+        }
+        PairStep::Failed { message, .. } => {
+            if let Some(message) = message {
+                assert!(shown(message), "a failure line too long or unprintable");
+            }
+        }
+    }
+}
+
+/// Drive one conversation to its end, asserting every step on the way.
+fn converse(
+    host: &mut Host,
+    manifest: &crate::Manifest,
+    settings: serde_json::Value,
+    code: &str,
+) -> (String, PairStep) {
+    let (session, mut step) = host
+        .pair_start(settings, None)
+        .expect("a package that declares pairing answers a start");
+    assert!(
+        couch_sdk::valid_session(&session),
+        "not a session id: {session}"
+    );
+    bounded(&step, manifest);
+    for _ in 0..MAX_STEPS {
+        if step.is_final() {
+            return (session, step);
+        }
+        assert_eq!(
+            host.pair_session(),
+            Some(session.as_str()),
+            "the session changed under the host"
+        );
+        let input = match &step {
+            PairStep::Waiting { prompt, .. } if prompt.is_code() => {
+                Some(PairInput::code(code.to_owned()))
+            }
+            _ => None,
+        };
+        step = host
+            .pair_continue(input)
+            .expect("a package answers every step of its own conversation");
+        bounded(&step, manifest);
+    }
+    panic!("the conversation never ended: {step:?}");
+}
+
+/// Pairing, against a real package subprocess: one conversation that works,
+/// one refused, one that runs out of time, one the person closes, the bounds
+/// of every step, and the one thing a key must never do.
+pub fn pairing(adapter: Adapter<'_>, case: PairingCase) {
+    let package = Package::new(adapter);
+    let pairing = package
+        .manifest
+        .pairing
+        .expect("a package that pairs says so in its manifest");
+    assert!(pairing.is_valid(), "{pairing:?}");
+    let mut skipped = Vec::new();
+
+    // ---- it works, and the key it produced is the key Couch stores.
+    let device =
+        (case.device)(PairingScenario::Paired).expect("a package that pairs can be made to pair");
+    let settings = (case.settings)(&*device, PairingScenario::Paired);
+    let mut host = package.host();
+    let (session, step) = converse(&mut host, &package.manifest, settings.clone(), case.code);
+    let PairStep::Done {
+        credential,
+        settings: corrected,
+        ..
+    } = step
+    else {
+        panic!("the paired scenario did not pair: {step:?}");
+    };
+    // The conversation is over: the host is holding nothing, and a step that
+    // names the session it just finished never leaves the host.
+    assert_eq!(host.pair_session(), None);
+    assert_eq!(
+        host.request_detailed(Request::pair_continue(&session, None))
+            .map_err(|failure| failure.code),
+        Err(Error::Invalid),
+        "a finished session was still answered"
+    );
+    assert!(host.is_alive(), "pairing cost the package its process");
+
+    // ---- the key reaches the package, and comes back out of nothing.
+    let saved = corrected.unwrap_or(settings);
+    if pairing.required {
+        let mut unpaired = package.host();
+        unpaired
+            .configure(saved.clone())
+            .expect("settings alone are still valid settings");
+        assert_eq!(
+            unpaired
+                .request_detailed(case.after.clone())
+                .map_err(|failure| failure.code),
+            Err(Error::Unpaired),
+            "a package whose pairing is required answered without a key"
+        );
+    }
+    let mut paired = package.host();
+    paired
+        .configure_with(saved, Some(&credential))
+        .expect("the stored key configures");
+    let (answer, rotated) = paired
+        .request_full(case.after.clone())
+        .expect("a paired package answers");
+    // Whatever it answered, the key is not in it. A rotation travels beside
+    // the reply, in `store_credential`, and is a different key.
+    let body = serde_json::to_string(&answer).expect("a serializable response");
+    for value in credential.get().values().filter_map(|v| v.as_str()) {
+        assert!(
+            !body.contains(value),
+            "the key was echoed back in an answer: {body}"
+        );
+    }
+    if let Some(rotated) = &rotated {
+        assert!(rotated.fits(), "a rotated key Couch will not store");
+    }
+
+    // ---- the limit on a key, which no honest package can be asked to break.
+    // The package produced a real one; this is the same key, too large, and
+    // the host's own gate refusing it.
+    let mut oversized = credential.get().clone();
+    oversized.insert(
+        "padding".into(),
+        serde_json::Value::String("a".repeat(Credential::MAX_BYTES)),
+    );
+    let oversized: Credential =
+        serde_json::from_value(serde_json::Value::Object(oversized)).expect("a credential object");
+    assert!(!oversized.fits());
+    assert_eq!(
+        Credential::new(serde_json::Value::Object(oversized.get().clone())),
+        Err(couch_sdk::Error::Invalid),
+        "the constructor let an oversized key through"
+    );
+    let too_big = R::Pairing {
+        session: session.clone(),
+        step: PairStep::Done {
+            credential: oversized,
+            settings: None,
+            summary: "Paired".into(),
+        },
+    };
+    assert_eq!(
+        accept(
+            &package.manifest,
+            &Request::pair_start(serde_json::json!({}), None),
+            &too_big
+        ),
+        Err(WireError::Protocol),
+        "the host accepted a key it cannot store"
+    );
+    // ...and the same for a step outside its bounds, which is the other half
+    // of what `bounded` above asserts the package itself never sends.
+    for step in [
+        PairStep::Waiting {
+            prompt: PairPrompt::press_button(),
+            poll_after_ms: 0,
+        },
+        PairStep::Waiting {
+            prompt: PairPrompt::press_button(),
+            poll_after_ms: MAX_POLL_MS + 1,
+        },
+        PairStep::Failed {
+            reason: PairFailure::Refused,
+            message: Some("a".repeat(MAX_PAIR_TEXT + 1)),
+        },
+    ] {
+        assert_eq!(
+            accept(
+                &package.manifest,
+                &Request::pair_start(serde_json::json!({}), None),
+                &R::Pairing {
+                    session: session.clone(),
+                    step: step.clone()
+                }
+            ),
+            Err(WireError::Protocol),
+            "the host accepted {step:?}"
+        );
+    }
+
+    // ---- refused, and out of time. Both end the conversation with nothing
+    // stored, and neither costs the package its process.
+    for (scenario, expected) in [
+        (PairingScenario::Refused, PairFailure::Refused),
+        (PairingScenario::TimedOut, PairFailure::TimedOut),
+    ] {
+        let Some(device) = (case.device)(scenario) else {
+            skipped.push(scenario);
+            continue;
+        };
+        let settings = (case.settings)(&*device, scenario);
+        let mut host = package.host();
+        let (_, step) = converse(&mut host, &package.manifest, settings, case.code);
+        match step {
+            PairStep::Failed { reason, .. } => assert_eq!(reason, expected, "{scenario:?}"),
+            other => panic!("{scenario:?} ended {other:?}"),
+        }
+        assert_eq!(host.pair_session(), None);
+        assert!(host.is_alive(), "{scenario:?} cost the package its process");
+    }
+
+    // ---- the person closed the dialog.
+    if let Some(device) = (case.device)(PairingScenario::Cancelled) {
+        let settings = (case.settings)(&*device, PairingScenario::Cancelled);
+        let mut host = package.host();
+        let (session, step) = host
+            .pair_start(settings, None)
+            .expect("a start before a cancel");
+        bounded(&step, &package.manifest);
+        assert!(!step.is_final(), "nothing to cancel: {step:?}");
+        host.pair_cancel().expect("a cancel is answered");
+        assert_eq!(host.pair_session(), None);
+        assert_eq!(
+            host.request_detailed(Request::pair_continue(&session, None))
+                .map_err(|failure| failure.code),
+            Err(Error::Invalid),
+            "a cancelled session was still answered"
+        );
+        assert!(host.is_alive(), "a cancel cost the package its process");
+    } else {
+        skipped.push(PairingScenario::Cancelled);
+    }
+
+    assert!(
+        skipped.is_empty(),
+        "these scenarios were not checked: {skipped:?}"
     );
 }

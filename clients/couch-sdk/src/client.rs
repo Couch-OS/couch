@@ -79,6 +79,46 @@ pub trait DeviceClient: Sized {
     /// Open the transport. Validate settings first; do not retry internally.
     fn connect(settings: &Self::Settings) -> Result<Self>;
 
+    /// [`DeviceClient::connect`] with the key Couch is holding for this
+    /// connection, if it has one. Protocol 3, unreleased: only a package whose
+    /// manifest declares `pairing` is ever given one, so the default - which
+    /// ignores it - is what every client written before pairing existed did.
+    ///
+    /// This is the only way a package sees its key. It is never in the
+    /// settings, never in the environment and never on disk anywhere the
+    /// package can read.
+    fn connect_with(
+        settings: &Self::Settings,
+        _credential: Option<&crate::Credential>,
+    ) -> Result<Self> {
+        Self::connect(settings)
+    }
+
+    /// Begin a pairing conversation for these settings. `existing` is the key
+    /// Couch already holds, for a device that wants it to issue a second one
+    /// (an Apple TV's metadata pairing) - re-pairing otherwise starts clean.
+    ///
+    /// The flow that comes back is stepped by `serve` until it is done, failed
+    /// or cancelled. [`Error::Unsupported`] is the default and is what a
+    /// package that does not pair keeps answering.
+    fn pair_start(
+        _settings: &Self::Settings,
+        _existing: Option<&crate::Credential>,
+    ) -> Result<Box<dyn crate::PairFlow>> {
+        Err(Error::Unsupported)
+    }
+
+    /// A key the device rotated under us, to be stored in place of the one
+    /// Couch holds. Polled by `serve` after every successful command, action,
+    /// status or input request, and never on a handshake, a configure or a
+    /// pairing step.
+    ///
+    /// Return it once: the default never returns one, and a client that does
+    /// must clear it so the same key is not written on every reply.
+    fn take_credential(&mut self) -> Option<crate::Credential> {
+        None
+    }
+
     /// Perform one function. Called only after the capability gate has passed.
     ///
     /// Never retry inside this method. A lost reply does not prove a lost

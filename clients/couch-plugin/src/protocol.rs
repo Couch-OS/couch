@@ -1,5 +1,5 @@
 use crate::Manifest;
-use couch_sdk::{KeyPhase, Reason, Selectable, Status};
+use couch_sdk::{Credential, KeyPhase, PairInput, PairStep, Reason, Selectable, Status};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{Read, Write};
 
@@ -128,6 +128,12 @@ pub enum Request {
     },
     Configure {
         settings: serde_json::Value,
+        /// Protocol 3. The key Couch is holding for this connection. Absent
+        /// whenever there is none, and the gate strips it for any package
+        /// below protocol 3 or without `pairing` in its manifest, so a
+        /// published package is configured with the bytes it always read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<Credential>,
     },
     Command {
         function: String,
@@ -164,8 +170,83 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
     },
+    /// Protocol 3. Begin a pairing conversation for these settings. It needs
+    /// no prior `configure`: pairing is how a connection becomes usable, and
+    /// the daemon runs it in a child of its own so the connection that is
+    /// already paired keeps working on its old key.
+    PairStart {
+        settings: serde_json::Value,
+        /// The key Couch already holds, for a device that issues a second one
+        /// against the first. Stripped by the gate exactly as
+        /// [`Request::Configure`]'s is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<Credential>,
+    },
+    /// Protocol 3. The next step of the conversation the package named,
+    /// carrying whatever Couch collected for the previous prompt.
+    PairContinue {
+        session: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<PairInput>,
+    },
+    /// Protocol 3. The person closed the dialog, or the deadline passed.
+    /// Answered `ok`, and nothing is stored.
+    PairCancel {
+        session: String,
+    },
 }
 impl Request {
+    /// Settings, and no key. The builder exists so a later field never breaks
+    /// a struct literal again: every caller that has no key writes this, and
+    /// its bytes are the ones a published package has always read.
+    pub fn configure(settings: serde_json::Value) -> Self {
+        Self::Configure {
+            settings,
+            credential: None,
+        }
+    }
+    /// Settings, and the key Couch is holding. The gate strips the key for
+    /// any package that may not be told one.
+    pub fn configure_with(settings: serde_json::Value, credential: Option<&Credential>) -> Self {
+        Self::Configure {
+            settings,
+            credential: credential.cloned(),
+        }
+    }
+    /// Protocol 3: begin a pairing conversation.
+    pub fn pair_start(settings: serde_json::Value, credential: Option<&Credential>) -> Self {
+        Self::PairStart {
+            settings,
+            credential: credential.cloned(),
+        }
+    }
+    /// Protocol 3: the next step of a conversation already under way.
+    pub fn pair_continue(session: impl Into<String>, input: Option<PairInput>) -> Self {
+        Self::PairContinue {
+            session: session.into(),
+            input,
+        }
+    }
+    /// Protocol 3: end one, storing nothing.
+    pub fn pair_cancel(session: impl Into<String>) -> Self {
+        Self::PairCancel {
+            session: session.into(),
+        }
+    }
+    /// The pairing session this request belongs to, if it belongs to one.
+    pub fn session(&self) -> Option<&str> {
+        match self {
+            Self::PairContinue { session, .. } | Self::PairCancel { session } => Some(session),
+            _ => None,
+        }
+    }
+    /// Whether this is part of a pairing conversation at all.
+    pub fn is_pairing(&self) -> bool {
+        matches!(
+            self,
+            Self::PairStart { .. } | Self::PairContinue { .. } | Self::PairCancel { .. }
+        )
+    }
     /// A command as every protocol sends it: a tap, to the connection itself.
     pub fn command(function: impl Into<String>) -> Self {
         Self::key(function, KeyPhase::Tap)
@@ -203,9 +284,13 @@ impl Request {
             Self::Command { resource: at, .. }
             | Self::Action { resource: at, .. }
             | Self::Status { resource: at } => *at = Some(resource.into()),
-            Self::Hello { .. } | Self::Configure { .. } | Self::Inputs | Self::Children { .. } => {
-                ()
-            }
+            Self::Hello { .. }
+            | Self::Configure { .. }
+            | Self::Inputs
+            | Self::Children { .. }
+            | Self::PairStart { .. }
+            | Self::PairContinue { .. }
+            | Self::PairCancel { .. } => (),
         }
         self
     }
@@ -215,9 +300,13 @@ impl Request {
             Self::Command { resource, .. }
             | Self::Action { resource, .. }
             | Self::Status { resource } => resource.as_deref(),
-            Self::Hello { .. } | Self::Configure { .. } | Self::Inputs | Self::Children { .. } => {
-                None
-            }
+            Self::Hello { .. }
+            | Self::Configure { .. }
+            | Self::Inputs
+            | Self::Children { .. }
+            | Self::PairStart { .. }
+            | Self::PairContinue { .. }
+            | Self::PairCancel { .. } => None,
         }
     }
 }
@@ -241,6 +330,13 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next: Option<String>,
     },
+    /// Protocol 3. One step of a pairing conversation, and the session it
+    /// belongs to. The package names the session on the first step and
+    /// repeats it on every one after; the host refuses any other.
+    Pairing {
+        session: String,
+        step: PairStep,
+    },
     Error {
         code: Error,
         /// Protocol 3. Absent from every protocol 1 and 2 error, in both
@@ -260,6 +356,24 @@ impl Response {
 pub(crate) struct Envelope<T> {
     pub id: u64,
     pub body: T,
+}
+
+/// A reply, and the one thing a package may say beside it.
+///
+/// `Envelope<Response>` is what this was and, with no `store_credential`,
+/// still is byte for byte: a published package's reply parses here and this
+/// writes the same bytes back. A key rotated by the device rides along with
+/// the answer that discovered it, so the daemon can store it under the
+/// connection's lock before the answer is returned.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReplyEnvelope {
+    pub id: u64,
+    pub body: Response,
+    /// Protocol 3. Never written by a package whose manifest is below 3 or
+    /// does not declare `pairing`, and a protocol error from one that is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_credential: Option<Credential>,
 }
 
 pub fn read_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<T> {
