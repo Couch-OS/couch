@@ -950,12 +950,13 @@ impl Controller {
         move |room| input.borrow_mut().push_back(Input::Open(room))
     }
     fn row(&self, e: &Entry) -> ChoiceItem {
+        let config = crate::connections::config();
         let detail = if !e.hue && self.busy.as_deref() == Some(&e.id) {
             "Updating…".into()
         } else if let Some((_, caption)) = &e.activity {
             caption.clone()
         } else if e.id.starts_with("device:") {
-            device_row_detail(crate::connections::config().as_deref(), &e.id)
+            device_row_detail(config.as_deref(), &e.id)
         } else {
             e.state
                 .as_ref()
@@ -980,6 +981,7 @@ impl Controller {
             power_known: e.state.as_ref().is_some_and(|s| s.active().is_some()),
             activity: e.activity.is_some(),
             kind: e.activity.as_ref().map_or(0, |(kind, _)| *kind),
+            controls: row_opens_a_screen(config.as_deref(), e),
         }
     }
     fn update_rows(&self, app: &App, reset: bool) {
@@ -1903,6 +1905,19 @@ pub(crate) fn description(light: &Light) -> String {
             .unwrap_or_else(|| "On".into()),
     }
 }
+/// Whether OK on this row opens a screen of any kind, which is what the
+/// chevron on it promises: its own light or blind screen, or the device screen
+/// a `device:` row has always had. A device still waiting for its package has
+/// no screen to open and says so in words instead.
+fn row_opens_a_screen(config: Option<&couch_model::Config>, entry: &Entry) -> bool {
+    if entry.activity.is_some() {
+        return false;
+    }
+    if let Some(device) = entry.id.strip_prefix("device:") {
+        return config.is_none_or(|config| needs_package(config, device).is_none());
+    }
+    opens_screen(entry)
+}
 /// Whether OK on this row opens its control screen rather than switching it.
 ///
 /// A packaged child declares what it can do, so this is known before any
@@ -2010,9 +2025,22 @@ mod tests {
         );
         assert_eq!(needs_package(&config, "tv"), None);
         assert_eq!(needs_package(&config, "missing"), None);
-        // It still has a row, and no screen of its own to open.
+        // It still has a row, and no screen of its own to open - so it makes
+        // no promise of one either: no chevron beside "Needs the Denon
+        // package", where the TV beside it has one.
         let entries = configured_in(&config, &Id::new("r")).unwrap();
         assert!(entries.iter().any(|e| e.id == "device:avr"));
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.id.as_str(), row_opens_a_screen(Some(&config), e)))
+                .collect::<Vec<_>>(),
+            [
+                ("device:avr", false),
+                ("device:inline", false),
+                ("device:tv", true)
+            ]
+        );
         assert_eq!(tv_connection(&config, "avr"), None);
     }
     /// The sentence has to fit the toast on the 480-pixel panel, under a real
@@ -2883,11 +2911,19 @@ mod tests {
         app.set_feedback_enabled(true);
         controller.update_rows(&app, true);
         // What the rows say, read back from the model the screen is drawn
-        // from, so the sentences asserted are the ones in the picture.
+        // from, so the sentences asserted are the ones in the picture. A
+        // trailing chevron is the row's hint that OK opens a screen.
         let shown: Vec<String> = app
             .get_light_items()
             .iter()
-            .map(|row| format!("{} - {}", row.title, row.detail))
+            .map(|row| {
+                format!(
+                    "{} - {}{}",
+                    row.title,
+                    row.detail,
+                    if row.controls { " ›" } else { "" }
+                )
+            })
             .collect();
         app.show().unwrap();
         window.dispatch_event(WindowEvent::WindowActiveChanged(true));
@@ -2916,9 +2952,9 @@ mod tests {
         shown
     }
 
-    /// A room with nothing in it but the built-in Hue rows: the picture that
-    /// must not move when packaged children exist. Run on the commit before
-    /// this change and on it, the two files are byte for byte the same.
+    /// A room with nothing in it but the built-in Hue rows. The sentences are
+    /// the ones they have always been; what is new is the chevron on the rows
+    /// whose OK now opens a screen, which never replaces the state text.
     #[test]
     fn a_room_of_built_in_hue_lights_is_drawn_as_it_always_was() {
         const NAME: &str = "lights::tests::a_room_of_built_in_hue_lights_is_drawn_as_it_always_was";
@@ -2979,8 +3015,12 @@ mod tests {
         assert_eq!(
             shown,
             [
-                "Desk lamp - On · 40%",
-                "Reading lamp - Off",
+                // Two lamps that dim: OK opens their screen, and the state
+                // text stays where it was.
+                "Desk lamp - On · 40% ›",
+                "Reading lamp - Off ›",
+                // The third has not answered, so OK is still the switch it
+                // has always been, and there is nothing to promise.
                 "Corner lamp - Unavailable"
             ]
         );
@@ -3040,14 +3080,16 @@ mod tests {
         assert_eq!(
             shown,
             [
-                "Desk lamp - On · 40%",
-                // The bridge had already failed to answer this round.
-                "Reading lamp - Unavailable",
-                "Blind - Open · 60% open",
+                "Desk lamp - On · 40% ›",
+                // The bridge had already failed to answer this round. A
+                // packaged child still declares what it can do, so the row
+                // keeps its promise even with nothing to report.
+                "Reading lamp - Unavailable ›",
+                "Blind - Open · 60% open ›",
                 // The thermostat and the receiver keep their device rows and
                 // the packaged screen behind them.
-                "Heating - Press OK for controls",
-                "Theater AVR - Press OK for controls"
+                "Heating - Press OK for controls ›",
+                "Theater AVR - Press OK for controls ›"
             ]
         );
     }
@@ -3084,13 +3126,13 @@ mod tests {
         assert_eq!(
             shown,
             [
-                "Desk lamp - Unavailable",
-                "Reading lamp - Needs pairing",
-                "Blind - Unavailable",
+                "Desk lamp - Unavailable ›",
+                "Reading lamp - Needs pairing ›",
+                "Blind - Unavailable ›",
                 // The thermostat and the receiver keep their device rows and
                 // the packaged screen behind them.
-                "Heating - Press OK for controls",
-                "Theater AVR - Press OK for controls"
+                "Heating - Press OK for controls ›",
+                "Theater AVR - Press OK for controls ›"
             ]
         );
     }
@@ -3614,6 +3656,97 @@ mod tests {
         controller.poll(&app);
         assert!(!app.get_light_screen_shown());
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The sentence that teaches the new hold has to read well on the toast of
+    /// the 480-pixel panel, under a real room list with a pinned activity on
+    /// it. `COUCH_ROOM_SCREENSHOTS=<dir>` keeps the picture.
+    #[test]
+    fn the_hold_power_hint_renders_over_the_room_list() {
+        const NAME: &str = "lights::tests::the_hold_power_hint_renders_over_the_room_list";
+        if std::env::var_os("COUCH_TEST_POWER_TOAST").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_POWER_TOAST", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::{platform::WindowEvent, ComponentHandle};
+        let config: couch_model::Config = serde_json::from_value(serde_json::json!({"schema_version":1,
+            "connections":[{"id":"bridge","name":"Hue bridge","provider":{"kind":"hue"}}],
+            "rooms":[{"id":"den","name":"Den","devices":[
+                {"id":"desk","name":"Desk lamp","kind":"light","integration":{"via":"connection","connection_id":"bridge","resource_id":"11111111-1111-4111-8111-111111111111"}},
+                {"id":"corner","name":"Corner lamp","kind":"light","integration":{"via":"connection","connection_id":"bridge","resource_id":"22222222-2222-4222-8222-222222222222"}}]}],
+            "activities":[{"id":"movie","name":"Movie night","room":"den","kind":"video"}]})).unwrap();
+        config.validate().unwrap();
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let controller = Controller::install(&app);
+        let mut entries = configured_in(&config, &Id::new("den")).unwrap();
+        let lamp = |id: &str, on: Option<bool>, percent: Option<u8>| {
+            Some(DeviceState::Light(Light {
+                entity_id: id.to_owned(),
+                name: String::new(),
+                on,
+                brightness_percent: percent,
+                dimmable: true,
+                mirek: None,
+                mirek_range: None,
+            }))
+        };
+        entries[1].state = lamp(&entries[1].id.clone(), Some(true), Some(40));
+        entries[2].state = lamp(&entries[2].id.clone(), Some(false), Some(70));
+        let mut controller = controller;
+        controller.entries = entries;
+        app.set_light_title("Den".into());
+        app.set_light_scene_label("0 scenes".into());
+        app.set_light_shown(true);
+        app.set_feedback_enabled(true);
+        controller.update_rows(&app, true);
+        // The activity is running and the highlighted row is the pinned
+        // activity itself, which has nothing for Power: this is the one case
+        // that raises the hint.
+        app.set_light_index(0);
+        app.set_activity_running(true);
+        app.set_active_activity("movie".into());
+        let hint = crate::hold_to_end(Some(&config), "movie");
+        assert_eq!(hint, "Hold Power to end Movie night");
+        app.set_toast(hint.as_str().into());
+        app.show().unwrap();
+        window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        app.invoke_focus_light();
+        for _ in 0..20 {
+            slint::platform::update_timers_and_animations();
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        let mut pixels = vec![slint::Rgb8Pixel::default(); 480 * 800];
+        window.request_redraw();
+        window.draw_if_needed(|r| {
+            r.render(&mut pixels, 480);
+        });
+        // The bar is up: its band is not the page background all the way across.
+        let band = &pixels[720 * 480..760 * 480];
+        assert!(band.iter().any(|p| *p != band[0]), "the toast drew nothing");
+        if let Some(dir) = std::env::var_os("COUCH_ROOM_SCREENSHOTS") {
+            let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+            image::save_buffer(
+                std::path::Path::new(&dir).join("room-hold-power-hint.png"),
+                &bytes,
+                480,
+                800,
+                image::ColorType::Rgb8,
+            )
+            .unwrap();
+        }
+        app.hide().unwrap();
     }
 
     #[test]

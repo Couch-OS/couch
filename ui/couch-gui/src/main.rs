@@ -476,6 +476,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     activity: false,
                     kind: 0,
                     power_known: false,
+                    controls: false,
                     icon: slint::Image::default(),
                 })
                 .collect();
@@ -511,6 +512,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         activity: false,
                         kind: 0,
                         power_known: false,
+                        controls: false,
                         icon: slint::Image::default(),
                     })
                     .collect::<Vec<_>>(),
@@ -550,6 +552,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         activity: false,
                         kind: 0,
                         power_known: false,
+                        controls: false,
                         icon: slint::Image::default(),
                     })
                     .collect::<Vec<_>>(),

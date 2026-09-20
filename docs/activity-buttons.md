@@ -37,6 +37,9 @@ remains unavailable until the built-in blaster can send codes.
   Back; existing long-Back overrides are retained in configuration but ignored.
 - Other short and long presses are independent. A configured long press fires once
   after 600 ms. Its short action waits for release and never also fires on a hold.
+- Power is timed the same way, everywhere, whether or not it is mapped: a tap
+  goes to what is on screen, and a hold of the same 600 ms ends the running
+  activity. A mapped Power still takes the tap; nothing overrides the hold.
 - D-pad, volume and channel keys retain repeat; they cannot have long bindings.
   Repeat events only repeat navigation, volume and channel functions, even when
   a repeat-capable button is assigned to a toggle or power function.
