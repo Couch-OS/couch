@@ -216,7 +216,7 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         return Err("Selected device is no longer a packaged integration".into());
     };
     let connection = connection_id.as_str();
-    let read = || match ask(connection, Request::Status)? {
+    let read = || match ask(connection, Request::status())? {
         Response::Status { status } => Ok(status),
         _ => Err("The integration returned an invalid status".to_string()),
     };

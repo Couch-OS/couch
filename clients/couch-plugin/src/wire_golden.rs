@@ -23,10 +23,18 @@ use crate::{
 use serde_json::json;
 
 mod shim {
-    use crate::{Error, Request, Response};
+    use crate::{Error, Request, Response, TypedAction};
     /// 00ab4da: `Request::Command { function: function.into() }`
     pub fn command(function: &str) -> Request {
         Request::command(function)
+    }
+    /// 00ab4da: `Request::Status`
+    pub fn status() -> Request {
+        Request::status()
+    }
+    /// 00ab4da: `Request::Action { action }`
+    pub fn action(action: TypedAction) -> Request {
+        Request::action(action)
     }
     /// 00ab4da: `Response::Error { code }`
     pub fn error(code: Error) -> Response {
@@ -91,6 +99,7 @@ fn v1_manifest() -> Manifest {
         ],
         supports_inputs: false,
         presentation: Vec::new(),
+        children: Vec::new(),
     }
 }
 
@@ -178,15 +187,10 @@ fn cases() -> Vec<(String, String)> {
     for tenths in [-800, -345, 0, 180] {
         add(
             &format!("request action set_volume_db {tenths}"),
-            frame(
-                4,
-                Request::Action {
-                    action: TypedAction::SetVolumeDb { tenths },
-                },
-            ),
+            frame(4, shim::action(TypedAction::SetVolumeDb { tenths })),
         );
     }
-    add("request status", frame(5, Request::Status));
+    add("request status", frame(5, shim::status()));
     add("request inputs", frame(u64::MAX, Request::Inputs));
 
     add(
@@ -216,6 +220,7 @@ fn cases() -> Vec<(String, String)> {
         input: Some("hdmi1".into()),
         playing: Some(true),
         title: Some("A title, with \"quotes\" and caf\u{e9}".into()),
+        ..Status::default()
     };
     for (name, status) in [
         ("empty", Status::default()),
@@ -296,13 +301,11 @@ fn cases() -> Vec<(String, String)> {
     // frames are the same types, so they are pinned too.
     for (name, request) in [
         ("command", shim::command("volume-up")),
-        ("status", Request::Status),
+        ("status", shim::status()),
         ("inputs", Request::Inputs),
         (
             "action",
-            Request::Action {
-                action: TypedAction::SetVolumeDb { tenths: -345 },
-            },
+            shim::action(TypedAction::SetVolumeDb { tenths: -345 }),
         ),
     ] {
         add(
@@ -312,6 +315,18 @@ fn cases() -> Vec<(String, String)> {
                 request,
             })
             .unwrap(),
+        );
+    }
+
+    // Protocol 3, step T2, put the level mapping in the host's gate. A level
+    // sent to a connection - one that names no child - is still the plain
+    // command every published package reads, and these are its bytes. Like
+    // every other case here they were captured at 00ab4da, which is why the
+    // mapping cannot have changed them.
+    for function in ["dim:30", "position:40", "mode:heat"] {
+        add(
+            &format!("request level {function}"),
+            frame(3, shim::command(function)),
         );
     }
     cases

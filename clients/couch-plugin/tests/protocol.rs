@@ -267,7 +267,7 @@ fn light_cover_and_climate_are_in_no_manifest_an_older_package_could_send() {
                 manifest.protocol_version
             );
             assert_eq!(
-                couch_plugin::requires(&Request::Action { action }),
+                couch_plugin::requires(&Request::action(action)),
                 couch_plugin::NEXT_PROTOCOL_VERSION
             );
         }
@@ -293,9 +293,7 @@ fn light_cover_and_climate_are_in_no_manifest_an_older_package_could_send() {
         }
     }
     assert_eq!(
-        couch_plugin::requires(&Request::Action {
-            action: TypedAction::SetVolumeDb { tenths: -345 }
-        }),
+        couch_plugin::requires(&Request::action(TypedAction::SetVolumeDb { tenths: -345 })),
         2
     );
 }
@@ -506,11 +504,11 @@ fn a_package_named_button_is_refused_before_any_io_unless_declared() {
         assert_eq!(host.status().unwrap().on, Some(true));
     }
     assert_eq!(couch_plugin::requires(&Request::command("power-on")), 1);
-    assert_eq!(couch_plugin::requires(&Request::Status), 1);
+    assert_eq!(couch_plugin::requires(&Request::status()), 1);
     assert_eq!(
-        couch_plugin::requires(&Request::Action {
-            action: couch_plugin::TypedAction::SetVolumeDb { tenths: 0 }
-        }),
+        couch_plugin::requires(&Request::action(couch_plugin::TypedAction::SetVolumeDb {
+            tenths: 0
+        })),
         2
     );
 }
@@ -535,7 +533,7 @@ fn a_reason_or_unpaired_from_a_protocol_1_or_2_package_retires_it() {
             let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
             let pid = host.pid();
             assert_eq!(
-                host.request_detailed(Request::Status),
+                host.request_detailed(Request::status()),
                 Err(Error::Protocol.into()),
                 "{body}"
             );
@@ -558,7 +556,7 @@ fn a_reason_or_unpaired_from_a_protocol_1_or_2_package_retires_it() {
         ));
         let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
         assert_eq!(
-            host.request_detailed(Request::Status),
+            host.request_detailed(Request::status()),
             Err(couch_plugin::Failure {
                 code: Error::Rejected,
                 reason: None
@@ -629,7 +627,7 @@ fn a_protocol_3_reason_is_kept_and_one_couch_cannot_show_retires_the_package() {
         match expected {
             Some(failure) => {
                 assert_eq!(
-                    host.request_detailed(Request::Status),
+                    host.request_detailed(Request::status()),
                     Err(failure),
                     "{body}"
                 );
@@ -637,7 +635,7 @@ fn a_protocol_3_reason_is_kept_and_one_couch_cannot_show_retires_the_package() {
             }
             None => {
                 assert_eq!(
-                    host.request_detailed(Request::Status),
+                    host.request_detailed(Request::status()),
                     Err(Error::Protocol.into()),
                     "{body}"
                 );
@@ -663,7 +661,7 @@ fn a_protocol_3_reason_is_kept_and_one_couch_cannot_show_retires_the_package() {
         couch_plugin::Endpoint::start(&p.root, p.manifest.clone(), json!({"host":"example"}))
             .unwrap();
     assert_eq!(
-        endpoint.request_detailed(Request::Status),
+        endpoint.request_detailed(Request::status()),
         Err(Failure {
             code: Error::Unpaired,
             reason: Some(Reason::Message {
@@ -734,14 +732,14 @@ fn wrong_ids_malformed_and_oversized_replies_retire_and_reap_child() {
         p.script(&format!("{}{}exec /bin/sleep 10", p.hello(), payload));
         let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
         let pid = host.pid();
-        assert_eq!(host.request(Request::Status), Err(Error::Protocol));
+        assert_eq!(host.request(Request::status()), Err(Error::Protocol));
         assert!(!host.is_alive());
         assert_eq!(
             unsafe { libc::kill(pid as i32, 0) },
             -1,
             "child must be reaped"
         );
-        assert_eq!(host.request(Request::Status), Err(Error::Transport));
+        assert_eq!(host.request(Request::status()), Err(Error::Transport));
     }
 }
 
@@ -755,7 +753,7 @@ fn timeout_is_absolute_including_partial_frames_and_kills_descendants() {
     host.set_timeout(Duration::from_millis(100)).unwrap();
     let pid = host.pid();
     let start = Instant::now();
-    assert_eq!(host.request(Request::Status), Err(Error::Timeout));
+    assert_eq!(host.request(Request::status()), Err(Error::Timeout));
     assert!(start.elapsed() < Duration::from_millis(500));
     assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
 }
@@ -772,7 +770,7 @@ fn unsupported_commands_never_reach_child_and_drop_reaps_it() {
     let pid = host.pid();
     assert_eq!(host.command("play-pause"), Err(Error::Unsupported));
     assert_eq!(
-        host.request(Request::Status),
+        host.request(Request::status()),
         Ok(Response::Status {
             status: couch_plugin::Status::on(true)
         })
@@ -793,7 +791,7 @@ fn final_endpoint_drop_synchronously_reaps_its_process() {
     let endpoint =
         couch_plugin::Endpoint::start(&p.root, p.manifest.clone(), json!({"host":"example"}))
             .unwrap();
-    let response = endpoint.request(Request::Status).unwrap();
+    let response = endpoint.request(Request::status()).unwrap();
     let Response::Status { status } = response else {
         panic!("expected status")
     };
@@ -1063,4 +1061,148 @@ fn typed_action_refusals_do_not_consume_a_child_request_and_bad_measurements_ret
         Err(Error::Protocol),
         "v1 cannot smuggle a v2 reading"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Protocol 3, step T2: the children of a connection.
+// ---------------------------------------------------------------------------
+
+fn lamp_kind() -> couch_plugin::PluginChildKind {
+    use couch_plugin::{ChildComponent, PluginActionSchema};
+    use couch_sdk::couch_model::{DeviceKind, PluginCapability};
+    couch_plugin::PluginChildKind {
+        kind: "light".into(),
+        label: "Lamp".into(),
+        device_kind: DeviceKind::Light,
+        component: ChildComponent::Light,
+        capabilities: vec![
+            PluginCapability {
+                id: "on".into(),
+                label: "On".into(),
+            },
+            PluginCapability {
+                id: "toggle".into(),
+                label: "Toggle".into(),
+            },
+        ],
+        actions: vec![PluginActionSchema::SetLight {}],
+    }
+}
+
+/// A manifest that declares children is a protocol 3 manifest, whatever else
+/// it says. With the switch off nothing gets that far, which is what keeps
+/// `children` out of every shipped build.
+#[test]
+fn only_a_protocol_3_manifest_may_declare_children() {
+    let p = Package::new();
+    for mut manifest in [p.manifest.clone(), v2_manifest(p.manifest.clone())] {
+        assert!(manifest.validate().is_ok());
+        assert!(manifest.children.is_empty(), "older manifests declare none");
+        manifest.children = vec![lamp_kind()];
+        assert_eq!(
+            manifest.validate(),
+            Err(Error::Invalid),
+            "protocol {}",
+            manifest.protocol_version
+        );
+    }
+}
+
+/// A listing has to end, be no longer than the host will hold, and never name
+/// the same child twice. Each of those is a protocol error, whoever asks.
+#[test]
+fn a_listing_that_never_ends_or_repeats_itself_is_a_protocol_error() {
+    use couch_plugin::{list_children, Child, Failure, Response, MAX_CHILDREN, MAX_CHILD_PAGES};
+    let lamp = |n: usize| Child::new(format!("lamp-{n}"), "light", format!("Lamp {n}"));
+    // A page at a time, for as many pages as the closure says.
+    let paged = |pages: usize, per_page: usize, cursors: Box<dyn Fn(usize) -> Option<String>>| {
+        let mut page = 0;
+        move |_request: Request| -> std::result::Result<Response, Failure> {
+            let children = (0..per_page).map(|n| lamp(page * per_page + n)).collect();
+            let next = if page + 1 < pages {
+                cursors(page)
+            } else {
+                None
+            };
+            page += 1;
+            Ok(Response::Children { children, next })
+        }
+    };
+    // The happy case: three pages, ending.
+    let mut ask = paged(3, 4, Box::new(|page| Some(format!("page-{}", page + 1))));
+    assert_eq!(list_children(&mut ask).map(|all| all.len()), Ok(12));
+
+    // A cursor already followed: the listing is going round in a circle.
+    let mut ask = paged(usize::MAX, 1, Box::new(|_| Some("loop".into())));
+    assert_eq!(list_children(&mut ask), Err(Error::Protocol));
+
+    // More pages than the host will read, even with a fresh cursor each time.
+    let mut ask = paged(
+        MAX_CHILD_PAGES + 1,
+        1,
+        Box::new(|page| Some(format!("page-{page}"))),
+    );
+    assert_eq!(list_children(&mut ask), Err(Error::Protocol));
+
+    // More children than the host will hold.
+    let mut page = 0;
+    let mut ask = |_request: Request| -> std::result::Result<Response, Failure> {
+        let children = (0..32).map(|n| lamp(page * 32 + n)).collect();
+        page += 1;
+        Ok(Response::Children {
+            children,
+            next: Some(format!("page-{page}")),
+        })
+    };
+    assert_eq!(list_children(&mut ask), Err(Error::Protocol));
+    assert!(page * 32 <= MAX_CHILDREN + 32);
+
+    for broken in [
+        // A page bigger than a page may be.
+        Response::Children {
+            children: (0..couch_plugin::MAX_PAGE + 1).map(lamp).collect(),
+            next: None,
+        },
+        // Nothing, but carry on: a listing that can never end.
+        Response::Children {
+            children: Vec::new(),
+            next: Some("page-1".into()),
+        },
+        // The same child twice on one page.
+        Response::Children {
+            children: vec![lamp(1), lamp(1)],
+            next: None,
+        },
+        // A child whose id could climb out of its connection.
+        Response::Children {
+            children: vec![Child::new("../secrets", "light", "Climbing")],
+            next: None,
+        },
+        // A cursor that could not be a resource.
+        Response::Children {
+            children: vec![lamp(1)],
+            next: Some("a/../b".into()),
+        },
+        // Not a listing at all.
+        Response::Ok,
+    ] {
+        let mut ask = |_request: Request| Ok(broken.clone());
+        assert_eq!(list_children(&mut ask), Err(Error::Protocol), "{broken:?}");
+    }
+
+    // The same child on two pages: every page is well formed, the listing is
+    // not, and only the caller can see it.
+    let mut page = 0;
+    let mut ask = |_request: Request| -> std::result::Result<Response, Failure> {
+        page += 1;
+        Ok(Response::Children {
+            children: vec![lamp(1)],
+            next: (page == 1).then(|| "page-1".to_owned()),
+        })
+    };
+    assert_eq!(list_children(&mut ask), Err(Error::Protocol));
+
+    // A refusal is the package's own code, not a protocol error.
+    let mut ask = |_request: Request| Err(Failure::from(Error::Busy));
+    assert_eq!(list_children(&mut ask), Err(Error::Busy));
 }

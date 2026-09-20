@@ -128,14 +128,14 @@ impl Api {
             };
         }
         let request = match (method, path) {
-            ("GET", ["status"]) => Request::Status,
+            ("GET", ["status"]) => Request::status(),
             ("GET", ["inputs"]) => Request::Inputs,
             ("POST", ["typed-action"]) => {
                 let action: couch_model::TypedAction = match parse(body) {
                     Ok(value) => value,
                     Err(reply) => return reply,
                 };
-                Request::Action { action }
+                Request::action(action)
             }
             ("POST", ["action"]) => {
                 #[derive(Deserialize)]
@@ -367,7 +367,7 @@ mod tests {
                     // this socket, decides whether the package is told.
                     assert!(matches!(
                         request.request,
-                        Request::Command { ref function, phase: couch_plugin::KeyPhase::Repeat }
+                        Request::Command { ref function, phase: couch_plugin::KeyPhase::Repeat, .. }
                             if function == "power-off"
                     ));
                     answer

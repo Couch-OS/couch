@@ -79,6 +79,7 @@
 //! A complete, runnable version with a fake device, a scripted failure and a
 //! test suite is `clients/couch-echo`.
 
+pub mod children;
 pub mod client;
 pub mod discovery;
 pub mod error;
@@ -90,6 +91,7 @@ pub mod testing;
 pub mod tls;
 pub mod wol;
 
+pub use children::{Child, ChildPage, MAX_CHILD_LABEL, MAX_CURSOR, MAX_PAGE, MAX_PAGE_BYTES};
 pub use client::{catalog_differences, Capability, DeviceClient};
 pub use discovery::{Discover, Discovered};
 pub use error::{Error, Reason, Result};
@@ -102,4 +104,7 @@ pub use status::{Selectable, Status};
 /// command vocabulary.
 pub use couch_model;
 
-pub use couch_model::{ActionKind, KeyPhase, PluginActionSchema, TypedAction, VolumeDb};
+pub use couch_model::{
+    ActionKind, ChildSnapshot, ClimateMode, ClimateState, ClimateTraits, CoverState, CoverTraits,
+    KeyPhase, LightState, LightTraits, PluginActionSchema, PluginChildKind, TypedAction, VolumeDb,
+};

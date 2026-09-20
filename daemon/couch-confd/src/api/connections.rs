@@ -893,7 +893,7 @@ mod delete_tests {
         assert!(house
             .api
             .plugins
-            .execute("receiver", "sample", couch_plugin::Request::Status)
+            .execute("receiver", "sample", couch_plugin::Request::status())
             .is_err());
         assert!(!house.folder("receiver").exists());
         // The same name again is a new connection that knows nothing.
