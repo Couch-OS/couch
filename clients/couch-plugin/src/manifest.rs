@@ -1,7 +1,9 @@
 use crate::{accepted_protocol_version, Error, Reason, Result, NEXT_PROTOCOL_VERSION};
 use couch_sdk::couch_model::{
     commands::{valid_input_id, Function, MAX_CUSTOM_FUNCTIONS},
-    ActionKind, PluginActionSchema, PluginComponent, PluginStatusField, TypedAction,
+    domain::valid_child_kinds,
+    ActionKind, PluginActionSchema, PluginChildKind, PluginComponent, PluginStatusField,
+    TypedAction,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,6 +60,12 @@ pub struct Manifest {
     /// Native controls rendered by Couch; packages never supply UI code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub presentation: Vec<PluginComponent>,
+    /// Protocol 3 (unreleased): the kinds of child this connection offers, at
+    /// most eight. Empty for a package whose connection is one device, which
+    /// is every package there is today, and then never written - so the bytes
+    /// of a published manifest are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<PluginChildKind>,
 }
 
 fn protocol_one() -> u32 {
@@ -130,19 +138,31 @@ impl Manifest {
                     .actions
                     .iter()
                     .any(|schema| schema.kind() != ActionKind::SetVolumeDb))
+            // Children of a connection arrived with protocol 3, like `x:`
+            // ids: an older manifest that declares one is invalid, so no
+            // package Couch can already run will ever be asked to list them.
+            || (self.protocol_version < NEXT_PROTOCOL_VERSION && !self.children.is_empty())
+            || !valid_child_kinds(&self.children)
         {
             return Err(Error::Invalid);
         }
         let mut seen = HashSet::new();
-        let mut named = 0;
+        // A button the package names itself (`x:`) belongs to protocol 3, and
+        // the limit is the package's, not one kind's: the same id named by the
+        // connection and by two of its kinds is three of the thirty-two.
+        let mut named = self
+            .children
+            .iter()
+            .flat_map(|kind| &kind.capabilities)
+            .filter(|capability| {
+                matches!(Function::parse(&capability.id), Some(Function::Custom(_)))
+            })
+            .count();
         for cap in &self.capabilities {
             let function = Function::parse(&cap.id);
-            // A button the package names itself (`x:`) belongs to protocol 3.
-            // A protocol 1 or 2 manifest declaring one is invalid, as it was
-            // before couch-model learnt to parse them.
             if matches!(function, Some(Function::Custom(_))) {
                 named += 1;
-                if self.protocol_version < NEXT_PROTOCOL_VERSION || named > MAX_CUSTOM_FUNCTIONS {
+                if self.protocol_version < NEXT_PROTOCOL_VERSION {
                     return Err(Error::Invalid);
                 }
             }
@@ -155,6 +175,9 @@ impl Manifest {
             {
                 return Err(Error::Invalid);
             }
+        }
+        if named > MAX_CUSTOM_FUNCTIONS {
+            return Err(Error::Invalid);
         }
         seen.clear();
         for field in &self.settings {
@@ -198,19 +221,33 @@ impl Manifest {
                 PluginComponent::InputSelector { label: text } => {
                     label(text) && self.supports_inputs
                 }
-                // couch-model knows these since protocol 3, step T2. No
-                // manifest may declare one yet, whatever protocol it names: the
-                // wire that drives them is the next pull request, which replaces
-                // this line with a rule on the manifest's version.
-                PluginComponent::Light { .. }
-                | PluginComponent::Cover { .. }
-                | PluginComponent::Climate { .. } => false,
+                // A connection that is itself one lamp, blind or thermostat.
+                // Protocol 3 only, and only over the action that drives it, as
+                // the decibel control is.
+                PluginComponent::Light { label: text } => self.composes(text, ActionKind::SetLight),
+                PluginComponent::Cover { label: text } => self.composes(text, ActionKind::SetCover),
+                PluginComponent::Climate { label: text } => {
+                    self.composes(text, ActionKind::SetClimate)
+                }
             };
             if !valid {
                 return Err(Error::Invalid);
             }
         }
         Ok(())
+    }
+
+    /// A protocol 3 control the connection itself composes: a shown label, and
+    /// the typed action that drives it declared on this manifest.
+    fn composes(&self, text: &str, kind: ActionKind) -> bool {
+        label(text)
+            && self.protocol_version >= NEXT_PROTOCOL_VERSION
+            && PluginActionSchema::find(&self.actions, kind).is_some()
+    }
+
+    /// The kind of child this resource is, as this manifest declares it.
+    pub fn child_kind(&self, kind: &str) -> Option<&PluginChildKind> {
+        self.children.iter().find(|child| child.kind == kind)
     }
 
     /// Validate without rendering values into errors. Unknown keys are refused.

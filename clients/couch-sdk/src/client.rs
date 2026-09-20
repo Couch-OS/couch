@@ -162,6 +162,55 @@ pub trait DeviceClient: Sized {
         }
         self.execute_phased(&function, phase)
     }
+
+    // Protocol 3, unreleased: one connection with many children. Every one of
+    // these has a default, so a client written before they existed compiles
+    // unchanged, declares no children, and puts the same bytes on the wire: a
+    // manifest with no `children` is a package the host never asks to list,
+    // and never names a resource to.
+
+    /// The kinds of child this client offers, exactly as its manifest declares
+    /// them. `serve` refuses to start if the two disagree, the way it already
+    /// does for capabilities and actions.
+    fn child_kinds() -> &'static [couch_model::PluginChildKind] {
+        &[]
+    }
+
+    /// One page of the children behind this connection, starting at `cursor`
+    /// (`None` for the first). Build it with
+    /// [`ChildPage::fill`](crate::ChildPage::fill) unless the device pages by
+    /// itself.
+    fn children(&mut self, _cursor: Option<&str>) -> Result<crate::ChildPage> {
+        Err(Error::Unsupported)
+    }
+
+    /// Perform one function on one child. The host has already checked that
+    /// the resource is well spelt and that the child's kind declares this
+    /// function. Answer `Ok(None)`, or `Ok(Some(status))` with the state the
+    /// child is in afterwards, which saves the caller a read.
+    fn child_command(
+        &mut self,
+        _resource: &str,
+        _function: &Function,
+        _phase: KeyPhase,
+    ) -> Result<Option<Status>> {
+        Err(Error::Unsupported)
+    }
+
+    /// [`DeviceClient::child_command`] for a typed action: a brightness, a
+    /// blind's position, a thermostat's set point.
+    fn child_action(
+        &mut self,
+        _resource: &str,
+        _action: crate::TypedAction,
+    ) -> Result<Option<Status>> {
+        Err(Error::Unsupported)
+    }
+
+    /// Observe one child.
+    fn child_status(&mut self, _resource: &str) -> Result<Status> {
+        Err(Error::Unsupported)
+    }
 }
 
 /// Compare a client's declared capabilities with the catalog `couch-model`
