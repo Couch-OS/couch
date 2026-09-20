@@ -87,16 +87,17 @@ node web/tests/home-assistant.mjs  # an HA fixture, loopback only
 node web/tests/hue.mjs             # an HTTPS bridge fixture, loopback only
 ```
 
-`integrations.mjs`, `plugin-components.mjs`, `plugin-children.mjs` and
-`updates.mjs` intercept every `/api/` call instead, so they need no daemon at
-all: any static server over `web/couch-web/dist` will do, which is how CI runs
-them.
+`integrations.mjs`, `plugin-components.mjs`, `plugin-children.mjs`,
+`plugin-pairing.mjs` and `updates.mjs` intercept every `/api/` call instead, so
+they need no daemon at all: any static server over `web/couch-web/dist` will
+do, which is how CI runs them.
 
 ```sh
 python3 -m http.server 18093 --bind 127.0.0.1 --directory web/couch-web/dist &
 COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/integrations.mjs
 COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/plugin-components.mjs
 COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/plugin-children.mjs  # protocol 3
+COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/plugin-pairing.mjs   # protocol 3
 COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/updates.mjs  # Updates screen copy
 ```
 
@@ -106,6 +107,17 @@ bridge room, "Add all shown" and its confirmation, the badge on a child that
 has stopped being listed, and the light panel over the child routes. Nothing a
 shipped build runs declares a kind of child, so it runs against a fixture.
 
+`plugin-pairing.mjs` covers the other half of protocol 3 that no shipped
+package can reach: the pairing dialog. Couch draws that dialog from the step
+the daemon hands it - a package never supplies any of it - so the test is the
+contract for the words: Couch's own headline per prompt ("Press the button on
+the device", "Approve on the device", "Enter the code shown on the device")
+with the package's one line under it, a Couch sentence for each failure, the
+rules of the code box per alphabet, the countdown, and every way out sending a
+cancel. It also covers the "This connection needs pairing" banner, which any
+call refused with `code: "unpaired"` raises, and "Forget pairing". No manifest
+this build accepts declares `pairing`, so it too runs against a fixture and
+nobody sees any of this yet.
 
 
 How the house gets described: `couch-confd`, a static binary on the remote that
