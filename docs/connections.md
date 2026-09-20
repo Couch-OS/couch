@@ -31,6 +31,12 @@ Private files are beside `config.json`, under `connections/<connection-id>/`:
 - `plugin-connection.json`: one external integration's manifest-defined
   settings. Secret values never appear in the settings response or house
   configuration.
+- `plugin-credential.json`: the key a package's device handed over when it was
+  paired (protocol 3, unreleased, so never in a shipped build). Couch never
+  looks inside it, never sends it over HTTP and never exports it; it goes back
+  to the package when its child is started, and nowhere else. Beside it,
+  `plugin-pairing.json` holds the one line a page shows about the pairing
+  (`{"summary": …, "paired_at": …}`), which is not a secret.
 
 Credentials are mode 0600 and absent from exported house configuration. The daemon
 copies former singleton files into their original named connection on startup,
@@ -42,7 +48,8 @@ legacy pairing after its connection is deleted.
 Deletion is rejected while devices or scenes still reference the connection.
 Removing a connection (`DELETE /api/connections/<id>`, **Remove connection** on
 its page) also removes `connections/<connection-id>/` and everything in it: the
-pairing, keys, tokens, passwords and a package's settings. A package connection's
+pairing, keys, tokens, passwords, a package's settings and a package's pairing
+key and summary. A package connection's
 running child is stopped first. To use the same bridge, server or TV again, add
 a connection and pair or sign in again; a new connection with the same name gets
 the same ID and starts with nothing saved.
@@ -85,7 +92,23 @@ of its own (protocol 3, unreleased, and so never in a shipped build) also has
 `/plugin/children/<id>/{status,action,typed-action}`, where `<id>` is the rest
 of the path up to the verb; every one of them answers 404 "This integration
 does not list devices" for a package that offers none. See
-[listing the children of a connection](development/protocol.md#the-daemon-listing-the-children-of-a-connection). The physical-button, sequence and custom
+[listing the children of a connection](development/protocol.md#the-daemon-listing-the-children-of-a-connection).
+
+A package that describes how it pairs (protocol 3, unreleased, and so never in
+a shipped build) also has `POST /plugin/pair`, `POST /plugin/pair/<session>`,
+`DELETE /plugin/pair/<session>` and `DELETE /plugin/credential`; all four
+answer 400 "This integration does not pair" for a package that does not, which
+is every package this build can run. The package describes one step at a time -
+press the button, approve on the device, type this code - and Couch draws the
+dialog and keeps the key in `plugin-credential.json`. A device that will not
+answer without a key is refused `unpaired` before its package is even started.
+Pairing again runs in a second child of the package, so the connection keeps
+working on the key it already has until the new one succeeds; a pairing that
+fails, is cancelled or runs out writes nothing and leaves the old key alone.
+**Forget pairing** (`DELETE /plugin/credential`) removes Couch's copy of the
+key and the line beside it; it says nothing to the device, which may still list
+Couch as paired. See
+[pairing a connection](development/protocol.md#the-daemon-pairing-a-connection). The physical-button, sequence and custom
 page pickers use the cached capability labels; selectable inputs are loaded
 from the package when requested. On the panel, commands travel over the
 owner-only `plugin.sock` beside `config.json` to the daemon's integration host.

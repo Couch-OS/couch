@@ -406,7 +406,10 @@ fn stored_name(name: &str) -> bool {
 /// Keep trying until the deadline, a couple of seconds for the whole deletion:
 /// a status read or a command may be passing through, a pairing that waits on
 /// somebody's TV is not worth waiting for.
-fn patiently<T>(deadline: std::time::Instant, mut attempt: impl FnMut() -> Option<T>) -> Option<T> {
+pub(crate) fn patiently<T>(
+    deadline: std::time::Instant,
+    mut attempt: impl FnMut() -> Option<T>,
+) -> Option<T> {
     loop {
         if let Some(value) = attempt() {
             return Some(value);
@@ -866,6 +869,11 @@ mod delete_tests {
         );
         let settings = house.folder("receiver").join("plugin-connection.json");
         assert!(fs::read_to_string(&settings).unwrap().contains("private"));
+        // Protocol 3 (unreleased): a pairing key and the line beside it live
+        // in the same folder and go the same way. Nothing a shipped build
+        // runs writes them; planted here so the removal is stated.
+        let key = house.stored("receiver", "plugin-credential.json");
+        let paired = house.stored("receiver", "plugin-pairing.json");
         let status =
             house
                 .api
@@ -889,6 +897,7 @@ mod delete_tests {
 
         assert!(!alive(child));
         assert!(!settings.exists() && !house.folder("receiver").exists());
+        assert!(!key.exists() && !paired.exists());
         // The panel's route to the package finds neither connection nor child.
         assert!(house
             .api

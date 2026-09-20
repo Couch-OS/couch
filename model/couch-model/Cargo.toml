@@ -20,10 +20,12 @@ name = "couch_model"
 # open if a future firmware-side consumer wants it.
 [dependencies]
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+# A departed built-in's stored key is mapped to a package credential by a
+# pure function in this crate (`LegacyBuiltin::credential`), so the shape of
+# that key belongs beside the row that names it rather than in the daemon.
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 [features]
 default = ["std"]
-std = ["serde/std"]
+std = ["serde/std", "serde_json/std"]
 
-[dev-dependencies]
-serde_json = "1"

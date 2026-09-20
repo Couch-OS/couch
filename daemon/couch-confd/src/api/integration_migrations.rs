@@ -312,9 +312,15 @@ impl Api {
         let Some(settings) = settings_value(row, &provider) else {
             return Ok(());
         };
+        // Protocol 3 (unreleased): the key the built-in kept, mapped to the
+        // shape its package takes. `None` for every row there is today, and
+        // the old file is left where it is either way.
+        let credential = self.plugins.legacy_credential(id.as_str(), row);
         // The slow part, with the configuration unlocked: start the package
         // and let it check the carried-over address (it contacts no device).
-        let prepared = self.plugins.prepare_legacy(row.package, settings)?;
+        let prepared = self
+            .plugins
+            .prepare_legacy(row.package, settings, credential)?;
         // Config readers and writers wait from here to the commit, so nothing
         // edits the connection in between. What was checked above has to be
         // what is converted: an address edited meanwhile goes round again.
@@ -892,7 +898,7 @@ mod tests {
         let prepared = fixture
             .api
             .plugins
-            .prepare_legacy("denon", json!({"host":"avr.invalid","port":23}))
+            .prepare_legacy("denon", json!({"host":"avr.invalid","port":23}), None)
             .unwrap();
         packages.remove("denon").unwrap();
         let committed = std::cell::Cell::new(false);
