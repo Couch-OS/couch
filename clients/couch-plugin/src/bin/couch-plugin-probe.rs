@@ -47,7 +47,10 @@ impl DeviceClient for Probe {
             arg: settings.arg.clone(),
         }))
     }
-    fn execute(&mut self, _function: &couch_sdk::couch_model::commands::Function) -> couch_sdk::Result<()> {
+    fn execute(
+        &mut self,
+        _function: &couch_sdk::couch_model::commands::Function,
+    ) -> couch_sdk::Result<()> {
         Err(couch_sdk::Error::Unsupported)
     }
     fn inputs(&mut self) -> couch_sdk::Result<Vec<Selectable>> {

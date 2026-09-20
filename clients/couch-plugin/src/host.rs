@@ -101,7 +101,9 @@ pub fn is_non_dumpable(pid: u32) -> Option<bool> {
         if unsafe { libc::geteuid() } != 0 {
             return None;
         }
-        let owner = std::fs::metadata(format!("/proc/{pid}/environ")).ok()?.uid();
+        let owner = std::fs::metadata(format!("/proc/{pid}/environ"))
+            .ok()?
+            .uid();
         Some(owner == 0)
     }
     #[cfg(not(target_os = "linux"))]

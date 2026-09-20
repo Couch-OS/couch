@@ -1764,7 +1764,10 @@ mod tests {
         assert_eq!(store.identity("example").unwrap(), (60000, 60000));
         // A second pass has nothing to give out and must not rewrite the file.
         store.assign_identities().unwrap();
-        assert_eq!(fs::read(store.root.join(IDENTITY_FILE)).unwrap(), after_first);
+        assert_eq!(
+            fs::read(store.root.join(IDENTITY_FILE)).unwrap(),
+            after_first
+        );
     }
 
     #[test]

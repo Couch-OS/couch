@@ -564,7 +564,8 @@ mod tests {
         let settings = json!({"host":"tv.local","port":23});
         let (directory, manifest) =
             scripted("refused", 1, json!({"type":"error","code":"invalid"}));
-        let refused = check_settings(&directory, &manifest, &settings).unwrap_err();
+        let refused =
+            check_settings(&directory, &manifest, &settings, HostPolicy::default()).unwrap_err();
         assert_eq!(refused, Failure::from(Error::Invalid));
         // What the settings form and the conversion say is what they always
         // said: the code's own sentence.
@@ -582,13 +583,16 @@ mod tests {
                 {"kind":"invalid_setting","field":"port","text":"The port must not be 0"}}),
         );
         assert_eq!(
-            check_settings(&directory, &manifest, &settings),
+            check_settings(&directory, &manifest, &settings, HostPolicy::default()),
             Err(Error::Protocol.into())
         );
         let _ = fs::remove_dir_all(directory);
 
         let (directory, manifest) = scripted("accepted", 2, json!({"type":"ok"}));
-        assert_eq!(check_settings(&directory, &manifest, &settings), Ok(()));
+        assert_eq!(
+            check_settings(&directory, &manifest, &settings, HostPolicy::default()),
+            Ok(())
+        );
         let _ = fs::remove_dir_all(directory);
     }
 

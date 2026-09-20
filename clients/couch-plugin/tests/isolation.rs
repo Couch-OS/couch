@@ -190,7 +190,7 @@ fn a_different_user_is_not_what_closes_proc() {
         return;
     }
     let older = Package::older("exec /bin/sleep 30\n");
-    let mut dumpable = older.start(FIRST);
+    let dumpable = older.start(FIRST);
     let target = dumpable.pid();
     assert_eq!(is_non_dumpable(target), Some(false));
 
