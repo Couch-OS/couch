@@ -45,6 +45,21 @@ long notes are for promotions. Dev prereleases are disposable: delete one as
 soon as the next dev build or a promotion supersedes it, the way a failed
 candidate is, so the release list stays readable.
 
+### A protocol 3 preview build
+
+One kind of dev build is not like the others: a runtime whose `couch-confd` was
+built with the unreleased integration protocol switched on
+(`COUCH_PROTOCOL_3_PREVIEW=dev-remote-only tools/build-release.sh`). It is for
+one development remote and one test session. Its tag takes the next `<n>` and
+ends `.p3.dev` (`v0.1.0-alpha.<date>.<n>.p3.dev`), the publisher refuses to sign
+that runtime under any other version and refuses that version for any other
+runtime, and the web UI shows a red notice while it is installed. It never
+becomes a promotion, it takes its `<n>` like any other published build, and it
+is deleted from GitHub when the session ends, not when the next build
+supersedes it. The previous ordinary dev build stays published meanwhile as
+the way back. How it is made, labelled and refused is in
+[SDK and protocol](development/protocol.md#a-preview-build-for-one-development-remote).
+
 ## Promoting to `main`
 
 1. On `dev`, prepare the promotion pull request with the runtime tag

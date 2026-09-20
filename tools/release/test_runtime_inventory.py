@@ -75,6 +75,31 @@ class RuntimeInventoryTests(unittest.TestCase):
             self.assertFalse(any(item['destination'] == destination for item in rejected['artifacts']))
             self.assertTrue(any(item.startswith(destination + ':') for item in rejected['blockers']))
 
+    def test_a_daemon_built_with_protocol_3_switched_on_is_recorded_as_a_preview(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / RUNTIME['couch-confd']
+            source.parent.mkdir(parents=True)
+            self.assertEqual(audit(root)['preview_features'], [])
+            source.write_bytes(elf() + b'ordinary daemon')
+            ordinary = audit(root)
+            self.assertEqual(ordinary['preview_features'], [])
+            self.assertFalse(any('preview build' in item for item in ordinary['blockers']))
+            source.write_bytes(elf() + b'\x00\xffCOUCH-PREVIEW-BUILD protocol-3\n\x00daemon')
+            preview = audit(root)
+            self.assertEqual(preview['preview_features'], ['protocol-3'])
+            self.assertEqual(sum('preview build (protocol-3 switched on)' in item
+                                 for item in preview['blockers']), 1)
+            # The daemon is still inventoried: the development remote's build is
+            # staged from this, and the hash says which daemon the record is of.
+            self.assertTrue(any(item['destination'] == 'opt/couch/couch-confd'
+                                for item in preview['artifacts']))
+            # Only the daemon has the switch, so only the daemon is searched.
+            source.write_bytes(elf())
+            other = root / RUNTIME['couch-system']
+            other.write_bytes(elf() + b'COUCH-PREVIEW-BUILD protocol-3\n')
+            self.assertEqual(audit(root)['preview_features'], [])
+
     def test_runtime_executables_must_be_static_arm32(self):
         arm_static(elf())
         for data in (elf(2), elf(3), elf(machine=62), elf()[:70], b'not ELF'):

@@ -595,6 +595,40 @@ pub fn bundle_boot(
     seal(version, seed, output, manifest, &data)
 }
 
+/// The line a `couch-confd` built with protocol 3 switched on carries in its
+/// bytes (`daemon/couch-confd/src/assets.rs`), here spelt backwards and only
+/// ever compared backwards. `couch-system` and `couch-gui` link this crate and
+/// `couch-confd` links `couch-system`, so the line spelt forwards in here could
+/// end up inside an ordinary daemon and mark it.
+const PREVIEW_MARKER_BACKWARDS: &[u8] = b"3-locotorp DLIUB-WEIVERP-HCUOC";
+fn carries_preview_marker(bytes: &[u8]) -> bool {
+    bytes
+        .windows(PREVIEW_MARKER_BACKWARDS.len())
+        .any(|window| window.iter().rev().eq(PREVIEW_MARKER_BACKWARDS.iter()))
+}
+/// A runtime with protocol 3 switched on is for one development remote. The
+/// version is the only label a release has (`build.json` is the version and
+/// nothing else, and the channels are decided from it), so the label has to be
+/// true in both directions: a marked runtime is signed as `...<N>.p3.dev` or
+/// not at all, and nothing unmarked may call itself `p3`. `dev` is what keeps
+/// it off the Alpha and Stable channels ([`release::accepts`]), which is
+/// checked as well as spelt, in case that rule ever changes under this one.
+fn check_preview_label(version: &semver::Version, marked: bool) -> Result<()> {
+    let has = |wanted: &str| version.pre.as_str().split('.').any(|part| part == wanted);
+    let dev_only =
+        !release::accepts(Channel::Stable, version) && !release::accepts(Channel::Alpha, version);
+    if marked && !(has("p3") && has("dev") && dev_only) {
+        return Err("A protocol 3 preview runtime may only be signed as a .p3.dev build".into());
+    }
+    if !marked && has("p3") {
+        return Err(
+            "Only a protocol 3 preview runtime may be signed as a .p3.dev build; \
+             this couch-confd is an ordinary one"
+                .into(),
+        );
+    }
+    Ok(())
+}
 /// Release publisher tool; runtime application never accepts a caller-supplied key.
 pub fn bundle(
     source: &std::path::Path,
@@ -603,9 +637,10 @@ pub fn bundle(
     output: &std::path::Path,
 ) -> Result<String> {
     use sha2::{Digest, Sha256};
-    if !version.starts_with('v') || semver::Version::parse(&version[1..]).is_err() {
-        return Err("Use a versioned vMAJOR.MINOR.PATCH tag".into());
-    }
+    let parsed = version
+        .strip_prefix('v')
+        .and_then(|v| semver::Version::parse(v).ok())
+        .ok_or("Use a versioned vMAJOR.MINOR.PATCH tag")?;
     if output.exists() {
         return Err("Bundle output must be new".into());
     }
@@ -665,6 +700,11 @@ pub fn bundle(
             }
             std::fs::read(path).map_err(|_| "Could not read runtime input")?
         };
+        // The bytes searched are the bytes archived and signed, not a second
+        // read of the file. The daemon is the only binary with the switch.
+        if name == "couch-confd" {
+            check_preview_label(&parsed, carries_preview_marker(&data))?;
+        }
         let mode = if name.ends_with(".sh")
             || name.starts_with("couch-")
             || name == "fbcon"
@@ -756,10 +796,147 @@ mod tests {
         }
     }
 
+    const PREVIEW_LINE: &[u8] = b"COUCH-PREVIEW-BUILD protocol-3\n";
+    /// A clean runtime tree as the publisher is handed one, with this daemon.
+    fn runtime_tree(confd: Option<&[u8]>) -> PathBuf {
+        let source = root();
+        for name in staging::required_names() {
+            if name != "build.json" && name != "couch-confd" {
+                std::fs::write(source.join(name), b"fixture runtime").unwrap();
+            }
+        }
+        if let Some(confd) = confd {
+            std::fs::write(source.join("couch-confd"), confd).unwrap();
+        }
+        std::fs::write(
+            source.join("os-baseline.json"),
+            br#"{"schema":1,"model":"sanytron-ha100","id":"baseline-a"}"#,
+        )
+        .unwrap();
+        source
+    }
+    /// A daemon-sized stretch of bytes that are not text, with `line` inside.
+    fn daemon(line: &[u8]) -> Vec<u8> {
+        let mut bytes: Vec<u8> = (0..4096u32).map(|i| (i * 31 % 251) as u8).collect();
+        bytes.extend_from_slice(b"\0\xff");
+        bytes.extend_from_slice(line);
+        bytes.extend((0..4096u32).map(|i| (i * 17 % 253) as u8));
+        bytes
+    }
+    fn publish(source: &std::path::Path, version: &str) -> Result<String> {
+        let output = source.join("published");
+        let result = bundle(source, version, &[42; 32], &output);
+        // A refusal leaves nothing behind that could be uploaded.
+        assert_eq!(output.exists(), result.is_ok(), "{version}");
+        if result.is_ok() {
+            let signed: SignedManifest = serde_json::from_slice(
+                &std::fs::read(output.join(format!("couch-{version}-ha100-update.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(signed.signed.version, version);
+            std::fs::remove_dir_all(output).unwrap();
+        }
+        result
+    }
+
+    #[test]
+    fn a_protocol_3_preview_runtime_is_signed_as_a_p3_dev_build_or_not_at_all() {
+        let refusal = "A protocol 3 preview runtime may only be signed as a .p3.dev build";
+        let source = runtime_tree(Some(&daemon(PREVIEW_LINE)));
+        publish(&source, "v0.1.0-alpha.20260920.191.p3.dev").unwrap();
+        for version in [
+            // An ordinary dev build, an Alpha and a finished release.
+            "v0.1.0-alpha.20260920.191.dev",
+            "v0.1.0-alpha.20260920.191",
+            "v0.2.0",
+            // `p3` alone is an Alpha build by the channel rule: the worst one.
+            "v0.1.0-alpha.20260920.191.p3",
+            // Identifiers are whole dot-separated parts, not substrings.
+            "v0.1.0-alpha.20260920.191.p3dev",
+            "v0.1.0-alpha.20260920.191p3.dev",
+            "v0.1.0-alpha.20260920.191.xp3.dev",
+            "v0.1.0-alpha.20260920.191.p3.devx",
+            // Build metadata is not part of the version's identity.
+            "v0.1.0-alpha.20260920.191+p3.dev",
+        ] {
+            assert_eq!(publish(&source, version).unwrap_err(), refusal, "{version}");
+        }
+        std::fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn an_ordinary_runtime_cannot_be_signed_as_a_p3_build() {
+        let source = runtime_tree(Some(&daemon(b"COUCH-PREVIEW-BUILD protocol-2\n")));
+        publish(&source, "v0.1.0-alpha.20260920.191.dev").unwrap();
+        publish(&source, "v0.1.0-alpha.20260920.191").unwrap();
+        publish(&source, "v0.2.0").unwrap();
+        for version in [
+            "v0.1.0-alpha.20260920.191.p3.dev",
+            "v0.1.0-alpha.20260920.191.p3",
+        ] {
+            assert!(
+                publish(&source, version)
+                    .unwrap_err()
+                    .starts_with("Only a protocol 3 preview runtime may be signed as a .p3.dev"),
+                "{version}"
+            );
+        }
+        std::fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn the_preview_line_is_looked_for_in_the_daemon_being_bundled_and_nowhere_else() {
+        // Found anywhere in the raw bytes, with or without its newline.
+        assert!(carries_preview_marker(PREVIEW_LINE));
+        assert!(carries_preview_marker(&daemon(PREVIEW_LINE)));
+        assert!(carries_preview_marker(&daemon(
+            &PREVIEW_LINE[..PREVIEW_LINE.len() - 1]
+        )));
+        assert!(!carries_preview_marker(b""));
+        assert!(!carries_preview_marker(&daemon(b"")));
+        assert!(!carries_preview_marker(&daemon(
+            &PREVIEW_LINE[..PREVIEW_LINE.len() - 2]
+        )));
+        assert!(!carries_preview_marker(PREVIEW_MARKER_BACKWARDS));
+        // This crate is linked into couch-system and so into every daemon: it
+        // must never hold the line the way a daemon does.
+        let forwards: Vec<u8> = PREVIEW_MARKER_BACKWARDS.iter().rev().copied().collect();
+        assert_eq!(forwards, PREVIEW_LINE[..PREVIEW_LINE.len() - 1]);
+        // The daemon's own bytes decide. The same line in another file of the
+        // tree neither marks an ordinary daemon nor excuses a marked one.
+        let source = runtime_tree(Some(&daemon(b"")));
+        std::fs::write(source.join("couch-system"), daemon(PREVIEW_LINE)).unwrap();
+        publish(&source, "v0.1.0-alpha.20260920.191.dev").unwrap();
+        assert!(publish(&source, "v0.1.0-alpha.20260920.191.p3.dev").is_err());
+        std::fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn a_tree_with_no_daemon_is_refused_as_it_always_was() {
+        let source = runtime_tree(None);
+        for version in [
+            "v0.1.0-alpha.20260920.191.dev",
+            "v0.1.0-alpha.20260920.191.p3.dev",
+        ] {
+            assert_eq!(
+                publish(&source, version).unwrap_err(),
+                "Missing regular runtime input",
+                "{version}"
+            );
+        }
+        assert_eq!(
+            publish(&source, "latest").unwrap_err(),
+            "Use a versioned vMAJOR.MINOR.PATCH tag"
+        );
+        std::fs::remove_dir_all(source).unwrap();
+    }
+
     #[test]
     fn a_prerelease_tag_shortens_to_its_build_number_and_keeps_a_dev_identifier() {
         assert_eq!(short_version("v0.1.0-alpha.20260913.165"), ".165");
         assert_eq!(short_version("v0.1.0-alpha.20260913.165.dev"), ".165.dev");
+        // A protocol 3 preview build says what it is where the number would be.
+        assert_eq!(short_version("v0.1.0-alpha.20260920.191.p3.dev"), ".p3.dev");
         assert_eq!(short_version("v0.2.0"), "v0.2.0");
         assert_eq!(short_version(""), "");
     }
