@@ -15,6 +15,20 @@ testing = ["couch-sdk/testing"]
 # fails if it is on. Tests here opt in with `--features protocol-3-preview`.
 protocol-3-preview = []
 
+# The package `tests/isolation.rs` starts as two different users. It is a real
+# package and not a shell script, so that it goes through `serve`, which is
+# where a child stops being dumpable. `testing` is off in every shipped build,
+# and so is this binary.
+[[bin]]
+name = "couch-plugin-probe"
+path = "src/bin/couch-plugin-probe.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "isolation"
+path = "tests/isolation.rs"
+required-features = ["testing"]
+
 [dependencies]
 couch-sdk = { path = "../couch-sdk" }
 serde = { version = "1", features = ["derive"] }

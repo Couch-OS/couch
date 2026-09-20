@@ -1,12 +1,15 @@
 //! Shared external integration ownership for HTTP and the panel's private socket.
 //! Settings remain daemon-owned; children receive only their own connection data.
-use couch_plugin::{Endpoint, Error, Failure, FieldKind, Manifest, Request, Response};
+use couch_plugin::{Endpoint, Error, Failure, FieldKind, HostPolicy, Manifest, Request, Response};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -71,8 +74,14 @@ impl From<couch_integrations::Error> for Refusal {
 /// Start the package and let it check these settings. Configure contacts no
 /// device, so what comes back is about the settings alone; a protocol 3
 /// package may say which one.
-fn check_settings(directory: &Path, manifest: &Manifest, settings: &Value) -> Result<(), Failure> {
-    let mut host = couch_plugin::Host::spawn(directory, manifest, Duration::from_secs(3))?;
+fn check_settings(
+    directory: &Path,
+    manifest: &Manifest,
+    settings: &Value,
+    policy: HostPolicy,
+) -> Result<(), Failure> {
+    let mut host =
+        couch_plugin::Host::spawn_with_policy(directory, manifest, Duration::from_secs(3), policy)?;
     match host.request_detailed(Request::Configure {
         settings: settings.clone(),
     })? {
@@ -118,6 +127,10 @@ pub struct Runtime {
     packages: couch_integrations::Store,
     endpoints: Mutex<HashMap<String, Running>>,
     catalog_generations: Mutex<HashMap<String, String>>,
+    /// The number of user-table rebuilds this runtime has already answered
+    /// for. A rebuild can move a package to a different user, so the children
+    /// started under the old one are retired and come back under the new one.
+    identity_rebuilds: AtomicU64,
 }
 
 impl Runtime {
@@ -125,12 +138,60 @@ impl Runtime {
         let directory = std::env::var_os("COUCH_INTEGRATIONS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join("integrations"));
-        Self {
+        let runtime = Self {
             home,
             packages: couch_integrations::Store::new(directory),
             endpoints: Mutex::new(HashMap::new()),
             catalog_generations: Mutex::new(HashMap::new()),
+            identity_rebuilds: AtomicU64::new(0),
+        };
+        // Packages installed by an older Couch have no user of their own yet.
+        // Give them one here, once, rather than have the first key press of
+        // the day wait for the store's exclusive lock. A store that has never
+        // held a package is left alone: there is nothing to name.
+        if runtime.packages.root().join("state").is_dir() {
+            if let Err(error) = runtime.packages.assign_identities() {
+                // Said once, here. Nothing is printed per spawn: a package
+                // still without a user is named when its request is refused.
+                eprintln!("couch-confd: cannot give integration packages their own users: {error}");
+            }
         }
+        // Whatever happened above, including a table rebuilt during it, is the
+        // state this runtime starts from; it has no children to retire yet.
+        runtime
+            .identity_rebuilds
+            .store(couch_integrations::identity_rebuilds(), Ordering::Relaxed);
+        runtime
+    }
+
+    /// Who this package's children run as. No fallback: a store that cannot
+    /// say is reported, and the caller refuses rather than start a package
+    /// under a user that belongs to another one.
+    ///
+    /// The package has to be installed first. Every id here came out of a
+    /// request, a user is never given back, and a browser must not be able to
+    /// spend the store's range on names of nothing.
+    fn policy(&self, plugin: &str) -> Result<HostPolicy, couch_integrations::Error> {
+        self.packages.generation(plugin)?;
+        let (uid, gid) = self.packages.identity(plugin)?;
+        Ok(HostPolicy::for_package(uid, gid))
+    }
+
+    /// A rebuilt user table can have moved a package to a different user, so
+    /// every child this runtime holds may be running as the wrong one. Retire
+    /// them; the next request starts each again under the user the table now
+    /// says. Reading the counter is an atomic load, so this sits on the
+    /// request path without costing anything.
+    fn retire_children_of_a_rebuilt_table(&self, endpoints: &mut HashMap<String, Running>) {
+        let rebuilds = couch_integrations::identity_rebuilds();
+        if self.identity_rebuilds.swap(rebuilds, Ordering::Relaxed) == rebuilds {
+            return;
+        }
+        eprintln!(
+            "couch-confd: the integration user table was rebuilt; \
+             package children restart under the users it now gives them"
+        );
+        endpoints.clear();
     }
 
     pub fn catalog(&self) -> Result<Vec<Manifest>, String> {
@@ -185,6 +246,10 @@ impl Runtime {
         plugin: &str,
         patch: Value,
     ) -> Result<Value, Refusal> {
+        // Before the lease: allocating a user of its own for a package seen
+        // for the first time needs the store's exclusive lock, which a lease
+        // held here would block.
+        let policy = self.policy(plugin)?;
         // Admission validates every saved connection before activating a new
         // package. Keep its selection stable until these settings are durable,
         // so validation by an old child cannot race a package activation.
@@ -199,7 +264,7 @@ impl Runtime {
         let settings = merge_settings(&manifest, saved.as_ref(), patch)?;
         // Configure validates the adapter's typed settings without requiring an
         // online TV. Do not save a schema-valid but unusable host/port.
-        check_settings(&directory, &manifest, &settings)?;
+        check_settings(&directory, &manifest, &settings, policy)?;
         let parent = path.parent().ok_or("Invalid settings path")?;
         fs::create_dir_all(parent).map_err(|_| "Cannot create connection settings directory")?;
         #[cfg(unix)]
@@ -227,11 +292,12 @@ impl Runtime {
         package: &str,
         settings: Value,
     ) -> Result<LegacyAdoption, Refusal> {
+        let policy = self.policy(package)?;
         let _lease = self.packages.read_lease()?;
         let (directory, manifest) = self.packages.resolve_wait(package, STORE_READ_WAIT)?;
         let generation = self.packages.generation(package)?;
         let settings = manifest.with_defaults(settings)?;
-        check_settings(&directory, &manifest, &settings)
+        check_settings(&directory, &manifest, &settings, policy)
             .map_err(|failure| named(&manifest, failure))?;
         Ok(LegacyAdoption {
             package: package.to_owned(),
@@ -311,6 +377,7 @@ impl Runtime {
         let settings = load_settings(&path)?.ok_or(Error::Invalid)?;
         let existing = {
             let mut endpoints = self.endpoints.lock().map_err(|_| Error::Transport)?;
+            self.retire_children_of_a_rebuilt_table(&mut endpoints);
             endpoints.retain(|_, entry| {
                 entry.used.elapsed() < IDLE || Arc::strong_count(&entry.endpoint) > 1
             });
@@ -334,12 +401,24 @@ impl Runtime {
             if remaining.is_zero() {
                 return Err(Error::Expired.into());
             }
-            let (directory, manifest) = self
+            // The version and the package's user, read together under one
+            // shared lock: an install landing between the two would otherwise
+            // turn a key press into a refusal. Bounded by what is left of this
+            // request, so a key press never waits a store mutation's three
+            // seconds; a press refused as busy succeeds on the next one.
+            let (directory, manifest, (uid, gid)) = self
                 .packages
-                .resolve_wait(plugin, STORE_READ_WAIT.min(remaining))
+                .resolve_with_identity(plugin, STORE_READ_WAIT.min(remaining))
                 .map_err(store_request_error)?;
             manifest.validate_settings(&settings)?;
-            let endpoint = Arc::new(Endpoint::start(&directory, manifest, settings.clone())?);
+            let policy = HostPolicy::for_package(uid, gid);
+            let endpoint = Arc::new(Endpoint::start_as(
+                &directory,
+                manifest,
+                settings.clone(),
+                couch_plugin::REQUEST_TIMEOUT,
+                policy,
+            )?);
             let mut endpoints = self.endpoints.lock().map_err(|_| Error::Transport)?;
             if endpoints.len() >= MAX_ENDPOINTS {
                 return Err(Error::Busy.into());
@@ -376,6 +455,10 @@ impl Runtime {
 
     pub fn reap(&self) {
         if let Ok(mut endpoints) = self.endpoints.lock() {
+            // The ten-second sweep is also where a child left running as a
+            // user a rebuilt table no longer gives its package goes, without
+            // waiting for that connection to be asked for something.
+            self.retire_children_of_a_rebuilt_table(&mut endpoints);
             endpoints.retain(|_, entry| {
                 entry.used.elapsed() < IDLE || Arc::strong_count(&entry.endpoint) > 1
             });
@@ -531,7 +614,8 @@ mod tests {
         let settings = json!({"host":"tv.local","port":23});
         let (directory, manifest) =
             scripted("refused", 1, json!({"type":"error","code":"invalid"}));
-        let refused = check_settings(&directory, &manifest, &settings).unwrap_err();
+        let refused =
+            check_settings(&directory, &manifest, &settings, HostPolicy::default()).unwrap_err();
         assert_eq!(refused, Failure::from(Error::Invalid));
         // What the settings form and the conversion say is what they always
         // said: the code's own sentence.
@@ -549,13 +633,16 @@ mod tests {
                 {"kind":"invalid_setting","field":"port","text":"The port must not be 0"}}),
         );
         assert_eq!(
-            check_settings(&directory, &manifest, &settings),
+            check_settings(&directory, &manifest, &settings, HostPolicy::default()),
             Err(Error::Protocol.into())
         );
         let _ = fs::remove_dir_all(directory);
 
         let (directory, manifest) = scripted("accepted", 2, json!({"type":"ok"}));
-        assert_eq!(check_settings(&directory, &manifest, &settings), Ok(()));
+        assert_eq!(
+            check_settings(&directory, &manifest, &settings, HostPolicy::default()),
+            Ok(())
+        );
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -702,6 +789,141 @@ mod tests {
             Refusal::from("Integration connection is busy").failure,
             None
         );
+    }
+
+    /// A home with one package really installed in its store, through the
+    /// store's own admission path, so the package has the user admission gave
+    /// it. The child answers the handshake and then says `ok` to everything.
+    fn home_with_a_package(name: &str, id: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!(
+            "couch-confd-{name}-{}-{:?}",
+            std::process::id(),
+            Instant::now()
+        ));
+        let mut described = serde_json::to_value(manifest()).unwrap();
+        described["id"] = json!(id);
+        let directory = home.join("payload/usr/lib/couch/integrations").join(id);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("manifest.json"),
+            serde_json::to_vec(&described).unwrap(),
+        )
+        .unwrap();
+        let mut script = String::from("#!/bin/sh\n");
+        for value in [
+            json!({"id":1,"body":{"type":"hello","manifest":described}}),
+            json!({"id":2,"body":{"type":"ok"}}),
+            json!({"id":3,"body":{"type":"ok"}}),
+        ] {
+            let mut frame = Vec::new();
+            couch_plugin::write_frame(&mut frame, &value).unwrap();
+            let bytes: String = frame.iter().map(|byte| format!("\\{byte:03o}")).collect();
+            script.push_str(&format!("printf '{bytes}'\n"));
+        }
+        script.push_str("sleep 5\n");
+        let executable = directory.join("plugin");
+        fs::write(&executable, script).unwrap();
+        fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let package = home.join("fixture.apk");
+        assert!(std::process::Command::new("tar")
+            .args(["-czf"])
+            .arg(&package)
+            .arg("-C")
+            .arg(home.join("payload"))
+            .arg(format!("usr/lib/couch/integrations/{id}/manifest.json"))
+            .arg(format!("usr/lib/couch/integrations/{id}/plugin"))
+            .status()
+            .unwrap()
+            .success());
+        let apk = home.join("fixture-apk");
+        fs::write(&apk, "#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n").unwrap();
+        fs::set_permissions(&apk, fs::Permissions::from_mode(0o755)).unwrap();
+        couch_integrations::Store::new(home.join("integrations"))
+            .with_apk(apk)
+            .install(&package)
+            .unwrap();
+        home
+    }
+
+    fn user_table(home: &Path) -> Vec<u8> {
+        fs::read(home.join("integrations/uids.json")).unwrap_or_default()
+    }
+
+    /// Every package id the daemon sees came out of a request, and a user is
+    /// never given back while the range lasts. A browser naming packages that
+    /// do not exist must therefore not be able to spend the range.
+    #[test]
+    fn settings_saved_against_a_package_that_is_not_installed_give_away_no_user() {
+        let home = home_with_a_package("no-user-for-nothing", "sample");
+        let runtime = Runtime::new(home.clone());
+        let before = user_table(&home);
+        assert!(!before.is_empty(), "admission gave the package its user");
+        for invented in 0..20 {
+            let refusal = runtime
+                .save_settings("conn", &format!("invented-{invented}"), json!({}))
+                .unwrap_err();
+            assert!(!refusal.text.is_empty());
+        }
+        assert_eq!(user_table(&home), before);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// A package the store cannot speak about right now is busy, not invalid:
+    /// the next key press finds the store free and works. The other refusal
+    /// the identity path can give - every user in the range taken by a package
+    /// that is still installed - is deliberately not busy, because waiting
+    /// would change nothing; `store_request_error` turns that into `Invalid`.
+    #[test]
+    fn a_press_while_the_store_is_held_is_busy_and_the_next_one_works() {
+        use std::{fs::OpenOptions, os::fd::AsRawFd};
+        let home = home_with_a_package("busy-identity", "sample");
+        let runtime = Runtime::new(home.clone());
+        let settings = runtime.settings_path("conn").unwrap();
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        couch_sdk::save_private(&settings, &json!({"host":"tv.local","port":23})).unwrap();
+
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(runtime.packages.root().join(".lock"))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            assert!(Instant::now() < deadline, "the store lock never came free");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            runtime.execute("conn", "sample", Request::status()),
+            Err(Error::Busy.into())
+        );
+        drop(lock);
+        // Whatever the child then says, the refusal is no longer the store's.
+        assert_ne!(
+            runtime.execute("conn", "sample", Request::status()),
+            Err(Error::Busy.into())
+        );
+        runtime.retire("conn");
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// Converting an old built-in connection happens long after the package
+    /// was installed, so its user is already in the table. Nothing is
+    /// allocated a second time and nothing in the table moves.
+    #[test]
+    fn converting_an_old_connection_uses_the_user_admission_already_gave() {
+        let home = home_with_a_package("legacy-user", "sample");
+        let runtime = Runtime::new(home.clone());
+        let before = user_table(&home);
+        let prepared = runtime
+            .prepare_legacy("sample", json!({"host":"tv.local","port":23}))
+            .expect("the package accepts the carried-over settings");
+        assert_eq!(prepared.package, "sample");
+        assert_eq!(user_table(&home), before);
+        let table: Value = serde_json::from_slice(&before).unwrap();
+        assert_eq!(table["packages"]["sample"], 60000);
+        assert_eq!(table["next"], 60001);
+        let _ = fs::remove_dir_all(home);
     }
 
     fn manifest() -> Manifest {

@@ -30,9 +30,10 @@ pub use couch_sdk::{
     PluginChildKind, Reason, Selectable, Status, TypedAction, VolumeDb, MAX_PAGE,
 };
 pub use host::{
-    list_children, local_request, local_request_detailed, read_frame_timeout, requires,
-    write_frame_timeout, Endpoint, Host, HostPolicy, LocalRequest, CHILD_LISTING_DEADLINE,
-    MAX_CHILDREN, MAX_CHILD_PAGES, QUEUE_CAPACITY, QUEUE_TTL, REQUEST_TIMEOUT, STARTUP_TIMEOUT,
+    is_non_dumpable, list_children, local_request, local_request_detailed, read_frame_timeout,
+    requires, write_frame_timeout, Endpoint, Host, HostPolicy, LocalRequest,
+    CHILD_LISTING_DEADLINE, MAX_CHILDREN, MAX_CHILD_PAGES, QUEUE_CAPACITY, QUEUE_TTL,
+    REQUEST_TIMEOUT, STARTUP_TIMEOUT,
 };
 pub use manifest::{Capability, FieldKind, Manifest, SettingField};
 pub use protocol::{
