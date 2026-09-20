@@ -1199,6 +1199,10 @@ button.add-all { margin-bottom:8px; }
 }
 .pairing-failed { margin:0 0 6px; color:var(--danger); font-weight:550; }
 .pairing-summary { margin:0 0 6px; font-weight:600; }
+/* A key that was stored beside settings that were not. Said in the ordinary
+   notice box rather than in red: nothing is broken and nothing has to be done
+   over. */
+.pairing-warning { margin:10px 0 0; }
 .pairing-countdown {
   margin:0 0 4px;
   color:var(--dim);

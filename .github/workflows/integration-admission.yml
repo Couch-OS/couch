@@ -196,6 +196,7 @@ jobs:
             build/webui-review/plugin-pairing-enter-code.png
             build/webui-review/plugin-pairing-wrong-code.png
             build/webui-review/plugin-pairing-done.png
+            build/webui-review/plugin-pairing-warning.png
             build/webui-review/plugin-pairing-banner.png
             build/webui-review/updates-installed-mobile.png
             build/webui-review/updates-installed-desktop.png

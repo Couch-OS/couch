@@ -467,6 +467,35 @@ try {
   assert.equal(await formLine().textContent(), 'Not saved. Check Port.');
   assert.equal(pairPosts('tv').length, startsBefore, 'settings the package refused never start a pairing');
 
+  // A key the remote stored beside settings it could not: the pairing stands,
+  // and the one thing that did not go through is said calmly and stays on
+  // screen until it is dismissed.
+  scripts.speaker = {
+    start: () => ({step: {
+      step: 'done', summary: 'Paired with the kitchen speaker',
+      settings: {settings: {host: 'speaker.local', port: 9299}, configured: true, secrets: []},
+      warning: 'the settings this device corrected were not kept: they were refused (invalid)',
+    }}),
+    step: () => assert.fail('a pairing that is already done is never polled'),
+  };
+  await openConnection('Kitchen speaker');
+  await banner().getByRole('button', {name: 'Pair', exact: true}).click();
+  await dialog().waitFor();
+  assert.equal(await headline().textContent(), 'Paired');
+  assert.equal(
+    await page.locator('.pairing-warning').textContent(),
+    'The pairing was saved, but the settings this device corrected were not kept: they were refused (invalid).',
+  );
+  assert.equal(await page.locator('.pairing-warning[role=alert]').count(), 0,
+    'a pairing that worked is not shouted about');
+  saved.speaker = {...saved.speaker, paired: true, summary: 'Paired with the kitchen speaker'};
+  await page.waitForTimeout(1500);
+  assert.equal(await dialog().count(), 1, 'a pairing with a warning is never closed for anybody');
+  await page.screenshot({path: `${shots}/plugin-pairing-warning.png`});
+  await dialog().getByRole('button', {name: 'Done', exact: true}).click();
+  await dialog().waitFor({state: 'detached'});
+  await page.getByText('Paired with the kitchen speaker').first().waitFor();
+
   // ------------------------------------------------------------------
   // 6. A connection that is told it is not paired, by any call at all.
   // ------------------------------------------------------------------
@@ -493,7 +522,7 @@ try {
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
     'the needs-pairing banner overflows a 360-pixel viewport');
   assert.deepEqual(errors, []);
-  console.log('PASS: the three prompts are drawn from the step with Couch\'s own words; a slow approval is polled and a busy poll retried quietly; a wrong code ends the attempt and Try again starts a new one; expiry, an interrupted session and too many pairings each say what happened; every way out sends a cancel; a refused setting is marked and starts nothing; and a call refused for want of a pairing raises the banner.');
+  console.log('PASS: the three prompts are drawn from the step with Couch\'s own words; a slow approval is polled and a busy poll retried quietly; a wrong code ends the attempt and Try again starts a new one; a key stored beside settings that were not says so and stays up; expiry, an interrupted session and too many pairings each say what happened; every way out sends a cancel; a refused setting is marked and starts nothing; and a call refused for want of a pairing raises the banner.');
 } finally {
   await browser.close();
 }

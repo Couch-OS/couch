@@ -91,6 +91,11 @@ enum Step {
     Done {
         #[serde(default)]
         summary: String,
+        /// What was paired but could not be kept beside the key: settings the
+        /// device corrected that the remote could not save. Absent from every
+        /// ordinary pairing. The key is stored either way.
+        #[serde(default)]
+        warning: Option<String>,
     },
     Failed {
         #[serde(default)]
@@ -137,6 +142,7 @@ enum Shown {
     },
     Done {
         summary: String,
+        warning: Option<String>,
     },
     Failed {
         sentence: String,
@@ -196,6 +202,19 @@ pub(super) fn failure_sentence(reason: &str) -> &'static str {
         "unsupported" => "This device does not pair this way.",
         _ => "Pairing did not finish.",
     }
+}
+
+/// Couch's sentence around a warning a `done` carried. The key was stored;
+/// something beside it was not, and the remote sends a clause rather than a
+/// sentence. Said calmly: nothing is broken and nothing has to be done again.
+pub(super) fn warning_sentence(warning: &str) -> String {
+    let warning = warning.trim();
+    let stop = if warning.ends_with(['.', '!', '?']) {
+        ""
+    } else {
+        "."
+    };
+    format!("The pairing was saved, but {warning}{stop}")
 }
 
 /// Which characters a code may be made of.
@@ -691,8 +710,12 @@ fn modal(app: App, state: State, started: Started) -> AnyView {
                 Shown::Waiting{..} => view!{<div class="actions">
                     <button class="ghost" type="button" on:click=move |_|cancel(attempt)>"Cancel"</button>
                 </div>}.into_any(),
-                Shown::Done{summary} => view!{
+                // A pairing the remote could not keep everything of stays up
+                // until it is dismissed: the key is good, and the one thing
+                // that did not go through is worth reading before it goes.
+                Shown::Done{summary,warning} => view!{
                     <p class="pairing-summary">{if summary.is_empty(){"This device is paired.".to_string()}else{summary}}</p>
+                    {warning.map(|warning|view!{<p class="notice small pairing-warning">{warning_sentence(&warning)}</p>})}
                     <div class="actions">
                         <button class="primary" type="button" on:click=move |_|finish(attempt)>"Done"</button>
                     </div>
@@ -800,7 +823,7 @@ fn arrive(attempt: Attempt, round: u32, changed: bool) {
                 );
             }
         }
-        Shown::Done { summary } => {
+        Shown::Done { summary, warning } => {
             if changed {
                 let connection = attempt.connection.get_value();
                 let summary = summary.clone();
@@ -809,10 +832,14 @@ fn arrive(attempt: Attempt, round: u32, changed: bool) {
                     known.unpaired = false;
                     known.summary = summary.clone();
                 });
-                attempt.live.set(if summary.is_empty() {
+                let said = if summary.is_empty() {
                     "This device is paired.".to_string()
                 } else {
                     summary
+                };
+                attempt.live.set(match warning {
+                    Some(warning) => format!("{said} {}", warning_sentence(warning)),
+                    None => said,
                 });
             }
         }
@@ -1022,7 +1049,12 @@ fn read_step(value: &Value) -> Shown {
             prompt,
             poll_after_ms,
         },
-        Ok(Step::Done { summary }) => Shown::Done { summary },
+        Ok(Step::Done { summary, warning }) => Shown::Done {
+            summary,
+            warning: warning
+                .map(|text| text.trim().to_owned())
+                .filter(|text| !text.is_empty()),
+        },
         Ok(Step::Failed { reason, message }) => Shown::Failed {
             sentence: failure_sentence(&reason).to_string(),
             note: message
@@ -1149,8 +1181,36 @@ mod tests {
                               "settings": {"configured": true}})
             ),
             Shown::Done {
-                summary: "Paired with the hall television".into()
+                summary: "Paired with the hall television".into(),
+                warning: None,
             }
+        );
+        // A key that was stored beside settings that were not.
+        assert_eq!(
+            read_step(
+                &json!({"step": "done", "summary": "Paired with the hall television",
+                "settings": {"configured": true},
+                "warning": "the settings this device corrected were not kept: they were refused (invalid)"})
+            ),
+            Shown::Done {
+                summary: "Paired with the hall television".into(),
+                warning: Some(
+                    "the settings this device corrected were not kept: they were refused (invalid)"
+                        .into()
+                ),
+            }
+        );
+        assert_eq!(
+            warning_sentence(
+                "the settings this device corrected were not kept: they were refused (invalid)"
+            ),
+            "The pairing was saved, but the settings this device corrected were not kept: \
+             they were refused (invalid)."
+        );
+        // The remote's own full stop is not doubled.
+        assert_eq!(
+            warning_sentence(" one setting was dropped. "),
+            "The pairing was saved, but one setting was dropped."
         );
         assert_eq!(
             read_step(&json!({"step": "failed", "reason": "wrong_code",
