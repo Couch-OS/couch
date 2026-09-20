@@ -35,8 +35,11 @@ Private files are beside `config.json`, under `connections/<connection-id>/`:
   paired (protocol 3, unreleased, so never in a shipped build). Couch never
   looks inside it, never sends it over HTTP and never exports it; it goes back
   to the package when its child is started, and nowhere else. Beside it,
-  `plugin-pairing.json` holds the one line a page shows about the pairing
-  (`{"summary": …, "paired_at": …}`), which is not a secret.
+  `plugin-pairing.json` holds the one line a page shows about the pairing and
+  which package it was made for (`{"summary": …, "paired_at": …, "package": …}`),
+  which is not a secret. A key file that cannot be read, or that was made for
+  a package this connection no longer uses, counts as no key at all: the
+  connection says it needs pairing rather than refusing everything.
 
 Credentials are mode 0600 and absent from exported house configuration. The daemon
 copies former singleton files into their original named connection on startup,
@@ -106,8 +109,8 @@ Pairing again runs in a second child of the package, so the connection keeps
 working on the key it already has until the new one succeeds; a pairing that
 fails, is cancelled or runs out writes nothing and leaves the old key alone.
 **Forget pairing** (`DELETE /plugin/credential`) removes Couch's copy of the
-key and the line beside it; it says nothing to the device, which may still list
-Couch as paired. See
+key, the line beside it and anything a half-finished write left behind; it says
+nothing to the device, which may still list Couch as paired. See
 [pairing a connection](development/protocol.md#the-daemon-pairing-a-connection). The physical-button, sequence and custom
 page pickers use the cached capability labels; selectable inputs are loaded
 from the package when requested. On the panel, commands travel over the

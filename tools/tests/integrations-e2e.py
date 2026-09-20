@@ -200,9 +200,6 @@ def run_pairing(confd, echo_pair, keep):
                 process, base = daemon(confd, home, log)
                 try:
                     pairing_flow(base, home, tv)
-                    print("Pairing product flow passed: unpaired without a child, all three "
-                          "route replies, the key on disk at 0600 and never over HTTP, a "
-                          "rotated key, forget, a wrong code, a cancel, and the panel refused.")
                 finally:
                     process.terminate()
                     try: process.wait(timeout=5)
@@ -213,6 +210,15 @@ def run_pairing(confd, echo_pair, keep):
                     if keep:
                         keep.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(home/"daemon.log", keep/"integration-pair-e2e.log")
+                # Nothing the daemon said, in all of that, was a key. Read
+                # once the daemon has stopped, so everything it wrote is out.
+                said = (home / "daemon.log").read_text(errors="replace")
+                for secret in ("e2e-0001", "rotated-0002"):
+                    assert secret not in said, f"{secret} reached the log"
+                print("Pairing product flow passed: unpaired without a child, all three "
+                      "route replies, the key on disk at 0600 in a 0700 folder, never over "
+                      "HTTP and never in the log, a rotated key, forget, a wrong code, a "
+                      "cancel, and the panel refused.")
 
 
 def pairing_flow(base, home, tv):
@@ -258,26 +264,37 @@ def pairing_flow(base, home, tv):
     assert done["settings"]["settings"]["host"] == "127.0.0.1", done
     assert "e2e-0001" not in json.dumps(done), done
 
-    # The key is on the remote, at 0600, and in nothing a browser can read.
+    # The key is on the remote, at 0600 in a folder only root may look in,
+    # and in nothing a browser can read.
     assert json.loads(key_file.read_text()) == {"key": "e2e-0001"}
     assert key_file.stat().st_mode & 0o777 == 0o600
+    assert stored.stat().st_mode & 0o777 == 0o700, oct(stored.stat().st_mode)
     assert json.loads(summary_file.read_text())["summary"] == "Paired with 127.0.0.1"
+    assert json.loads(summary_file.read_text())["package"] == "echo-pair"
     assert (home / "config.json").read_bytes() == config_before, "T3 writes nothing to config"
     view = api(base, "GET", scoped + "/settings")
     assert view["paired"] is True and view["summary"] == "Paired with 127.0.0.1", view
-    assert "e2e-0001" not in json.dumps(view)
-    assert "e2e-0001" not in json.dumps(api(base, "GET", "/api/config"))
+    for elsewhere in (view, api(base, "GET", "/api/config"),
+                      api(base, "GET", "/api/integrations")):
+        assert "e2e-0001" not in json.dumps(elsewhere), elsewhere
     # The session is over.
     api(base, "POST", f"{scoped}/pair/{session}", {}, expected=404)
 
-    # With the key, the set answers.
-    assert api(base, "GET", scoped + "/status")["volume"] == 30
+    # With the key, the set answers - and says nothing about the key.
+    status = api(base, "GET", scoped + "/status")
+    assert status["volume"] == 30
+    assert "e2e-0001" not in json.dumps(status), status
 
     # A key the set issues while answering replaces the one on disk, under
     # the connection's lock, before the reading comes back.
     api(base, "POST", scoped + "/settings", {"rotate": True})
-    assert api(base, "GET", scoped + "/status")["volume"] == 30
+    status = api(base, "GET", scoped + "/status")
+    assert status["volume"] == 30
+    assert "rotated-0002" not in json.dumps(status), status
     assert json.loads(key_file.read_text()) == {"key": "rotated-0002"}
+    # The child that answers next is configured with the new key, which is
+    # the whole point of writing it: the set has forgotten the old one.
+    assert api(base, "GET", scoped + "/status")["volume"] == 30
 
     # Forgetting it removes Couch's copy and says nothing to the set.
     said = len(tv.commands)

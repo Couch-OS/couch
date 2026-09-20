@@ -125,9 +125,13 @@ jobs:
       # tests above run with the ordinary feature set and stay green.
       - name: Pair a real protocol 3 package end to end
         run: |
-          cargo build --locked --manifest-path clients/Cargo.toml -p couch-echo             --bin couch-plugin-echo-pair --features couch-echo/protocol-3-preview
-          cargo build --locked --manifest-path daemon/Cargo.toml -p couch-confd             --features couch-plugin/protocol-3-preview
-          python3 tools/tests/integrations-e2e.py             --confd daemon/target/debug/couch-confd             --echo-pair clients/target/debug/couch-plugin-echo-pair
+          cargo build --locked --manifest-path clients/Cargo.toml -p couch-echo \
+            --bin couch-plugin-echo-pair --features couch-echo/protocol-3-preview
+          cargo build --locked --manifest-path daemon/Cargo.toml -p couch-confd \
+            --features couch-plugin/protocol-3-preview
+          python3 tools/tests/integrations-e2e.py \
+            --confd daemon/target/debug/couch-confd \
+            --echo-pair clients/target/debug/couch-plugin-echo-pair
 
   management-browser:
     needs: changes

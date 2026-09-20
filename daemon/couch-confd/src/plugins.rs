@@ -141,6 +141,9 @@ fn named(manifest: &Manifest, failure: Failure) -> Refusal {
 }
 
 struct Running {
+    /// The package this child is of, so a sweep can ask whether it is still
+    /// installed without going near the connection's configuration.
+    plugin: String,
     generation: String,
     settings: Value,
     /// The key this child was configured with. A key that has been written,
@@ -164,6 +167,37 @@ fn retained(entry: &Running) -> bool {
     entry.used.elapsed() < IDLE || Arc::strong_count(&entry.endpoint) > 1 || entry.pinned
 }
 
+/// What [`Runtime::pair_package`] answers with: the manifest whose settings
+/// rules apply, and how the package pairs if it does.
+struct PairPackage {
+    manifest: Manifest,
+    /// `None` for every package a shipped build can run.
+    pairing: Option<couch_plugin::Pairing>,
+}
+
+/// Protocol 3 (unreleased): one pairing, as the map holds it.
+///
+/// The token and the cancelled flag are outside the session's own lock, so
+/// ending a pairing never waits on a call that is already in flight: it takes
+/// the slot out of the map, says so here, and whoever is inside the call sees
+/// it the moment the package answers.
+struct PairingSlot {
+    /// The `<session>` in the URL: 128 bits of the host's own, never the id
+    /// the package minted for itself (which the [`Host`] keeps).
+    token: String,
+    /// Set by whatever ended this pairing - a cancel, a replacement, a delete,
+    /// a sweep - and read by the call that is still out. Nothing is written
+    /// once it is set, whatever the package goes on to say.
+    cancelled: std::sync::atomic::AtomicBool,
+    session: Mutex<PairingSession>,
+}
+
+impl PairingSlot {
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
 /// Protocol 3 (unreleased): one pairing conversation, and the package child
 /// that is having it.
 ///
@@ -172,28 +206,13 @@ fn retained(entry: &Running) -> bool {
 /// connection's ordinary child keeps serving on the old key for as long as
 /// this runs. It is never restarted either: a package that dies mid-pairing
 /// ends the attempt rather than starting again behind the person's back.
-/// What [`Runtime::pair_package`] answers with.
-struct PairPackage {
-    manifest: Manifest,
-    /// How this package pairs, or `None` if it does not. `None` for every
-    /// package a shipped build can run.
-    pairing: Option<couch_plugin::Pairing>,
-    generation: String,
-}
-
-struct PairingSlot {
-    /// The `<session>` in the URL: 128 bits of the host's own, never the id
-    /// the package minted for itself (which the [`Host`] keeps). It is out
-    /// here so that cancelling can name a session without waiting on a call
-    /// that is already in flight.
-    token: String,
-    session: Mutex<PairingSession>,
-}
-
 struct PairingSession {
     plugin: String,
     generation: String,
     manifest: Manifest,
+    /// The key Couch already held when this began, if any. Kept so that a
+    /// line the package asks Couch to show can be measured against it.
+    held: Option<Credential>,
     /// The package child having this conversation, until the conversation is
     /// over. Never restarted, and never in `endpoints`.
     child: Option<Box<dyn PairChild>>,
@@ -245,6 +264,14 @@ pub enum PairReply {
         /// The redacted view of the settings now saved for the connection,
         /// the same shape `GET …/plugin/settings` answers with.
         settings: Value,
+        /// What was paired but could not be kept beside the key - settings
+        /// the device corrected that would not save, or that the manifest
+        /// refused. **Absent** when everything was kept, which is every
+        /// ordinary pairing. The key itself is stored either way: it is the
+        /// device's and it is good, and the alternative to saying this is
+        /// answering `done` over settings that were quietly dropped.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        warning: Option<String>,
     },
     Failed {
         reason: PairFailure,
@@ -266,6 +293,7 @@ impl PairReply {
 }
 
 /// A pairing that has just begun.
+#[derive(Debug)]
 pub struct PairStarted {
     pub session: String,
     pub step: PairReply,
@@ -325,6 +353,13 @@ struct PairingRecord {
     summary: String,
     /// Seconds since the epoch, for a page that wants to say when.
     paired_at: u64,
+    /// The package the key was made for. A connection whose package has been
+    /// changed since is not paired: whatever the old one left behind is not a
+    /// key the new one can use, and handing it over would be handing one
+    /// package's secret to another. Absent in a file an earlier Couch wrote,
+    /// which is then taken at face value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    package: Option<String>,
 }
 
 /// Protocol 3 (unreleased). Every child of one connection as its package last
@@ -410,7 +445,9 @@ impl PairChild for Host {
 struct ScriptedPairing {
     manifest: Manifest,
     pairing: couch_plugin::Pairing,
-    generation: String,
+    /// The package selection, as the state file would give it. `None` is a
+    /// store that cannot say - the shape an install holding its lock has.
+    generation: Option<String>,
     open: OpenPairChild,
 }
 
@@ -445,6 +482,9 @@ pub struct Runtime {
     /// rotated on a request queued before that is not stored: the pairing's
     /// is the newer one.
     paired_at: Mutex<HashMap<String, Instant>>,
+    /// Connections whose saved key could not be read, so that is said once
+    /// rather than once per key press.
+    unreadable_keys: Mutex<HashSet<String>>,
     /// The number of user-table rebuilds this runtime has already answered
     /// for. A rebuild can move a package to a different user, so the children
     /// started under the old one are retired and come back under the new one.
@@ -468,6 +508,7 @@ impl Runtime {
             children: Mutex::new(HashMap::new()),
             pairings: Mutex::new(HashMap::new()),
             paired_at: Mutex::new(HashMap::new()),
+            unreadable_keys: Mutex::new(HashSet::new()),
             identity_rebuilds: AtomicU64::new(0),
             #[cfg(test)]
             lister: Mutex::new(None),
@@ -547,22 +588,34 @@ impl Runtime {
             .unwrap_or_else(|e| e.into_inner()) = Some(ScriptedPairing {
             manifest,
             pairing,
-            generation: generation.to_owned(),
+            generation: Some(generation.to_owned()),
             open: Box::new(open),
         });
     }
 
-    /// The package selection a scripted pairing is at, moved as a package
-    /// update would move it.
+    /// Pretend this connection's package asked to stay alive between
+    /// requests. No manifest a shipped build accepts may say so - that is the
+    /// switch - which is why a test has to say it here.
     #[cfg(test)]
-    pub fn pair_generation(&self, generation: &str) {
+    pub fn keep_alive_for_test(&self, connection: &str) {
+        if let Ok(mut endpoints) = self.endpoints.lock() {
+            if let Some(entry) = endpoints.get_mut(connection) {
+                entry.keep_alive = true;
+            }
+        }
+    }
+
+    /// The package selection a scripted pairing is at, moved as a package
+    /// update would move it. `None` is a store that cannot say just now.
+    #[cfg(test)]
+    pub fn pair_generation(&self, generation: Option<&str>) {
         if let Some(scripted) = self
             .scripted_pairing
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_mut()
         {
-            scripted.generation = generation.to_owned();
+            scripted.generation = generation.map(str::to_owned);
         }
     }
 
@@ -622,8 +675,62 @@ impl Runtime {
             .with_file_name("plugin-pairing.json"))
     }
 
-    fn credential(&self, connection: &str) -> Result<Option<Credential>, Error> {
-        load_credential(&self.credential_path(connection)?)
+    /// The key this connection is paired with, if it has one this package may
+    /// be given.
+    ///
+    /// **A key Couch cannot read is a key Couch has not got.** A file that is
+    /// corrupt, too large, or left by a package this connection no longer
+    /// uses answers `None` rather than an error, so the connection says
+    /// `unpaired` and pairing again writes over it. Failing the request
+    /// instead would strand the connection: every key press refused, the
+    /// settings page unable to load, and no way to reach "Pair again". It is
+    /// said in the log once, not once per key press.
+    fn credential(&self, connection: &str, plugin: &str) -> Option<Credential> {
+        let path = self.credential_path(connection).ok()?;
+        // A key made for a package this connection has been moved off is not
+        // this package's to be given.
+        if let Some(record) = self.pairing_record(connection) {
+            if record.package.is_some_and(|made_for| made_for != plugin) {
+                self.complain(
+                    connection,
+                    "was paired with a different integration; it counts as unpaired",
+                );
+                return None;
+            }
+        }
+        match couch_sdk::load_private::<Credential>(&path) {
+            Ok(credential) if credential.fits() => {
+                self.forget_complaint(connection);
+                Some(credential)
+            }
+            Ok(_) => {
+                self.complain(connection, "holds a key too large to be one");
+                None
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.forget_complaint(connection);
+                None
+            }
+            Err(error) => {
+                self.complain(connection, &format!("cannot be read ({error})"));
+                None
+            }
+        }
+    }
+
+    /// Say something about a connection's key file once, however many times
+    /// it is read.
+    fn complain(&self, connection: &str, what: &str) {
+        if let Ok(mut said) = self.unreadable_keys.lock() {
+            if said.insert(connection.to_owned()) {
+                eprintln!("couch-confd: connection {connection}: its saved key {what}");
+            }
+        }
+    }
+    fn forget_complaint(&self, connection: &str) {
+        if let Ok(mut said) = self.unreadable_keys.lock() {
+            said.remove(connection);
+        }
     }
 
     fn pairing_record(&self, connection: &str) -> Option<PairingRecord> {
@@ -631,18 +738,17 @@ impl Runtime {
     }
 
     pub fn settings(&self, connection: &str, plugin: &str) -> Result<Value, String> {
-        let manifest = self.manifest(plugin)?;
+        // One resolution of the package, not two: this is a browser call and
+        // resolving digests the whole slot.
+        let package = self.pair_package(plugin).map_err(|e| e.to_string())?;
         let path = self.settings_path(connection).map_err(|e| e.to_string())?;
         let saved = load_settings(&path).map_err(|e| e.to_string())?;
-        let mut view = redacted(&manifest, saved.as_ref());
+        let mut view = redacted(&package.manifest, saved.as_ref());
         // Protocol 3 (unreleased). Absent for every package a shipped build
         // can run: none of them declares pairing, so none of these keys is
         // ever written and the reply is byte for byte the one it always was.
-        if let Some(pairing) = self.pair_package(plugin).ok().and_then(|p| p.pairing) {
-            let paired = self
-                .credential(connection)
-                .map_err(|e| e.to_string())?
-                .is_some();
+        if let Some(pairing) = package.pairing {
+            let paired = self.credential(connection, plugin).is_some();
             view["paired"] = json!(paired);
             view["pairing"] = json!({ "required": pairing.required });
             if let Some(record) = self.pairing_record(connection).filter(|_| paired) {
@@ -678,7 +784,7 @@ impl Runtime {
         // that will not speak without one has to be given it to say whether
         // these settings are usable. The gate strips it for anything that may
         // not be told one, so this is safe whatever the package is.
-        let credential = self.credential(connection)?;
+        let credential = self.credential(connection, plugin);
         // Configure validates the adapter's typed settings without requiring an
         // online TV. Do not save a schema-valid but unusable host/port.
         check_settings(
@@ -854,7 +960,7 @@ impl Runtime {
         let settings = load_settings(&path)?.ok_or(Error::Invalid)?;
         // Read beside the settings and handed to the child on its configure.
         // Never returned, never logged: from here it only goes into the host.
-        let credential = self.credential(connection)?;
+        let credential = self.credential(connection, plugin);
         let paired = credential.is_some();
         let endpoint = self.endpoint_for(
             connection,
@@ -929,15 +1035,14 @@ impl Runtime {
             );
             return;
         }
-        // The child that issued it is the one configured with it, so the entry
-        // keeps its key up to date rather than being evicted and started again
-        // on the next request. The caller holds the connection's lock, so
-        // nothing else can be starting a child for it.
-        if let Ok(mut endpoints) = self.endpoints.lock() {
-            if let Some(entry) = endpoints.get_mut(connection) {
-                entry.credential = Some(credential);
-            }
-        }
+        // The entry deliberately keeps the key it was started with, so the
+        // next request finds it different from the one on disk and starts the
+        // child again. It has to: the endpoint's worker holds its own copy of
+        // the key for the replacement it launches after a failure, and that
+        // copy is the one from before the rotation. Letting the entry stand
+        // would leave a child that had crashed once configured with a key the
+        // device has already replaced - for ever, while `keep_alive` holds it.
+        self.forget_complaint(connection);
     }
 
     /// The running child of this connection, started if there is not one.
@@ -1014,6 +1119,7 @@ impl Runtime {
             endpoints.insert(
                 connection.to_owned(),
                 Running {
+                    plugin: plugin.to_owned(),
                     generation: generation.to_owned(),
                     settings,
                     credential,
@@ -1154,7 +1260,7 @@ impl Runtime {
             plugin,
             generation,
             settings.clone(),
-            self.credential(connection)?,
+            self.credential(connection, plugin),
             Instant::now(),
         )?;
         // Every limit on a listing - 1024 children, 64 pages, ten seconds, no
@@ -1227,16 +1333,45 @@ impl Runtime {
 
     /// One sweep, every ten seconds.
     ///
-    /// `in_use` says whether a connection is still referred to by a device,
-    /// which is the only thing that earns a package's `keep_alive` its
-    /// exemption from the idle reaper. The reaper computes it from the saved
-    /// configuration; nothing else here knows what a room is.
+    /// `in_use` is the set of connections a room device still refers to, which
+    /// is the only thing that earns a package's `keep_alive` its exemption
+    /// from the idle reaper. It is a **set the caller has already built**, not
+    /// a question asked while this runs: the reaper reads it out of the saved
+    /// configuration before calling, because answering it takes the
+    /// configuration store's lock, and a deletion holds that lock and then
+    /// asks for this registry. Nothing here calls out to anything while the
+    /// registry is held.
     pub fn reap(&self, in_use: &dyn Fn(&str) -> bool) {
+        // Which packages are still installed, and at which version. Asked
+        // before the registry is locked, and from the state file alone: no
+        // store lock, so an install running now does not stall the sweep.
+        let known: HashMap<String, Option<String>> = self
+            .endpoints
+            .lock()
+            .map(|endpoints| {
+                endpoints
+                    .values()
+                    .map(|entry| entry.plugin.clone())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|plugin| {
+                let generation = self.packages.generation(&plugin).ok();
+                (plugin, generation)
+            })
+            .collect();
         if let Ok(mut endpoints) = self.endpoints.lock() {
             // The ten-second sweep is also where a child left running as a
             // user a rebuilt table no longer gives its package goes, without
             // waiting for that connection to be asked for something.
             self.retire_children_of_a_rebuilt_table(&mut endpoints);
+            // A child of a package that has been updated or removed since it
+            // started goes here rather than waiting to be asked for something,
+            // which a pinned one never is.
+            endpoints.retain(|_, entry| {
+                known.get(&entry.plugin).and_then(Option::as_ref) == Some(&entry.generation)
+            });
             // Protocol 3 (unreleased). Which children may outstay the idle
             // retains: the ones whose package asked and whose connection a
             // device still refers to, and at most MAX_KEEP_ALIVE of those.
@@ -1281,12 +1416,13 @@ impl Runtime {
                 let Ok(session) = slot.session.try_lock() else {
                     return true;
                 };
+                // The package selection from the state file alone. An install
+                // holds the store's exclusive lock for seconds, and reading it
+                // through that lock would make every pairing in the house fail
+                // while one package is being updated.
                 let moved = self
-                    .pair_package(&session.plugin)
-                    .ok()
-                    .map(|package| package.generation)
-                    .as_ref()
-                    != Some(&session.generation);
+                    .package_generation(&session.plugin)
+                    .is_some_and(|at| at != session.generation);
                 if !session.expired(now) && !moved {
                     return true;
                 }
@@ -1297,6 +1433,7 @@ impl Runtime {
                     );
                 }
                 drop(session);
+                slot.cancelled.store(true, Ordering::SeqCst);
                 ended.push(slot.clone());
                 false
             });
@@ -1323,9 +1460,10 @@ impl Runtime {
             .is_ok_and(|package| package.pairing.is_some())
     }
 
-    /// What a pairing goes by: the manifest whose settings rules apply, the
-    /// way it pairs (`None` for every package a shipped build can run), and
-    /// the package selection it is all at.
+    /// What a pairing goes by: the manifest whose settings rules apply and
+    /// the way it pairs (`None` for every package a shipped build can run).
+    /// This resolves the package, which digests its whole slot, so it belongs
+    /// on a browser call and not on a poll.
     fn pair_package(&self, plugin: &str) -> Result<PairPackage, couch_integrations::Error> {
         #[cfg(test)]
         if let Some(scripted) = self
@@ -1337,19 +1475,33 @@ impl Runtime {
             return Ok(PairPackage {
                 manifest: scripted.manifest.clone(),
                 pairing: Some(scripted.pairing),
-                generation: scripted.generation.clone(),
             });
         }
         let (_, manifest) = self.packages.resolve_wait(plugin, STORE_READ_WAIT)?;
-        let generation = self.packages.generation(plugin)?;
         // `pairs` is both at once: only a protocol 3 manifest may declare a
         // way of pairing, and only a protocol 3 package may be sent one.
         let pairing = manifest.pairing.filter(|_| manifest.pairs());
-        Ok(PairPackage {
-            manifest,
-            pairing,
-            generation,
-        })
+        Ok(PairPackage { manifest, pairing })
+    }
+
+    /// Which version of a package is selected, from its state file alone.
+    ///
+    /// No store lock and no payload digest, so it costs nothing on a poll,
+    /// and it still answers while an install is holding the store's exclusive
+    /// lock for several seconds, which is the point. `None` is "cannot say
+    /// just now", never "it moved": a pairing is not ended because a package
+    /// operation happened to be running while somebody pressed a button.
+    fn package_generation(&self, plugin: &str) -> Option<String> {
+        #[cfg(test)]
+        if let Some(scripted) = self
+            .scripted_pairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            return scripted.generation.clone();
+        }
+        self.packages.generation(plugin).ok()
     }
 
     /// Start the package child this pairing is its own conversation with.
@@ -1400,21 +1552,24 @@ impl Runtime {
         patch: Value,
     ) -> Result<PairStarted, PairError> {
         let started = Instant::now();
-        let PairPackage {
-            manifest,
-            pairing,
-            generation,
-        } = self.pair_package(plugin)?;
+        // The token first. A session nobody can name is worse than no session
+        // at all: its child would run to the deadline with no way to cancel
+        // it, so nothing is started or replaced until there is one.
+        let token = token().ok_or_else(|| {
+            PairError::Storage("this remote could not mint a session number".into())
+        })?;
+        let PairPackage { manifest, pairing } = self.pair_package(plugin)?;
         let Some(pairing) = pairing else {
             return Err(PairError::DoesNotPair);
         };
+        let generation = self.package_generation(plugin);
         let path = self.settings_path(connection).map_err(Refusal::from)?;
         let settings = merge_settings(&manifest, load_settings(&path)?.as_ref(), patch)
             .map_err(Refusal::from)?;
         manifest
             .validate_settings(&settings)
             .map_err(Refusal::from)?;
-        let credential = self.credential(connection)?;
+        let credential = self.credential(connection, plugin);
         // Cheaply, before a process is started; again when it is inserted.
         if self.pairings_full(connection) {
             return Err(PairError::TooMany);
@@ -1425,12 +1580,13 @@ impl Runtime {
         let mut child = self.open_pair_child(connection, plugin)?;
         let step = match child.start(settings.clone(), credential.as_ref()) {
             Ok(step) => step,
-            Err(failure) => return Ok(Self::started(token(), lost(failure), deadline)),
+            Err(failure) => return Ok(Self::started(token, lost(failure), deadline)),
         };
         let mut session = PairingSession {
             plugin: plugin.to_owned(),
-            generation,
+            generation: generation.unwrap_or_default(),
             manifest,
+            held: credential,
             child: Some(child),
             deadline,
             last_poll: started,
@@ -1438,16 +1594,22 @@ impl Runtime {
             poll_after_ms: 0,
             pending_done: None,
         };
-        let reply = self.follow(connection, &mut session, step);
+        // A `done` on the very first step has no slot to be checked against,
+        // and needs none: nothing can have cancelled a session that has not
+        // been answered for yet.
+        let reply = self.follow(connection, &mut session, step, None);
         if reply.is_final() {
             session.end();
-            return Ok(Self::started(token(), reply, deadline));
+            // Even a pairing that is over before it began replaces the one
+            // that was in flight: the person started this one instead.
+            self.end_pairing(connection, None);
+            return Ok(Self::started(token, reply, deadline));
         }
         let slot = Arc::new(PairingSlot {
-            token: token(),
+            token: token.clone(),
+            cancelled: std::sync::atomic::AtomicBool::new(false),
             session: Mutex::new(session),
         });
-        let token = slot.token.clone();
         let replaced = {
             let mut pairings = self
                 .pairings
@@ -1460,7 +1622,8 @@ impl Runtime {
             pairings.insert(connection.to_owned(), slot)
         };
         if let Some(replaced) = replaced {
-            if let Ok(mut session) = replaced.session.lock() {
+            replaced.cancelled.store(true, Ordering::SeqCst);
+            if let Ok(mut session) = replaced.session.try_lock() {
                 session.end();
             }
         }
@@ -1485,30 +1648,21 @@ impl Runtime {
             self.end_pairing(connection, Some(token));
             return Err(PairError::Unknown);
         }
-        if self
-            .pair_package(&session.plugin)
-            .ok()
-            .map(|package| package.generation)
-            .as_ref()
-            != Some(&session.generation)
-        {
-            drop(session);
-            self.end_pairing(connection, Some(token));
-            return Ok(PairReply::failed(
-                PairFailure::Unsupported,
-                "The integration changed while this was being paired",
-            ));
+        if self.moved_under(&session) {
+            return Ok(self.ended_by_a_package_change(connection, token, &mut session));
         }
         session.last_poll = Instant::now();
         // A key already in hand that only wants writing. The package is not
         // asked again, whatever the dialog sent.
         if session.pending_done.is_some() {
-            let reply = self.write_done(connection, &mut session)?;
+            let result = self.write_done(connection, &mut session, Some(&slot));
             drop(session);
-            if reply.is_final() {
+            // Either way it is over: a parked key that could not be written
+            // is not going to be written by asking again.
+            if !matches!(result, Ok(PairReply::Waiting { .. })) {
                 self.end_pairing(connection, Some(token));
             }
-            return Ok(reply);
+            return result;
         }
         match (&session.prompt, &input) {
             // A prompt that asked for nothing is never given anything, and a
@@ -1532,8 +1686,19 @@ impl Runtime {
             Some(child) => child.step(input),
             None => Err(Failure::from(Error::Transport)),
         };
+        // Up to twelve seconds have passed inside the package. Whoever ended
+        // this pairing while it was in there wins: the slot is already out of
+        // the map and nothing is written, whatever the package has just said.
+        if slot.cancelled() {
+            session.end();
+            drop(session);
+            return Err(PairError::Unknown);
+        }
+        if self.moved_under(&session) {
+            return Ok(self.ended_by_a_package_change(connection, token, &mut session));
+        }
         let reply = match step {
-            Ok(step) => self.follow(connection, &mut session, step),
+            Ok(step) => self.follow(connection, &mut session, step, Some(&slot)),
             Err(failure) => lost(failure),
         };
         drop(session);
@@ -1541,6 +1706,30 @@ impl Runtime {
             self.end_pairing(connection, Some(token));
         }
         Ok(reply)
+    }
+
+    /// Whether the package has been updated or removed under this pairing.
+    /// A store that cannot say just now is not a package that moved.
+    fn moved_under(&self, session: &PairingSession) -> bool {
+        self.package_generation(&session.plugin)
+            .is_some_and(|at| at != session.generation)
+    }
+
+    /// End a pairing whose package has changed under it. The caller is
+    /// holding the session, so the package is told here and the slot is taken
+    /// out of the map afterwards; nothing is written.
+    fn ended_by_a_package_change(
+        &self,
+        connection: &str,
+        token: &str,
+        session: &mut PairingSession,
+    ) -> PairReply {
+        session.end();
+        self.end_pairing(connection, Some(token));
+        PairReply::failed(
+            PairFailure::Unsupported,
+            "The integration changed while this was being paired",
+        )
     }
 
     /// End a pairing, storing nothing. Idempotent: a session that is not
@@ -1559,6 +1748,10 @@ impl Runtime {
         if !self.pairs(plugin) {
             return Err(PairError::DoesNotPair);
         }
+        // Before the lock, not after it: a pairing that is finishing wants
+        // this very lock, and ending it first is what stops the two waiting
+        // on each other. It never blocks, so the order costs nothing.
+        self.end_pairing(connection, None);
         let path = self.settings_path(connection).map_err(Refusal::from)?;
         let lock = crate::api::connections::lock_for(&path);
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -1566,17 +1759,20 @@ impl Runtime {
         else {
             return Err(PairError::Refused("Integration connection is busy".into()));
         };
-        self.end_pairing(connection, None);
-        for path in [
-            self.credential_path(connection).map_err(Refusal::from)?,
-            self.pairing_path(connection).map_err(Refusal::from)?,
-        ] {
-            if let Err(error) = fs::remove_file(&path) {
+        let key = self.credential_path(connection).map_err(Refusal::from)?;
+        let record = self.pairing_path(connection).map_err(Refusal::from)?;
+        for path in [&key, &record] {
+            if let Err(error) = fs::remove_file(path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
                     return Err(PairError::Storage(error.to_string()));
                 }
             }
         }
+        // And whatever an interrupted write left beside them. `save_private`
+        // names its temporary `<file>.<pid>.<clock>.<n>.new`; one of those
+        // holds a key and nothing removes it otherwise.
+        remove_temporaries(&[&key, &record]);
+        self.forget_complaint(connection);
         self.retire_endpoint(connection);
         self.forget_children(connection);
         Ok(())
@@ -1611,6 +1807,12 @@ impl Runtime {
 
     /// Take the session out of the map and tell the package it is over.
     /// `token` names one in particular; `None` means whatever is there.
+    ///
+    /// This **never waits**. A call may be inside the package for up to
+    /// twelve seconds, and a cancel that waited for it would hold an HTTP
+    /// worker for as long. Taking the slot out of the map and marking it is
+    /// enough: the call sees the mark the moment the package answers, tells
+    /// the package itself and writes nothing.
     fn end_pairing(&self, connection: &str, token: Option<&str>) {
         let slot = {
             let Ok(mut pairings) = self.pairings.lock() else {
@@ -1624,15 +1826,57 @@ impl Runtime {
             }
         };
         if let Some(slot) = slot {
-            if let Ok(mut session) = slot.session.lock() {
+            slot.cancelled.store(true, Ordering::SeqCst);
+            if let Ok(mut session) = slot.session.try_lock() {
                 session.end();
             }
         }
     }
 
+    /// Whether this slot is still the one this connection is pairing through.
+    /// A cancel, a replacement, a delete or a sweep takes it out of the map,
+    /// and what a package says after that is not written.
+    fn still_pairing(&self, connection: &str, slot: &Arc<PairingSlot>) -> bool {
+        !slot.cancelled()
+            && self
+                .pairings
+                .lock()
+                .ok()
+                .and_then(|pairings| pairings.get(connection).map(|live| Arc::ptr_eq(live, slot)))
+                .unwrap_or(false)
+    }
+
     /// Keep the session in step with what the package just said, and turn it
     /// into the answer the browser gets - which is where the key stops.
-    fn follow(&self, connection: &str, session: &mut PairingSession, step: PairStep) -> PairReply {
+    ///
+    /// `slot` is the session's place in the map, so a `done` can be checked
+    /// against it before anything is written. A first step has none and needs
+    /// none: it has not been answered for yet, so nothing can have ended it.
+    fn follow(
+        &self,
+        connection: &str,
+        session: &mut PairingSession,
+        step: PairStep,
+        slot: Option<&Arc<PairingSlot>>,
+    ) -> PairReply {
+        // A line a package asks Couch to show is shown to a person, and a
+        // person's screen is not where a key goes. One that carries any part
+        // of a key is a package answering nonsense: the child goes and
+        // nothing is stored.
+        if let Some(shown) = shown_text(&step) {
+            let keys = [session.held.as_ref(), done_credential(&step)];
+            if keys.into_iter().flatten().any(|key| leaks(shown, key)) {
+                eprintln!(
+                    "couch-confd: connection {connection}: the integration put its own key in \
+                     the words it asked Couch to show; the pairing was dropped"
+                );
+                session.end();
+                return PairReply::failed(
+                    PairFailure::Unsupported,
+                    "This integration answered with its own key in the words it showed",
+                );
+            }
+        }
         match step {
             PairStep::Waiting {
                 prompt,
@@ -1656,16 +1900,25 @@ impl Runtime {
                 // the child goes now rather than waiting on a lock.
                 session.child = None;
                 session.pending_done = Some((credential, settings, summary));
-                match self.write_done(connection, session) {
+                match self.write_done(connection, session, slot) {
                     Ok(reply) => reply,
                     // A key that cannot be written is not a pairing. The
                     // words go to the person; the key itself never does.
                     Err(error) => {
-                        if let PairError::Storage(error) = &error {
-                            eprintln!(
+                        session.pending_done = None;
+                        match &error {
+                            PairError::Storage(error) => eprintln!(
                                 "couch-confd: connection {connection}: the pairing key was not \
                                  saved: {error}"
-                            );
+                            ),
+                            // The slot went while this was in the package.
+                            PairError::Unknown => {
+                                return PairReply::failed(
+                                    PairFailure::Refused,
+                                    "This pairing was ended before the device finished",
+                                )
+                            }
+                            _ => (),
                         }
                         PairReply::failed(
                             PairFailure::Unsupported,
@@ -1687,6 +1940,7 @@ impl Runtime {
         &self,
         connection: &str,
         session: &mut PairingSession,
+        slot: Option<&Arc<PairingSlot>>,
     ) -> Result<PairReply, PairError> {
         let path = self.settings_path(connection).map_err(Refusal::from)?;
         let lock = crate::api::connections::lock_for(&path);
@@ -1702,9 +1956,29 @@ impl Runtime {
                 poll_after_ms: FINISHING_POLL_MS,
             });
         };
+        // Under the lock, and as late as possible: a pairing that was
+        // cancelled, replaced, swept or deleted while its package was being
+        // waited on writes nothing. A first step has no slot and cannot have
+        // been ended.
+        if slot.is_some_and(|slot| !self.still_pairing(connection, slot)) {
+            session.pending_done = None;
+            return Err(PairError::Unknown);
+        }
         // Admission validates every saved connection before activating a new
-        // package; hold the selection still until the key is durable.
-        let _lease = self.packages.read_lease();
+        // package; hold the selection still until the key is durable. A store
+        // that will not give a lease is not a reason to lose the key the
+        // device has just handed over: it is said, and the write goes ahead
+        // under the connection's own lock.
+        let _lease = match self.packages.read_lease() {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                eprintln!(
+                    "couch-confd: connection {connection}: the package store could not be held \
+                     still while its key was written ({error}); writing it anyway"
+                );
+                None
+            }
+        };
         let Some((credential, corrected, summary)) = session.pending_done.take() else {
             return Err(PairError::Unknown);
         };
@@ -1713,27 +1987,33 @@ impl Runtime {
             return Err(PairError::Storage(error.to_string()));
         }
         // Then the settings the device would rather Couch had, if it gave
-        // any. The host has already measured them against the manifest.
+        // any. The host has already measured them against the manifest, so
+        // neither arm below can be reached by a package that behaves; when
+        // one is, the key stays (it is the device's and it is good) and the
+        // person is told rather than being shown a `done` over settings that
+        // were quietly dropped.
+        let mut warning = None;
         if let Some(corrected) = corrected {
-            match session
+            let settings = session
                 .manifest
                 .with_defaults(corrected)
                 .and_then(|settings| {
                     session.manifest.validate_settings(&settings)?;
                     Ok(settings)
-                }) {
-                Ok(settings) => {
-                    if let Err(error) = couch_sdk::save_private(&path, &settings) {
-                        eprintln!(
-                            "couch-confd: connection {connection}: the settings the device \
-                             corrected were not saved: {error}"
-                        );
-                    }
-                }
-                Err(code) => eprintln!(
+                });
+            let stored = match settings {
+                Ok(settings) => couch_sdk::save_private(&path, &settings)
+                    .map_err(|error| format!("they could not be saved ({error})")),
+                Err(code) => Err(format!("they were refused ({code})")),
+            };
+            if let Err(why) = stored {
+                eprintln!(
                     "couch-confd: connection {connection}: the settings the device corrected \
-                     were refused ({code}); the key was kept and they were not"
-                ),
+                     were not kept: {why}; its key was"
+                );
+                warning = Some(format!(
+                    "the settings this device corrected were not kept: {why}"
+                ));
             }
         }
         let paired_at = SystemTime::now()
@@ -1743,6 +2023,7 @@ impl Runtime {
         let record = PairingRecord {
             summary: summary.clone(),
             paired_at,
+            package: Some(session.plugin.clone()),
         };
         if let Err(error) = couch_sdk::save_private(
             &self.pairing_path(connection).map_err(Refusal::from)?,
@@ -1753,17 +2034,26 @@ impl Runtime {
                  {error}"
             );
         }
-        // The next request starts a child configured with the new key.
-        self.retire_endpoint(connection);
-        self.forget_children(connection);
-        if let Ok(mut marks) = self.paired_at.lock() {
-            marks.insert(connection.to_owned(), Instant::now());
-        }
+        self.finished_pairing(connection);
         let saved = load_settings(&path).unwrap_or(None);
         Ok(PairReply::Done {
             summary,
             settings: redacted(&session.manifest, saved.as_ref()),
+            warning,
         })
+    }
+
+    /// What every successful pairing leaves behind it: the child that was
+    /// configured with the old key is dropped, the listing it read through
+    /// goes with it, and the moment is remembered so a key rotated on an
+    /// older request cannot overwrite the one just made.
+    fn finished_pairing(&self, connection: &str) {
+        self.retire_endpoint(connection);
+        self.forget_children(connection);
+        self.forget_complaint(connection);
+        if let Ok(mut marks) = self.paired_at.lock() {
+            marks.insert(connection.to_owned(), Instant::now());
+        }
     }
 }
 
@@ -1794,16 +2084,74 @@ fn lost(failure: Failure) -> PairReply {
 /// 128 bits from the kernel, spelt in hexadecimal: the `<session>` in the URL.
 /// Never the id the package minted, which is the package's own business and
 /// stays inside the host.
-fn token() -> String {
+///
+/// `None` rather than anything invented: a guessable session is a pairing
+/// somebody else can finish, and a pairing nobody can name is a child running
+/// to its deadline with no way to stop it.
+fn token() -> Option<String> {
     let mut random = [0; 16];
     match std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut random)) {
-        Ok(()) => random.iter().map(|byte| format!("{byte:02x}")).collect(),
-        // Refusing to invent one: a guessable session is a pairing somebody
-        // else can finish. An empty token matches nothing, so the attempt
-        // simply cannot be continued.
+        Ok(()) => Some(random.iter().map(|byte| format!("{byte:02x}")).collect()),
         Err(error) => {
             eprintln!("couch-confd: cannot read /dev/urandom, so no pairing can start: {error}");
-            String::new()
+            None
+        }
+    }
+}
+
+/// The line a step asks Couch to show a person, if it has one.
+fn shown_text(step: &PairStep) -> Option<&str> {
+    match step {
+        PairStep::Waiting { prompt, .. } => prompt.message(),
+        PairStep::Done { summary, .. } => Some(summary.as_str()),
+        PairStep::Failed { message, .. } => message.as_deref(),
+    }
+}
+
+fn done_credential(step: &PairStep) -> Option<&Credential> {
+    match step {
+        PairStep::Done { credential, .. } => Some(credential),
+        _ => None,
+    }
+}
+
+/// Whether a line a package wants shown carries any part of a key.
+///
+/// Values of eight characters or more only: a key with `"port": "9299"` in it
+/// would otherwise make every sensible summary a leak, and eight characters
+/// is past anything that is not a secret.
+fn leaks(text: &str, credential: &Credential) -> bool {
+    fn anywhere(text: &str, value: &Value) -> bool {
+        match value {
+            Value::String(secret) => secret.len() >= 8 && text.contains(secret.as_str()),
+            Value::Array(values) => values.iter().any(|value| anywhere(text, value)),
+            Value::Object(map) => map.values().any(|value| anywhere(text, value)),
+            _ => false,
+        }
+    }
+    credential.get().values().any(|value| anywhere(text, value))
+}
+
+/// Remove the temporary files an interrupted `save_private` may have left
+/// beside these, which are named `<file>.<pid>.<clock>.<n>.new`. One of them
+/// holds a key, and nothing else ever removes it.
+fn remove_temporaries(files: &[&Path]) {
+    for file in files {
+        let (Some(folder), Some(stem)) = (file.parent(), file.file_stem()) else {
+            continue;
+        };
+        let Ok(entries) = fs::read_dir(folder) else {
+            continue;
+        };
+        let prefix = format!("{}.", stem.to_string_lossy());
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&prefix)
+                && name.ends_with(".new")
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+            {
+                let _ = fs::remove_file(entry.path());
+            }
         }
     }
 }
@@ -1820,15 +2168,6 @@ fn save_credential(path: &Path, credential: &Credential) -> std::io::Result<()> 
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
     couch_sdk::save_private(path, credential)
-}
-
-fn load_credential(path: &Path) -> Result<Option<Credential>, Error> {
-    match couch_sdk::load_private::<Credential>(path) {
-        Ok(credential) if credential.fits() => Ok(Some(credential)),
-        Ok(_) => Err(Error::Invalid),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(Error::Invalid),
-    }
 }
 
 fn load_settings(path: &Path) -> Result<Option<Value>, Error> {
@@ -2122,18 +2461,49 @@ mod tests {
             frame(r#"{"id":5,"body":{"method":"command","function":"volume-up"}}"#),
         ]
         .concat();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while fs::read(&seen).unwrap_or_default().len() < expected.len()
-            && Instant::now() < deadline
-        {
-            std::thread::sleep(Duration::from_millis(10));
+        let read_back = |want: &[u8]| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while fs::read(&seen).unwrap_or_default().len() < want.len()
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let received = fs::read(&seen).unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&received),
+                String::from_utf8_lossy(want)
+            );
+            assert_eq!(received, want);
+        };
+        read_back(&expected);
+
+        // Protocol 3 (unreleased). A key file beside this connection - a good
+        // one, and then one nothing can read - changes not one byte of what
+        // this package is sent, and does not refuse the press. The gate
+        // strips a key for a package below protocol 3, and a key Couch cannot
+        // read is a key Couch has not got. Each of them is a different child,
+        // because the key it was configured with has changed, so each writes
+        // the handshake, the configure and the press again from the start.
+        let handshake = &expected[..expected.len()
+            - 2 * frame(r#"{"id":3,"body":{"method":"command","function":"volume-up"}}"#).len()];
+        for key in [
+            serde_json::to_vec(&json!({"key": "s3cret-0001"})).unwrap(),
+            b"not json at all".to_vec(),
+        ] {
+            fs::write(runtime.credential_path("receiver").unwrap(), &key).unwrap();
+            assert_eq!(
+                runtime.execute(
+                    "receiver",
+                    "denon",
+                    None,
+                    Request::key("volume-up", KeyPhase::Tap)
+                ),
+                Ok(Response::Ok)
+            );
+            read_back(handshake);
+            runtime.retire("receiver");
+            fs::write(&seen, b"").unwrap();
         }
-        let received = fs::read(&seen).unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&received),
-            String::from_utf8_lossy(&expected)
-        );
-        assert_eq!(received, expected);
         runtime.retire("receiver");
         let _ = fs::remove_dir_all(home);
     }
@@ -2762,10 +3132,16 @@ mod pairing_tests {
             Ok(PairReply::Waiting { .. })
         ));
         let done = runtime.pair_continue("tv", &token, None).unwrap();
-        let PairReply::Done { summary, settings } = &done else {
+        let PairReply::Done {
+            summary,
+            settings,
+            warning,
+        } = &done
+        else {
             panic!("{done:?}");
         };
         assert_eq!(summary, "Paired with the hall television");
+        assert_eq!(warning, &None, "everything the device gave was kept");
         // The redacted view of what is saved now, and never the key.
         assert_eq!(
             settings,
@@ -3102,7 +3478,7 @@ mod pairing_tests {
             vec![Ok(press()), Ok(PairStep::done(key("k"), "Paired"))],
         );
         let started = runtime.pair_start("tv", "sample", json!({})).unwrap();
-        runtime.pair_generation("2");
+        runtime.pair_generation(Some("2"));
         let reply = runtime.pair_continue("tv", &started.session, None).unwrap();
         assert_eq!(
             reply,
@@ -3303,6 +3679,470 @@ mod pairing_tests {
         let _ = fs::remove_dir_all(home);
     }
 
+    /// A conversation the test can hold open, so a cancel, a replacement or a
+    /// delete can be made to land while the package is still being waited on.
+    struct Held {
+        script: Script,
+        release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        entered: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    }
+    struct Blocking {
+        script: Script,
+        release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        entered: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    }
+    impl PairChild for Blocking {
+        fn start(
+            &mut self,
+            settings: Value,
+            credential: Option<&Credential>,
+        ) -> Result<PairStep, Failure> {
+            let mut script = self.script.lock().unwrap();
+            script.started = Some((settings, credential.is_some()));
+            script.next()
+        }
+        fn step(&mut self, input: Option<PairInput>) -> Result<PairStep, Failure> {
+            {
+                let (lock, waiting) = &*self.entered;
+                *lock.lock().unwrap() = true;
+                waiting.notify_all();
+            }
+            let (lock, waiting) = &*self.release;
+            let mut go = lock.lock().unwrap();
+            while !*go {
+                go = waiting.wait(go).unwrap();
+            }
+            let mut script = self.script.lock().unwrap();
+            script.asked.push(input);
+            script.next()
+        }
+        fn cancel(&mut self) {
+            self.script.lock().unwrap().cancelled += 1;
+        }
+    }
+    impl Held {
+        fn wait_until_inside(&self) {
+            let (lock, waiting) = &*self.entered;
+            let mut inside = lock.lock().unwrap();
+            let deadline = Duration::from_secs(5);
+            while !*inside {
+                let (next, timed_out) = waiting.wait_timeout(inside, deadline).unwrap();
+                inside = next;
+                assert!(!timed_out.timed_out(), "the package was never asked");
+            }
+        }
+        fn let_it_answer(&self) {
+            let (lock, waiting) = &*self.release;
+            *lock.lock().unwrap() = true;
+            waiting.notify_all();
+        }
+    }
+
+    /// A pairing whose second step blocks inside the package until the test
+    /// says so, and then answers `steps`.
+    fn held_script(runtime: &Runtime, steps: Vec<Result<PairStep, Failure>>) -> Held {
+        let script: Script = Arc::new(Mutex::new(Conversation {
+            steps: steps.into(),
+            ..Default::default()
+        }));
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let entered = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let held = Held {
+            script: script.clone(),
+            release: release.clone(),
+            entered: entered.clone(),
+        };
+        runtime.pair_with(
+            settings_manifest(),
+            couch_plugin::Pairing {
+                required: true,
+                max_seconds: 120,
+            },
+            "1",
+            move |_| {
+                script.lock().unwrap().opened += 1;
+                Ok(Box::new(Blocking {
+                    script: script.clone(),
+                    release: release.clone(),
+                    entered: entered.clone(),
+                }) as Box<dyn PairChild>)
+            },
+        );
+        held
+    }
+
+    /// H2. A pairing that is ended while its package is being waited on does
+    /// not come back and write a key: the slot is out of the map, and what
+    /// the package says after that is not this connection's business.
+    #[test]
+    fn a_pairing_ended_while_the_package_was_answering_writes_nothing() {
+        for ending in ["cancelled", "replaced", "deleted"] {
+            let home = home(&format!("ended-{ending}"));
+            let runtime = Arc::new(Runtime::new(home.clone()));
+            save_settings_file(&runtime, "tv", json!({"host": "tv.local"}));
+            plant_key(&runtime, "tv", &key("old-0000"));
+            let before = fs::read(runtime.credential_path("tv").unwrap()).unwrap();
+            // The steps are taken in order by whoever asks next: the start,
+            // then the replacement's own start where there is one, and the
+            // poll that is being held gets the `done` in either case.
+            let done = Ok(PairStep::done(key("s3cret-0001"), "Paired")
+                .with_settings(json!({"host": "corrected.local"})));
+            let steps = if ending == "replaced" {
+                vec![Ok(press()), Ok(press()), done]
+            } else {
+                vec![Ok(press()), done]
+            };
+            let held = held_script(&runtime, steps);
+            let started = runtime.pair_start("tv", "sample", json!({})).unwrap();
+            let token = started.session.clone();
+
+            let polling = {
+                let runtime = runtime.clone();
+                let token = token.clone();
+                std::thread::spawn(move || runtime.pair_continue("tv", &token, None))
+            };
+            held.wait_until_inside();
+            // Whatever ends it, it must not wait for the package either.
+            let at = Instant::now();
+            match ending {
+                "cancelled" => runtime.pair_cancel("tv", &token),
+                "replaced" => {
+                    // A second start replaces the first while it is in there.
+                    assert!(runtime.pair_start("tv", "sample", json!({})).is_ok());
+                }
+                _ => runtime.retire("tv"),
+            }
+            assert!(
+                at.elapsed() < Duration::from_secs(2),
+                "{ending} waited for the package"
+            );
+            held.let_it_answer();
+            let answer = polling.join().unwrap();
+            assert!(
+                matches!(answer, Err(PairError::Unknown)),
+                "{ending}: {answer:?}"
+            );
+            // Nothing written, the old key exactly as it was, and the
+            // connection's settings untouched.
+            assert_eq!(
+                fs::read(runtime.credential_path("tv").unwrap()).unwrap(),
+                before,
+                "{ending}"
+            );
+            assert!(!runtime.pairing_path("tv").unwrap().exists(), "{ending}");
+            assert_eq!(
+                settings_of(&runtime, "tv").unwrap(),
+                json!({"host": "tv.local"}),
+                "{ending}"
+            );
+            // The package was told its conversation was over.
+            assert!(held.script.lock().unwrap().cancelled >= 1, "{ending}");
+            let _ = fs::remove_dir_all(home);
+        }
+    }
+
+    /// H3. A package operation holds the store's exclusive lock for seconds.
+    /// Reading the selection through it would end every pairing in the house
+    /// while one package was being updated.
+    #[test]
+    fn a_store_that_cannot_say_just_now_does_not_end_a_pairing() {
+        let home = home("busy-store");
+        let runtime = Runtime::new(home.clone());
+        save_settings_file(&runtime, "tv", json!({"host": "tv.local"}));
+        let script = script(&runtime, vec![Ok(press()), Ok(press()), Ok(press())]);
+        let started = runtime.pair_start("tv", "sample", json!({})).unwrap();
+        // The store cannot say which version is selected.
+        runtime.pair_generation(None);
+        assert!(matches!(
+            runtime.pair_continue("tv", &started.session, None),
+            Ok(PairReply::Waiting { .. })
+        ));
+        runtime.reap(&|_| false);
+        assert_eq!(script.lock().unwrap().cancelled, 0);
+        assert!(runtime.pair_continue("tv", &started.session, None).is_ok());
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// ...and what it reads instead costs no lock at all, which is what makes
+    /// that true: the selection comes out of the state file.
+    #[test]
+    fn the_package_selection_a_pairing_watches_needs_no_store_lock() {
+        use std::{fs::OpenOptions, os::fd::AsRawFd};
+        let home = super::tests::home_with_a_package("lock-free", "sample");
+        let runtime = Runtime::new(home.clone());
+        let expected = runtime.package_generation("sample");
+        assert!(expected.is_some(), "the package is installed");
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(runtime.packages.root().join(".lock"))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            assert!(Instant::now() < deadline, "the store lock never came free");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // An install is running. Resolving the package would wait on it and
+        // then give up; reading the selection does not.
+        let at = Instant::now();
+        assert_eq!(runtime.package_generation("sample"), expected);
+        assert!(at.elapsed() < Duration::from_millis(200));
+        assert!(runtime
+            .packages
+            .resolve_wait("sample", Duration::from_millis(10))
+            .is_err());
+        drop(lock);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// M1. A key the set issues while answering is written, and the child
+    /// that answers next is started with it - which it has to be, because the
+    /// endpoint's worker keeps its own copy for the replacement it launches
+    /// after a failure, and that copy is the one from before.
+    #[test]
+    fn a_rotated_key_is_what_the_next_child_is_configured_with() {
+        let home = super::tests::home_with_a_package("rotation", "sample");
+        let runtime = Runtime::new(home.clone());
+        save_settings_file(&runtime, "conn", json!({"host": "tv.local", "port": 23}));
+        plant_key(&runtime, "conn", &key("old-0000"));
+        let _ = runtime.execute("conn", "sample", None, Request::status());
+        let first = {
+            let endpoints = runtime.endpoints.lock().unwrap();
+            let entry = &endpoints["conn"];
+            assert_eq!(entry.credential, Some(key("old-0000")));
+            Arc::as_ptr(&entry.endpoint)
+        };
+        runtime.store_rotated("conn", true, Instant::now(), key("rotated-0002"));
+        assert_eq!(
+            fs::read_to_string(runtime.credential_path("conn").unwrap()).unwrap(),
+            r#"{"key":"rotated-0002"}"#
+        );
+        // The entry deliberately still says what its child was configured
+        // with, which is what makes the next request start a new one.
+        assert_eq!(
+            runtime.endpoints.lock().unwrap()["conn"].credential,
+            Some(key("old-0000"))
+        );
+        let _ = runtime.execute("conn", "sample", None, Request::status());
+        assert_eq!(
+            runtime.endpoints.lock().unwrap()["conn"].credential,
+            Some(key("rotated-0002")),
+            "a child configured with the new key"
+        );
+        let _ = first;
+        runtime.retire("conn");
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// M2. A key file nothing can read is a key Couch has not got, not a
+    /// connection nobody can use: the settings page still loads, so "Pair
+    /// again" is reachable, and saving settings is not refused.
+    #[test]
+    fn a_key_that_cannot_be_read_leaves_the_connection_usable() {
+        let home = super::tests::home_with_a_package("unreadable", "sample");
+        let runtime = Runtime::new(home.clone());
+        save_settings_file(&runtime, "conn", json!({"host": "tv.local", "port": 23}));
+        for broken in [
+            b"not json".to_vec(),
+            b"[1,2,3]".to_vec(),
+            serde_json::to_vec(&json!({"k": "a".repeat(17 * 1024)})).unwrap(),
+        ] {
+            fs::write(runtime.credential_path("conn").unwrap(), &broken).unwrap();
+            let view = runtime.settings("conn", "sample").unwrap();
+            assert_eq!(view["configured"], true);
+            // No pairing is declared by this package, so nothing is said
+            // about one; what matters is that the page loads at all.
+            assert!(view.get("paired").is_none());
+            assert!(runtime
+                .save_settings("conn", "sample", json!({"host": "other.local"}))
+                .is_ok());
+            assert_ne!(
+                runtime.execute("conn", "sample", None, Request::status()),
+                Err(Error::Invalid.into())
+            );
+            runtime.retire("conn");
+        }
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// P1. A key made for one package is not handed to another.
+    #[test]
+    fn a_key_made_for_another_package_counts_as_unpaired() {
+        let home = home("moved-package");
+        let runtime = Runtime::new(home.clone());
+        save_settings_file(&runtime, "tv", json!({"host": "tv.local"}));
+        plant_key(&runtime, "tv", &key("s3cret"));
+        couch_sdk::save_private(
+            &runtime.pairing_path("tv").unwrap(),
+            &json!({"summary": "Paired", "paired_at": 1_758_000_000u64, "package": "elsewhere"}),
+        )
+        .unwrap();
+        script(&runtime, vec![Ok(press())]);
+        assert!(runtime.credential("tv", "elsewhere").is_some());
+        assert!(runtime.credential("tv", "sample").is_none());
+        // ...so the package is asked to pair without one.
+        let script = script(&runtime, vec![Ok(press())]);
+        assert!(runtime.pair_start("tv", "sample", json!({})).is_ok());
+        assert!(!script.lock().unwrap().started.clone().unwrap().1);
+        // A record an older Couch wrote names no package, and is believed.
+        couch_sdk::save_private(
+            &runtime.pairing_path("tv").unwrap(),
+            &json!({"summary": "Paired", "paired_at": 1_758_000_000u64}),
+        )
+        .unwrap();
+        assert!(runtime.credential("tv", "sample").is_some());
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// P2. A line a package asks Couch to show is shown to a person, and a
+    /// person's screen is not where a key goes.
+    #[test]
+    fn a_package_that_puts_its_key_in_the_words_it_shows_is_refused() {
+        let home = home("leak");
+        let runtime = Runtime::new(home.clone());
+        save_settings_file(&runtime, "tv", json!({"host": "tv.local"}));
+        let leaked = Credential::new(json!({"key": "s3cret-0001", "id": 7})).unwrap();
+        let script = script(
+            &runtime,
+            vec![Ok(PairStep::done(
+                leaked,
+                "Paired with s3cret-0001, keep it safe",
+            ))],
+        );
+        let started = runtime.pair_start("tv", "sample", json!({})).unwrap();
+        assert_eq!(
+            started.step,
+            PairReply::Failed {
+                reason: PairFailure::Unsupported,
+                message: Some(
+                    "This integration answered with its own key in the words it showed".into()
+                )
+            }
+        );
+        assert!(!runtime.credential_path("tv").unwrap().exists());
+        assert_eq!(script.lock().unwrap().cancelled, 1);
+
+        // A short value is not a secret: a summary is not refused for
+        // carrying the port the device answered on.
+        let script = script_for(
+            &runtime,
+            120,
+            vec![Ok(PairStep::done(
+                Credential::new(json!({"key": "s3cret-0002", "port": "9299"})).unwrap(),
+                "Paired on 9299",
+            ))],
+        );
+        assert!(matches!(
+            runtime.pair_start("tv", "sample", json!({})).unwrap().step,
+            PairReply::Done { .. }
+        ));
+        assert_eq!(script.lock().unwrap().cancelled, 0);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// L2. A `done` whose corrected settings cannot be kept says so. The key
+    /// is the device's and it is good, so it stays; what is refused is the
+    /// silence.
+    #[test]
+    fn settings_a_device_corrected_that_cannot_be_kept_are_not_passed_over() {
+        let home = home("corrected");
+        let runtime = Runtime::new(home.clone());
+        save_settings_file(&runtime, "tv", json!({"host": "tv.local"}));
+        script(
+            &runtime,
+            vec![Ok(
+                PairStep::done(key("s3cret"), "Paired").with_settings(json!({"host": ""}))
+            )],
+        );
+        let started = runtime.pair_start("tv", "sample", json!({})).unwrap();
+        let PairReply::Done {
+            warning: Some(said),
+            ..
+        } = &started.step
+        else {
+            panic!("{:?}", started.step);
+        };
+        assert!(said.contains("were not kept"), "{said}");
+        // ...and it is in the bytes the dialog reads.
+        assert!(serde_json::to_string(&started.step)
+            .unwrap()
+            .contains("\"warning\""));
+        // The key is there, so the page shows it as paired and nobody has to
+        // pair again; the settings are the ones that were already saved.
+        assert_eq!(
+            fs::read_to_string(runtime.credential_path("tv").unwrap()).unwrap(),
+            r#"{"key":"s3cret"}"#
+        );
+        assert_eq!(
+            settings_of(&runtime, "tv").unwrap(),
+            json!({"host": "tv.local"})
+        );
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// M4. Forgetting a key while a poll is inside the package neither waits
+    /// for it nor lets it write anything afterwards.
+    #[test]
+    fn forgetting_a_key_while_the_package_is_answering_is_prompt_and_final() {
+        let home = home("forget-mid");
+        let runtime = Arc::new(Runtime::new(home.clone()));
+        save_settings_file(&runtime, "tv", json!({"host": "tv.local"}));
+        plant_key(&runtime, "tv", &key("old-0000"));
+        let held = held_script(
+            &runtime,
+            vec![
+                Ok(press()),
+                Ok(PairStep::done(key("s3cret-0001"), "Paired")),
+            ],
+        );
+        let started = runtime.pair_start("tv", "sample", json!({})).unwrap();
+        let polling = {
+            let runtime = runtime.clone();
+            let token = started.session.clone();
+            std::thread::spawn(move || runtime.pair_continue("tv", &token, None))
+        };
+        held.wait_until_inside();
+        let at = Instant::now();
+        runtime.forget_credential("tv", "sample").unwrap();
+        assert!(at.elapsed() < Duration::from_secs(2), "forget waited");
+        held.let_it_answer();
+        assert!(matches!(polling.join().unwrap(), Err(PairError::Unknown)));
+        assert!(!runtime.credential_path("tv").unwrap().exists());
+        assert!(!runtime.pairing_path("tv").unwrap().exists());
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// L5. And it takes the half-written files with it: one of those holds a
+    /// key, and nothing else ever removes one.
+    #[test]
+    fn forgetting_a_key_removes_what_an_interrupted_write_left_behind() {
+        let home = home("leftovers");
+        let runtime = Runtime::new(home.clone());
+        save_settings_file(&runtime, "tv", json!({"host": "tv.local"}));
+        plant_key(&runtime, "tv", &key("s3cret"));
+        script(&runtime, vec![Ok(press())]);
+        let folder = runtime.credential_path("tv").unwrap();
+        let folder = folder.parent().unwrap().to_owned();
+        let leftovers = [
+            folder.join("plugin-credential.401.17.0.new"),
+            folder.join("plugin-pairing.401.17.1.new"),
+        ];
+        for path in &leftovers {
+            fs::write(path, br#"{"key":"s3cret"}"#).unwrap();
+        }
+        // ...and what is not one of them.
+        let settings = folder.join("plugin-connection.json");
+        let other = folder.join("webos-connection.401.17.2.new");
+        fs::write(&other, b"{}").unwrap();
+
+        runtime.forget_credential("tv", "sample").unwrap();
+        for path in &leftovers {
+            assert!(!path.exists(), "{}", path.display());
+        }
+        assert!(other.exists() && settings.exists());
+        let _ = fs::remove_dir_all(home);
+    }
+
     #[test]
     fn neither_the_panel_nor_a_browser_can_pair_through_the_request_gate() {
         let home = home("gate");
@@ -3423,6 +4263,28 @@ mod keep_alive_tests {
         for connection in many {
             runtime.retire(&connection);
         }
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// A pinned child is never asked for anything, so nothing else would ever
+    /// notice that its package had been updated or removed underneath it.
+    /// The sweep does, from the state file, without going near the store lock
+    /// an install is holding.
+    #[test]
+    fn a_child_whose_package_has_gone_is_not_kept_alive_by_anything() {
+        let home = super::tests::home_with_a_package("gone", "sample");
+        let runtime = Runtime::new(home.clone());
+        let one = vec!["a".to_owned()];
+        warm(&runtime, &one);
+        idle(&runtime, true);
+        // Still installed and still referred to: it stays.
+        runtime.reap(&|_| true);
+        assert_eq!(live(&runtime), one);
+
+        // The package is removed under it.
+        fs::remove_file(home.join("integrations/state/sample")).unwrap();
+        runtime.reap(&|_| true);
+        assert!(live(&runtime).is_empty(), "its package is not installed");
         let _ = fs::remove_dir_all(home);
     }
 }

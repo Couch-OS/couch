@@ -847,6 +847,73 @@ mod delete_tests {
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
+    /// The two locks this file and `plugins.rs` hold are taken in one order
+    /// and one order only: the configuration store first, then the package
+    /// registry. A deletion does exactly that. The ten-second sweep has to
+    /// read the configuration too - it is what says which connections a
+    /// device still refers to - and it reads it **before** it locks the
+    /// registry, never while holding it. Taken the other way round, one
+    /// sweep and one delete would wait on each other for good, and every
+    /// configuration read on the remote would queue behind them.
+    #[test]
+    fn a_sweep_never_holds_the_package_registry_while_it_reads_the_configuration() {
+        use std::time::{Duration, Instant};
+        let house = House::new("sweep-order", json!({"schema_version":1,"revision":0}));
+        let pids = house.home.join("pids");
+        install_sample(&house.home, &pids);
+        assert_eq!(
+            house.create(
+                json!({"name":"Receiver","provider":{"kind":"plugin","id":"sample","label":""}})
+            ),
+            "receiver"
+        );
+        assert_eq!(
+            house
+                .api
+                .connection_route(
+                    "POST",
+                    &["receiver", "plugin", "settings"],
+                    br#"{"host":"avr.invalid"}"#,
+                    None,
+                )
+                .status,
+            200
+        );
+        assert_eq!(
+            house
+                .api
+                .connection_route("GET", &["receiver", "plugin", "status"], b"", None)
+                .status,
+            200
+        );
+        // A child that nothing will ask for again, which is what `keep_alive`
+        // makes of one.
+        house.api.plugins.keep_alive_for_test("receiver");
+
+        // The configuration is held, as it is while a deletion saves.
+        let held = house.api.store.lock().unwrap();
+        std::thread::scope(|scope| {
+            let sweeping = scope.spawn(|| {
+                let in_use = house.api.connections_in_use();
+                house
+                    .api
+                    .plugins
+                    .reap(&|connection| in_use.contains(connection));
+            });
+            // The sweep is now waiting for the configuration. While it does,
+            // anything that needs a package child has to get through.
+            std::thread::sleep(Duration::from_millis(200));
+            let at = Instant::now();
+            house.api.plugins.retire("receiver");
+            assert!(
+                at.elapsed() < Duration::from_secs(2),
+                "the sweep was holding the package registry while it waited"
+            );
+            drop(held);
+            sweeping.join().unwrap();
+        });
+    }
+
     #[test]
     fn a_packaged_connection_loses_its_settings_and_its_running_child() {
         let house = House::new("packaged", json!({"schema_version":1,"revision":0}));

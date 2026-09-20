@@ -155,8 +155,11 @@ What this does **not** do:
 started when its connection is asked for something and reaped when it has been
 idle for a minute. A manifest may say `keep_alive` (protocol 3, unreleased, so
 no package here does) and keep its child through that reaping - only while a
-room device still refers to its connection, and only for the eight most
-recently used packages that ask. It changes nothing above: the child is the
+room device still refers to its connection, and for at most **eight always-on
+package processes** on the remote. One connection is one child, so a package
+with three connections would be three of the eight; beyond the cap the least
+recently used are reaped as any other idle child is. It changes nothing above:
+the child is the
 same process, under the same user, with the same empty environment and no
 writable directory. Pairing is the one thing that runs a *second* child of a
 package at once, for at most five minutes, so that the connection keeps working

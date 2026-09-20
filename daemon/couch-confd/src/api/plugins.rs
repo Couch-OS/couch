@@ -142,15 +142,24 @@ impl Api {
         .or_else(|| self.plugins.cached_child_kind(connection, resource))
     }
 
-    /// Whether any room device still refers to this connection. The only
-    /// thing a package's `keep_alive` is honoured for: a connection nothing
-    /// points at is reaped like any other when it goes idle.
-    pub(super) fn connection_in_use(&self, connection: &str) -> bool {
-        let id = Id::new(connection);
+    /// Every connection a room device still refers to. The only thing a
+    /// package's `keep_alive` is honoured for: a connection nothing points at
+    /// is reaped like any other when it goes idle.
+    ///
+    /// A **set**, read in one pass, because the reaper has to have the answer
+    /// before it locks the package registry. Asking this while holding the
+    /// registry would take the configuration store's lock in that order,
+    /// which is the opposite of the order a connection being deleted takes
+    /// them in (store first, then registry), and the two would wait on each
+    /// other for good.
+    pub(super) fn connections_in_use(&self) -> std::collections::HashSet<String> {
         self.with(|s| {
-            s.config().devices().any(|(_, device)| {
-                parts(&device.integration).is_some_and(|(connection_id, ..)| connection_id == &id)
-            })
+            s.config()
+                .devices()
+                .filter_map(|(_, device)| {
+                    parts(&device.integration).map(|(connection_id, ..)| connection_id.to_string())
+                })
+                .collect()
         })
     }
 
@@ -570,11 +579,15 @@ impl Api {
         rest: &[&str],
         body: &[u8],
     ) -> Reply {
-        if !self.plugins.pairs(plugin) {
-            return Reply::error(400, NO_PAIRING);
-        }
         match (method, rest) {
             ("POST", []) => {
+                // Only a start asks the store whether this package pairs.
+                // Continuing or cancelling is answered by whether the session
+                // is there, which no package that does not pair can have, so
+                // a poll never waits on a store an install is holding.
+                if !self.plugins.pairs(plugin) {
+                    return Reply::error(400, NO_PAIRING);
+                }
                 #[derive(Deserialize, Default)]
                 #[serde(deny_unknown_fields)]
                 struct Start {
@@ -726,10 +739,10 @@ impl Api {
             .spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(10));
                 let Some(api) = weak.upgrade() else { break };
-                // What `keep_alive` is measured against: a connection no room
-                // device refers to any more keeps nothing alive.
-                api.plugins
-                    .reap(&|connection| api.connection_in_use(connection));
+                // What `keep_alive` is measured against, read before the
+                // package registry is locked: see `connections_in_use`.
+                let in_use = api.connections_in_use();
+                api.plugins.reap(&|connection| in_use.contains(connection));
             })?;
         Ok(())
     }
@@ -1955,16 +1968,22 @@ mod pairing_tests {
             couch_plugin::PROTOCOL_VERSION
         );
         let (dir, api) = fixture("off");
-        for (method, path) in [
-            ("POST", vec!["pair"]),
-            ("POST", vec!["pair", "0123456789abcdef0123456789abcdef"]),
-            ("DELETE", vec!["pair", "0123456789abcdef0123456789abcdef"]),
-            ("DELETE", vec!["credential"]),
-        ] {
+        // Starting one, and forgetting a key, say what the package is.
+        for (method, path) in [("POST", vec!["pair"]), ("DELETE", vec!["credential"])] {
             let reply = api.plugin_route(method, "tv", &path, b"");
             assert_eq!(reply.status, 400, "{method} {path:?}");
             assert_eq!(body(&reply)["error"], NO_PAIRING, "{method} {path:?}");
         }
+        // Continuing or cancelling asks the package nothing at all - the
+        // session is the whole gate, and a package that does not pair can
+        // never have one - so an invented session is simply not there.
+        let session = ["pair", "0123456789abcdef0123456789abcdef"];
+        let reply = api.plugin_route("POST", "tv", &session, b"");
+        assert_eq!(reply.status, 404);
+        assert_eq!(body(&reply)["error"], NO_SESSION);
+        let reply = api.plugin_route("DELETE", "tv", &session, b"");
+        assert_eq!(reply.status, 200);
+        assert_eq!(body(&reply), json!({"cancelled": true}));
         assert_eq!(route(&api, "GET", &["credential"], "").status, 405);
         let _ = fs::remove_dir_all(dir);
     }
