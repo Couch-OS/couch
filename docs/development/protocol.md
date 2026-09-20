@@ -999,9 +999,13 @@ the release evidence rely on, protocol 3 is not released, and the preview must
 not teach anything to believe otherwise.
 
 **Afterwards.** The preview release is deleted from GitHub as soon as the test
-session ends - any other remote on the Dev channel would be offered it
-meanwhile - and the remote is moved to the next ordinary dev build, or rolled
-back.
+session ends, and the remote is moved to the next ordinary dev build, or rolled
+back. The remotes that could be offered it meanwhile are the ones on `.173` or
+later whose owner chose the Dev channel, and no others: an updater up to `.170`
+lists only the archived `dangerouslaser/couch` repository and accepts only
+assets and signed URLs under it, so it never sees a release published on
+`Couch-OS/couch`
+([Who can see a `.dev` release](../runtime-updates.md#who-can-see-a-dev-release)).
 
 ## Source references
 
