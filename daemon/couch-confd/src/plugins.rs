@@ -294,7 +294,10 @@ impl Runtime {
         // The bridge cannot reconfigure a child or bypass the package handshake.
         if !matches!(
             request,
-            Request::Command { .. } | Request::Action { .. } | Request::Status | Request::Inputs
+            Request::Command { .. }
+                | Request::Action { .. }
+                | Request::Status { .. }
+                | Request::Inputs
         ) {
             return Err(Error::Unsupported.into());
         }

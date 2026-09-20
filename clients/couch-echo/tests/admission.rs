@@ -96,7 +96,7 @@ fn timeout_no_retry() {
                 .on("GET STATUS", Reply::line("STATUS power=on")),
             command: "volume-up",
             timed_out_requests: &["CMD volume-up"],
-            recovery_request: Request::Status,
+            recovery_request: Request::status(),
             recovery_requests: &["GET STATUS"],
         },
     );

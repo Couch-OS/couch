@@ -271,7 +271,7 @@ impl Pages {
         });
         app.set_custom_activity_shown(true);
         app.set_custom_activity_available(true);
-        self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+        self.request_plugin(app, PluginRequest::status(), "Refreshing status…");
         if self
             .plugin
             .as_ref()
@@ -439,7 +439,7 @@ impl Pages {
                 plugin_command(&tile.action, &plugin.status)
             }
             PluginTileAction::RefreshStatus => {
-                self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+                self.request_plugin(app, PluginRequest::status(), "Refreshing status…");
                 return;
             }
             PluginTileAction::RefreshInputs => {
@@ -463,9 +463,7 @@ impl Pages {
             PluginTileAction::SetVolume(tenths) => {
                 if self.request_plugin(
                     app,
-                    PluginRequest::Action {
-                        action: TypedAction::SetVolumeDb { tenths: *tenths },
-                    },
+                    PluginRequest::action(TypedAction::SetVolumeDb { tenths: *tenths }),
                     "Setting volume…",
                 ) {
                     self.busy = true;
@@ -503,7 +501,7 @@ impl Pages {
                 Err(e) => e.into(),
             });
             if succeeded && self.plugin.is_some() {
-                self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+                self.request_plugin(app, PluginRequest::status(), "Refreshing status…");
             }
         }
         let events = self.plugin_rx.try_iter().collect::<Vec<_>>();
@@ -519,7 +517,7 @@ impl Pages {
                 app.set_custom_activity_status(message.into());
                 self.render(app);
                 if action_done {
-                    self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+                    self.request_plugin(app, PluginRequest::status(), "Refreshing status…");
                 }
             }
         }
@@ -893,9 +891,7 @@ mod tests {
                 at,
                 generation,
                 connection: "receiver".into(),
-                request: PluginRequest::Action {
-                    action: TypedAction::SetVolumeDb { tenths: -345 },
-                },
+                request: PluginRequest::action(TypedAction::SetVolumeDb { tenths: -345 }),
             })
             .unwrap();
         }
@@ -1281,7 +1277,8 @@ mod tests {
         assert!(matches!(
             work.try_recv().unwrap().request,
             PluginRequest::Action {
-                action: TypedAction::SetVolumeDb { tenths: -340 }
+                action: TypedAction::SetVolumeDb { tenths: -340 },
+                ..
             }
         ));
         pages.handle(&app, "command", 1);
