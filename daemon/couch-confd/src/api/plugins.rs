@@ -739,12 +739,17 @@ impl Api {
             .spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(10));
                 let Some(api) = weak.upgrade() else { break };
-                // What `keep_alive` is measured against, read before the
-                // package registry is locked: see `connections_in_use`.
-                let in_use = api.connections_in_use();
-                api.plugins.reap(&|connection| in_use.contains(connection));
+                api.sweep_packages();
             })?;
         Ok(())
+    }
+
+    /// One pass of the ten-second sweep, as the reaper thread runs it.
+    pub(super) fn sweep_packages(&self) {
+        // What `keep_alive` is measured against, read before the package
+        // registry is locked: see `connections_in_use`.
+        let in_use = self.connections_in_use();
+        self.plugins.reap(&|connection| in_use.contains(connection));
     }
 }
 

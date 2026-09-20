@@ -13,6 +13,7 @@
 mod api;
 mod assets;
 mod auth;
+mod lock_order;
 mod plugins;
 mod store;
 

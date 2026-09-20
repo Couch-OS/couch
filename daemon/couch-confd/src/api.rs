@@ -40,7 +40,7 @@ mod updates;
 mod webos;
 
 use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use couch_model::{
     Action, Activity, ActivityKind, Area, Config, Device, DeviceKind, Icon, Id, Integration, Room,
@@ -52,6 +52,7 @@ use tiny_http::{Header, Request, Response, StatusCode};
 
 use crate::assets::Assets;
 use crate::auth::{self, Auth, Verdict};
+use crate::lock_order::{level, RankedMutex};
 use crate::store::{self, Store};
 
 /// Bodies are small by construction - a whole house is a few KB - so a cap this
@@ -60,7 +61,9 @@ use crate::store::{self, Store};
 const MAX_BODY: u64 = 512 * 1024;
 
 pub struct Api {
-    store: Mutex<Store>,
+    /// The configuration. Its place among the daemon's locks, and what may
+    /// not happen while it is held, is in `docs/development/confd-locking.md`.
+    store: RankedMutex<level::ConfigStore, Store>,
     assets: Assets,
     auth: Arc<Auth>,
     plugins: crate::plugins::Runtime,
@@ -232,7 +235,7 @@ impl Api {
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_path_buf();
         Api {
-            store: Mutex::new(store),
+            store: RankedMutex::new(store),
             assets,
             auth,
             integration_packages: couch_integrations::management::Manager::new(

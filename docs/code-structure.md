@@ -11,6 +11,9 @@ The [system service](system-service.md) owns runtime networking and SSH, while
 `stage2` retains board initialization and service startup. The native GUI owns
 presentation. `couch-confd` owns configuration, browser APIs and shared media
 connections. Keep recovery access independent of the application processes.
+Before adding a lock, a cache or a background thread to `couch-confd`, read
+[Locks in couch-confd](development/confd-locking.md): they are taken in one
+order and a debug build panics when they are not.
 
 ## Further useful refactors
 
