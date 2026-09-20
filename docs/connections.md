@@ -85,6 +85,14 @@ from the package when requested. On the panel, commands travel over the
 owner-only `plugin.sock` beside `config.json` to the daemon's integration host.
 The GUI never starts a package process or reads its private settings.
 
+A refused request answers with `{"error": "<sentence>", "code": "<code>"}`. The
+sentence is what a page shows; `code` is the integration protocol's error code
+(`invalid`, `unsupported`, `busy`, `expired`, `rejected`, `timeout`, ...). A
+package that speaks protocol 3, which no released Couch loads yet, may add a
+`reason`; one of kind `invalid_setting` names a setting, and the settings form
+marks that setting with the package's words. See
+[what reaches the panel and the web page](development/protocol.md#what-reaches-the-panel-and-the-web-page).
+
 A package may compose its on-screen controls from Couch's curated native
 components: command groups, status text, boolean toggles and an input selector.
 The browser and physical remote render the same manifest recipe with their own

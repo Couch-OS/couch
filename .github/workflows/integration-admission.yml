@@ -172,6 +172,7 @@ jobs:
             build/webui-review/integrations-desktop.png
             build/webui-review/plugin-components-mobile.png
             build/webui-review/plugin-components-desktop.png
+            build/webui-review/plugin-components-field-error.png
             build/webui-review/updates-installed-mobile.png
             build/webui-review/updates-installed-desktop.png
             ${{ runner.temp }}/couch-web.log

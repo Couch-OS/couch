@@ -1,6 +1,6 @@
 //! Activity overrides: physical timing on the UI thread, device I/O on a worker.
 use crate::{connections, keypad::Press, App};
-use couch_model::commands::Function as F;
+use couch_model::commands::{Function as F, KeyPhase};
 use couch_model::{
     buttons::{Binding, Button, Gesture},
     Action, Config, Integration,
@@ -26,6 +26,9 @@ struct Request {
     config: Arc<Config>,
     action: Action,
     repeat: bool,
+    /// The binding that matched, short or long: with `repeat`, how the key was
+    /// pressed, for a package that asked to be told.
+    gesture: Gesture,
     /// Which hold a repeat belongs to. Releasing the key starts a new one, and
     /// a repeat from a hold that has ended is never sent: the queue may still
     /// hold several, and a volume that keeps rising after the finger has left
@@ -202,6 +205,7 @@ impl Controller {
                 config: self.config.clone(),
                 action,
                 repeat,
+                gesture,
                 hold: self.hold.load(Ordering::SeqCst),
             });
             // A held key repeats faster than a slow device answers. A repeat
@@ -534,7 +538,7 @@ fn connection_worker(
             &mut streaming,
             &mut sonos,
             &matter,
-            r.repeat,
+            couch_model::buttons::key_phase(r.gesture, r.repeat),
             &|| {
                 current.load(Ordering::SeqCst) == r.generation
                     && r.at.elapsed() <= Duration::from_millis(750)
@@ -584,9 +588,16 @@ pub(crate) fn execute(
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
 ) -> Result<(), String> {
-    execute_with_input(config, action, tv, streaming, sonos, matter, false, &|| {
-        true
-    })
+    execute_with_input(
+        config,
+        action,
+        tv,
+        streaming,
+        sonos,
+        matter,
+        KeyPhase::Tap,
+        &|| true,
+    )
     .map(|_| ())
 }
 
@@ -617,6 +628,10 @@ fn unreachable(e: impl std::fmt::Display) -> Failure {
 
 /// Physical input preserves hold edges; other callers represent distinct presses.
 /// `current` is rechecked after loading a codeset and opening the blaster.
+/// `phase` is how the key was pressed (`buttons::key_phase`): a repeat is a
+/// held key's edge for every transport, and a packaged device is sent the
+/// phase itself, which the daemon's host passes on only to a package that
+/// asked for it.
 ///
 /// The key goes down the device's transport order (`Device::transport_order`:
 /// the preferred transport first) and stops at the first that takes it. Which
@@ -629,12 +644,13 @@ pub(crate) fn execute_with_input(
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
-    repeat: bool,
+    phase: KeyPhase,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, String> {
     if !current() {
         return Ok(Outcome::default());
     }
+    let repeat = phase == KeyPhase::Repeat;
     let device = config
         .devices()
         .find(|(_, d)| d.id == action.device)
@@ -646,28 +662,23 @@ pub(crate) fn execute_with_input(
         else {
             return Err("Unsupported button function".into());
         };
-        return match couch_plugin::local_request(
-            &crate::home::path("plugin.sock"),
+        return match crate::tv::plugin::ask_detailed(
             connection_id.as_str(),
             couch_plugin::Request::Action {
                 action: couch_model::TypedAction::SetVolumeDb { tenths },
             },
-            couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
         ) {
             // Part of a hold: the lane reads the level once it goes quiet.
             Ok(couch_plugin::Response::Ok) => Ok(Outcome {
                 settle: true,
                 ..Outcome::default()
             }),
-            Ok(couch_plugin::Response::Error { code, .. }) => Err(code.to_string()),
             Ok(_) => Err("The integration returned an invalid response".into()),
-            Err(error) => Err(error.to_string()),
+            Err(failure) => Err(crate::tv::plugin::refusal(&failure)),
         };
     }
     if action.command == POWER_TOGGLE {
-        return power_toggle(
-            config, device, tv, streaming, sonos, matter, repeat, current,
-        );
+        return power_toggle(config, device, tv, streaming, sonos, matter, phase, current);
     }
     let command = F::parse(&action.command).ok_or("Unsupported button function")?;
     let order = device.transport_order(config);
@@ -698,7 +709,7 @@ pub(crate) fn execute_with_input(
             }
             couch_model::Transport::Bluetooth => send_bluetooth(device, &command),
             couch_model::Transport::Ip => send_network(
-                config, device, &command, tv, streaming, sonos, matter, repeat, current,
+                config, device, &command, tv, streaming, sonos, matter, phase, current,
             ),
         };
         match result {
@@ -735,7 +746,7 @@ fn power_toggle(
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
-    repeat: bool,
+    phase: KeyPhase,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, String> {
     let name = device.name.clone();
@@ -759,16 +770,13 @@ fn power_toggle(
     } else {
         match device.network_integration(config) {
             Some(Integration::Plugin { connection_id, .. }) => {
-                match couch_plugin::local_request(
-                    &crate::home::path("plugin.sock"),
+                match crate::tv::plugin::ask_detailed(
                     connection_id.as_str(),
                     couch_plugin::Request::Status,
-                    couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
                 ) {
                     Ok(couch_plugin::Response::Status { status }) => Plan::Observed(status.on),
-                    Ok(couch_plugin::Response::Error { code, .. }) => return Err(code.to_string()),
                     Ok(_) => return Err("The integration returned an invalid status".into()),
-                    Err(error) => return Err(error.to_string()),
+                    Err(failure) => return Err(crate::tv::plugin::refusal(&failure)),
                 }
             }
             Some(Integration::AndroidTv) => {
@@ -802,7 +810,7 @@ fn power_toggle(
             streaming,
             sonos,
             matter,
-            repeat,
+            phase,
             current,
         )
     };
@@ -858,9 +866,10 @@ fn send_network(
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
-    repeat: bool,
+    phase: KeyPhase,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, Failure> {
+    let repeat = phase == KeyPhase::Repeat;
     let command = command.clone();
     // A volume or mute press on a device that can report its level gets the
     // level read back for the volume card; everything else reports nothing.
@@ -1183,12 +1192,12 @@ fn send_network(
         .map(|_| Outcome::default())
         .map_err(Failure::Command),
         Integration::Plugin { connection_id, .. } => {
-            let timeout = couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1);
-            let result = couch_plugin::local_request(
-                &crate::home::path("plugin.sock"),
+            // How the key was pressed goes with it. The daemon's host sends a
+            // phase only to a protocol 3 package; every other package is sent
+            // the tap it always was, byte for byte.
+            let result = crate::tv::plugin::ask_detailed(
                 connection_id.as_str(),
-                couch_plugin::Request::command(command.id()),
-                timeout,
+                couch_plugin::Request::key(command.id(), phase),
             );
             match result {
                 // The package reports its level only when asked, and asking
@@ -1209,13 +1218,10 @@ fn send_network(
                         ..Outcome::default()
                     })
                 }
-                Ok(couch_plugin::Response::Error { code, .. }) => {
-                    Err(plugin_failure(code, code.to_string()))
-                }
                 Ok(_) => Err(Failure::Command(
                     "The external integration returned an invalid command response".into(),
                 )),
-                Err(error) => Err(plugin_failure(error, error.to_string())),
+                Err(failure) => Err(plugin_failure(&failure)),
             }
         }
         _ => Err(Failure::Command(
@@ -1337,8 +1343,11 @@ fn db_reading(target: &str, tenths: i16, muted: bool, scale: Option<DbScale>) ->
     }
 }
 
-fn plugin_failure(error: couch_plugin::Error, message: String) -> Failure {
-    match error {
+/// Whether the next transport gets the key is the code's question alone: a
+/// package's reason changes what is said, never what is done.
+fn plugin_failure(failure: &couch_plugin::Failure) -> Failure {
+    let message = crate::tv::plugin::refusal(failure);
+    match failure.code {
         couch_plugin::Error::Transport
         | couch_plugin::Error::Timeout
         | couch_plugin::Error::Busy
@@ -1600,7 +1609,7 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &connections::MatterFleet::default(),
-                false,
+                KeyPhase::Tap,
                 &|| true,
             );
             assert!(
@@ -1709,7 +1718,7 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &matter,
-                false,
+                KeyPhase::Tap,
                 &|| true,
             )
             .unwrap_err();
@@ -2128,7 +2137,7 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &matter,
-                false,
+                KeyPhase::Tap,
                 &|| true,
             )
             .unwrap_err();
@@ -2187,7 +2196,7 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &matter,
-                false,
+                KeyPhase::Tap,
                 &|| true,
             )
             .unwrap_err()
@@ -2212,6 +2221,280 @@ mod tests {
             "a plain error ends the press"
         );
         assert!(matches!(unreachable("gone"), Failure::Unavailable(m) if m == "gone"));
+    }
+
+    fn said(code: couch_plugin::Error, text: &str) -> couch_plugin::Failure {
+        couch_plugin::Failure {
+            code,
+            reason: Some(couch_plugin::Reason::Message { text: text.into() }),
+        }
+    }
+
+    #[test]
+    fn a_package_reason_changes_what_is_said_and_never_which_transport_is_tried() {
+        use couch_plugin::Error as E;
+        // Exactly the codes that let the next transport have the key, with a
+        // reason or without: a package cannot talk its way into or out of the
+        // infrared and Bluetooth fallback.
+        for code in [
+            E::Invalid,
+            E::Unsupported,
+            E::Incompatible,
+            E::Protocol,
+            E::Transport,
+            E::Timeout,
+            E::Busy,
+            E::Expired,
+            E::Rejected,
+            E::Unpaired,
+        ] {
+            let falls_through = matches!(code, E::Transport | E::Timeout | E::Busy | E::Expired);
+            // Without a reason the words are the ones every build has shown.
+            let plain = plugin_failure(&code.into());
+            let worded = plugin_failure(&said(code, "The TV is locked"));
+            let text = format!("{code}\nThe TV is locked");
+            if falls_through {
+                assert_eq!(plain, Failure::Unavailable(code.to_string()));
+                assert_eq!(worded, Failure::Unavailable(text));
+            } else {
+                assert_eq!(plain, Failure::Command(code.to_string()));
+                assert_eq!(worded, Failure::Command(text));
+            }
+        }
+        // An empty line is no line.
+        assert_eq!(
+            plugin_failure(&said(E::Rejected, "  ")),
+            Failure::Command(E::Rejected.to_string())
+        );
+    }
+
+    #[test]
+    fn a_long_binding_is_remembered_so_the_worker_can_say_how_the_key_was_pressed() {
+        use couch_model::buttons::key_phase;
+        let (mut c, rx) = fixture();
+        c.bindings = vec![
+            Binding {
+                button: Button::VolumeUp,
+                gesture: Gesture::Short,
+                action: Some(Action::new("tv", "volume-up")),
+            },
+            binding(Gesture::Long, "home"),
+        ];
+        let mut p = press(115, false);
+        c.handle_press(&p);
+        let tap = rx.try_recv().unwrap();
+        assert_eq!(key_phase(tap.gesture, tap.repeat), KeyPhase::Tap);
+        p.repeat = true;
+        c.handle_press(&p);
+        let held = rx.try_recv().unwrap();
+        assert_eq!(key_phase(held.gesture, held.repeat), KeyPhase::Repeat);
+        c.fire(Button::Ok, Gesture::Long, false);
+        let long = rx.try_recv().unwrap();
+        assert_eq!(long.action.command, "home");
+        assert_eq!(key_phase(long.gesture, long.repeat), KeyPhase::LongPress);
+    }
+
+    /// What this panel writes to the daemon's socket for a packaged device,
+    /// byte for byte, and what it says when the daemon relays a refusal. A tap
+    /// is the frame every build has written (`local command` in couch-plugin's
+    /// tests/golden/wire-00ab4da.tsv); only a held or long-pressed key carries
+    /// a phase, which the daemon's host drops again for a protocol 1 or 2
+    /// package (couch-confd's plugins.rs has the test with the Denon manifest).
+    #[test]
+    fn the_panel_sends_the_key_phase_to_the_daemon_and_shows_the_reason_it_relays() {
+        const NAME: &str = "activity_buttons::tests::the_panel_sends_the_key_phase_to_the_daemon_and_shows_the_reason_it_relays";
+        if std::env::var_os("COUCH_TEST_PANEL_SOCKET").is_none() {
+            let home =
+                std::env::temp_dir().join(format!("couch-panel-sock-{}", std::process::id()));
+            std::fs::create_dir_all(&home).unwrap();
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env("COUCH_TEST_PANEL_SOCKET", "1")
+                .env("COUCH_HOME_DIR", &home)
+                .output()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(home);
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use std::io::{Read, Write};
+        let listener =
+            std::os::unix::net::UnixListener::bind(crate::home::path("plugin.sock")).unwrap();
+        let ok = r#"{"type":"ok"}"#;
+        let status = r#"{"type":"status","status":{}}"#;
+        // One reply per connection, in the order the presses below ask.
+        let replies = [
+            ok,
+            status,
+            ok,
+            ok,
+            status,
+            r#"{"type":"error","code":"rejected","reason":{"kind":"message","text":"The TV is locked"}}"#,
+            r#"{"type":"error","code":"timeout","reason":{"kind":"message","text":"Still starting up"}}"#,
+            r#"{"type":"error","code":"rejected"}"#,
+        ];
+        let daemon = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            // Kept open to the end: macOS will not set a deadline on a socket
+            // whose peer has gone, which the asking side does before reading.
+            let mut open = Vec::new();
+            for reply in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut length = [0; 4];
+                stream.read_exact(&mut length).unwrap();
+                let mut frame = vec![0; u32::from_be_bytes(length) as usize];
+                stream.read_exact(&mut frame).unwrap();
+                seen.push(String::from_utf8(frame).unwrap());
+                stream
+                    .write_all(&(reply.len() as u32).to_be_bytes())
+                    .unwrap();
+                stream.write_all(reply.as_bytes()).unwrap();
+                open.push(stream);
+            }
+            seen
+        });
+        let config = room();
+        let matter = connections::MatterFleet::default();
+        let press = |command: &str, phase: KeyPhase| {
+            execute_with_input(
+                &config,
+                &Action::new("avr-package", command),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &matter,
+                phase,
+                &|| true,
+            )
+        };
+        assert!(press("volume-up", KeyPhase::Tap).is_ok());
+        // A held key is not read back: the lane does that once it goes quiet.
+        assert!(press("volume-up", KeyPhase::Repeat).unwrap().settle);
+        assert!(press("mute", KeyPhase::LongPress).is_ok());
+        assert_eq!(
+            press("power-on", KeyPhase::Tap).unwrap_err(),
+            "The device refused the request\nThe TV is locked"
+        );
+        // No other transport on this device, so what made the network
+        // unavailable is what is said.
+        assert_eq!(
+            press("power-on", KeyPhase::Tap).unwrap_err(),
+            "The integration did not reply before the deadline\nStill starting up"
+        );
+        assert_eq!(
+            press("power-on", KeyPhase::Tap).unwrap_err(),
+            "The device refused the request"
+        );
+        let command = |function: &str, phase: &str| {
+            format!(
+                r#"{{"connection_id":"avr-package","request":{{"method":"command","function":"{function}"{phase}}}}}"#
+            )
+        };
+        let read = r#"{"connection_id":"avr-package","request":{"method":"status"}}"#;
+        assert_eq!(
+            daemon.join().unwrap(),
+            [
+                command("volume-up", ""),
+                read.into(),
+                command("volume-up", r#","phase":"repeat""#),
+                command("mute", r#","phase":"long_press""#),
+                read.into(),
+                command("power-on", ""),
+                command("power-on", ""),
+                command("power-on", ""),
+            ]
+        );
+    }
+
+    /// A refusal with a package's line under it has to read well on the toast
+    /// of the 480-pixel panel, at its longest too. `COUCH_CORE_SCREENSHOTS=<dir>`
+    /// keeps the pictures.
+    #[test]
+    fn a_refusal_and_its_reason_render_on_the_toast() {
+        const NAME: &str = "activity_buttons::tests::a_refusal_and_its_reason_render_on_the_toast";
+        if std::env::var_os("COUCH_TEST_REASON_TOAST").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_REASON_TOAST", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::{platform::WindowEvent, ComponentHandle};
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.set_feedback_enabled(true);
+        app.show().unwrap();
+        window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        // One buffer for every picture: the renderer repaints only what changed.
+        let mut pixels = vec![slint::Rgb8Pixel::default(); 480 * 800];
+        let mut above: Option<Vec<slint::Rgb8Pixel>> = None;
+        let longest = "The receiver is updating its firmware and will not take commands until it has restarted, which can take as long as ten minutes. Try again after that, please. OK";
+        assert_eq!(longest.len(), couch_plugin::Reason::MAX_TEXT);
+        for (name, failure) in [
+            (
+                "reason-toast-1-code-only.png",
+                couch_plugin::Error::Rejected.into(),
+            ),
+            (
+                "reason-toast-2-message.png",
+                said(couch_plugin::Error::Rejected, "The TV is locked"),
+            ),
+            (
+                "reason-toast-3-unpaired.png",
+                said(couch_plugin::Error::Unpaired, "Pair this TV again"),
+            ),
+            (
+                "reason-toast-4-longest.png",
+                said(couch_plugin::Error::Rejected, longest),
+            ),
+        ] {
+            let message = match plugin_failure(&failure) {
+                Failure::Command(message) | Failure::Unavailable(message) => message,
+            };
+            app.set_toast(message.as_str().into());
+            for _ in 0..20 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(&mut pixels, 480);
+            });
+            let band = &pixels[720 * 480..760 * 480];
+            assert!(band.iter().any(|p| *p != band[0]), "the toast drew nothing");
+            // Two lines stay inside the bar one line has: the page above it
+            // is the page the one-line toast left.
+            let page = pixels[..680 * 480].to_vec();
+            assert!(
+                above.get_or_insert(page.clone()) == &page,
+                "{name}: the toast spilled above its bar"
+            );
+            if let Some(dir) = std::env::var_os("COUCH_CORE_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir).join(name),
+                    &bytes,
+                    480,
+                    800,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        app.hide().unwrap();
     }
 
     #[test]

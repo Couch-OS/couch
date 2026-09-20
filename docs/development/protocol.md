@@ -203,9 +203,10 @@ gate in `couch-plugin` and `couch-sdk`, described under
   A protocol 1 or 2 manifest that declares one is invalid.
 - **Key phase.** `KeyPhase` is `tap`, `repeat` or `long_press`, default `tap`,
   and `tap` is never written. `couch_model::buttons::key_phase(gesture, repeat)`
-  maps a panel key event to it. The `command` request can carry it (below);
-  nothing in Couch sends one yet, and a protocol 1 or 2 package keeps receiving
-  the bytes it receives today.
+  maps a panel key event to it. The `command` request can carry it (below), and
+  the panel sends it for every mapped key; the host passes it on only to a
+  protocol 3 package, so a protocol 1 or 2 package keeps receiving the bytes it
+  receives today.
 - **More than one typed action.** A saved package snapshot may hold up to eight
   action schemas of distinct kinds, and a request finds its schema by kind
   (`PluginActionSchema::find`). `set_volume_db` is still the only kind, so
@@ -272,6 +273,62 @@ revision's types, which refuse unknown fields, on both sides of the host's own
 gate; and `tools/tests/old-package-wire.sh`, which builds `couch-plugin-echo`
 and `couch-plugin-sonos` from that revision and runs this tree's admission and
 subprocess suites against those executables.
+
+### What reaches the panel and the web page
+
+The daemon carries a refusal whole, in both directions it serves:
+
+- **The panel's socket** (`plugin.sock`). The request frame is unchanged
+  (`LocalRequest`); a `command` may now carry a `phase`, which the daemon hands
+  to the host untouched, and the host's gate decides whether the package is
+  told. A refusal comes back as the `error` frame with the package's `reason`
+  when it gave one. Without a reason the frame is the one it always was,
+  `{"type":"error","code":"unsupported"}`.
+- **HTTP** (`/api/connections/<id>/plugin/...`). The error body keeps `error`,
+  the sentence every client already shows, and gains `code` and, when there is
+  one, `reason`:
+
+  ```json
+  {"error":"The device refused the request","code":"rejected"}
+  {"error":"The port must not be 0","code":"invalid",
+   "reason":{"kind":"invalid_setting","field":"port","text":"The port must not be 0"}}
+  ```
+
+  `error` is the reason's text when there is a reason, so a client that reads
+  only `error` still shows the better sentence. `unpaired` answers 409; every
+  other status is what it was (400 for `invalid` and `unsupported`, 503 for
+  `busy` and `expired`, 502 otherwise, and 400 for anything that stops settings
+  from being saved).
+
+What a person sees:
+
+- **On the remote**, a mapped key that fails raises the toast: Couch's own
+  sentence for the code, and the package's line under it. The toast holds two
+  lines of about 35 characters at the panel's width and ends a longer one with
+  an ellipsis, so put the words that matter first: "The TV is locked", not
+  "An error occurred because the TV is locked". The device screen shows the
+  same two lines in its error box, which wraps, and a package's own pages in
+  their two-line status area. Which transport is tried next (infrared, Bluetooth) depends on the
+  code alone: a reason changes what is said, never what is done.
+- **On the settings form** in the web UI, an `invalid_setting` reason outlines
+  the setting it names and puts the text under that control; the form's status
+  line says which setting to check. Editing the setting clears it. Any other
+  reason, and a refusal with none, is the form's status line, as before. Where
+  a setting is refused with no form in sight (a connection saved by a built-in
+  client being handed to its package), the sentence names the setting by its
+  label: "Port: The port must not be 0".
+
+A held volume key on a device whose package declares a decibel range is not a
+stream of `repeat` commands: the panel turns the hold into absolute
+`set_volume_db` writes, as it did before protocol 3, and those carry no phase.
+
+None of this is reachable on a remote yet. With the switch off no package can
+give a reason, and a phase is dropped by the host before it is written. The
+daemon and the panel are tested with constructed failures and with scripted
+protocol 1 and 2 packages (the Denon 0.2.1 manifest receives a held and a
+long-pressed `volume-up` as the bytes of a tap); the path from the panel's
+socket to a protocol 3 package and back runs in `couch-echo`'s
+`tests/protocol3.rs`, with the preview on.
 
 ### The switch
 

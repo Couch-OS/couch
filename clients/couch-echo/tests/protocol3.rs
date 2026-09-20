@@ -153,3 +153,75 @@ fn a_refusal_carries_its_reason_through_the_host_and_the_endpoint() {
         Ok(Response::Ok)
     );
 }
+
+/// The panel's leg, which the daemon sits in the middle of: a key goes in over
+/// the local socket with its phase, and a refusal comes back with its reason.
+/// The relay here is the daemon's (`couch-confd`'s `relay`: the endpoint's
+/// detailed answer, a failure sent on whole); the daemon itself is never built
+/// with the preview on, so this is where that leg meets a protocol 3 package.
+#[test]
+fn the_panel_socket_carries_the_phase_in_and_the_reason_out() {
+    use couch_plugin::LocalRequest;
+    use std::{os::unix::net::UnixListener, time::Duration};
+    let device = MockHost::start(
+        Script::new()
+            .terminator(b'\n')
+            .on("CMD volume-up repeat", Reply::line("OK"))
+            .on("CMD x:info long_press", Reply::line("OK"))
+            .on("CMD power-off", Reply::line("ERR the TV is locked"))
+            .on("CMD power-on long_press", Reply::line("ERR unpaired")),
+    );
+    let package = testing::Package::new(adapter());
+    let endpoint = package.endpoint(settings(&device), Duration::from_secs(5));
+    let directory = std::env::temp_dir().join(format!("couch-echo-panel-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let socket = directory.join("p.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let daemon = std::thread::spawn(move || {
+        // Answered streams stay open to the end: macOS will not set a deadline
+        // on a socket whose peer has gone, which the asking side does.
+        let mut answered = Vec::new();
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request: LocalRequest =
+                couch_plugin::read_frame_timeout(&mut stream, Duration::from_secs(2)).unwrap();
+            assert_eq!(request.connection_id, "bedroom-tv");
+            let response = endpoint
+                .request_detailed(request.request)
+                .unwrap_or_else(Response::error);
+            couch_plugin::write_frame_timeout(&mut stream, &response, Duration::from_secs(2))
+                .unwrap();
+            answered.push(stream);
+        }
+    });
+    let ask = |request| {
+        couch_plugin::local_request_detailed(&socket, "bedroom-tv", request, Duration::from_secs(5))
+    };
+    assert_eq!(
+        ask(Request::key("volume-up", KeyPhase::Repeat)),
+        Ok(Response::Ok)
+    );
+    assert_eq!(
+        ask(Request::key("x:info", KeyPhase::LongPress)),
+        Ok(Response::Ok)
+    );
+    assert_eq!(
+        ask(Request::command("power-off")),
+        Err(because(Error::Rejected, "the TV is locked"))
+    );
+    assert_eq!(
+        ask(Request::key("power-on", KeyPhase::LongPress)),
+        Err(because(Error::Unpaired, "Pair this TV again"))
+    );
+    daemon.join().unwrap();
+    assert_eq!(
+        device.requests(),
+        [
+            "CMD volume-up repeat",
+            "CMD x:info long_press",
+            "CMD power-off",
+            "CMD power-on long_press"
+        ]
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
