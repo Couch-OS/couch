@@ -12,8 +12,10 @@
 use couch_plugin::{is_non_dumpable, Host, HostPolicy, Manifest};
 use serde_json::json;
 use std::{
+    io::Write,
     os::unix::fs::PermissionsExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
@@ -89,9 +91,7 @@ impl Package {
     }
 
     fn install(&self, bytes: Vec<u8>) {
-        let executable = self.root.join("bin/plugin");
-        std::fs::write(&executable, bytes).unwrap();
-        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&self.root.join("bin/plugin"), &bytes);
     }
 
     fn start(&self, uid: u32) -> Host {
@@ -108,6 +108,25 @@ impl Drop for Package {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// Writes a package executable without this process ever holding a descriptor
+/// open for writing it.
+///
+/// Linux refuses `execve` with ETXTBSY (errno 26) while anyone has the file
+/// open for writing, and a fork made by another test thread's spawn inherits
+/// this thread's descriptors until its own exec closes them. A short-lived
+/// child holds the writing descriptor instead, as the host protocol tests do.
+fn write_executable(path: &Path, bytes: &[u8]) {
+    let mut writer = Command::new("/bin/sh")
+        .args(["-c", r#"exec /bin/cat > "$1""#, "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer.stdin.take().unwrap().write_all(bytes).unwrap();
+    assert!(writer.wait().unwrap().success(), "write {}", path.display());
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 /// One question to a probe child, and its one-word answer.

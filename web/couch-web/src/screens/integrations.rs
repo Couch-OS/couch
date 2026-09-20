@@ -554,6 +554,7 @@ pub fn screen(app: App) -> AnyView {
     view! {
         {ui::page_header(app, "Integrations", None)}
         <p class="lead">"Install signed packages from trusted repositories. Removing or changing a package keeps its saved connection settings so it can be set up again later."</p>
+        {super::updates::preview_notice()}
         {move || recovery.get().recovery.and_then(|snapshot| (!snapshot.integrations_active && snapshot.path.is_some()).then_some(view! {
             <section class="notice" role="alert"><strong>"Saved integration configuration found"</strong><p>"Couch kept configuration from an earlier runtime integration setup. Download a copy before any deliberate import; importing it replaces the current house configuration."</p><a href="/api/integrations/recovery/config" download="couch-integration-recovery.json">"Download saved integration configuration"</a></section>
         }))}

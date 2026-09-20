@@ -415,6 +415,51 @@ mod tests {
         )
         .is_err_and(|e| e.to_string().contains("Unsupported update origin")));
     }
+    /// What keeps a new release away from every updater up to `.170`: the
+    /// publisher signs the Couch-OS owner into the manifest, and those updaters
+    /// take the other one and nothing else. `verify` at
+    /// `v0.1.0-alpha.20260916.170`, with
+    /// `PREFIX = "https://github.com/dangerouslaser/couch/releases/download/"`:
+    ///
+    /// ```text
+    /// || m.url
+    ///     != format!(
+    ///         "{PREFIX}{}/couch-{}-ha100-{}.tar.gz",
+    ///         m.version, m.version, m.kind
+    ///     )
+    /// ```
+    ///
+    /// They also list releases from `repos/dangerouslaser/couch`, now a separate
+    /// archived repository, and skip an asset whose download URL is not under
+    /// that prefix. Those updaters are all the ones with no Dev channel (before
+    /// `.123`) and no `couch-*` wildcard (before `.142`), so this prefix is part
+    /// of why a `.dev` build, a protocol 3 preview included, reaches only
+    /// Dev-channel remotes on `.173` or later (docs/runtime-updates.md, "Who
+    /// can see a `.dev` release"). Signing the old owner again would undo that.
+    #[test]
+    fn the_publisher_signs_the_couch_os_owner_which_updaters_up_to_170_refuse() {
+        let old_prefix = "https://github.com/dangerouslaser/couch/releases/download/";
+        assert_eq!(
+            PREFIX,
+            "https://github.com/Couch-OS/couch/releases/download/"
+        );
+        assert_ne!(PREFIX, old_prefix);
+        assert!(PREFIXES.contains(&old_prefix));
+        // The `.170` comparison, run on the URL today's publisher signs.
+        let version = "v0.1.0-alpha.20260920.191.p3.dev";
+        let signed = format!("{PREFIX}{version}/couch-{version}-ha100-runtime.tar.gz");
+        let wanted_by_170 = format!(
+            "{old_prefix}{}/couch-{}-ha100-{}.tar.gz",
+            version, version, "runtime"
+        );
+        assert_ne!(signed, wanted_by_170);
+        // This updater takes it, as every one from `.173` on does.
+        assert!(release_url(
+            &signed,
+            version,
+            &format!("couch-{version}-ha100-runtime.tar.gz")
+        ));
+    }
     #[test]
     fn signed_manifests_may_name_either_owner_but_not_another() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
@@ -518,6 +563,52 @@ mod tests {
         let dev = version("v0.1.0-alpha.20260913.122.dev").unwrap();
         let next = version("v0.1.0-alpha.20260914.130").unwrap();
         assert!(alpha < dev && dev < next);
+        // A protocol 3 preview build of the same number sits above that dev
+        // build and below the next one, so an ordinary dev build with the next
+        // number always replaces it. Identifiers compare part by part; `191p3`
+        // would be one alphanumeric part and would sort above every number.
+        let dev = version("v0.1.0-alpha.20260920.191.dev").unwrap();
+        let preview = version("v0.1.0-alpha.20260920.191.p3.dev").unwrap();
+        let next_dev = version("v0.1.0-alpha.20260920.192.dev").unwrap();
+        let next_alpha = version("v0.1.0-alpha.20260920.192").unwrap();
+        assert!(version("v0.1.0-alpha.20260920.191").unwrap() < dev);
+        assert!(dev < preview && preview < next_alpha && next_alpha < next_dev);
+        assert!(version("v0.1.0-alpha.20260920.191p3.dev").unwrap() > next_dev);
+    }
+    #[test]
+    fn a_protocol_3_preview_build_is_offered_on_the_dev_channel_only() {
+        let tag = "v0.1.0-alpha.20260920.191.p3.dev";
+        let preview = version(tag).unwrap();
+        assert!(accepts(Channel::Dev, &preview));
+        assert!(!accepts(Channel::Alpha, &preview));
+        assert!(!accepts(Channel::Stable, &preview));
+        // Without `dev` the same tag would be an Alpha build, which is why the
+        // publisher insists on both identifiers for a preview runtime.
+        assert!(accepts(
+            Channel::Alpha,
+            &version("v0.1.0-alpha.20260920.191.p3").unwrap()
+        ));
+        // The whole selection, as a remote on `.190` runs it.
+        let installed = "v0.1.0-alpha.20260920.190";
+        let mut release = listing(tag, false);
+        release["prerelease"] = serde_json::json!(true);
+        for (channel, offered) in [
+            (Channel::Stable, false),
+            (Channel::Alpha, false),
+            (Channel::Dev, true),
+        ] {
+            let (runtime, _) = select_listed(vec![release.clone()], channel, installed).unwrap();
+            assert_eq!(
+                runtime.map(|item| item.tag),
+                offered.then(|| tag.to_owned())
+            );
+        }
+        // And a remote on the preview build is offered the next ordinary dev
+        // build, which is how it leaves the preview again.
+        let mut next = listing("v0.1.0-alpha.20260920.192.dev", false);
+        next["prerelease"] = serde_json::json!(true);
+        let (runtime, _) = select_listed(vec![next], Channel::Dev, tag).unwrap();
+        assert_eq!(runtime.unwrap().tag, "v0.1.0-alpha.20260920.192.dev");
     }
     #[test]
     fn channels_take_what_they_should() {

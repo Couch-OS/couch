@@ -17,9 +17,18 @@
 # explained in tools/release/update_floor.py, and
 # `python3 tools/release/update_floor.py --tree CLEAN_RUNTIME` checks a staged
 # tree before it is signed.
+#
+# COUCH_PROTOCOL_3_PREVIEW=dev-remote-only builds couch-confd, and nothing else,
+# with protocol 3 switched on, for one development remote
+# (tools/protocol-3-preview-env.sh; docs/development/protocol.md, "The switch").
+# Such a build may only be published as `...<N>.p3.dev`; the publisher refuses
+# any other version for it.
 set -eu
 cd "$(dirname "$0")/.."
-[ "$#" -eq 0 ] || { echo 'Usage: tools/build-release.sh' >&2; exit 2; }
+[ "$#" -eq 0 ] || {
+    echo 'Usage: [COUCH_PROTOCOL_3_PREVIEW=dev-remote-only] tools/build-release.sh' >&2; exit 2; }
+. tools/protocol-3-preview-env.sh
+preview_banner
 TARGET=armv7-unknown-linux-musleabihf
 rustup target list --installed | grep -qx "$TARGET" || {
     echo "no $TARGET toolchain: rustup target add $TARGET" >&2; exit 1; }
@@ -56,17 +65,26 @@ if ! bluez_current; then
     third_party/bluez/build.sh build/bluez
 fi
 
+# The preview marker is in couch-confd exactly when this was a preview build,
+# and in nothing else ever: no other binary has the switch, and a marked file
+# under another name would get past the publisher, which reads couch-confd.
 echo '= runtime bundle binaries (published in the signed update)'
 for bin in ui/target/$TARGET/release/couch-gui \
     daemon/target/$TARGET/release/couch-confd \
     daemon/target/$TARGET/release/couch-system \
     clients/target/$TARGET/release/couch-sonos \
     clients/target/$TARGET/release/couch-coreelec; do
+    case "$bin" in
+        */couch-confd) check_preview_marker "$bin" "$PREVIEW" ;;
+        *) check_preview_marker "$bin" no ;;
+    esac
     printf '%s (%s bytes)\n' "$bin" "$(wc -c < "$bin" | tr -d ' ')"
 done
 echo '= boot ramdisk /extra binaries (never in the runtime bundle)'
 for bin in clients/target/$TARGET/release/couch-bt-bridge \
     clients/target/$TARGET/release/couch-bt-hid \
     build/bluez/couch-bluetoothd; do
+    check_preview_marker "$bin" no
     printf '%s (%s bytes)\n' "$bin" "$(wc -c < "$bin" | tr -d ' ')"
 done
+preview_banner

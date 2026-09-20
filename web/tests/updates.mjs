@@ -65,6 +65,10 @@ try {
   // sentence about versions.
   await card.getByText('Kernel source 81d180fc19ec', {exact: true}).waitFor();
 
+  // An ordinary build carries no preview notice.
+  const preview = page.getByRole('alert').filter({hasText: 'Protocol 3 preview build. Development remote only.'});
+  assert.equal(await preview.count(), 0, 'an ordinary version is not a protocol 3 preview build');
+
   const copy = async () => (await card.innerText()).replace(/\s+/g, ' ');
   const installedCopy = await copy();
   // The screen cannot know whether a newer kernel has been published, and a
@@ -107,11 +111,26 @@ try {
   status.guidance = '';
   await card.getByText('This kernel matches the installed software.', {exact: true}).waitFor();
 
+  // A build with protocol 3 switched on is only ever signed as `.p3.dev`, and
+  // the page says what that means in red, above everything else on it.
+  status.installed = 'v0.1.0-alpha.20260916.174.p3.dev';
+  await preview.waitFor();
+  await card.getByText(`Software ${status.installed}`, {exact: true}).waitFor();
+  const [red, green, blue] = (await preview.evaluate(node => getComputedStyle(node).color)).match(/\d+/g).map(Number);
+  assert(red > 150 && green < 100 && blue < 100, `the preview notice is red, not rgb(${red}, ${green}, ${blue})`);
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'the preview notice overflows a phone viewport');
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.screenshot({path: process.env.COUCH_PREVIEW_SCREENSHOT ?? 'build/webui-review/updates-preview-build-mobile.png'});
+  // The next ordinary dev build takes the notice away again.
+  status.installed = 'v0.1.0-alpha.20260916.175.dev';
+  await preview.waitFor({state: 'detached'});
+  status.installed = installed;
+
   await page.setViewportSize({width: 1280, height: 900});
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Updates page overflows a desktop viewport');
   await page.screenshot({path: process.env.COUCH_DESKTOP_SCREENSHOT ?? 'build/webui-review/updates-installed-desktop.png', fullPage: true});
   assert.deepEqual(errors, []);
-  console.log('PASS: the Updates screen states the installed software and kernel in short sentences, keeps the kernel commit as a labelled detail, and offers the boot-image restore with a brief warning and no recovery mechanics.');
+  console.log('PASS: the Updates screen states the installed software and kernel in short sentences, keeps the kernel commit as a labelled detail, offers the boot-image restore with a brief warning and no recovery mechanics, and shows a red notice for a protocol 3 preview build and for nothing else.');
 } finally {
   await browser.close();
 }

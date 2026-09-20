@@ -59,6 +59,26 @@ MAX_FILE = 64 * 1024 * 1024
 MAX_TOTAL = 128 * 1024 * 1024
 
 
+# What a couch-confd built with protocol 3 switched on carries in its bytes
+# (daemon/couch-confd/src/assets.rs; docs/development/protocol.md, "The
+# switch"). A Cargo feature shows in no file name, tree hash or version, so the
+# line is the only thing that tells such a daemon from an ordinary one. It is
+# for one development remote, and couch_updates::bundle signs it only under a
+# `.p3.dev` version; the check here says so before the seed is ever read.
+PREVIEW_MARKERS = {'protocol-3': b'COUCH-PREVIEW-BUILD protocol-3'}
+
+
+def preview_features(daemon):
+    """The preview features a couch-confd's raw bytes say it was built with."""
+    return sorted(name for name, marker in PREVIEW_MARKERS.items() if marker in (daemon or b''))
+
+
+def tree_preview_features(tree):
+    """The same for a staged runtime tree; a tree with no daemon has none."""
+    path = Path(tree) / 'couch-confd'
+    return preview_features(path.read_bytes()) if path.is_file() and not path.is_symlink() else []
+
+
 def _traversable(name):
     """The floor's path check: every component Normal, no backslash."""
     if not name or len(name) > MAX_NAME or '\\' in name or name.startswith('/'):
@@ -226,14 +246,29 @@ def main(argv=None):
                         help='A clean runtime tree, checked as the publisher would bundle it')
     source.add_argument('--inventory', action='store_true',
                         help="This checkout's runtime payload lists, with no build needed")
+    parser.add_argument('--allow-preview', action='store_true',
+                        help='With --tree: accept a couch-confd built with protocol 3 switched on. '
+                             'Only for a .p3.dev build that goes to one development remote')
     args = parser.parse_args(argv)
+    # sys.stdout is named at each call: report()'s default was bound at import.
+    if args.allow_preview and not args.tree:
+        parser.error('--allow-preview only means something with --tree')
     if args.manifest:
         manifest = manifest_files(json.loads(args.manifest.read_text()))
-        ok = report(manifest['files'], label=manifest.get('version', str(args.manifest)))
+        ok = report(manifest['files'], sys.stdout, manifest.get('version', str(args.manifest)))
     elif args.tree:
-        ok = report(tree_files(args.tree), label=str(args.tree))
+        ok = report(tree_files(args.tree), sys.stdout, str(args.tree))
+        preview = tree_preview_features(args.tree)
+        if preview:
+            print(f'\nPREVIEW BUILD: couch-confd in this tree was built with {", ".join(preview)} '
+                  'switched on.\nIt is for one development remote: Dev channel, a version ending '
+                  '.p3.dev, never Alpha.\ncouch-updates refuses to sign it under any other version '
+                  '(docs/development/protocol.md, "The switch").')
+            if not args.allow_preview:
+                print('REFUSED: pass --allow-preview if that is what this tree is for.')
+                ok = False
     else:
-        ok = report(inventory_files(), label='tools/release/runtime_inventory.py')
+        ok = report(inventory_files(), sys.stdout, 'tools/release/runtime_inventory.py')
     return 0 if ok else 1
 
 

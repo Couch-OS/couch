@@ -3,7 +3,33 @@
 use couch_integrations::Store;
 use flate2::{write::GzEncoder, Compression};
 use serde_json::json;
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{
+    fs,
+    io::Write,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
+
+/// Writes an executable a test is about to run, without this process ever
+/// holding a descriptor open for writing it.
+///
+/// Linux refuses `execve` with ETXTBSY (errno 26) while anyone has the file
+/// open for writing, and a fork made by another test thread inherits this
+/// thread's descriptors until its own exec closes them. A short-lived child
+/// holds the writing descriptor instead: nothing this process forks can
+/// inherit it.
+fn write_executable(path: &Path, bytes: &[u8]) {
+    let mut writer = Command::new("/bin/sh")
+        .args(["-c", r#"exec /bin/cat > "$1""#, "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer.stdin.take().unwrap().write_all(bytes).unwrap();
+    assert!(writer.wait().unwrap().success(), "write {}", path.display());
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
 
 struct Fixture(PathBuf);
 impl Drop for Fixture {
@@ -16,8 +42,7 @@ impl Fixture {
         let root = std::env::temp_dir().join(format!("couch-lifecycle-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let apk = root.join("fixture-apk");
-        fs::write(&apk, "#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n").unwrap();
-        fs::set_permissions(&apk, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&apk, b"#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n");
         Self(root)
     }
     fn package(&self, version: &str, configure_ok: bool, suffix: &str) -> PathBuf {
