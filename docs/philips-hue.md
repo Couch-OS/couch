@@ -16,17 +16,38 @@ One bridge connection is supported per remote.
    click **Add to this room**. Discovery never assigns devices automatically.
 4. Open that room on the remote. Devices appear in one flat list. Highlight a
    light and press **Power** to switch it on or off. Press **OK** to open its
-   controls: brightness, and colour temperature on a light whose bridge reports
-   a range for it, shown in Kelvin from warm to cool. Left and right adjust the
-   highlighted control there, and on the row itself they still dim the light in
-   place. A row whose OK opens controls shows a small chevron and keeps its
-   state text ("On · 40%"). A light that can only be switched keeps OK as the
-   switch it was. Tapping selects a row, matching room navigation. Physical
+   controls: a tall brightness bar, and beside it a colour temperature bar on a
+   light whose bridge reports a range for it, shown in Kelvin. Both bars fill
+   and read from the bottom, and warm is at the bottom of the colour bar, so up
+   is always the higher number. On the row itself left and right still dim the
+   light in place. A row whose OK opens controls shows a small chevron and keeps
+   its state text ("On · 40%"). A light that can only be switched keeps OK as
+   the switch it was. Tapping selects a row, matching room navigation. Physical
    Back returns to the room with the same row still highlighted.
    Zero-percent brightness means off.
 
 Unreachable lights display as unavailable. Commands are acknowledged by the
 bridge; refresh to see reported state. This is not proof of physical illumination.
+
+## The keys on a light's or blind's controls
+
+| Key | On a lamp | On a blind |
+| --- | --- | --- |
+| Volume up / down | Brighter / dimmer, 5% a press | More / less open, 5% a press |
+| Channel up / down | Cooler / warmer, a twentieth of the lamp's range a press (at least 5 mirek). A lamp with no colour temperature ignores them | Nothing |
+| Up / down | The same, on whichever bar is highlighted | Always the position bar, even while a button is highlighted |
+| Left / right | Move between the two bars | Move along the bar, Open, Stop and Close |
+| OK | On / off | Open / close, or the highlighted button |
+| Power | On / off | Open / close |
+| Back | The room, with the same row highlighted | The same |
+
+The volume and channel keys work wherever the highlight is, and they hold to
+repeat like everywhere else: a held key leaves one target behind rather than a
+queue of commands, so the lamp follows the key instead of trailing it. While
+these controls are open the volume and channel keys are *theirs alone* - a
+receiver in a running activity does not also hear them - and closing the screen
+hands them straight back. The line along the bottom of the screen says the same
+thing in one line.
 
 ## Connection and credentials
 

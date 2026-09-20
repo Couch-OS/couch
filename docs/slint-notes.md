@@ -138,6 +138,13 @@ is an error. Either measure off `root` (its own geometry, set by the caller) or
 take the value as a property. The focus ring takes the box it rings; the volume
 overlay is positioned by its caller.
 
+## `border-radius` does not round a gradient
+
+The software renderer rounds a solid `background`, but a `@linear-gradient` one
+is drawn square whatever the radius says. Put the gradient in a child of a
+`clip: true` rectangle when the shape matters. The light screen's colour
+temperature bar does that; its brightness bar, a solid colour, needs nothing.
+
 ## DirtyRegion holds three rectangles
 
 ```rust

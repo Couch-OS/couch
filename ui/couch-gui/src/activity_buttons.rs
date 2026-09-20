@@ -80,6 +80,19 @@ const HOLD_DOWN_TENTHS: i16 = 20;
 /// The context prefix of a highlighted room row, as opposed to an activity id.
 const ROW: &str = "row:";
 
+/// The keys a light's or blind's control screen takes for itself while it is
+/// open: volume is its brightness bar and channel its colour temperature.
+/// Nothing else on the remote may hear them meanwhile - a receiver's volume in
+/// a running activity, or the volume binding of whatever row is highlighted
+/// behind the screen - or one press would dim a lamp and turn up the amplifier
+/// at the same time. Everything else, Power included, still goes where it went.
+fn light_screen_key(button: Button) -> bool {
+    matches!(
+        button,
+        Button::VolumeUp | Button::VolumeDown | Button::ChannelUp | Button::ChannelDown
+    )
+}
+
 /// The Kodi player call behind a transport key, and nothing for any other
 /// function: a command Kodi does not have must never become one it does.
 fn kodi_player_call(command: &F) -> Option<(&'static str, serde_json::Value)> {
@@ -223,6 +236,11 @@ impl Controller {
             || app.get_pair_shown()
             || app.get_settings_shown()
             || app.get_keyboard_shown()
+        {
+            return false;
+        }
+        if app.get_light_screen_shown()
+            && Button::from_evdev(press.code).is_some_and(light_screen_key)
         {
             return false;
         }
@@ -2423,6 +2441,100 @@ mod tests {
             ]
         );
         drop(open);
+    }
+
+    /// While a light's control screen is open its volume and channel keys are
+    /// its own, and a running activity hears neither. Anything else on the
+    /// screen, Power included, still goes where it always went, and closing
+    /// the screen hands the keys straight back.
+    #[test]
+    fn the_open_light_screen_takes_volume_and_channel_from_the_running_activity() {
+        const NAME: &str = "activity_buttons::tests::the_open_light_screen_takes_volume_and_channel_from_the_running_activity";
+        if std::env::var_os("COUCH_TEST_SCREEN_CLAIM").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_SCREEN_CLAIM", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let mut config = room();
+        let living = config.rooms.first().unwrap().id.clone();
+        let mut activity: couch_model::Activity = serde_json::from_value(
+            serde_json::json!({"id":"movie","name":"Movie night","room":living}),
+        )
+        .unwrap();
+        activity.buttons = vec![
+            Binding {
+                button: Button::VolumeUp,
+                gesture: Gesture::Short,
+                action: Some(Action::new("avr-package", "volume-up")),
+            },
+            Binding {
+                button: Button::VolumeDown,
+                gesture: Gesture::Short,
+                action: Some(Action::new("avr-package", "volume-down")),
+            },
+            Binding {
+                button: Button::ChannelUp,
+                gesture: Gesture::Short,
+                action: Some(Action::new("lg", "channel-up")),
+            },
+            Binding {
+                button: Button::Power,
+                gesture: Gesture::Short,
+                action: Some(Action::new("avr-package", "power-on")),
+            },
+        ];
+        config.activities.push(activity);
+        config.validate().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "couch-screen-claim-{}-{}.json",
+            std::process::id(),
+            NAME.len()
+        ));
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        crate::config_snapshot::start(path.clone());
+        let _window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let (mut controller, rx) = fixture();
+        // The activity is running, with its own screen up behind everything.
+        app.set_tv_shown(true);
+        app.set_active_activity("movie".into());
+        let commands = |rx: &mpsc::Receiver<Request>| {
+            rx.try_iter()
+                .map(|r| r.action.command)
+                .collect::<Vec<String>>()
+        };
+        assert!(controller.handle(&app, &press(115, false)));
+        assert_eq!(commands(&rx), ["volume-up"]);
+
+        // A light's controls open over it: its four keys are now the screen's,
+        // and nothing reaches the receiver or the TV.
+        app.set_light_screen_shown(true);
+        for code in [115, 114, 104, 402, 109, 403] {
+            assert!(!controller.handle(&app, &press(code, false)), "{code}");
+            assert!(!controller.handle(&app, &press(code, true)), "{code}");
+        }
+        assert!(commands(&rx).is_empty());
+        // Power is not one of them: the screen's own Power is handled in the
+        // key loop, and a mapped binding still takes the tap.
+        assert!(controller.handle(&app, &press(60, false)));
+        assert_eq!(commands(&rx), ["power-on"]);
+
+        // Back to the room: the activity hears its volume keys again.
+        app.set_light_screen_shown(false);
+        assert!(controller.handle(&app, &press(114, false)));
+        assert!(controller.handle(&app, &press(104, false)));
+        assert_eq!(commands(&rx), ["volume-down", "channel-up"]);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A refusal with a package's line under it has to read well on the toast
