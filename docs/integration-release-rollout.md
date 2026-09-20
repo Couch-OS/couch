@@ -9,7 +9,7 @@ image to make the two releases appear atomic.
 The initial receiver pilot used the core contract at
 `b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb` with Denon `0.1.1` from the
 official preview feed. The renewed host compatibility set tests the exact same
-signed APK against core `76888d108d7b323121eed9905231c9b73ca14d57` under
+signed APK against core `f454746e6bc634104f2f1495d7290586eecc391d` under
 ARM emulation with a simulated receiver. The machine-readable identity is
 `tools/release/tested-integrations.json`. Its schema 2 separates:
 

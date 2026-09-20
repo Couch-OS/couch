@@ -9,8 +9,8 @@
     "v2_action_refused_for_v1": "passed"
   },
   "core": {
-    "binary_sha256": "cfa4c549551e624fe2f74d352f30efe77148342c872182e09c79890d379ecc62",
-    "source_commit": "76888d108d7b323121eed9905231c9b73ca14d57",
+    "binary_sha256": "a4daec1a5cbc3d836f1ba8e6ddc27cb18dc81656c1e3e8d00ff1d5cca3db2581",
+    "source_commit": "f454746e6bc634104f2f1495d7290586eecc391d",
     "supported_protocol_versions": [
       1,
       2
@@ -32,6 +32,6 @@
     }
   ],
   "kind": "couch-integration-host-compatibility",
-  "report_sha256": "43800f3816fae56fa14d3b827fe0cbddbf1498aba9c173701a126aeec2e9310c",
+  "report_sha256": "f1700de1402fcdf2fe8df587666c33bdf7dbabb9e83a29029f8ad083c632b04f",
   "schema": 1
 }
