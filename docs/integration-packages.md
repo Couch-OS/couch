@@ -433,15 +433,30 @@ later than `expires` is the expiry case, and refuses.
 
 **When metadata is required.** What a remote remembers is kept per repository
 in `integrations/management/feed-state.json`: the highest sequence accepted,
-and that metadata has been seen. A repository that has never published
-metadata works as it always did. Once a remote has accepted metadata from a
-repository, that repository must keep providing it: missing metadata, or a
-format this Couch cannot read, is then refused. Removing a repository and
-adding it again starts over. The record belongs to the repository, not to an
-address, so the official feed's previous address cannot serve something older
-than the current one did. The official repositories follow the same rule for
-now, because the official feed does not publish metadata yet; a later Couch
-will require it of them from the start.
+and that metadata has been seen. A custom repository that has never published
+metadata works as it always did; once a remote has accepted metadata from it,
+that repository must keep providing it: missing metadata, or a format this
+Couch cannot read, is then refused. Removing a repository and adding it again
+starts over.
+
+The official repositories require valid signed metadata from their very
+first refresh, with no such grace period: a missing `feed.json`, one this
+Couch cannot read, or one that fails any of the checks above, refuses an
+official repository immediately, the same as a repository this remote has
+already accepted metadata from. The record still belongs to the repository,
+not to an address, so the official feed's previous address could never serve
+something older than the current one did; now that metadata is required of
+every official repository, that previous address is not tried at all, since
+it moved away with the repository that used to publish there and can never
+carry the current feed's signed metadata.
+
+If the official feed's signature lapses (the feed re-signs at least weekly,
+each signature valid 30 days) before a remote fetches a fresh one, that
+remote refuses the official repository until the feed is re-signed: the
+Integrations page shows the reason for that repository, and Install and
+Update stay unavailable from it. Packages already installed from it keep
+running unaffected, and nothing is uninstalled. Other repositories, official
+or custom, are unaffected and keep working.
 
 **Refusing before the download.** A package whose `min_core_protocol_version`
 is higher than this Couch speaks is listed as not installable, "Needs a newer
