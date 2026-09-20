@@ -1108,6 +1108,62 @@ fn only_a_protocol_3_manifest_may_declare_children() {
     }
 }
 
+/// Pairing and a kept-alive child are protocol 3 words, like children and
+/// `x:` ids: an older manifest that declares either is invalid, which is what
+/// keeps a key away from every package Couch can already run.
+#[test]
+fn only_a_protocol_3_manifest_may_declare_pairing_or_ask_to_be_kept_alive() {
+    use couch_plugin::Pairing;
+    let p = Package::new();
+    for older in [p.manifest.clone(), v2_manifest(p.manifest.clone())] {
+        assert!(older.validate().is_ok());
+        assert!(older.pairing.is_none() && !older.keep_alive);
+        assert!(!older.pairs(), "a package Couch can run today never pairs");
+        let mut pairs = older.clone();
+        pairs.pairing = Some(Pairing {
+            required: true,
+            max_seconds: 120,
+        });
+        assert_eq!(
+            pairs.validate(),
+            Err(Error::Invalid),
+            "protocol {}",
+            older.protocol_version
+        );
+        let mut kept = older.clone();
+        kept.keep_alive = true;
+        assert_eq!(
+            kept.validate(),
+            Err(Error::Invalid),
+            "protocol {}",
+            older.protocol_version
+        );
+    }
+    // Neither is written when it says nothing, so a published manifest's
+    // bytes are unchanged.
+    let wire = serde_json::to_value(&p.manifest).unwrap();
+    assert!(wire.get("pairing").is_none());
+    assert!(wire.get("keep_alive").is_none());
+    // And the window a package may ask for is bounded, whatever its protocol.
+    let mut v3 = v3_manifest(p.manifest.clone());
+    for (seconds, valid) in [(9, false), (10, true), (300, true), (301, false)] {
+        v3.pairing = Some(Pairing {
+            required: false,
+            max_seconds: seconds,
+        });
+        // With the switch off a protocol 3 manifest is incompatible before
+        // anything else is looked at; the bound is the same either way.
+        let expected = if couch_plugin::accepted_protocol_version() < 3 {
+            Err(Error::Incompatible)
+        } else if valid {
+            Ok(())
+        } else {
+            Err(Error::Invalid)
+        };
+        assert_eq!(v3.validate(), expected, "{seconds} s");
+    }
+}
+
 /// A listing has to end, be no longer than the host will hold, and never name
 /// the same child twice. Each of those is a protocol error, whoever asks.
 #[test]

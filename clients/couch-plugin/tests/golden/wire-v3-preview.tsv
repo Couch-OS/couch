@@ -1,0 +1,22 @@
+request configure with credential	{"id":2,"body":{"method":"configure","settings":{"host":"avr.local","port":23,"tls":false,"token":"private"},"credential":{"id":7,"key":"0f1e2d"}}}
+request pair_start	{"id":3,"body":{"method":"pair_start","settings":{"host":"avr.local","port":23,"tls":false,"token":"private"}}}
+request pair_start with credential	{"id":3,"body":{"method":"pair_start","settings":{"host":"avr.local","port":23,"tls":false,"token":"private"},"credential":{"id":7,"key":"0f1e2d"}}}
+request pair_continue	{"id":4,"body":{"method":"pair_continue","session":"p1"}}
+request pair_continue code	{"id":4,"body":{"method":"pair_continue","session":"p1","input":{"kind":"code","code":"0417"}}}
+request pair_cancel	{"id":5,"body":{"method":"pair_cancel","session":"p1"}}
+response pairing waiting press_button	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"waiting","prompt":{"kind":"press_button"},"poll_after_ms":2000}}}
+response pairing waiting press_button said	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"waiting","prompt":{"kind":"press_button","message":"Press pair on the bridge"},"poll_after_ms":2000}}}
+response pairing waiting approve	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"waiting","prompt":{"kind":"approve_on_device"},"poll_after_ms":2000}}}
+response pairing waiting code	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"waiting","prompt":{"kind":"enter_code","length":6,"alphabet":"hex"},"poll_after_ms":0}}}
+response pairing waiting code digits	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"waiting","prompt":{"kind":"enter_code","length":4,"alphabet":"digits"},"poll_after_ms":0}}}
+response pairing done	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"done","credential":{"id":7,"key":"0f1e2d"},"summary":"Paired with Hall bridge"}}}
+response pairing done with settings	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"done","credential":{"id":7,"key":"0f1e2d"},"settings":{"host":"avr.local","port":23,"tls":false,"token":"private"},"summary":"Paired with Hall bridge"}}}
+response pairing failed unreachable	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"failed","reason":"unreachable"}}}
+response pairing failed refused	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"failed","reason":"refused"}}}
+response pairing failed wrong_code	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"failed","reason":"wrong_code"}}}
+response pairing failed timed_out	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"failed","reason":"timed_out"}}}
+response pairing failed unsupported	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"failed","reason":"unsupported"}}}
+response pairing failed said	{"id":6,"body":{"type":"pairing","session":"p1","step":{"step":"failed","reason":"refused","message":"The bridge said no"}}}
+reply ok with store_credential	{"id":7,"body":{"type":"ok"},"store_credential":{"id":7,"key":"0f1e2d"}}
+reply status with store_credential	{"id":7,"body":{"type":"status","status":{"on":true}},"store_credential":{"id":7,"key":"0f1e2d"}}
+manifest pairing 3	{"protocol_version":3,"min_core_protocol_version":3,"actions":[{"action":"set_volume_db","min_tenths":-800,"max_tenths":180,"step_tenths":5}],"id":"fixture","label":"Fixture","version":"1.0.0","executable":"bin/plugin","capabilities":[{"id":"power-on","label":"On"},{"id":"power-off","label":"Off"},{"id":"volume-up","label":"Volume up"}],"settings":[{"id":"host","label":"Host","kind":"text","required":true},{"id":"port","label":"Port","kind":"integer","required":false,"default":23},{"id":"token","label":"Token","kind":"secret","required":false},{"id":"tls","label":"Use TLS","kind":"boolean","required":false,"default":false}],"supports_inputs":true,"presentation":[{"kind":"command_group","title":"Power","commands":["power-on","power-off"]},{"kind":"status_text","label":"Volume","field":"volume_db"},{"kind":"volume_db_control","label":"Volume"},{"kind":"toggle","label":"Power","state":"on","on":"power-on","off":"power-off"},{"kind":"input_selector","label":"Input"}],"pairing":{"required":true,"max_seconds":120},"keep_alive":true}

@@ -16,9 +16,10 @@
 //! a case only this tree can build does not belong in it.
 
 use crate::{
-    protocol::Envelope, Capability, Component, Error, FieldKind, LocalRequest, Manifest,
-    PluginActionSchema, Request, Response, Selectable, SettingField, Status, StatusField,
-    TypedAction, VolumeDb,
+    protocol::{Envelope, ReplyEnvelope},
+    Capability, CodeAlphabet, Component, Credential, Error, FieldKind, LocalRequest, Manifest,
+    PairFailure, PairInput, PairPrompt, PairStep, Pairing, PluginActionSchema, Request, Response,
+    Selectable, SettingField, Status, StatusField, TypedAction, VolumeDb,
 };
 use serde_json::json;
 
@@ -32,6 +33,10 @@ mod shim {
     pub fn status() -> Request {
         Request::status()
     }
+    /// 00ab4da: `Request::Configure { settings }`
+    pub fn configure(settings: serde_json::Value) -> Request {
+        Request::configure(settings)
+    }
     /// 00ab4da: `Request::Action { action }`
     pub fn action(action: TypedAction) -> Request {
         Request::action(action)
@@ -43,6 +48,11 @@ mod shim {
 }
 
 const GOLDEN: &str = include_str!("../tests/golden/wire-00ab4da.tsv");
+/// Protocol 3, which no published package speaks. Captured by this tree, from
+/// this tree, so that a frame nobody has written yet cannot change shape
+/// unnoticed between one step of the train and the next. A row here can never
+/// move a row in the file above: they are separate files on purpose.
+const PREVIEW: &str = include_str!("../tests/golden/wire-v3-preview.tsv");
 
 fn v1_manifest() -> Manifest {
     Manifest {
@@ -100,6 +110,8 @@ fn v1_manifest() -> Manifest {
         supports_inputs: false,
         presentation: Vec::new(),
         children: Vec::new(),
+        pairing: None,
+        keep_alive: false,
     }
 }
 
@@ -167,9 +179,7 @@ fn cases() -> Vec<(String, String)> {
         "request configure",
         frame(
             2,
-            Request::Configure {
-                settings: json!({"host":"avr.local","port":23,"token":"private","tls":false}),
-            },
+            shim::configure(json!({"host":"avr.local","port":23,"token":"private","tls":false})),
         ),
     );
     for function in [
@@ -384,4 +394,278 @@ fn every_byte_00ab4da_writes_is_read_back_and_rewritten_unchanged() {
             other => panic!("unknown golden kind {other}"),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Protocol 3, step T3: pairing.
+// ---------------------------------------------------------------------------
+//
+// Two claims, kept apart on purpose.
+//
+// The first is that nothing above moved. `Configure` gained a field and the
+// reply envelope gained one, and every row of `wire-00ab4da.tsv` still has to
+// be the bytes that revision wrote - which the test above asserts for the
+// request side by construction, and `the_new_fields_reproduce_the_bytes_of_00ab4da`
+// asserts again for both, explicitly, against the file's own rows.
+//
+// The second is that the protocol 3 frames have a shape, and that it does not
+// drift between one step of the train and the next. Those cannot be captured
+// at 00ab4da, because the types did not exist there, so they live in their own
+// file (`wire-v3-preview.tsv`), captured from this tree:
+//
+//   COUCH_WIRE_V3_OUT=$PWD/couch-plugin/tests/golden/wire-v3-preview.tsv \
+//     cargo test -p couch-plugin --lib wire_golden
+
+fn credential() -> Credential {
+    Credential::new(json!({"key": "0f1e2d", "id": 7})).expect("a small credential")
+}
+
+fn v3_pairing_manifest() -> Manifest {
+    let mut manifest = v2_manifest();
+    manifest.protocol_version = 3;
+    manifest.min_core_protocol_version = 3;
+    manifest.pairing = Some(Pairing {
+        required: true,
+        max_seconds: 120,
+    });
+    manifest.keep_alive = true;
+    manifest
+}
+
+/// `(name, bytes)` for everything pairing put on the wire.
+fn preview_cases() -> Vec<(String, String)> {
+    let mut cases = Vec::new();
+    let mut add = |name: &str, bytes: String| cases.push((name.to_owned(), bytes));
+    let settings = json!({"host":"avr.local","port":23,"token":"private","tls":false});
+
+    add(
+        "request configure with credential",
+        frame(
+            2,
+            Request::configure_with(settings.clone(), Some(&credential())),
+        ),
+    );
+    add(
+        "request pair_start",
+        frame(3, Request::pair_start(settings.clone(), None)),
+    );
+    add(
+        "request pair_start with credential",
+        frame(
+            3,
+            Request::pair_start(settings.clone(), Some(&credential())),
+        ),
+    );
+    add(
+        "request pair_continue",
+        frame(4, Request::pair_continue("p1", None)),
+    );
+    add(
+        "request pair_continue code",
+        frame(
+            4,
+            Request::pair_continue("p1", Some(PairInput::code("0417"))),
+        ),
+    );
+    add("request pair_cancel", frame(5, Request::pair_cancel("p1")));
+
+    let pairing = |step| Response::Pairing {
+        session: "p1".into(),
+        step,
+    };
+    for (name, prompt) in [
+        ("press_button", PairPrompt::press_button()),
+        (
+            "press_button said",
+            PairPrompt::press_button().saying("Press pair on the bridge"),
+        ),
+        ("approve", PairPrompt::approve_on_device()),
+        ("code", PairPrompt::enter_code(6, CodeAlphabet::Hex)),
+        (
+            "code digits",
+            PairPrompt::enter_code(4, CodeAlphabet::Digits),
+        ),
+    ] {
+        let wait = if prompt.is_code() { 0 } else { 2000 };
+        add(
+            &format!("response pairing waiting {name}"),
+            frame(6, pairing(PairStep::waiting(prompt, wait))),
+        );
+    }
+    add(
+        "response pairing done",
+        frame(
+            6,
+            pairing(PairStep::done(credential(), "Paired with Hall bridge")),
+        ),
+    );
+    add(
+        "response pairing done with settings",
+        frame(
+            6,
+            pairing(
+                PairStep::done(credential(), "Paired with Hall bridge")
+                    .with_settings(settings.clone()),
+            ),
+        ),
+    );
+    for reason in [
+        PairFailure::Unreachable,
+        PairFailure::Refused,
+        PairFailure::WrongCode,
+        PairFailure::TimedOut,
+        PairFailure::Unsupported,
+    ] {
+        add(
+            &format!(
+                "response pairing failed {}",
+                serde_json::to_value(reason).unwrap().as_str().unwrap()
+            ),
+            frame(6, pairing(PairStep::failed(reason))),
+        );
+    }
+    add(
+        "response pairing failed said",
+        frame(
+            6,
+            pairing(PairStep::failed(PairFailure::Refused).because("The bridge said no")),
+        ),
+    );
+
+    // The reply envelope, which is the only place a rotated key travels.
+    add(
+        "reply ok with store_credential",
+        serde_json::to_string(&ReplyEnvelope {
+            id: 7,
+            body: Response::Ok,
+            store_credential: Some(credential()),
+        })
+        .unwrap(),
+    );
+    add(
+        "reply status with store_credential",
+        serde_json::to_string(&ReplyEnvelope {
+            id: 7,
+            body: Response::Status {
+                status: Status::on(true),
+            },
+            store_credential: Some(credential()),
+        })
+        .unwrap(),
+    );
+
+    add(
+        "manifest pairing 3",
+        serde_json::to_string(&v3_pairing_manifest()).unwrap(),
+    );
+    cases
+}
+
+#[test]
+fn every_protocol_3_pairing_message_keeps_the_shape_this_tree_captured() {
+    let cases = preview_cases();
+    if let Ok(path) = std::env::var("COUCH_WIRE_V3_OUT") {
+        let text: String = cases
+            .iter()
+            .map(|(name, bytes)| format!("{name}\t{bytes}\n"))
+            .collect();
+        std::fs::write(path, text).unwrap();
+        return;
+    }
+    let golden: Vec<(String, String)> = PREVIEW
+        .lines()
+        .map(|line| {
+            let (name, bytes) = line.split_once('\t').expect("name<TAB>bytes");
+            (name.to_owned(), bytes.to_owned())
+        })
+        .collect();
+    assert_eq!(
+        cases.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        golden.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        "the preview cases and the preview golden file list different messages"
+    );
+    for ((name, bytes), (_, expected)) in cases.iter().zip(&golden) {
+        assert_eq!(bytes, expected, "{name}");
+    }
+    // Every one of them reads back into the same bytes, as the older file's do.
+    for (name, bytes) in &golden {
+        match name.split(' ').next().unwrap() {
+            "request" => {
+                let value: Envelope<Request> = serde_json::from_str(bytes).unwrap();
+                assert_eq!(serde_json::to_string(&value).unwrap(), *bytes, "{name}");
+            }
+            "response" | "reply" => {
+                let value: ReplyEnvelope = serde_json::from_str(bytes).unwrap();
+                assert_eq!(serde_json::to_string(&value).unwrap(), *bytes, "{name}");
+            }
+            "manifest" => {
+                let manifest: Manifest = serde_json::from_str(bytes).unwrap();
+                assert_eq!(serde_json::to_string(&manifest).unwrap(), *bytes, "{name}");
+                assert_eq!(manifest.pairing.unwrap().max_seconds, 120);
+                assert!(manifest.keep_alive);
+                // Only a build with the switch on accepts such a manifest.
+                #[cfg(feature = "protocol-3-preview")]
+                assert_eq!(manifest.validate(), Ok(()), "{name}");
+            }
+            other => panic!("unknown preview kind {other}"),
+        }
+    }
+}
+
+/// The compatibility claim, stated against the file rather than left implicit:
+/// a `Configure` with no key, and a reply with no rotated key, are the bytes
+/// 00ab4da wrote. Neither field is ever written when it says nothing, and a
+/// published package's `Request` and `Envelope` both refuse unknown fields.
+#[test]
+fn the_new_fields_reproduce_the_bytes_of_00ab4da() {
+    let rows = golden();
+    let row = |name: &str| {
+        rows.iter()
+            .find(|(row, _)| row == name)
+            .map(|(_, bytes)| bytes.clone())
+            .unwrap_or_else(|| panic!("no golden row {name}"))
+    };
+    // The request side, through the builder every caller now uses.
+    assert_eq!(
+        frame(
+            2,
+            Request::configure(json!({"host":"avr.local","port":23,"token":"private","tls":false})),
+        ),
+        row("request configure")
+    );
+    assert_eq!(
+        frame(
+            2,
+            Request::configure_with(
+                json!({"host":"avr.local","port":23,"token":"private","tls":false}),
+                None
+            ),
+        ),
+        row("request configure")
+    );
+    assert!(!row("request configure").contains("credential"));
+    // The reply side: every response row, written through the envelope that
+    // can carry a rotated key, with none to carry.
+    let mut replies = 0;
+    for (name, bytes) in &rows {
+        if !name.starts_with("response ") {
+            continue;
+        }
+        replies += 1;
+        let read: ReplyEnvelope =
+            serde_json::from_str(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(read.store_credential.is_none(), "{name}");
+        assert_eq!(
+            serde_json::to_string(&ReplyEnvelope {
+                id: read.id,
+                body: read.body,
+                store_credential: None,
+            })
+            .unwrap(),
+            *bytes,
+            "{name}"
+        );
+        assert!(!bytes.contains("store_credential"), "{name}");
+    }
+    assert!(replies >= 15, "{replies} replies");
 }
