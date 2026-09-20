@@ -24,10 +24,11 @@ publisher signs such a runtime only under a version with both a `p3` and a
 nothing else; it sorts above `<N>.dev` and below `<N+1>.dev`, so the next
 ordinary dev build replaces it. `<N>p3` would be wrong: it is one alphanumeric
 identifier and sorts above every number. The panel shows `.p3.dev`, and the web
-UI shows a red notice on the Updates and Integrations pages. Like every `.dev`
-tag it is **not private** to updaters older than the Dev channel (see
-[What this cost, twice](#what-this-cost-twice)): the release is deleted as soon
-as the session ends.
+UI shows a red notice on the Updates and Integrations pages. The only remotes
+that can see it are Dev-channel remotes on `.173` or later (see
+[Who can see a `.dev` release](#who-can-see-a-dev-release)); any of those would
+be offered it while it is published, which is why the release is deleted as
+soon as the session ends.
 
 The same operations are available on the remote itself under **Settings →
 Updates** (hold Menu on the home screen): the installed build, the channel
@@ -246,8 +247,46 @@ which is exactly what the constant exists to prevent.
   exists to answer: see
   [the installer FAQ](installer.md#the-web-ui-reports-an-older-version-than-the-installer-i-used).
 
-A released `.dev` prerelease is visible to every remote whose updater predates
-the Dev channel. Until the floor moves past .142, a `.dev` tag is not private.
+### Who can see a `.dev` release
+
+When the second of these happened, a released `.dev` prerelease was visible to
+every remote whose updater predated the Dev channel (before `.123`), because to
+such an updater it is an ordinary `alpha.*` prerelease. That stopped being true
+when the repository moved to Couch-OS on 2026-09-17
+([Moving the repositories](github-org-transfer.md)), and it is worth being
+exact about why, from the tagged sources
+(`git show <tag>:daemon/couch-updates/src/release.rs`):
+
+- Every updater up to `.170` lists releases from
+  `api.github.com/repos/dangerouslaser/couch`. That name is now a separate,
+  archived and therefore read-only repository that holds two releases, `.170`
+  and `.173`. It is not `Couch-OS/couch`, and nothing new is published there.
+- The same updaters skip a listed release whose manifest asset is not at exactly
+  `github.com/dangerouslaser/couch/releases/download/<tag>/...`, and their
+  `verify` refuses a signed manifest whose `url` is not under that prefix.
+  Everything published now is under `Couch-OS/couch`, and the publisher signs
+  that owner into the manifest (`release::PREFIX`; a test in `release.rs` holds
+  it there).
+
+So an updater up to `.170` can never see or install a release published on
+`Couch-OS/couch`. That covers every updater without the Dev channel (before
+`.123`) and every one without the `couch-*` wildcard (before `.142`). A remote
+freshly installed with the `.24` runtime is offered the archive's `.173` and
+nothing else. The `.173` updater lists releases by the repository's permanent
+ID, accepts either owner, knows the `couch-*` wildcard, and has the Dev channel:
+on Alpha it ignores every tag carrying a `dev` identifier.
+
+The only remotes that can see a `.dev` release, a
+[protocol 3 preview build](development/protocol.md#a-preview-build-for-one-development-remote)
+included, are therefore remotes on `.173` or later whose owner chose the Dev
+channel. Any of them is offered it while it is published, so a preview release
+is still deleted the same day.
+
+Open question: for the same reason the `.24` floor may now protect less than
+its comments say - a `.24` remote can only be offered the archive's `.173`, and
+every later bundle is seen only by updaters from `.173` on. Verify that before
+anyone moves the floor; nothing about the floor has been changed on the
+strength of it.
 
 ## Boot image updates
 

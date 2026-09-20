@@ -834,6 +834,15 @@ mod tests {
             )
             .unwrap();
             assert_eq!(signed.signed.version, version);
+            // The owner updaters up to `.170` refuse (release.rs,
+            // `the_publisher_signs_the_couch_os_owner_...`).
+            assert_eq!(
+                signed.signed.url,
+                format!(
+                    "https://github.com/Couch-OS/couch/releases/download/\
+                     {version}/couch-{version}-ha100-runtime.tar.gz"
+                )
+            );
             std::fs::remove_dir_all(output).unwrap();
         }
         result

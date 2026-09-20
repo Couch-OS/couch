@@ -415,6 +415,51 @@ mod tests {
         )
         .is_err_and(|e| e.to_string().contains("Unsupported update origin")));
     }
+    /// What keeps a new release away from every updater up to `.170`: the
+    /// publisher signs the Couch-OS owner into the manifest, and those updaters
+    /// take the other one and nothing else. `verify` at
+    /// `v0.1.0-alpha.20260916.170`, with
+    /// `PREFIX = "https://github.com/dangerouslaser/couch/releases/download/"`:
+    ///
+    /// ```text
+    /// || m.url
+    ///     != format!(
+    ///         "{PREFIX}{}/couch-{}-ha100-{}.tar.gz",
+    ///         m.version, m.version, m.kind
+    ///     )
+    /// ```
+    ///
+    /// They also list releases from `repos/dangerouslaser/couch`, now a separate
+    /// archived repository, and skip an asset whose download URL is not under
+    /// that prefix. Those updaters are all the ones with no Dev channel (before
+    /// `.123`) and no `couch-*` wildcard (before `.142`), so this prefix is part
+    /// of why a `.dev` build, a protocol 3 preview included, reaches only
+    /// Dev-channel remotes on `.173` or later (docs/runtime-updates.md, "Who
+    /// can see a `.dev` release"). Signing the old owner again would undo that.
+    #[test]
+    fn the_publisher_signs_the_couch_os_owner_which_updaters_up_to_170_refuse() {
+        let old_prefix = "https://github.com/dangerouslaser/couch/releases/download/";
+        assert_eq!(
+            PREFIX,
+            "https://github.com/Couch-OS/couch/releases/download/"
+        );
+        assert_ne!(PREFIX, old_prefix);
+        assert!(PREFIXES.contains(&old_prefix));
+        // The `.170` comparison, run on the URL today's publisher signs.
+        let version = "v0.1.0-alpha.20260920.191.p3.dev";
+        let signed = format!("{PREFIX}{version}/couch-{version}-ha100-runtime.tar.gz");
+        let wanted_by_170 = format!(
+            "{old_prefix}{}/couch-{}-ha100-{}.tar.gz",
+            version, version, "runtime"
+        );
+        assert_ne!(signed, wanted_by_170);
+        // This updater takes it, as every one from `.173` on does.
+        assert!(release_url(
+            &signed,
+            version,
+            &format!("couch-{version}-ha100-runtime.tar.gz")
+        ));
+    }
     #[test]
     fn signed_manifests_may_name_either_owner_but_not_another() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
