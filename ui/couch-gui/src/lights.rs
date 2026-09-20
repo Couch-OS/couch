@@ -1,7 +1,11 @@
 //! Room light controls. Network requests run on one worker, never on Slint's thread.
 use crate::{App, ChoiceItem};
 use couch_ha::{Climate, Command, Cover, CoverCommand, Light};
-use couch_model::{Id, Integration};
+use couch_model::{
+    ChildComponent, ChildSnapshot, CoverState, CoverTraits, Id, Integration, LightState,
+    LightTraits, TypedAction,
+};
+use couch_plugin::{Request, Response};
 use slint::{Model, ModelRc, VecModel};
 use std::{
     cell::RefCell,
@@ -63,11 +67,177 @@ impl DeviceState {
     }
 }
 fn ha_domain(id: &str) -> &str {
+    // A packaged child's row id carries the package's own spelling of the
+    // child, which may well look like an entity id (a Home Assistant package
+    // would list `cover.blind`). It is not one: only a Home Assistant row
+    // has a domain.
+    if id.starts_with(PLUGIN_PREFIX) {
+        return "";
+    }
     crate::connections::split(id)
         .1
         .split_once('.')
         .map(|(domain, _)| domain)
         .unwrap_or("")
+}
+/// Row ids of packaged children: the connection and the child, which cannot
+/// collide because a connection id never contains a slash.
+const PLUGIN_PREFIX: &str = "plugin:";
+/// A status read is one of many in a round, made one after another on the one
+/// worker, so it waits far less than a command does.
+const STATUS_TIMEOUT: Duration = Duration::from_millis(1500);
+/// A command, and the read that follows a package's bare `Ok`.
+fn write_timeout() -> Duration {
+    couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1)
+}
+/// What every packaged request in this module goes through: the connection,
+/// the frame, and how long to wait. The tests put a closure here in place of
+/// the daemon's socket.
+pub(crate) type Ask<'a> =
+    &'a mut dyn FnMut(&str, Request, Duration) -> Result<Response, couch_plugin::Failure>;
+
+pub(crate) fn plugin_socket(
+    connection: &str,
+    request: Request,
+    timeout: Duration,
+) -> Result<Response, couch_plugin::Failure> {
+    crate::tv::plugin::ask_within(connection, request, timeout)
+}
+
+/// A row that is one child of a packaged connection: which child to name, and
+/// what this particular one can do while its package is not running.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PluginRow {
+    connection: String,
+    resource: String,
+    /// Drawn and driven as a blind rather than as a lamp.
+    cover: bool,
+    snapshot: ChildSnapshot,
+}
+impl PluginRow {
+    fn id(&self) -> String {
+        format!("{PLUGIN_PREFIX}{}/{}", self.connection, self.resource)
+    }
+    /// What one status reading says about this child, in the shape the rows
+    /// already use. A reading that carries nothing about this child is no
+    /// reading at all: the row says "Unavailable" rather than inventing an
+    /// off state for it.
+    fn state(&self, name: &str, status: &couch_plugin::Status) -> Option<DeviceState> {
+        if self.cover {
+            let cover = status.cover.as_ref()?;
+            Some(DeviceState::Cover(cover_row(
+                name,
+                self.snapshot.cover.as_ref(),
+                cover,
+            )))
+        } else {
+            let light = status.light.as_ref()?;
+            Some(DeviceState::Light(light_row(
+                name,
+                self.snapshot.light.as_ref(),
+                light,
+            )))
+        }
+    }
+    /// The typed action a level on this row means.
+    fn level(&self, percent: u8) -> TypedAction {
+        if self.cover {
+            TypedAction::SetCover { position: percent }
+        } else {
+            TypedAction::SetLight {
+                on: None,
+                brightness: Some(percent),
+                mirek: None,
+                xy: None,
+            }
+        }
+    }
+}
+
+/// A package's lamp, as `couch_ha::Light`: the shape `brightness_step`,
+/// `description` and the row already speak. Nothing is inferred - a lamp that
+/// has not said whether it is on stays unknown, and the level it would return
+/// to is kept while it is off, as the domain type has it.
+fn light_row(name: &str, traits: Option<&LightTraits>, state: &LightState) -> Light {
+    Light {
+        entity_id: String::new(),
+        name: name.to_owned(),
+        on: state.on,
+        brightness_percent: state.brightness,
+        dimmable: traits.is_some_and(|traits| traits.dimmable),
+    }
+}
+
+/// A package's blind, as `couch_ha::Cover`. A child reports where it is, not
+/// which way it is travelling, so a blind in motion reads as its last known
+/// end state until it settles.
+fn cover_row(name: &str, traits: Option<&CoverTraits>, state: &CoverState) -> Cover {
+    Cover {
+        entity_id: String::new(),
+        name: name.to_owned(),
+        state: state
+            .open
+            .map(|open| if open { "open" } else { "closed" }.to_owned()),
+        position_percent: state.position,
+        can_open: true,
+        can_close: true,
+        can_set_position: traits.is_some_and(|traits| traits.position),
+        can_stop: traits.is_some_and(|traits| traits.stop),
+    }
+}
+
+/// Which built-in control a packaged child is drawn with.
+///
+/// The connection's declared kind decides. A kind the connection no longer
+/// lists (a rollback that has not healed yet) falls back on what the device
+/// saved about itself, so a lamp keeps its row instead of turning into a
+/// device with a screen; a child that saved nothing at all is treated as a
+/// light, which shows "Unavailable" and opens nothing.
+fn child_component(
+    config: &couch_model::Config,
+    integration: &Integration,
+    child: &ChildSnapshot,
+) -> ChildComponent {
+    if let Some(kind) = config.device_child_kind(integration) {
+        return kind.component;
+    }
+    if child.cover.is_some() {
+        ChildComponent::Cover
+    } else if child.climate.is_some() {
+        ChildComponent::Climate
+    } else {
+        ChildComponent::Light
+    }
+}
+
+/// The room row a packaged child is drawn as, for a light or a blind. A
+/// thermostat child is not one: it keeps its `device:` row and the packaged
+/// control screen until Home Assistant is packaged.
+pub(crate) fn plugin_row(
+    config: &couch_model::Config,
+    device: &couch_model::Device,
+) -> Option<PluginRow> {
+    let resolved = config.resolve_integration(&device.integration)?;
+    let Integration::Plugin {
+        connection_id,
+        resource_id,
+        child: Some(child),
+        ..
+    } = &resolved
+    else {
+        return None;
+    };
+    let cover = match child_component(config, &device.integration, child) {
+        ChildComponent::Light => false,
+        ChildComponent::Cover => true,
+        ChildComponent::Climate | ChildComponent::Scene => return None,
+    };
+    Some(PluginRow {
+        connection: connection_id.to_string(),
+        resource: resource_id.clone(),
+        cover,
+        snapshot: child.clone(),
+    })
 }
 /// Short-lived observations speed up navigation, never authorize commands.
 #[derive(Default)]
@@ -94,6 +264,8 @@ struct Entry {
     state: Option<DeviceState>,
     hue: bool,
     matter: bool,
+    /// One child of a packaged connection, driven over the panel socket.
+    plugin: Option<PluginRow>,
     /// A Sonos speaker: the physical keys drive it from this list.
     media: bool,
     /// An activity pinned above the devices: its glyph index and the
@@ -110,6 +282,10 @@ enum Answer {
     IrChecked(bool, Input),
     List(Vec<Entry>),
     State(DeviceState),
+    /// The daemon was busy with this connection (a browser listing its
+    /// children, say). Nothing was sent; the level goes back on the queue and
+    /// the user is told nothing, because nothing is wrong.
+    Busy,
 }
 enum Input {
     PhysicalPick(usize, bool),
@@ -220,12 +396,29 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
             state: None,
             hue: false,
             matter: false,
+            plugin: None,
             media: false,
             activity: Some((a.kind.glyph_index(), activity_caption(config, a))),
         })
         .collect();
     entries.extend(room.devices.iter().filter_map(|d| {
         let integration = config.resolve_integration(&d.integration);
+        // A light or a blind behind a package is a room row like any other:
+        // the same slider, the same optimistic level, the same description.
+        // Only where its readings come from is different.
+        if let Some(row) = plugin_row(config, d) {
+            return Some(Entry {
+                name: d.name.clone(),
+                icon: d.effective_icon(),
+                id: row.id(),
+                state: None,
+                hue: false,
+                matter: false,
+                plugin: Some(row),
+                media: false,
+                activity: None,
+            });
+        }
         match integration.as_ref() {
             Some(Integration::HomeAssistant { entity_id })
                 if matches!(ha_domain(entity_id), "light" | "cover" | "climate") =>
@@ -237,6 +430,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                     state: None,
                     hue: false,
                     matter: false,
+                    plugin: None,
                     media: false,
                     activity: None,
                 })
@@ -248,6 +442,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                 state: None,
                 hue: true,
                 matter: false,
+                plugin: None,
                 media: false,
                 activity: None,
             }),
@@ -258,6 +453,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                 state: None,
                 hue: false,
                 matter: true,
+                plugin: None,
                 media: false,
                 activity: None,
             }),
@@ -268,6 +464,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                 state: None,
                 hue: false,
                 matter: false,
+                plugin: None,
                 media: matches!(integration, Some(Integration::Sonos { .. })),
                 activity: None,
             }),
@@ -282,11 +479,114 @@ fn toggle_command(state: &Light) -> Result<Command, String> {
         None => Err("This light is unavailable".into()),
     }
 }
+
+/// What OK on a packaged row sends: the child's own `toggle`, which the
+/// package decides the meaning of. Unlike Home Assistant, nothing is read
+/// first: a child that cannot toggle refuses the command, and a refusal is
+/// better than a guess made from a stale reading.
+fn toggle_request(row: &PluginRow) -> Request {
+    Request::command("toggle").at(&row.resource)
+}
+
+/// Switch one packaged row from a shortcut key: the same request OK on the row
+/// sends. `None` means the connection was busy - the press was not lost, there
+/// is simply nothing to say about it yet.
+pub(crate) fn plugin_toggle(
+    row: &PluginRow,
+    name: &str,
+    ask: Ask,
+) -> Result<Option<DeviceState>, String> {
+    match write_plugin_row(row, name, toggle_request(row), ask)? {
+        Answer::State(state) => Ok(Some(state)),
+        _ => Ok(None),
+    }
+}
+
+/// One status read for every packaged row in the room, in order, on this one
+/// worker.
+///
+/// A connection that fails to answer takes the rest of its rows with it for
+/// this round: waiting 1.5 s per row on a bridge that is not there would hold
+/// the list up for as long as the room is large. Those rows keep their place
+/// and say "Unavailable"; the next round asks again. A child the package no
+/// longer knows refuses the read and is shown the same way - never removed,
+/// because the device is still configured.
+fn read_plugin_rows(entries: &mut [Entry], ask: Ask) {
+    let mut silent: Vec<String> = Vec::new();
+    for e in entries.iter_mut() {
+        let Some(row) = e.plugin.clone() else {
+            continue;
+        };
+        if silent.contains(&row.connection) {
+            continue;
+        }
+        match ask(
+            &row.connection,
+            Request::status().at(&row.resource),
+            STATUS_TIMEOUT,
+        ) {
+            Ok(Response::Status { status }) => {
+                e.state = row.state(&e.name, &status).map(|mut state| {
+                    state.set_id(e.id.clone());
+                    state
+                });
+            }
+            Ok(_) => {}
+            Err(failure) => {
+                if matches!(
+                    failure.code,
+                    couch_plugin::Error::Transport | couch_plugin::Error::Timeout
+                ) {
+                    silent.push(row.connection.clone());
+                }
+            }
+        }
+    }
+}
+
+/// A command or a typed action on one packaged row, and the state it left the
+/// child in.
+///
+/// A write may be acknowledged with that state, which saves a round trip and
+/// cannot disagree with what was just written. A package that answers a bare
+/// `Ok` is asked once, straight after.
+fn write_plugin_row(
+    row: &PluginRow,
+    name: &str,
+    request: Request,
+    ask: Ask,
+) -> Result<Answer, String> {
+    let answered = |status: &couch_plugin::Status| {
+        row.state(name, status)
+            .map(|mut state| {
+                state.set_id(row.id());
+                Answer::State(state)
+            })
+            .ok_or_else(|| "The integration did not report this device".to_string())
+    };
+    match ask(&row.connection, request, write_timeout()) {
+        Ok(Response::Status { status }) => answered(&status),
+        Ok(Response::Ok) => match ask(
+            &row.connection,
+            Request::status().at(&row.resource),
+            STATUS_TIMEOUT,
+        ) {
+            Ok(Response::Status { status }) => answered(&status),
+            Ok(_) => Err("The integration returned an invalid status".into()),
+            Err(failure) if failure.code == couch_plugin::Error::Busy => Ok(Answer::Busy),
+            Err(failure) => Err(crate::tv::plugin::refusal(&failure)),
+        },
+        Ok(_) => Err("The integration returned an invalid response".into()),
+        Err(failure) if failure.code == couch_plugin::Error::Busy => Ok(Answer::Busy),
+        Err(failure) => Err(crate::tv::plugin::refusal(&failure)),
+    }
+}
 fn perform(
     room: &Id,
     operation: Operation,
     hue: &crate::connections::HueFleet,
     matter: &crate::connections::MatterFleet,
+    ask: Ask,
     current: &dyn Fn() -> bool,
 ) -> Result<Answer, String> {
     let mut entries = configured(room)?;
@@ -314,7 +614,7 @@ fn perform(
         Operation::List => {
             let ha_states = if entries
                 .iter()
-                .any(|e| !e.hue && !e.matter && !e.id.starts_with("device:"))
+                .any(|e| !e.hue && !e.matter && e.plugin.is_none() && !e.id.starts_with("device:"))
             {
                 crate::connections::ha_room_states()
             } else {
@@ -339,6 +639,9 @@ fn perform(
                 Vec::new()
             };
             for e in &mut entries {
+                if e.plugin.is_some() {
+                    continue;
+                }
                 let states = if e.hue {
                     &hue_states
                 } else if e.matter {
@@ -355,11 +658,17 @@ fn perform(
                     s
                 });
             }
+            read_plugin_rows(&mut entries, ask);
             Ok(Answer::List(entries))
         }
         Operation::Brightness(id, percent) => {
-            if !entries.iter().any(|e| e.id == id) {
+            let Some(entry) = entries.iter().find(|e| e.id == id) else {
                 return Err("This device was removed from the room".into());
+            };
+            if let Some(row) = entry.plugin.clone() {
+                let name = entry.name.clone();
+                let action = Request::action(row.level(percent)).at(&row.resource);
+                return write_plugin_row(&row, &name, action, ask);
             }
             let mut state = if let Some(raw) = id.strip_prefix("hue:") {
                 DeviceState::Light(hue.brightness(raw, percent).map_err(|e| e.to_string())?)
@@ -383,8 +692,12 @@ fn perform(
             Ok(Answer::State(state))
         }
         Operation::Toggle(id) => {
-            if !entries.iter().any(|e| e.id == id) {
+            let Some(entry) = entries.iter().find(|e| e.id == id) else {
                 return Err("This device was removed from the room".into());
+            };
+            if let Some(row) = entry.plugin.clone() {
+                let name = entry.name.clone();
+                return write_plugin_row(&row, &name, toggle_request(&row), ask);
             }
             // Hue uses its push-maintained cache; HA still reads before toggling.
             let mut state = if let Some(raw) = id.strip_prefix("hue:") {
@@ -457,9 +770,14 @@ impl Controller {
             while let Ok((generation, room, op)) = requests.recv() {
                 let _ = events.send((
                     generation,
-                    perform(&room, op, &worker_hue, &worker_matter, &|| {
-                        worker_active.load(std::sync::atomic::Ordering::SeqCst) == generation
-                    }),
+                    perform(
+                        &room,
+                        op,
+                        &worker_hue,
+                        &worker_matter,
+                        &mut plugin_socket,
+                        &|| worker_active.load(std::sync::atomic::Ordering::SeqCst) == generation,
+                    ),
                 ));
             }
         });
@@ -959,6 +1277,19 @@ impl Controller {
                     self.entries = entries;
                     self.update_rows(app, reset);
                 }
+                Ok(Answer::Busy) => {
+                    // Nothing was sent and nothing is wrong: put the level
+                    // back at the head of the queue unless a newer one for the
+                    // same row is already waiting, and say nothing.
+                    if let Some((id, percent)) = brightness {
+                        requeue_brightness(&mut self.brightness_pending, id, percent);
+                    }
+                    // Without this the next poll would resend immediately and
+                    // spin against a connection that is busy for a moment.
+                    self.last_brightness_send = Instant::now();
+                    // The row said "Updating…" while the request was out.
+                    self.update_rows(app, false);
+                }
                 Ok(Answer::State(s)) => {
                     self.cache.put(s.clone());
                     for e in &mut self.entries {
@@ -1005,6 +1336,14 @@ fn queue_brightness(queue: &mut VecDeque<(String, u8)>, id: String, percent: u8)
         *target = percent;
     } else {
         queue.push_back((id, percent));
+    }
+}
+/// Put an unsent level back at the head of the queue. A newer level for the
+/// same row is already waiting there and wins: only the latest target is ever
+/// sent.
+fn requeue_brightness(queue: &mut VecDeque<(String, u8)>, id: String, percent: u8) {
+    if !queue.iter().any(|(pending, _)| pending == &id) {
+        queue.push_front((id, percent));
     }
 }
 fn brightness_step(light: &Light, target: Option<u8>, delta: i32) -> Result<u8, &'static str> {
@@ -1060,6 +1399,17 @@ fn description(light: &Light) -> String {
             .unwrap_or_else(|| "On".into()),
     }
 }
+/// Whether a packaged device gets the generic packaged control screen.
+///
+/// A device that is the connection does, and so does a thermostat child until
+/// Home Assistant is packaged. A light or a blind child never does: it is a
+/// room row, where its level already lives.
+pub(crate) fn opens_packaged_screen(
+    config: &couch_model::Config,
+    device: &couch_model::Device,
+) -> bool {
+    plugin_row(config, device).is_none()
+}
 // Resolve the selected device's own connection; never select the first Android
 // TV when multiple TVs are configured.
 pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Option<String> {
@@ -1076,8 +1426,12 @@ pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Op
     let provider = match integration? {
         Integration::Sonos { .. } => return Some(format!("sonos:{device_id}")),
         // A packaged device: the core control screen, filled from what the
-        // package declares (tv_plugin.rs).
-        Integration::Plugin { .. } => return Some(format!("plugin:{device_id}")),
+        // package declares (tv_plugin.rs). Not a packaged light or blind:
+        // those are room rows, and a row has no screen behind it.
+        Integration::Plugin { .. } if opens_packaged_screen(config, device) => {
+            return Some(format!("plugin:{device_id}"))
+        }
+        Integration::Plugin { .. } => return None,
         Integration::WebOs => couch_model::Provider::WebOs,
         Integration::AndroidTv => couch_model::Provider::AndroidTv,
         Integration::AppleTv => couch_model::Provider::AppleTv,
@@ -1398,6 +1752,741 @@ mod tests {
         assert!(cache.get("b/cover.office").is_some());
         assert!(cache.get("cover.office").is_none());
     }
+    /// Protocol 3 is unreleased and the panel is never built with its preview
+    /// switched on, so no connection can declare children and no device can be
+    /// saved as one: nothing here changes what a user sees today.
+    #[test]
+    fn the_panel_is_never_built_with_the_protocol_3_preview() {
+        assert_eq!(
+            couch_plugin::accepted_protocol_version(),
+            couch_plugin::PROTOCOL_VERSION
+        );
+    }
+
+    /// A bridge that offers children, and a receiver that is a connection of
+    /// its own: the two shapes a packaged connection has.
+    fn packaged() -> couch_model::Config {
+        let config: couch_model::Config = serde_json::from_value(serde_json::json!({"schema_version":1,
+            "connections":[
+                {"id":"bridge","name":"Hue bridge","provider":{"kind":"plugin","id":"hue","label":"Philips Hue",
+                    "children":[
+                        {"kind":"light","label":"Light","device_kind":"light","component":"light",
+                         "capabilities":[{"id":"toggle","label":"Toggle"}],"actions":[{"action":"set_light"}]},
+                        {"kind":"blind","label":"Blind","device_kind":"blind","component":"cover",
+                         "capabilities":[{"id":"toggle","label":"Toggle"}],"actions":[{"action":"set_cover"}]},
+                        {"kind":"thermostat","label":"Thermostat","device_kind":"thermostat","component":"climate",
+                         "actions":[{"action":"set_climate"}]},
+                        {"kind":"scene","label":"Scene","device_kind":"other","component":"scene",
+                         "capabilities":[{"id":"on","label":"On"}]}]}},
+                {"id":"receiver","name":"Theater AVR","provider":{"kind":"plugin","id":"denon","label":"Denon AVR",
+                    "supports_inputs":true,
+                    "capabilities":[{"id":"power-on","label":"Main zone on"},{"id":"power-off","label":"Main zone off"}]}}],
+            "rooms":[{"id":"living-room","name":"Living room","devices":[
+                {"id":"desk","name":"Desk lamp","kind":"light","integration":{"via":"connection","connection_id":"bridge",
+                    "resource_id":"lamp/1","child":{"kind":"light","light":{"dimmable":true,"mirek":[153,500]}}}},
+                {"id":"reading","name":"Reading lamp","kind":"light","integration":{"via":"connection","connection_id":"bridge",
+                    "resource_id":"lamp/2","child":{"kind":"light","light":{"dimmable":true}}}},
+                {"id":"blind","name":"Blind","kind":"blind","integration":{"via":"connection","connection_id":"bridge",
+                    "resource_id":"cover/1","child":{"kind":"blind","cover":{"position":true,"stop":true}}}},
+                {"id":"heat","name":"Heating","kind":"thermostat","integration":{"via":"connection","connection_id":"bridge",
+                    "resource_id":"climate/1","child":{"kind":"thermostat","climate":{
+                        "min_tenths":70,"max_tenths":300,"step_tenths":5,"modes":["off","heat"]}}}},
+                {"id":"avr","name":"Theater AVR","kind":"speaker",
+                 "integration":{"via":"connection","connection_id":"receiver","resource_id":""}}]}],
+            "scenes":[{"id":"relax","name":"Relax","rooms":["living-room"],
+                "resource":{"connection_id":"bridge","resource_id":"scene/1","kind":"scene"}}]})).unwrap();
+        config.validate().unwrap();
+        config
+    }
+
+    fn reading(json: serde_json::Value) -> couch_plugin::Status {
+        serde_json::from_value(json).unwrap()
+    }
+
+    /// The shape of the room list with packaged children in it: lamps and
+    /// blinds are rows like any other, a thermostat keeps the screen it had,
+    /// a scene is not a device at all, and a receiver is untouched.
+    #[test]
+    fn packaged_lights_and_blinds_are_room_rows_and_nothing_else_moves() {
+        let config = packaged();
+        let entries = configured_in(&config, &Id::new("living-room")).unwrap();
+        assert_eq!(
+            entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            [
+                "plugin:bridge/lamp/1",
+                "plugin:bridge/lamp/2",
+                "plugin:bridge/cover/1",
+                "device:heat",
+                "device:avr"
+            ]
+        );
+        // The two lamps and the blind carry what it takes to drive them; the
+        // thermostat and the receiver carry nothing.
+        let row = |i: usize| entries[i].plugin.clone();
+        assert_eq!(
+            row(0).map(|r| (r.connection, r.resource, r.cover)),
+            Some(("bridge".into(), "lamp/1".into(), false))
+        );
+        assert_eq!(
+            row(2).map(|r| (r.connection, r.resource, r.cover)),
+            Some(("bridge".into(), "cover/1".into(), true))
+        );
+        assert!(row(3).is_none() && row(4).is_none());
+        // A lamp is drawn as a light row, never as a device with a screen.
+        assert!(entries[0].state.is_none() && !entries[0].hue && !entries[0].matter);
+        // Nothing here opens the packaged control screen but the thermostat
+        // and the receiver.
+        assert_eq!(tv_connection(&config, "desk"), None);
+        assert_eq!(tv_connection(&config, "blind"), None);
+        assert_eq!(
+            tv_connection(&config, "heat").as_deref(),
+            Some("plugin:heat")
+        );
+        assert_eq!(tv_connection(&config, "avr").as_deref(), Some("plugin:avr"));
+        // The room's Scenes button counts the package's scene beside any Hue
+        // one, because a scene is listed by its rooms alone.
+        assert_eq!(
+            config
+                .scenes
+                .iter()
+                .filter(|s| s.rooms.contains(&Id::new("living-room")))
+                .count(),
+            1
+        );
+    }
+
+    /// A kind the connection has stopped declaring (a rollback that has not
+    /// healed): the saved traits still say what the device is, so the lamp
+    /// keeps its row rather than turning into a screen.
+    #[test]
+    fn a_child_whose_kind_has_gone_keeps_the_row_its_own_traits_describe() {
+        let mut config = packaged();
+        let couch_model::Provider::Plugin { children, .. } = &mut config
+            .connections
+            .iter_mut()
+            .find(|c| c.id.as_str() == "bridge")
+            .unwrap()
+            .provider
+        else {
+            panic!("a packaged connection")
+        };
+        children.clear();
+        let entries = configured_in(&config, &Id::new("living-room")).unwrap();
+        assert_eq!(
+            entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            [
+                "plugin:bridge/lamp/1",
+                "plugin:bridge/lamp/2",
+                "plugin:bridge/cover/1",
+                "device:heat",
+                "device:avr"
+            ]
+        );
+        assert!(entries[2].plugin.as_ref().is_some_and(|r| r.cover));
+        assert_eq!(tv_connection(&config, "desk"), None);
+    }
+
+    /// Readings become the shapes the rows already speak, and an unknown
+    /// stays unknown: a lamp that has not said whether it is on is not off.
+    #[test]
+    fn a_reading_never_turns_an_unknown_into_an_off() {
+        let dimmable = LightTraits {
+            dimmable: true,
+            mirek: Some((153, 500)),
+            color: false,
+        };
+        let plug = LightTraits::default();
+        for (traits, state, on, percent, dims) in [
+            (
+                Some(&dimmable),
+                serde_json::json!({"on":true,"brightness":40}),
+                Some(true),
+                Some(40),
+                true,
+            ),
+            (
+                Some(&dimmable),
+                serde_json::json!({"on":false,"brightness":40}),
+                Some(false),
+                Some(40),
+                true,
+            ),
+            (Some(&dimmable), serde_json::json!({}), None, None, true),
+            (
+                Some(&plug),
+                serde_json::json!({"on":true}),
+                Some(true),
+                None,
+                false,
+            ),
+            (
+                None,
+                serde_json::json!({"on":true}),
+                Some(true),
+                None,
+                false,
+            ),
+        ] {
+            let state: LightState = serde_json::from_value(state).unwrap();
+            let light = light_row("Desk", traits, &state);
+            assert_eq!(
+                (light.on, light.brightness_percent, light.dimmable),
+                (on, percent, dims),
+                "{state:?}"
+            );
+        }
+        // Unknown reads as "Unavailable", and the slider refuses to invent a
+        // level for it.
+        let unknown = light_row("Desk", Some(&dimmable), &LightState::default());
+        assert_eq!(description(&unknown), "Unavailable");
+        assert!(brightness_step(&unknown, None, 5).is_err());
+        // An off lamp keeps the level it would return to, and dims from zero.
+        let off = light_row(
+            "Desk",
+            Some(&dimmable),
+            &serde_json::from_value(serde_json::json!({"on":false,"brightness":40})).unwrap(),
+        );
+        assert_eq!(description(&off), "Off");
+        assert_eq!(brightness_step(&off, None, 5), Ok(5));
+        // A lamp that cannot be dimmed says so rather than sending a level.
+        let plain = light_row(
+            "Plug",
+            Some(&plug),
+            &serde_json::from_value(serde_json::json!({"on":true})).unwrap(),
+        );
+        assert_eq!(description(&plain), "On");
+        assert!(brightness_step(&plain, None, 5).is_err());
+
+        let full = CoverTraits {
+            position: true,
+            stop: true,
+        };
+        for (traits, state, shown, steps) in [
+            (
+                Some(&full),
+                serde_json::json!({"open":true,"position":60}),
+                "Open · 60% open",
+                true,
+            ),
+            (
+                Some(&full),
+                serde_json::json!({"open":false,"position":0}),
+                "Closed · 0% open",
+                true,
+            ),
+            (Some(&full), serde_json::json!({}), "Unavailable", false),
+            (
+                Some(&CoverTraits::default()),
+                serde_json::json!({"open":true,"position":60}),
+                "Open · 60% open",
+                false,
+            ),
+            (None, serde_json::json!({"open":true}), "Open", false),
+        ] {
+            let state: CoverState = serde_json::from_value(state).unwrap();
+            let cover = cover_row("Blind", traits, &state);
+            assert_eq!(cover_description(&cover), shown, "{state:?}");
+            assert_eq!(cover_step(&cover, None, 5).is_ok(), steps, "{state:?}");
+        }
+    }
+
+    /// A status that says nothing about this child is no reading at all: the
+    /// row says "Unavailable" rather than showing a lamp as off.
+    #[test]
+    fn a_status_without_this_childs_state_is_not_a_reading() {
+        let config = packaged();
+        let entries = configured_in(&config, &Id::new("living-room")).unwrap();
+        let lamp = entries[0].plugin.clone().unwrap();
+        let blind = entries[2].plugin.clone().unwrap();
+        assert!(lamp
+            .state("Desk", &reading(serde_json::json!({})))
+            .is_none());
+        assert!(lamp
+            .state("Desk", &reading(serde_json::json!({"cover":{"open":true}})))
+            .is_none());
+        assert!(blind
+            .state("Blind", &reading(serde_json::json!({"light":{"on":true}})))
+            .is_none());
+        assert!(matches!(
+            lamp.state("Desk", &reading(serde_json::json!({"light":{"on":true}}))),
+            Some(DeviceState::Light(_))
+        ));
+        assert!(matches!(
+            blind.state(
+                "Blind",
+                &reading(serde_json::json!({"cover":{"open":true}}))
+            ),
+            Some(DeviceState::Cover(_))
+        ));
+    }
+
+    /// Every packaged row is read on its own, in order, on the one worker.
+    /// The first connection that cannot be reached takes the rest of its rows
+    /// with it for this round; another connection is still read, and no row is
+    /// ever removed.
+    #[test]
+    fn a_round_reads_each_row_once_and_gives_up_on_a_silent_connection() {
+        let mut config = packaged();
+        // A second bridge, so one going quiet cannot silence the other.
+        let (bridge, devices) = {
+            let bridge = config
+                .connections
+                .iter()
+                .find(|c| c.id.as_str() == "bridge")
+                .unwrap()
+                .clone();
+            let devices = config.rooms[0].devices.clone();
+            (bridge, devices)
+        };
+        config.connections.push(couch_model::Connection {
+            id: "hall".into(),
+            name: "Hall bridge".into(),
+            provider: bridge.provider.clone(),
+        });
+        let mut hall = devices[0].clone();
+        hall.id = "hall-lamp".into();
+        hall.name = "Hall lamp".into();
+        hall.integration = couch_model::Integration::Connection {
+            connection_id: "hall".into(),
+            resource_id: "lamp/9".into(),
+            child: match &devices[0].integration {
+                couch_model::Integration::Connection { child, .. } => child.clone(),
+                _ => panic!("a child"),
+            },
+        };
+        config.rooms[0].devices.push(hall);
+        config.validate().unwrap();
+        let mut entries = configured_in(&config, &Id::new("living-room")).unwrap();
+        let mut asked: Vec<(String, Option<String>, Duration)> = Vec::new();
+        read_plugin_rows(&mut entries, &mut |connection, request, timeout| {
+            asked.push((
+                connection.to_owned(),
+                request.resource().map(str::to_owned),
+                timeout,
+            ));
+            match request.resource() {
+                // The first lamp answers; the blind would, but the bridge has
+                // already gone quiet by then.
+                Some("lamp/1") => Ok(Response::Status {
+                    status: reading(serde_json::json!({"light":{"on":true,"brightness":40}})),
+                }),
+                Some("lamp/2") => Err(couch_plugin::Error::Timeout.into()),
+                Some("lamp/9") => Ok(Response::Status {
+                    status: reading(serde_json::json!({"light":{"on":false,"brightness":10}})),
+                }),
+                _ => panic!("nothing else may be asked: {request:?}"),
+            }
+        });
+        assert_eq!(
+            asked,
+            [
+                ("bridge".to_string(), Some("lamp/1".into()), STATUS_TIMEOUT),
+                ("bridge".to_string(), Some("lamp/2".into()), STATUS_TIMEOUT),
+                ("hall".to_string(), Some("lamp/9".into()), STATUS_TIMEOUT),
+            ]
+        );
+        assert_eq!(STATUS_TIMEOUT, Duration::from_millis(1500));
+        // The rows are all still there; the ones that went unasked simply have
+        // no reading, which is what "Unavailable" is drawn from.
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (
+                    e.id.as_str(),
+                    e.state.as_ref().map(DeviceState::description)
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("plugin:bridge/lamp/1", Some("On · 40%".to_string())),
+                ("plugin:bridge/lamp/2", None),
+                ("plugin:bridge/cover/1", None),
+                ("device:heat", None),
+                ("device:avr", None),
+                ("plugin:hall/lamp/9", Some("Off".to_string())),
+            ]
+        );
+        // The reading is filed under the row's own id, so the state cache and
+        // the row find each other.
+        assert_eq!(
+            entries[0].state.as_ref().map(DeviceState::id),
+            Some("plugin:bridge/lamp/1")
+        );
+    }
+
+    /// A child the package no longer knows refuses the read. The row stays:
+    /// the device is still configured, it just cannot be reached.
+    #[test]
+    fn a_child_the_package_forgot_is_unavailable_and_never_removed() {
+        let config = packaged();
+        let mut entries = configured_in(&config, &Id::new("living-room")).unwrap();
+        let mut asked = 0;
+        read_plugin_rows(&mut entries, &mut |_, _, _| {
+            asked += 1;
+            Err(couch_plugin::Error::Unsupported.into())
+        });
+        // Unsupported is not a connection failure: every row is still asked.
+        assert_eq!(asked, 3);
+        assert_eq!(entries.len(), 5);
+        assert!(entries.iter().all(|e| e.state.is_none()));
+    }
+
+    /// A level is written as the typed action the child's kind declares, and
+    /// the state the write acknowledged is what the row then shows.
+    #[test]
+    fn a_level_uses_the_state_the_write_acknowledged() {
+        let config = packaged();
+        let entries = configured_in(&config, &Id::new("living-room")).unwrap();
+        let lamp = entries[0].plugin.clone().unwrap();
+        let blind = entries[2].plugin.clone().unwrap();
+        let mut sent = Vec::new();
+        let answer = write_plugin_row(
+            &lamp,
+            "Desk lamp",
+            Request::action(lamp.level(40)).at(&lamp.resource),
+            &mut |connection, request, _| {
+                sent.push((connection.to_owned(), request));
+                Ok(Response::Status {
+                    status: reading(serde_json::json!({"light":{"on":true,"brightness":40}})),
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            sent,
+            [(
+                "bridge".to_string(),
+                Request::Action {
+                    action: TypedAction::SetLight {
+                        on: None,
+                        brightness: Some(40),
+                        mirek: None,
+                        xy: None
+                    },
+                    resource: Some("lamp/1".into())
+                }
+            )]
+        );
+        let Answer::State(state) = answer else {
+            panic!("the acknowledged state")
+        };
+        assert_eq!(state.id(), "plugin:bridge/lamp/1");
+        assert_eq!(state.description(), "On · 40%");
+        // A blind's level is the other typed action, at its own child.
+        assert_eq!(blind.level(40), TypedAction::SetCover { position: 40 });
+        // And OK on the row is the child's own toggle, never a read first.
+        assert_eq!(
+            toggle_request(&lamp),
+            Request::Command {
+                function: "toggle".into(),
+                phase: couch_model::KeyPhase::Tap,
+                resource: Some("lamp/1".into())
+            }
+        );
+    }
+
+    /// A package that only says `Ok` is asked once, straight after, and that
+    /// read is the short one.
+    #[test]
+    fn a_bare_ok_is_followed_by_one_read() {
+        let config = packaged();
+        let entries = configured_in(&config, &Id::new("living-room")).unwrap();
+        let lamp = entries[0].plugin.clone().unwrap();
+        let mut sent: Vec<(Request, Duration)> = Vec::new();
+        let answer = write_plugin_row(
+            &lamp,
+            "Desk lamp",
+            toggle_request(&lamp),
+            &mut |_, request, timeout| {
+                sent.push((request.clone(), timeout));
+                match request {
+                    Request::Command { .. } => Ok(Response::Ok),
+                    Request::Status { .. } => Ok(Response::Status {
+                        status: reading(serde_json::json!({"light":{"on":true,"brightness":80}})),
+                    }),
+                    other => panic!("{other:?}"),
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].1, write_timeout());
+        assert_eq!(sent[1], (Request::status().at("lamp/1"), STATUS_TIMEOUT));
+        assert!(matches!(answer, Answer::State(state) if state.description() == "On · 80%"));
+        // A reply that says nothing about this child is reported, not shown as
+        // an off lamp.
+        let quiet = write_plugin_row(&lamp, "Desk lamp", toggle_request(&lamp), &mut |_, _, _| {
+            Ok(Response::Status {
+                status: reading(serde_json::json!({"on":true})),
+            })
+        });
+        assert_eq!(
+            quiet.err().as_deref(),
+            Some("The integration did not report this device")
+        );
+    }
+
+    /// A busy connection is not a failure: nothing was sent, the level goes
+    /// back on the queue, and the user is told nothing.
+    #[test]
+    fn a_busy_connection_keeps_only_the_latest_target_and_says_nothing() {
+        let config = packaged();
+        let entries = configured_in(&config, &Id::new("living-room")).unwrap();
+        let lamp = entries[0].plugin.clone().unwrap();
+        let answer = write_plugin_row(
+            &lamp,
+            "Desk lamp",
+            Request::action(lamp.level(40)).at(&lamp.resource),
+            &mut |_, _, _| Err(couch_plugin::Error::Busy.into()),
+        )
+        .unwrap();
+        assert!(matches!(answer, Answer::Busy));
+        // The in-flight level goes back at the head of the queue, ahead of
+        // another light's, and in front of nothing newer for itself.
+        let mut queue = VecDeque::new();
+        queue_brightness(&mut queue, "two".into(), 25);
+        requeue_brightness(&mut queue, "one".into(), 40);
+        assert_eq!(
+            queue.iter().cloned().collect::<Vec<_>>(),
+            [("one".to_string(), 40), ("two".to_string(), 25)]
+        );
+        // A newer level for the same row is already waiting: it wins, and the
+        // one that came back is dropped.
+        requeue_brightness(&mut queue, "one".into(), 10);
+        assert_eq!(
+            queue.into_iter().collect::<Vec<_>>(),
+            [("one".to_string(), 40), ("two".to_string(), 25)]
+        );
+        // A refusal that is not busy is still a refusal.
+        let refused =
+            write_plugin_row(&lamp, "Desk lamp", toggle_request(&lamp), &mut |_, _, _| {
+                Err(couch_plugin::Error::Rejected.into())
+            });
+        assert_eq!(
+            refused.err().as_deref(),
+            Some("The device refused the request")
+        );
+    }
+
+    /// A packaged child's name is the package's own, and may well read like a
+    /// Home Assistant entity id. It is not one: nothing here treats it as a
+    /// domain, so a `climate.` child never opens the thermostat screen.
+    #[test]
+    fn a_child_name_is_never_read_as_a_home_assistant_domain() {
+        assert_eq!(ha_domain("plugin:bridge/climate.living"), "");
+        assert_eq!(ha_domain("plugin:bridge/cover.blind"), "");
+        assert_eq!(ha_domain("bridge/climate.living"), "climate");
+        assert_eq!(ha_domain("cover.office"), "cover");
+    }
+
+    /// One rendered room, drawn the way the panel draws it: the controller's
+    /// own rows, on the 480-pixel screen. `COUCH_ROOM_SCREENSHOTS=<dir>`
+    /// keeps the picture.
+    fn draw_room(
+        config: &couch_model::Config,
+        room: &str,
+        fill: impl Fn(&mut Vec<Entry>),
+        name: &str,
+    ) -> Vec<String> {
+        use slint::{platform::WindowEvent, ComponentHandle};
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let controller = Controller::install(&app);
+        let mut entries = configured_in(config, &Id::new(room)).unwrap();
+        fill(&mut entries);
+        let mut controller = controller;
+        controller.entries = entries;
+        app.set_light_title(
+            config
+                .room(&Id::new(room))
+                .map(|r| r.name.as_str())
+                .unwrap_or("Room")
+                .into(),
+        );
+        // The Scenes button, filled the way `open_room` fills it.
+        let scenes: Vec<String> = config
+            .scenes
+            .iter()
+            .filter(|s| s.rooms.contains(&Id::new(room)))
+            .map(|s| s.name.clone())
+            .collect();
+        app.set_light_scene_label(if scenes.len() == 1 {
+            scenes[0].clone().into()
+        } else {
+            format!("{} scenes", scenes.len()).into()
+        });
+        app.set_light_scene_count(scenes.len() as i32);
+        app.set_light_shown(true);
+        app.set_feedback_enabled(true);
+        controller.update_rows(&app, true);
+        // What the rows say, read back from the model the screen is drawn
+        // from, so the sentences asserted are the ones in the picture.
+        let shown: Vec<String> = app
+            .get_light_items()
+            .iter()
+            .map(|row| format!("{} - {}", row.title, row.detail))
+            .collect();
+        app.show().unwrap();
+        window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        app.invoke_focus_light();
+        for _ in 0..20 {
+            slint::platform::update_timers_and_animations();
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        let mut pixels = vec![slint::Rgb8Pixel::default(); 480 * 800];
+        window.request_redraw();
+        window.draw_if_needed(|r| {
+            r.render(&mut pixels, 480);
+        });
+        if let Some(dir) = std::env::var_os("COUCH_ROOM_SCREENSHOTS") {
+            let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+            image::save_buffer(
+                std::path::Path::new(&dir).join(name),
+                &bytes,
+                480,
+                800,
+                image::ColorType::Rgb8,
+            )
+            .unwrap();
+        }
+        app.hide().unwrap();
+        shown
+    }
+
+    /// A room with nothing in it but the built-in Hue rows: the picture that
+    /// must not move when packaged children exist. Run on the commit before
+    /// this change and on it, the two files are byte for byte the same.
+    #[test]
+    fn a_room_of_built_in_hue_lights_is_drawn_as_it_always_was() {
+        const NAME: &str = "lights::tests::a_room_of_built_in_hue_lights_is_drawn_as_it_always_was";
+        if std::env::var_os("COUCH_TEST_HUE_ROOM").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_HUE_ROOM", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let config: couch_model::Config = serde_json::from_value(serde_json::json!({"schema_version":1,
+            "connections":[{"id":"bridge","name":"Hue bridge","provider":{"kind":"hue"}}],
+            "rooms":[{"id":"living-room","name":"Living room","devices":[
+                {"id":"desk","name":"Desk lamp","kind":"light","integration":{"via":"connection","connection_id":"bridge","resource_id":"11111111-1111-4111-8111-111111111111"}},
+                {"id":"reading","name":"Reading lamp","kind":"light","integration":{"via":"connection","connection_id":"bridge","resource_id":"22222222-2222-4222-8222-222222222222"}},
+                {"id":"corner","name":"Corner lamp","kind":"light","integration":{"via":"connection","connection_id":"bridge","resource_id":"33333333-3333-4333-8333-333333333333"}}]}]}))
+            .unwrap();
+        config.validate().unwrap();
+        let lamp = |id: &str, name: &str, on: Option<bool>, percent: Option<u8>| {
+            DeviceState::Light(Light {
+                entity_id: id.to_owned(),
+                name: name.to_owned(),
+                on,
+                brightness_percent: percent,
+                dimmable: true,
+            })
+        };
+        let shown = draw_room(
+            &config,
+            "living-room",
+            |entries| {
+                entries[0].state = Some(lamp(
+                    &entries[0].id.clone(),
+                    "Desk lamp",
+                    Some(true),
+                    Some(40),
+                ));
+                entries[1].state = Some(lamp(
+                    &entries[1].id.clone(),
+                    "Reading lamp",
+                    Some(false),
+                    Some(70),
+                ));
+                // The third said nothing: unknown, never an inferred off.
+                entries[2].state = None;
+            },
+            "room-built-in-hue.png",
+        );
+        assert_eq!(
+            shown,
+            [
+                "Desk lamp - On · 40%",
+                "Reading lamp - Off",
+                "Corner lamp - Unavailable"
+            ]
+        );
+    }
+
+    /// The same room list with packaged children in it: two lamps and a
+    /// blind behind one package, drawn as ordinary rows, beside a thermostat
+    /// and a receiver that keep their screens.
+    #[test]
+    fn a_room_draws_packaged_lamps_and_a_blind_as_ordinary_rows() {
+        const NAME: &str =
+            "lights::tests::a_room_draws_packaged_lamps_and_a_blind_as_ordinary_rows";
+        if std::env::var_os("COUCH_TEST_PACKAGED_ROOM").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_PACKAGED_ROOM", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let config = packaged();
+        let shown = draw_room(
+            &config,
+            "living-room",
+            |entries| {
+                for (i, status) in [
+                    (
+                        0,
+                        Some(serde_json::json!({"light":{"on":true,"brightness":40}})),
+                    ),
+                    // The second lamp went unread: its bridge had already
+                    // failed to answer this round.
+                    (1, None),
+                    (
+                        2,
+                        Some(serde_json::json!({"cover":{"open":true,"position":60}})),
+                    ),
+                ] {
+                    let row = entries[i].plugin.clone().unwrap();
+                    let id = entries[i].id.clone();
+                    let name = entries[i].name.clone();
+                    entries[i].state = status.map(|status| {
+                        let mut state = row.state(&name, &reading(status)).unwrap();
+                        state.set_id(id);
+                        state
+                    });
+                }
+            },
+            "room-packaged-children.png",
+        );
+        assert_eq!(
+            shown,
+            [
+                "Desk lamp - On · 40%",
+                // The bridge had already failed to answer this round.
+                "Reading lamp - Unavailable",
+                "Blind - Open · 60% open",
+                // The thermostat and the receiver keep their device rows and
+                // the packaged screen behind them.
+                "Heating - Press OK for controls",
+                "Theater AVR - Press OK for controls"
+            ]
+        );
+    }
+
     #[test]
     fn navigation_cache_expires() {
         let mut c = StateCache::default();
