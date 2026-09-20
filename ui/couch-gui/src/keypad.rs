@@ -32,6 +32,11 @@ pub const KEY_MIC: u16 = 61;
 /// PMIC side button; the faceplate TV power button reports F2 (60).
 pub const KEY_SIDE_POWER: u16 = 116;
 
+/// The faceplate Power key. Like the microphone and the menu keys, the host
+/// times this one: a tap belongs to whatever is on screen, a hold ends the
+/// running activity, and the two are the same edge until the key comes up.
+pub const KEY_POWER: u16 = 60;
+
 /// The menu button, KEY_MENU. Reported as an edge like the microphone, because
 /// the home screen opens settings on a *hold* of it and only the host can time
 /// a hold. It is not routed into the UI as a key.

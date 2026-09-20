@@ -14,7 +14,10 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const HOLD: Duration = Duration::from_millis(600);
+/// How long a key has to be down before it counts as a hold. Mapped long
+/// presses use it, and so does the Power key's "hold to end the activity"
+/// (main.rs), so the two feel the same under a thumb.
+pub(crate) const HOLD: Duration = Duration::from_millis(600);
 struct Pending {
     down: Press,
     at: Instant,
@@ -150,9 +153,6 @@ pub struct Controller {
     // way, so without this the remote's primary input disappears in silence;
     // poll turns it into the same toast every other dispatch path raises.
     dropped: bool,
-    // Power ends a running activity (main.rs); a highlighted row takes the key
-    // only when there is none to end.
-    activity_running: bool,
     // Bumped when a key is released; see `Request::hold`.
     hold: Arc<AtomicU64>,
     // The packaged device on the core control screen, which has no activity
@@ -178,15 +178,14 @@ impl Controller {
             tx,
             rx: out,
             dropped: false,
-            activity_running: false,
             hold,
             screen_device: None,
         }
     }
     fn binding(&self, button: Button, gesture: Gesture) -> Option<&Binding> {
-        if button == Button::Power && self.activity_running && self.context.starts_with(ROW) {
-            return None;
-        }
+        // Power is not special here any more. A short press belongs to the
+        // context on screen whether or not an activity is running; ending the
+        // activity is a *hold*, which main.rs times.
         self.bindings
             .iter()
             .find(|b| b.button == button && b.gesture == gesture)
@@ -265,7 +264,6 @@ impl Controller {
         self.screen_device = device;
     }
     fn sync_context(&mut self, app: &App) {
-        self.activity_running = app.get_activity_running();
         let config = connections::config();
         let context = if app.get_player_shown() || app.get_tv_shown() {
             // A device's own screen (`device:<id>`) has no activity bindings to
@@ -1682,21 +1680,22 @@ mod tests {
     }
 
     #[test]
-    fn power_on_a_row_yields_to_a_running_activity() {
+    fn power_on_a_row_acts_on_the_row_even_while_an_activity_runs() {
         let config = Arc::new(room());
         let mut controller = Controller::new();
         controller.refresh(format!("{ROW}avr-legacy"), Some(config));
-        assert!(controller.binding(Button::Power, Gesture::Short).is_some());
-        assert!(controller
-            .binding(Button::VolumeUp, Gesture::Short)
-            .is_some());
-        controller.activity_running = true;
-        assert!(controller.binding(Button::Power, Gesture::Short).is_none());
-        assert!(controller
-            .binding(Button::VolumeUp, Gesture::Short)
-            .is_some());
+        // A running activity used to take Power off the row, because a short
+        // press ended the activity. It no longer does: a short press is never
+        // the activity's, so the receiver on the highlighted row switches
+        // while the film is still playing. Ending the activity is a hold,
+        // timed by the key loop (main.rs), and nothing here knows about it.
+        for button in [Button::Power, Button::VolumeUp, Button::VolumeDown] {
+            assert!(
+                controller.binding(button, Gesture::Short).is_some(),
+                "{button:?}"
+            );
+        }
         // A row whose device is gone has no bindings rather than stale ones.
-        controller.activity_running = false;
         controller.refresh(format!("{ROW}no-such-device"), Some(Arc::new(room())));
         assert!(controller.binding(Button::Power, Gesture::Short).is_none());
     }
@@ -2029,7 +2028,6 @@ mod tests {
                 tx,
                 rx: out,
                 dropped: false,
-                activity_running: false,
                 hold: Arc::new(AtomicU64::new(0)),
                 screen_device: None,
             },

@@ -295,8 +295,12 @@ enum Answer {
 enum Input {
     PhysicalPick(usize, bool),
     PhysicalLevel(usize, i32, bool),
+    /// The Power key on a highlighted row. It switches the row whatever else
+    /// is going on, so it runs through the same IR check OK does.
+    PhysicalPower(usize, bool),
     Open(Id),
     Pick(usize),
+    Power(usize),
     Brightness(usize, i32),
     Back,
 }
@@ -1053,6 +1057,62 @@ impl Controller {
             self.last_brightness_send = Instant::now();
         }
     }
+    /// Switch one row: what OK does on a row with nothing but on and off
+    /// behind it, and what the Power key does on any of them.
+    fn toggle_row(&mut self, app: &App, id: String) {
+        self.position_targets.remove(&id);
+        let generation = self.generation + 1;
+        if self
+            .tx
+            .try_send((
+                generation,
+                self.room.clone().unwrap(),
+                Operation::Toggle(id.clone()),
+            ))
+            .is_ok()
+        {
+            self.generation = generation;
+            self.active
+                .store(self.generation, std::sync::atomic::Ordering::SeqCst);
+            self.busy = Some(id);
+            self.refreshing = false;
+            app.set_light_detail("".into());
+            self.update_rows(app, false);
+        } else {
+            app.set_light_detail("Connection busy. Press OK again in a moment.".into());
+        }
+    }
+    /// The row on this index the Power key switches. An activity row, a
+    /// device with a screen of its own and a thermostat are not: their Power
+    /// key is a mapped binding (`activity_buttons`) or nothing at all.
+    fn power_row(&self, row: usize) -> Option<&Entry> {
+        self.entries.get(row).filter(|entry| {
+            entry.activity.is_none()
+                && !entry.id.starts_with("device:")
+                && ha_domain(&entry.id) != "climate"
+        })
+    }
+    /// Take the Power key for the highlighted row of the open room. `false`
+    /// means nothing here wants it, and the key loop looks elsewhere.
+    pub fn power_press(&self, app: &App) -> bool {
+        if !app.get_light_shown()
+            || app.get_chooser_shown()
+            || app.get_settings_shown()
+            || app.get_keyboard_shown()
+        {
+            return false;
+        }
+        let Some(row) = usize::try_from(app.get_light_index())
+            .ok()
+            .filter(|row| self.power_row(*row).is_some())
+        else {
+            return false;
+        };
+        self.input
+            .borrow_mut()
+            .push_back(Input::PhysicalPower(row, false));
+        true
+    }
     fn open_room(&mut self, app: &App, room: Id) {
         self.clear_brightness(app);
         let started = Instant::now();
@@ -1158,6 +1218,29 @@ impl Controller {
                         self.input.borrow_mut().push_front(Input::Pick(i));
                     }
                 }
+                Input::PhysicalPower(i, repeat) => {
+                    if self
+                        .entries
+                        .get(i)
+                        .is_some_and(|e| e.hue || matches!(ha_domain(&e.id), "light" | "cover"))
+                    {
+                        self.intercept_ir(i, "toggle", repeat, Input::Power(i));
+                    } else {
+                        self.input.borrow_mut().push_front(Input::Power(i));
+                    }
+                }
+                Input::Power(i) => {
+                    if self.room.is_none()
+                        || self.busy.is_some()
+                        || !self.brightness_pending.is_empty()
+                    {
+                        continue;
+                    }
+                    let Some(id) = self.power_row(i).map(|e| e.id.clone()) else {
+                        continue;
+                    };
+                    self.toggle_row(app, id);
+                }
                 Input::Open(room) => self.open_room(app, room),
                 Input::Back => {
                     self.clear_brightness(app);
@@ -1242,27 +1325,7 @@ impl Controller {
                         continue;
                     }
                     let id = e.id.clone();
-                    self.position_targets.remove(&id);
-                    let generation = self.generation + 1;
-                    if self
-                        .tx
-                        .try_send((
-                            generation,
-                            self.room.clone().unwrap(),
-                            Operation::Toggle(id.clone()),
-                        ))
-                        .is_ok()
-                    {
-                        self.generation = generation;
-                        self.active
-                            .store(self.generation, std::sync::atomic::Ordering::SeqCst);
-                        self.busy = Some(id);
-                        self.refreshing = false;
-                        app.set_light_detail("".into());
-                        self.update_rows(app, false);
-                    } else {
-                        app.set_light_detail("Connection busy. Press OK again in a moment.".into());
-                    }
+                    self.toggle_row(app, id);
                 }
             }
         }
@@ -2577,6 +2640,96 @@ mod tests {
                 "Theater AVR - Press OK for controls"
             ]
         );
+    }
+
+    /// Which rows the Power key switches, and which it leaves to their own
+    /// bindings. Guarded like the other panel tests: one Slint platform per
+    /// process.
+    #[test]
+    fn the_power_key_switches_light_rows_and_leaves_the_rest_alone() {
+        const NAME: &str =
+            "lights::tests::the_power_key_switches_light_rows_and_leaves_the_rest_alone";
+        if std::env::var_os("COUCH_TEST_POWER_ROWS").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_POWER_ROWS", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let mut config = packaged();
+        // An activity pinned above the devices, so the row it adds is part of
+        // what the key has to see past.
+        config.activities.push(
+            serde_json::from_value(
+                serde_json::json!({"id":"movie","name":"Movie night","room":"living-room"}),
+            )
+            .unwrap(),
+        );
+        config.validate().unwrap();
+        let _window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let mut controller = Controller::install(&app);
+        let room = Id::new("living-room");
+        controller.entries = configured_in(&config, &room).unwrap();
+        controller.room = Some(room);
+        app.set_light_shown(true);
+        assert_eq!(
+            controller
+                .entries
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "activity:movie",
+                "plugin:bridge/lamp/1",
+                "plugin:bridge/lamp/2",
+                "plugin:bridge/cover/1",
+                "device:heat",
+                "device:avr"
+            ]
+        );
+        // The two lamps and the blind take it; the pinned activity, the
+        // thermostat and the receiver do not - a receiver's Power is a mapped
+        // binding (`activity_buttons::row_bindings`), and the other two have
+        // nothing for it at all.
+        for (row, takes) in [
+            (0, false),
+            (1, true),
+            (2, true),
+            (3, true),
+            (4, false),
+            (5, false),
+            (6, false),
+        ] {
+            app.set_light_index(row);
+            controller.input.borrow_mut().clear();
+            assert_eq!(controller.power_press(&app), takes, "row {row}");
+            assert_eq!(controller.input.borrow().len(), usize::from(takes));
+        }
+        // Off the room list the key is nobody's here: the chooser, the
+        // settings sheet and the keyboard each own their own keys.
+        app.set_light_index(1);
+        for close in [
+            |a: &crate::App| a.set_light_shown(false),
+            |a: &crate::App| a.set_chooser_shown(true),
+            |a: &crate::App| a.set_settings_shown(true),
+            |a: &crate::App| a.set_keyboard_shown(true),
+        ] {
+            app.set_light_shown(true);
+            app.set_chooser_shown(false);
+            app.set_settings_shown(false);
+            app.set_keyboard_shown(false);
+            close(&app);
+            assert!(!controller.power_press(&app));
+        }
     }
 
     #[test]
