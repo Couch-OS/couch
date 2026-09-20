@@ -1,6 +1,6 @@
 use super::{parse, Api, Reply};
 use couch_model::{Id, Provider};
-use couch_plugin::{Error, LocalRequest, Request, Response};
+use couch_plugin::{Error, Failure, LocalRequest, Request, Response};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -88,7 +88,7 @@ impl Api {
         )
     }
 
-    fn plugin_request(&self, connection: &str, request: Request) -> Result<Response, Error> {
+    fn plugin_request(&self, connection: &str, request: Request) -> Result<Response, Failure> {
         let id = self.plugin_id(connection).ok_or(Error::Invalid)?;
         self.plugins.execute(connection, &id, request)
     }
@@ -105,7 +105,10 @@ impl Api {
         };
         if path == ["settings"] {
             let result = match method {
-                "GET" => self.plugins.settings(connection, &id),
+                "GET" => self
+                    .plugins
+                    .settings(connection, &id)
+                    .map_err(crate::plugins::Refusal::from),
                 "POST" | "PUT" => {
                     let value = match parse(body) {
                         Ok(value) => value,
@@ -117,7 +120,10 @@ impl Api {
             };
             return match result {
                 Ok(value) => Reply::json(200, &value),
-                Err(message) => Reply::error(400, message),
+                Err(refusal) => match &refusal.failure {
+                    Some(failure) => refused(400, failure),
+                    None => Reply::error(400, refusal.text),
+                },
             };
         }
         let request = match (method, path) {
@@ -149,14 +155,7 @@ impl Api {
             Ok(Response::Status { status }) => Reply::json(200, &status),
             Ok(Response::Inputs { inputs }) => Reply::json(200, &inputs),
             Ok(_) => Reply::error(502, "Invalid integration reply"),
-            Err(error) => Reply::error(
-                match error {
-                    Error::Invalid | Error::Unsupported => 400,
-                    Error::Busy | Error::Expired => 503,
-                    _ => 502,
-                },
-                error.to_string(),
-            ),
+            Err(failure) => refused(status_for(failure.code), &failure),
         }
     }
 
@@ -196,20 +195,9 @@ impl Api {
                     let spawned = std::thread::Builder::new()
                         .name("integration-request".into())
                         .spawn(move || {
-                            let response = match couch_plugin::read_frame_timeout::<LocalRequest>(
-                                &mut stream,
-                                Duration::from_secs(2),
-                            ) {
-                                Ok(request) => api
-                                    .plugin_request(&request.connection_id, request.request)
-                                    .unwrap_or_else(Response::error),
-                                Err(code) => Response::error(code),
-                            };
-                            let _ = couch_plugin::write_frame_timeout(
-                                &mut stream,
-                                &response,
-                                Duration::from_secs(2),
-                            );
+                            relay(&mut stream, |request| {
+                                api.plugin_request(&request.connection_id, request.request)
+                            });
                             count.fetch_sub(1, Ordering::SeqCst);
                         });
                     if spawned.is_err() {
@@ -227,6 +215,40 @@ impl Api {
             })?;
         Ok(())
     }
+}
+
+/// The HTTP status for a refused integration request. `unpaired` is a conflict
+/// with the state of the device, which only pairing again resolves; it is not
+/// a bad gateway.
+fn status_for(code: Error) -> u16 {
+    match code {
+        Error::Invalid | Error::Unsupported => 400,
+        Error::Unpaired => 409,
+        Error::Busy | Error::Expired => 503,
+        _ => 502,
+    }
+}
+
+/// `error` is the sentence every client already shows. `code` and, from a
+/// protocol 3 package, `reason` sit beside it for a client that can do better:
+/// mark the setting a reason names, or offer pairing for `unpaired`.
+fn refused(status: u16, failure: &Failure) -> Reply {
+    let mut body = json!({"error": failure.to_string(), "code": failure.code});
+    if let Some(reason) = &failure.reason {
+        body["reason"] = json!(reason);
+    }
+    Reply::json(status, &body)
+}
+
+/// One request from the panel, answered on its own stream. A refusal goes back
+/// whole: the code and, when a protocol 3 package gave one, its reason.
+fn relay(stream: &mut UnixStream, execute: impl FnOnce(LocalRequest) -> Result<Response, Failure>) {
+    let response =
+        match couch_plugin::read_frame_timeout::<LocalRequest>(stream, Duration::from_secs(2)) {
+            Ok(request) => execute(request).unwrap_or_else(Response::error),
+            Err(code) => Response::error(code),
+        };
+    let _ = couch_plugin::write_frame_timeout(stream, &response, Duration::from_secs(2));
 }
 
 fn same_uid(stream: &UnixStream) -> bool {
@@ -254,5 +276,132 @@ fn same_uid(stream: &UnixStream) -> bool {
     {
         let _ = stream;
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use couch_plugin::Reason;
+    use serde_json::Value;
+
+    fn body(reply: &Reply) -> Value {
+        serde_json::from_slice(&reply.body).unwrap()
+    }
+
+    #[test]
+    fn a_refusal_over_http_keeps_its_sentence_and_gains_a_code_and_a_reason() {
+        // Every code a package can send today: the status and the sentence are
+        // the ones they were, and `code` is new beside them.
+        for (code, status, word) in [
+            (Error::Invalid, 400, "invalid"),
+            (Error::Unsupported, 400, "unsupported"),
+            (Error::Busy, 503, "busy"),
+            (Error::Expired, 503, "expired"),
+            (Error::Incompatible, 502, "incompatible"),
+            (Error::Protocol, 502, "protocol"),
+            (Error::Transport, 502, "transport"),
+            (Error::Timeout, 502, "timeout"),
+            (Error::Rejected, 502, "rejected"),
+        ] {
+            let reply = refused(status_for(code), &code.into());
+            assert_eq!(reply.status, status, "{word}");
+            assert_eq!(
+                body(&reply),
+                json!({"error": code.to_string(), "code": word}),
+                "{word}"
+            );
+        }
+        // Protocol 3, which no shipped build lets a package speak.
+        let unpaired = Failure {
+            code: Error::Unpaired,
+            reason: Some(Reason::Message {
+                text: "Pair this TV again".into(),
+            }),
+        };
+        let reply = refused(status_for(unpaired.code), &unpaired);
+        assert_eq!(reply.status, 409);
+        assert_eq!(
+            body(&reply),
+            json!({"error":"Pair this TV again","code":"unpaired",
+                "reason":{"kind":"message","text":"Pair this TV again"}})
+        );
+        let port = Failure {
+            code: Error::Invalid,
+            reason: Some(Reason::InvalidSetting {
+                field: "port".into(),
+                text: "The port must not be 0".into(),
+            }),
+        };
+        assert_eq!(
+            body(&refused(400, &port)),
+            json!({"error":"The port must not be 0","code":"invalid",
+                "reason":{"kind":"invalid_setting","field":"port","text":"The port must not be 0"}})
+        );
+    }
+
+    #[test]
+    fn the_panel_is_told_the_reason_and_a_refusal_without_one_is_the_frame_it_always_was() {
+        let directory = std::env::temp_dir().join(format!("couch-relay-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("p.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let locked = Failure {
+            code: Error::Rejected,
+            reason: Some(Reason::Message {
+                text: "The TV is locked".into(),
+            }),
+        };
+        let answers = [Err(locked.clone()), Err(Error::Unsupported.into())];
+        let server = std::thread::spawn(move || {
+            // Answered streams stay open until the end: macOS refuses to set a
+            // deadline on a socket whose peer has already gone, which the
+            // asking side does before it reads.
+            let mut answered = Vec::new();
+            for answer in answers {
+                let (mut stream, _) = listener.accept().unwrap();
+                relay(&mut stream, |request| {
+                    assert_eq!(request.connection_id, "tv");
+                    // How the key was pressed arrives with it; the host, not
+                    // this socket, decides whether the package is told.
+                    assert!(matches!(
+                        request.request,
+                        Request::Command { ref function, phase: couch_plugin::KeyPhase::Repeat }
+                            if function == "power-off"
+                    ));
+                    answer
+                });
+                answered.push(stream);
+            }
+            // The last one by hand, to see the bytes the panel is sent.
+            let (mut stream, _) = listener.accept().unwrap();
+            relay(&mut stream, |_| Err(Error::Unsupported.into()));
+        });
+        let ask = || {
+            couch_plugin::local_request_detailed(
+                &socket,
+                "tv",
+                Request::key("power-off", couch_plugin::KeyPhase::Repeat),
+                Duration::from_secs(2),
+            )
+        };
+        assert_eq!(ask(), Err(locked));
+        assert_eq!(ask(), Err(Error::Unsupported.into()));
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        couch_plugin::write_frame(
+            &mut stream,
+            &LocalRequest {
+                connection_id: "tv".into(),
+                request: Request::command("power-off"),
+            },
+        )
+        .unwrap();
+        let frame: Value = couch_plugin::read_frame(&mut stream).unwrap();
+        assert_eq!(
+            frame.to_string(),
+            r#"{"code":"unsupported","type":"error"}"#
+        );
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(directory);
     }
 }

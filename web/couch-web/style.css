@@ -863,6 +863,21 @@ label.field {
 .field input:disabled,.field select:disabled,.field textarea:disabled {
   opacity:.6;
 }
+/* A setting a package refused: the control is outlined and the package's
+   words sit directly under it, in the same column as the control. */
+.field-refused .field input {
+  border-color:var(--danger);
+}
+.field-refused .field {
+  margin-bottom:6px;
+}
+.field-error {
+  margin:0 0 17px;
+  max-width:600px;
+  font-size:14px;
+  color:var(--danger);
+  overflow-wrap:anywhere;
+}
 /* A checkbox and its sentence, wherever they appear. */
 label:has(> input[type=checkbox]),.field > span:has(> input[type=checkbox]) {
   display:flex;

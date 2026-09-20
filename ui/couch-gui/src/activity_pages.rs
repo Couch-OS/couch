@@ -181,17 +181,15 @@ fn plugin_worker(
         let event = if is_action {
             PluginEvent::ActionDone(match response {
                 Ok(PluginResponse::Ok) => Ok(()),
-                Ok(PluginResponse::Error { code, .. }) => Err(code.to_string()),
-                Err(error) => Err(error.to_string()),
+                Err(error) => Err(error),
                 _ => Err("The integration sent an unexpected reply".into()),
             })
         } else {
             match response {
                 Ok(PluginResponse::Status { status }) => PluginEvent::Status(status),
                 Ok(PluginResponse::Inputs { inputs }) => PluginEvent::Inputs(inputs),
-                Ok(PluginResponse::Error { code, .. }) => PluginEvent::Error(code.to_string()),
                 Ok(_) => PluginEvent::Error("The integration sent an unexpected reply".into()),
-                Err(error) => PluginEvent::Error(error.to_string()),
+                Err(error) => PluginEvent::Error(error),
             }
         };
         let _ = reply.send((work.generation, event));
@@ -229,14 +227,11 @@ impl Pages {
                 plugin_work,
                 plugin_reply,
                 plugin_generation,
+                // A refusal arrives as an `Err`, never as a reply: the code's
+                // sentence, and the package's line under it when it gave one.
                 |connection, request| {
-                    couch_plugin::local_request(
-                        &crate::home::path("plugin.sock"),
-                        connection,
-                        request,
-                        couch_plugin::REQUEST_TIMEOUT + std::time::Duration::from_secs(1),
-                    )
-                    .map_err(|error| error.to_string())
+                    crate::tv::plugin::ask_detailed(connection, request)
+                        .map_err(|failure| crate::tv::plugin::refusal(&failure))
                 },
             );
         });

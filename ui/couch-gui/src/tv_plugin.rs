@@ -64,14 +64,39 @@ pub(crate) fn layout(config: &couch_model::Config, device: &couch_model::Device)
     })
 }
 
-fn ask(connection: &str, request: Request) -> Result<Response, String> {
-    couch_plugin::local_request(
+/// What the panel says when a packaged device's request fails: Couch's own
+/// sentence for the code, and under it the package's line when it gave one
+/// (protocol 3; the host has already held it to 160 bytes of printable text).
+/// The sentence comes first because it is the part that is always there, and
+/// the part a one-line surface keeps.
+pub(crate) fn refusal(failure: &couch_plugin::Failure) -> String {
+    let said = failure
+        .reason
+        .as_ref()
+        .map(|reason| reason.text().trim())
+        .filter(|text| !text.is_empty());
+    match said {
+        Some(text) => format!("{}\n{text}", failure.code),
+        None => failure.code.to_string(),
+    }
+}
+
+/// One request to the daemon's panel socket. A refusal is an `Err`, with its
+/// reason; `Ok` is never `Response::Error`.
+pub(crate) fn ask_detailed(
+    connection: &str,
+    request: Request,
+) -> Result<Response, couch_plugin::Failure> {
+    couch_plugin::local_request_detailed(
         &crate::home::path("plugin.sock"),
         connection,
         request,
         couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
     )
-    .map_err(|e| e.to_string())
+}
+
+fn ask(connection: &str, request: Request) -> Result<Response, String> {
+    ask_detailed(connection, request).map_err(|failure| refusal(&failure))
 }
 
 /// The function a screen action means for this device, given its last status.
@@ -193,7 +218,6 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     let connection = connection_id.as_str();
     let read = || match ask(connection, Request::Status)? {
         Response::Status { status } => Ok(status),
-        Response::Error { code, .. } => Err(code.to_string()),
         _ => Err("The integration returned an invalid status".to_string()),
     };
     // Power is decided against what the device says now, not what the screen
@@ -207,7 +231,6 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         }
         match ask(connection, Request::command(function))? {
             Response::Ok => {}
-            Response::Error { code, .. } => return Err(code.to_string()),
             _ => return Err("The integration returned an invalid response".into()),
         }
     }
