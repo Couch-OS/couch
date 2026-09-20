@@ -49,6 +49,9 @@ const MAX_FILES: usize = 512;
 // A catalog integrity read may overlap a user install/remove request. Wait
 // before starting the mutation, but never retry a partially executed operation.
 const MUTATION_LOCK_WAIT: Duration = Duration::from_secs(3);
+// Reading which user a package runs as is on the path a key press takes, and
+// its budget is a press's, not an install's.
+const IDENTITY_READ_WAIT: Duration = Duration::from_millis(250);
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);
@@ -229,13 +232,21 @@ impl Store {
     /// Callers that hold a lease must ask before taking it. The daemon does,
     /// and the startup pass means a lease holder finds every installed package
     /// already allocated.
+    ///
+    /// This allocates for any well-formed id, because admission asks for a
+    /// package's user before that package is selected. A caller answering a
+    /// browser asks whether the package is installed first, so a stream of
+    /// invented names cannot use the range up.
     pub fn identity(&self, id: &str) -> Result<(u32, u32)> {
         if !valid_component(id) {
             return Err(err("invalid integration id"));
         }
         self.layout()?;
         {
-            let _lock = Lock::acquire_shared_wait(self.root.join(".lock"), MUTATION_LOCK_WAIT)?;
+            // The answer a package that has run before gets, and the one on
+            // the path a key press takes. Its bound is the caller's request
+            // budget, not the one a store mutation may wait.
+            let _lock = Lock::acquire_shared_wait(self.root.join(".lock"), IDENTITY_READ_WAIT)?;
             if let Some(uid) = self.identities().packages.get(id) {
                 return Ok((*uid, *uid));
             }
@@ -1743,6 +1754,30 @@ mod tests {
         assert_eq!(fs::read(store.root.join(IDENTITY_FILE)).unwrap(), bytes);
         // And the layout check an older Couch makes still passes with it there.
         assert!(store.layout().is_ok());
+    }
+
+    /// The store hands a user to any well-formed id, because admission asks
+    /// before the package is selected. The daemon is what refuses a name of
+    /// nothing, so a browser cannot spend the range; this pins the pair the
+    /// daemon relies on.
+    #[test]
+    fn a_package_that_is_not_installed_has_no_generation_to_go_with_its_user() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        assert!(store.generation("invented").is_err());
+        assert_eq!(store.identity("invented").unwrap(), (60000, 60000));
+        let installed = slot(&store, "1.0.0");
+        store
+            .select(
+                "example",
+                &Selection {
+                    active: Some(installed),
+                    previous: None,
+                },
+            )
+            .unwrap();
+        assert!(store.generation("example").is_ok());
+        assert_eq!(store.identity("example").unwrap(), (60001, 60001));
     }
 
     #[test]

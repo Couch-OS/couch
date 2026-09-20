@@ -152,7 +152,12 @@ impl Runtime {
     /// Who this package's children run as. No fallback: a store that cannot
     /// say is reported, and the caller refuses rather than start a package
     /// under a user that belongs to another one.
+    ///
+    /// The package has to be installed first. Every id here came out of a
+    /// request, a user is never given back, and a browser must not be able to
+    /// spend the store's range on names of nothing.
     fn policy(&self, plugin: &str) -> Result<HostPolicy, couch_integrations::Error> {
+        self.packages.generation(plugin)?;
         let (uid, gid) = self.packages.identity(plugin)?;
         Ok(HostPolicy::for_package(uid, gid))
     }
