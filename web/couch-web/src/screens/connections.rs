@@ -527,9 +527,12 @@ fn plugin_form(
 ) -> AnyView {
     let fields = manifest.settings.clone();
     let submit_fields = fields.clone();
+    // The setting a package blamed for refusing to save, and its words.
+    let blamed = RwSignal::new(None::<(String, String)>);
     view! {<form on:submit=move |event|{
         event.prevent_default();
         if busy.get_untracked(){return}
+        blamed.set(None);
         let current=values.get_untracked();
         let cleared=clear_secrets.get_untracked();
         let mut settings=serde_json::Map::new();
@@ -550,14 +553,38 @@ fn plugin_form(
                     values.update(|all|for field in &saved_fields {if field.kind==PluginFieldKind::Secret {all.remove(&field.id);}});
                     message.set("Private settings saved.".into());
                 }
-                Err(error)=>{if error.unauthorized{app.paired.set(Some(false));}message.set(error.message);}
+                Err(error)=>{
+                    if error.unauthorized{app.paired.set(Some(false));}
+                    let (field,text)=refused_setting(&error,&saved_fields);
+                    blamed.set(field);
+                    message.set(text);
+                }
             }
             busy.set(false);
         });
     }>
-        {fields.into_iter().map(|setting|plugin_field(setting,values,saved_secrets,clear_secrets,busy)).collect_view()}
+        {fields.into_iter().map(|setting|plugin_field(setting,values,saved_secrets,clear_secrets,busy,blamed)).collect_view()}
         <button type="submit" class="primary" disabled=move ||busy.get()>"Save private settings"</button>
     </form>}.into_any()
+}
+
+/// Where a refused save is shown. A reason naming a setting of this form marks
+/// that setting and puts the package's words beside it, and the form's own
+/// line says which one to look at; anything else is the form's line alone, as
+/// it always was (`error` already holds a `message` reason's words).
+fn refused_setting(
+    error: &api::ApiError,
+    fields: &[PluginSetting],
+) -> (Option<(String, String)>, String) {
+    if let Some(api::Reason::InvalidSetting { field, text }) = &error.reason {
+        if let Some(setting) = fields.iter().find(|setting| &setting.id == field) {
+            return (
+                Some((field.clone(), text.clone())),
+                format!("Not saved. Check {}.", setting.label),
+            );
+        }
+    }
+    (None, error.message.clone())
 }
 
 fn plugin_field(
@@ -566,16 +593,50 @@ fn plugin_field(
     saved_secrets: RwSignal<BTreeSet<String>>,
     clear_secrets: RwSignal<BTreeSet<String>>,
     busy: RwSignal<bool>,
+    blamed: RwSignal<Option<(String, String)>>,
 ) -> AnyView {
     let id = setting.id.clone();
     let input_id = id.clone();
+    // The package's words about this setting, from the last refused save.
+    // Editing the setting takes them away: they were about the old value.
+    let blame_id = id.clone();
+    let refusal = Memo::new(move |_| {
+        blamed.with(|blamed| {
+            blamed
+                .as_ref()
+                .filter(|(field, _)| *field == blame_id)
+                .map(|(_, text)| text.clone())
+        })
+    });
+    let edited_id = id.clone();
+    let edited = move || {
+        if blamed.with_untracked(|blamed| {
+            blamed
+                .as_ref()
+                .is_some_and(|(field, _)| *field == edited_id)
+        }) {
+            blamed.set(None);
+        }
+    };
+    let edited_toggle = edited.clone();
+    let describes = format!("plugin-setting-{id}-error");
+    let described = describes.clone();
+    let complaint = move || {
+        let describes = describes.clone();
+        refusal
+            .get()
+            .map(|text| view! {<p class="field-error" role="alert" id=describes>{text}</p>})
+    };
     let label = if setting.required {
         format!("{} · required", setting.label)
     } else {
         setting.label
     };
     match setting.kind {
-        PluginFieldKind::Boolean => view! {<label class="field checkbox-field"><input type="checkbox" checked=move ||values.with(|all|all.get(&id).and_then(Value::as_bool).unwrap_or(false)) disabled=move ||busy.get() on:change=move |event|values.update(|all|{all.insert(input_id.clone(),Value::Bool(event_target_checked(&event)));})/><span>{label}</span></label>}.into_any(),
+        PluginFieldKind::Boolean => view! {<div class:field-refused=move ||refusal.get().is_some()>
+            <label class="field checkbox-field"><input type="checkbox" aria-invalid=move ||refusal.get().map(|_|"true") aria-describedby=move ||refusal.get().map(|_|described.clone()) checked=move ||values.with(|all|all.get(&id).and_then(Value::as_bool).unwrap_or(false)) disabled=move ||busy.get() on:change=move |event|{values.update(|all|{all.insert(input_id.clone(),Value::Bool(event_target_checked(&event)));});edited_toggle();}/><span>{label}</span></label>
+            {complaint}
+        </div>}.into_any(),
         kind => {
             let id_for_value=id.clone();
             let id_for_input=id.clone();
@@ -583,8 +644,9 @@ fn plugin_field(
             let clear_id=id.clone();
             let clear_change=id.clone();
             let input_type=if kind==PluginFieldKind::Secret{"password"}else if kind==PluginFieldKind::Integer{"number"}else{"text"};
-            view! {<div>
-                <label class="field">{label}<input type=input_type autocomplete=if kind==PluginFieldKind::Secret{"new-password"}else{"off"} required=setting.required && kind!=PluginFieldKind::Secret prop:value=move ||values.with(|all|all.get(&id_for_value).map(|value|value.as_str().map(str::to_owned).unwrap_or_else(||value.to_string())).unwrap_or_default()) placeholder=move ||if kind==PluginFieldKind::Secret&&saved_secrets.with(|all|all.contains(&saved_id)){"Saved secret · leave blank to keep"}else{""} on:input=move |event|{let text=event_target_value(&event);let value=if kind==PluginFieldKind::Integer{text.parse::<i64>().map(Value::from).unwrap_or(Value::String(text))}else{Value::String(text)};values.update(|all|{all.insert(id_for_input.clone(),value);});clear_secrets.update(|all|{all.remove(&clear_id);});}/></label>
+            view! {<div class:field-refused=move ||refusal.get().is_some()>
+                <label class="field">{label}<input type=input_type aria-invalid=move ||refusal.get().map(|_|"true") aria-describedby=move ||refusal.get().map(|_|described.clone()) autocomplete=if kind==PluginFieldKind::Secret{"new-password"}else{"off"} required=setting.required && kind!=PluginFieldKind::Secret prop:value=move ||values.with(|all|all.get(&id_for_value).map(|value|value.as_str().map(str::to_owned).unwrap_or_else(||value.to_string())).unwrap_or_default()) placeholder=move ||if kind==PluginFieldKind::Secret&&saved_secrets.with(|all|all.contains(&saved_id)){"Saved secret · leave blank to keep"}else{""} on:input=move |event|{let text=event_target_value(&event);let value=if kind==PluginFieldKind::Integer{text.parse::<i64>().map(Value::from).unwrap_or(Value::String(text))}else{Value::String(text)};values.update(|all|{all.insert(id_for_input.clone(),value);});clear_secrets.update(|all|{all.remove(&clear_id);});edited();}/></label>
+                {complaint}
                 {(kind==PluginFieldKind::Secret).then(||view!{<label class="field checkbox-field"><input type="checkbox" checked=move ||clear_secrets.with(|all|all.contains(&id)) disabled=move ||busy.get() on:change=move |event|clear_secrets.update(|all|{if event_target_checked(&event){all.insert(clear_change.clone());}else{all.remove(&clear_change);}})/><span>"Clear the saved value"</span></label>})}
             </div>}.into_any()
         }
@@ -801,6 +863,57 @@ fn plugin_status_text(status: &Value, field: PluginStatusField) -> String {
 #[cfg(test)]
 mod plugin_tests {
     use super::*;
+
+    #[test]
+    fn a_refused_save_marks_the_setting_a_package_blames_and_nothing_else() {
+        let fields: Vec<PluginSetting> = serde_json::from_value(json!([
+            {"id":"host","label":"Device address","kind":"text","required":true},
+            {"id":"port","label":"Port","kind":"integer","default":23}
+        ]))
+        .unwrap();
+        let refused = |message: &str, reason: Option<api::Reason>| api::ApiError {
+            message: message.into(),
+            reason,
+            unauthorized: false,
+            stale: false,
+        };
+        // What every daemon says today: the sentence, on the form's own line.
+        assert_eq!(
+            refused_setting(
+                &refused("Invalid integration settings or package", None),
+                &fields
+            ),
+            (None, "Invalid integration settings or package".into())
+        );
+        let port = api::Reason::InvalidSetting {
+            field: "port".into(),
+            text: "The port must not be 0".into(),
+        };
+        assert_eq!(
+            refused_setting(&refused("The port must not be 0", Some(port)), &fields),
+            (
+                Some(("port".into(), "The port must not be 0".into())),
+                "Not saved. Check Port.".into()
+            )
+        );
+        // A setting this form does not have cannot be marked, and words about
+        // no setting belong to the form.
+        let elsewhere = api::Reason::InvalidSetting {
+            field: "token".into(),
+            text: "The token has expired".into(),
+        };
+        assert_eq!(
+            refused_setting(&refused("The token has expired", Some(elsewhere)), &fields),
+            (None, "The token has expired".into())
+        );
+        let message = api::Reason::Message {
+            text: "Pair this TV again".into(),
+        };
+        assert_eq!(
+            refused_setting(&refused("Pair this TV again", Some(message)), &fields),
+            (None, "Pair this TV again".into())
+        );
+    }
 
     #[test]
     fn db_targets_are_exact_tenths_and_obey_declared_bounds() {
