@@ -1,6 +1,6 @@
 //! Shared external integration ownership for HTTP and the panel's private socket.
 //! Settings remain daemon-owned; children receive only their own connection data.
-use couch_plugin::{Endpoint, Error, FieldKind, Manifest, Request, Response};
+use couch_plugin::{Endpoint, Error, Failure, FieldKind, Manifest, Request, Response};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -20,6 +20,81 @@ fn store_request_error(error: couch_integrations::Error) -> Error {
     } else {
         Error::Invalid
     }
+}
+
+/// Why settings were not saved, or a connection not prepared: the words for a
+/// person, and, when it was the host or the package that refused, the code and
+/// the reason a protocol 3 package gave. The words are the ones this always
+/// said; only a reason changes them, to the package's own.
+#[derive(Debug, PartialEq)]
+pub struct Refusal {
+    pub text: String,
+    pub failure: Option<Failure>,
+}
+impl From<Failure> for Refusal {
+    fn from(failure: Failure) -> Self {
+        Self {
+            text: failure.to_string(),
+            failure: Some(failure),
+        }
+    }
+}
+impl From<Error> for Refusal {
+    fn from(code: Error) -> Self {
+        Failure::from(code).into()
+    }
+}
+impl From<String> for Refusal {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            failure: None,
+        }
+    }
+}
+impl From<&str> for Refusal {
+    fn from(text: &str) -> Self {
+        text.to_owned().into()
+    }
+}
+impl From<Refusal> for String {
+    fn from(refusal: Refusal) -> Self {
+        refusal.text
+    }
+}
+impl From<couch_integrations::Error> for Refusal {
+    fn from(error: couch_integrations::Error) -> Self {
+        error.to_string().into()
+    }
+}
+
+/// Start the package and let it check these settings. Configure contacts no
+/// device, so what comes back is about the settings alone; a protocol 3
+/// package may say which one.
+fn check_settings(directory: &Path, manifest: &Manifest, settings: &Value) -> Result<(), Failure> {
+    let mut host = couch_plugin::Host::spawn(directory, manifest, Duration::from_secs(3))?;
+    match host.request_detailed(Request::Configure {
+        settings: settings.clone(),
+    })? {
+        Response::Ok => Ok(()),
+        _ => Err(Error::Protocol.into()),
+    }
+}
+
+/// A conversion has no form to mark a field on, so the setting is named in
+/// the sentence.
+fn named(manifest: &Manifest, failure: Failure) -> Refusal {
+    let label = failure
+        .reason
+        .as_ref()
+        .and_then(|reason| reason.field())
+        .and_then(|id| manifest.settings.iter().find(|field| field.id == id))
+        .map(|field| field.label.clone());
+    let mut refusal = Refusal::from(failure);
+    if let Some(label) = label {
+        refusal.text = format!("{label}: {}", refusal.text);
+    }
+    refusal
 }
 
 struct Running {
@@ -109,29 +184,22 @@ impl Runtime {
         connection: &str,
         plugin: &str,
         patch: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, Refusal> {
         // Admission validates every saved connection before activating a new
         // package. Keep its selection stable until these settings are durable,
         // so validation by an old child cannot race a package activation.
-        let _lease = self.packages.read_lease().map_err(|e| e.to_string())?;
-        let (directory, manifest) = self
-            .packages
-            .resolve_wait(plugin, STORE_READ_WAIT)
-            .map_err(|e| e.to_string())?;
-        let path = self.settings_path(connection).map_err(|e| e.to_string())?;
+        let _lease = self.packages.read_lease()?;
+        let (directory, manifest) = self.packages.resolve_wait(plugin, STORE_READ_WAIT)?;
+        let path = self.settings_path(connection)?;
         let lock = crate::api::connections::lock_for(&path);
         let _guard = lock
             .try_lock()
             .map_err(|_| "Integration connection is busy")?;
-        let saved = load_settings(&path).map_err(|e| e.to_string())?;
-        let settings =
-            merge_settings(&manifest, saved.as_ref(), patch).map_err(|e| e.to_string())?;
+        let saved = load_settings(&path)?;
+        let settings = merge_settings(&manifest, saved.as_ref(), patch)?;
         // Configure validates the adapter's typed settings without requiring an
         // online TV. Do not save a schema-valid but unusable host/port.
-        let mut host = couch_plugin::Host::spawn(&directory, &manifest, Duration::from_secs(3))
-            .map_err(|e| e.to_string())?;
-        host.configure(settings.clone())
-            .map_err(|e| e.to_string())?;
+        check_settings(&directory, &manifest, &settings)?;
         let parent = path.parent().ok_or("Invalid settings path")?;
         fs::create_dir_all(parent).map_err(|_| "Cannot create connection settings directory")?;
         #[cfg(unix)]
@@ -154,23 +222,17 @@ impl Runtime {
     /// let it check the settings carried over from the old connection
     /// (configure validates them and contacts no device). Nothing is written
     /// and no configuration lock is needed.
-    pub fn prepare_legacy(&self, package: &str, settings: Value) -> Result<LegacyAdoption, String> {
-        let _lease = self.packages.read_lease().map_err(|e| e.to_string())?;
-        let (directory, manifest) = self
-            .packages
-            .resolve_wait(package, STORE_READ_WAIT)
-            .map_err(|e| e.to_string())?;
-        let generation = self
-            .packages
-            .generation(package)
-            .map_err(|e| e.to_string())?;
-        let settings = manifest
-            .with_defaults(settings)
-            .map_err(|e| e.to_string())?;
-        let mut host = couch_plugin::Host::spawn(&directory, &manifest, Duration::from_secs(3))
-            .map_err(|e| e.to_string())?;
-        host.configure(settings.clone())
-            .map_err(|e| e.to_string())?;
+    pub fn prepare_legacy(
+        &self,
+        package: &str,
+        settings: Value,
+    ) -> Result<LegacyAdoption, Refusal> {
+        let _lease = self.packages.read_lease()?;
+        let (directory, manifest) = self.packages.resolve_wait(package, STORE_READ_WAIT)?;
+        let generation = self.packages.generation(package)?;
+        let settings = manifest.with_defaults(settings)?;
+        check_settings(&directory, &manifest, &settings)
+            .map_err(|failure| named(&manifest, failure))?;
         Ok(LegacyAdoption {
             package: package.to_owned(),
             generation,
@@ -219,19 +281,22 @@ impl Runtime {
         Ok(result)
     }
 
+    /// The reason a protocol 3 package gives for a refusal comes back with the
+    /// code. Everything decided here, before the package is asked, is a code
+    /// alone.
     pub fn execute(
         &self,
         connection: &str,
         plugin: &str,
         request: Request,
-    ) -> Result<Response, Error> {
+    ) -> Result<Response, Failure> {
         let queued = Instant::now();
         // The bridge cannot reconfigure a child or bypass the package handshake.
         if !matches!(
             request,
             Request::Command { .. } | Request::Action { .. } | Request::Status | Request::Inputs
         ) {
-            return Err(Error::Unsupported);
+            return Err(Error::Unsupported.into());
         }
         let path = self.settings_path(connection)?;
         let lock = crate::api::connections::lock_for(&path);
@@ -264,7 +329,7 @@ impl Runtime {
             // another room's dead integration must not block healthy devices.
             let remaining = couch_plugin::QUEUE_TTL.saturating_sub(queued.elapsed());
             if remaining.is_zero() {
-                return Err(Error::Expired);
+                return Err(Error::Expired.into());
             }
             let (directory, manifest) = self
                 .packages
@@ -274,7 +339,7 @@ impl Runtime {
             let endpoint = Arc::new(Endpoint::start(&directory, manifest, settings.clone())?);
             let mut endpoints = self.endpoints.lock().map_err(|_| Error::Transport)?;
             if endpoints.len() >= MAX_ENDPOINTS {
-                return Err(Error::Busy);
+                return Err(Error::Busy.into());
             }
             endpoints.insert(
                 connection.to_owned(),
@@ -288,9 +353,9 @@ impl Runtime {
             endpoint
         };
         if queued.elapsed() >= couch_plugin::QUEUE_TTL {
-            return Err(Error::Expired);
+            return Err(Error::Expired.into());
         }
-        endpoint.request(request)
+        endpoint.request_detailed(request)
     }
 
     /// Stop the package child of a connection that has just been deleted.
@@ -423,6 +488,217 @@ mod tests {
         next.protocol_version = couch_plugin::NEXT_PROTOCOL_VERSION;
         next.min_core_protocol_version = couch_plugin::NEXT_PROTOCOL_VERSION;
         assert_eq!(next.validate(), Err(Error::Incompatible));
+    }
+
+    /// A package that answers the handshake and then says `reply` to
+    /// configure: a shell script printing two frames, as the conversion tests
+    /// use.
+    fn scripted(name: &str, protocol: u32, reply: Value) -> (PathBuf, Manifest) {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::env::temp_dir().join(format!(
+            "couch-confd-{name}-{}-{:?}",
+            std::process::id(),
+            Instant::now()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let mut described = serde_json::to_value(manifest()).unwrap();
+        described["protocol_version"] = json!(protocol);
+        described["min_core_protocol_version"] = json!(protocol);
+        let manifest: Manifest = serde_json::from_value(described).unwrap();
+        let mut script = String::from("#!/bin/sh\n");
+        for value in [
+            json!({"id":1,"body":{"type":"hello","manifest":manifest}}),
+            json!({"id":2,"body":reply}),
+        ] {
+            let mut frame = Vec::new();
+            couch_plugin::write_frame(&mut frame, &value).unwrap();
+            let bytes: String = frame.iter().map(|byte| format!("\\{byte:03o}")).collect();
+            script.push_str(&format!("printf '{bytes}'\n"));
+        }
+        script.push_str("sleep 5\n");
+        let executable = directory.join("plugin");
+        fs::write(&executable, script).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        (directory, manifest)
+    }
+
+    #[test]
+    fn a_refused_setting_comes_back_as_its_code_and_never_with_words_from_an_older_package() {
+        let settings = json!({"host":"tv.local","port":23});
+        let (directory, manifest) =
+            scripted("refused", 1, json!({"type":"error","code":"invalid"}));
+        let refused = check_settings(&directory, &manifest, &settings).unwrap_err();
+        assert_eq!(refused, Failure::from(Error::Invalid));
+        // What the settings form and the conversion say is what they always
+        // said: the code's own sentence.
+        let refusal = Refusal::from(refused);
+        assert_eq!(refusal.text, Error::Invalid.to_string());
+        assert_eq!(String::from(refusal), Error::Invalid.to_string());
+        let _ = fs::remove_dir_all(directory);
+
+        // Protocol 3 is switched off, so the only packages there are may not
+        // give a reason. One that does is broken, and its words go nowhere.
+        let (directory, manifest) = scripted(
+            "worded",
+            2,
+            json!({"type":"error","code":"invalid","reason":
+                {"kind":"invalid_setting","field":"port","text":"The port must not be 0"}}),
+        );
+        assert_eq!(
+            check_settings(&directory, &manifest, &settings),
+            Err(Error::Protocol.into())
+        );
+        let _ = fs::remove_dir_all(directory);
+
+        let (directory, manifest) = scripted("accepted", 2, json!({"type":"ok"}));
+        assert_eq!(check_settings(&directory, &manifest, &settings), Ok(()));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    /// The panel now says how a key was pressed. Denon 0.2.1 is a protocol 2
+    /// package built from an SDK that refuses a field it does not know, so a
+    /// held volume key has to reach it as the bytes a tap always was. This is
+    /// the daemon's own path (`execute`, the endpoint, the host's gate) with
+    /// that package's manifest, and a child that keeps what it was sent.
+    #[test]
+    fn a_held_key_reaches_a_protocol_2_package_as_the_tap_it_always_was() {
+        use couch_plugin::KeyPhase;
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!(
+            "couch-confd-held-{}-{:?}",
+            std::process::id(),
+            Instant::now()
+        ));
+        let manifest: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/denon-0.2.1-plugin.json"))
+                .unwrap();
+        assert_eq!(manifest["protocol_version"], 2);
+        let directory = home.join("payload/usr/lib/couch/integrations/denon");
+        fs::create_dir_all(directory.join("bin")).unwrap();
+        fs::write(
+            directory.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let seen = home.join("seen");
+        let mut script = String::from("#!/bin/sh\n");
+        for value in [
+            json!({"id":1,"body":{"type":"hello","manifest":manifest}}),
+            json!({"id":2,"body":{"type":"ok"}}),
+            json!({"id":3,"body":{"type":"ok"}}),
+            json!({"id":4,"body":{"type":"ok"}}),
+            json!({"id":5,"body":{"type":"ok"}}),
+        ] {
+            let mut frame = Vec::new();
+            couch_plugin::write_frame(&mut frame, &value).unwrap();
+            let bytes: String = frame.iter().map(|byte| format!("\\{byte:03o}")).collect();
+            script.push_str(&format!("printf '{bytes}'\n"));
+        }
+        script.push_str(&format!("exec /bin/cat > '{}'\n", seen.display()));
+        let executable = directory.join("bin/couch-plugin-denon");
+        fs::write(&executable, script).unwrap();
+        fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let package = home.join("denon-fixture.apk");
+        assert!(std::process::Command::new("tar")
+            .args(["-czf"])
+            .arg(&package)
+            .arg("-C")
+            .arg(home.join("payload"))
+            .args([
+                "usr/lib/couch/integrations/denon/manifest.json",
+                "usr/lib/couch/integrations/denon/bin/couch-plugin-denon"
+            ])
+            .status()
+            .unwrap()
+            .success());
+        let apk = home.join("fixture-apk");
+        fs::write(&apk, "#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n").unwrap();
+        fs::set_permissions(&apk, fs::Permissions::from_mode(0o755)).unwrap();
+        couch_integrations::Store::new(home.join("integrations"))
+            .with_apk(apk)
+            .install(&package)
+            .unwrap();
+        let runtime = Runtime::new(home.clone());
+        let settings = runtime.settings_path("receiver").unwrap();
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        couch_sdk::save_private(&settings, &json!({"host":"avr.invalid","port":23})).unwrap();
+
+        for phase in [KeyPhase::Tap, KeyPhase::Repeat, KeyPhase::LongPress] {
+            assert_eq!(
+                runtime.execute("receiver", "denon", Request::key("volume-up", phase)),
+                Ok(Response::Ok),
+                "{phase:?}"
+            );
+        }
+        let frame = |text: &str| {
+            let mut bytes = (text.len() as u32).to_be_bytes().to_vec();
+            bytes.extend_from_slice(text.as_bytes());
+            bytes
+        };
+        // The exact bytes, in the host's own field order. The command frame is
+        // the one couch-plugin's golden file holds from the SDK revision the
+        // published packages were built with.
+        let expected = [
+            frame(r#"{"id":1,"body":{"method":"hello","protocol_version":2}}"#),
+            frame(
+                r#"{"id":2,"body":{"method":"configure","settings":{"host":"avr.invalid","port":23}}}"#,
+            ),
+            frame(r#"{"id":3,"body":{"method":"command","function":"volume-up"}}"#),
+            frame(r#"{"id":4,"body":{"method":"command","function":"volume-up"}}"#),
+            frame(r#"{"id":5,"body":{"method":"command","function":"volume-up"}}"#),
+        ]
+        .concat();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fs::read(&seen).unwrap_or_default().len() < expected.len()
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let received = fs::read(&seen).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&received),
+            String::from_utf8_lossy(&expected)
+        );
+        assert_eq!(received, expected);
+        runtime.retire("receiver");
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_reason_replaces_the_sentence_and_a_conversion_names_the_setting_it_blames() {
+        let port = Failure {
+            code: Error::Invalid,
+            reason: Some(couch_plugin::Reason::InvalidSetting {
+                field: "port".into(),
+                text: "The port must not be 0".into(),
+            }),
+        };
+        let refusal = Refusal::from(port.clone());
+        assert_eq!(refusal.text, "The port must not be 0");
+        assert_eq!(refusal.failure.as_ref(), Some(&port));
+        // The form marks the field; a conversion has no form.
+        assert_eq!(
+            named(&manifest(), port.clone()).text,
+            "Port: The port must not be 0"
+        );
+        assert_eq!(named(&manifest(), port.clone()).failure, Some(port));
+        let pairing = Failure {
+            code: Error::Unpaired,
+            reason: Some(couch_plugin::Reason::Message {
+                text: "Pair this TV again".into(),
+            }),
+        };
+        assert_eq!(named(&manifest(), pairing).text, "Pair this TV again");
+        assert_eq!(
+            named(&manifest(), Error::Timeout.into()).text,
+            Error::Timeout.to_string()
+        );
+        // Words of this daemon's own carry no code.
+        assert_eq!(
+            Refusal::from("Integration connection is busy").failure,
+            None
+        );
     }
 
     fn manifest() -> Manifest {
