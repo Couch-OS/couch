@@ -465,11 +465,18 @@ fn remove_stored(root: &std::path::Path, name: &str) -> std::io::Result<bool> {
     Err(DirectoryNotEmpty.into())
 }
 
+/// What [`gate_for`] and [`lock_for`] hand out. Where each sits among the
+/// daemon's locks is `docs/development/confd-locking.md`: the gate is the
+/// first lock a request takes, and a settings lock is only ever tried.
+type Gate = crate::lock_order::RankedRwLock<crate::lock_order::level::ConnectionGate, ()>;
+pub(crate) type SettingsLock =
+    crate::lock_order::RankedMutex<crate::lock_order::level::ConnectionSettings, ()>;
+
 /// Held for reading by every operation inside one connection's folder, and for
 /// writing while the connection is deleted.
-fn gate_for(folder: &std::path::Path) -> std::sync::Arc<std::sync::RwLock<()>> {
-    use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
-    static GATES: OnceLock<Mutex<std::collections::HashMap<std::path::PathBuf, Weak<RwLock<()>>>>> =
+fn gate_for(folder: &std::path::Path) -> std::sync::Arc<Gate> {
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    static GATES: OnceLock<Mutex<std::collections::HashMap<std::path::PathBuf, Weak<Gate>>>> =
         OnceLock::new();
     let mut gates = GATES
         .get_or_init(|| Mutex::new(Default::default()))
@@ -479,15 +486,15 @@ fn gate_for(folder: &std::path::Path) -> std::sync::Arc<std::sync::RwLock<()>> {
     if let Some(gate) = gates.get(folder).and_then(|v| v.upgrade()) {
         return gate;
     }
-    let gate = Arc::new(RwLock::new(()));
+    let gate = Arc::new(Gate::new(()));
     gates.insert(folder.into(), Arc::downgrade(&gate));
     gate
 }
 
-pub(crate) fn lock_for(path: &std::path::Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+pub(crate) fn lock_for(path: &std::path::Path) -> std::sync::Arc<SettingsLock> {
     use std::sync::{Arc, Mutex, OnceLock};
     static LOCKS: OnceLock<
-        Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<Mutex<()>>>>,
+        Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<SettingsLock>>>,
     > = OnceLock::new();
     let mut locks = LOCKS
         .get_or_init(|| Mutex::new(Default::default()))
@@ -497,7 +504,7 @@ pub(crate) fn lock_for(path: &std::path::Path) -> std::sync::Arc<std::sync::Mute
     if let Some(lock) = locks.get(path).and_then(|v| v.upgrade()) {
         return lock;
     }
-    let lock = Arc::new(Mutex::new(()));
+    let lock = Arc::new(SettingsLock::new(()));
     locks.insert(path.into(), Arc::downgrade(&lock));
     lock
 }
@@ -912,6 +919,41 @@ mod delete_tests {
             drop(held);
             sweeping.join().unwrap();
         });
+    }
+
+    /// The same order, held to by `lock_order` rather than by a clock: the
+    /// sweep exactly as the reaper thread runs it, over a child that asked to
+    /// stay, on one thread. Asking the configuration anything while the
+    /// registry is held panics in a debug build the first time it happens,
+    /// with no second thread and nothing to time.
+    #[test]
+    fn the_sweep_the_daemon_runs_takes_its_locks_in_order() {
+        let house = House::new("sweep-ranked", json!({"schema_version":1,"revision":0}));
+        let pids = house.home.join("pids");
+        install_sample(&house.home, &pids);
+        assert_eq!(
+            house.create(
+                json!({"name":"Receiver","provider":{"kind":"plugin","id":"sample","label":""}})
+            ),
+            "receiver"
+        );
+        for (method, path, body) in [
+            ("POST", "settings", &br#"{"host":"avr.invalid"}"#[..]),
+            ("GET", "status", &b""[..]),
+        ] {
+            let reply =
+                house
+                    .api
+                    .connection_route(method, &["receiver", "plugin", path], body, None);
+            assert_eq!(reply.status, 200, "{method} {path}");
+        }
+        // Only a child that asked to stay is measured against the
+        // configuration at all.
+        house.api.plugins.keep_alive_for_test("receiver");
+        house.api.sweep_packages();
+        // Nothing refers to the connection, so the sweep let the child idle
+        // out as it would any other, and deleting it still works afterwards.
+        assert_eq!(house.delete("receiver", None), 200);
     }
 
     #[test]

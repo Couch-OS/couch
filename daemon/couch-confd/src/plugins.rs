@@ -13,10 +13,16 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::{Duration, Instant, SystemTime},
 };
+
+use crate::lock_order::{self, level, RankedMutex};
+// The two seams a `daemon` test scripts a package through are outside the
+// order: nothing but a test ever holds one.
+#[cfg(test)]
+use std::sync::Mutex;
 
 const IDLE: Duration = Duration::from_secs(60);
 const MAX_ENDPOINTS: usize = 64;
@@ -116,6 +122,7 @@ fn check_settings(
     credential: Option<&Credential>,
     policy: HostPolicy,
 ) -> Result<(), Failure> {
+    lock_order::calling_out("a package is started to check settings");
     let mut host =
         couch_plugin::Host::spawn_with_policy(directory, manifest, Duration::from_secs(3), policy)?;
     match host.request_detailed(Request::configure_with(settings.clone(), credential))? {
@@ -189,7 +196,7 @@ struct PairingSlot {
     /// a sweep - and read by the call that is still out. Nothing is written
     /// once it is set, whatever the package goes on to say.
     cancelled: std::sync::atomic::AtomicBool,
-    session: Mutex<PairingSession>,
+    session: RankedMutex<level::PairingSession, PairingSession>,
 }
 
 impl PairingSlot {
@@ -470,21 +477,24 @@ pub struct LegacyAdoption {
 pub struct Runtime {
     home: PathBuf,
     packages: couch_integrations::Store,
-    endpoints: Mutex<HashMap<String, Running>>,
-    catalog_generations: Mutex<HashMap<String, String>>,
-    children: Mutex<HashMap<String, Listing>>,
+    // The order these may be taken in, and what may not happen under one, is
+    // `docs/development/confd-locking.md`; `lock_order` holds a debug build
+    // to it.
+    endpoints: RankedMutex<level::Endpoints, HashMap<String, Running>>,
+    catalog_generations: RankedMutex<level::CatalogGenerations, HashMap<String, String>>,
+    children: RankedMutex<level::Children, HashMap<String, Listing>>,
     /// Protocol 3 (unreleased): the pairing in flight for each connection, at
     /// most one apiece and [`MAX_PAIRINGS`] in all. The map lock is held only
     /// to find a session; the conversation itself holds the session's own, so
     /// one television nobody is standing next to never blocks another.
-    pairings: Mutex<HashMap<String, Arc<PairingSlot>>>,
+    pairings: RankedMutex<level::Pairings, HashMap<String, Arc<PairingSlot>>>,
     /// When a pairing on each connection last wrote a key. A key the device
     /// rotated on a request queued before that is not stored: the pairing's
     /// is the newer one.
-    paired_at: Mutex<HashMap<String, Instant>>,
+    paired_at: RankedMutex<level::PairedAt, HashMap<String, Instant>>,
     /// Connections whose saved key could not be read, so that is said once
     /// rather than once per key press.
-    unreadable_keys: Mutex<HashSet<String>>,
+    unreadable_keys: RankedMutex<level::UnreadableKeys, HashSet<String>>,
     /// The number of user-table rebuilds this runtime has already answered
     /// for. A rebuild can move a package to a different user, so the children
     /// started under the old one are retired and come back under the new one.
@@ -503,12 +513,12 @@ impl Runtime {
         let runtime = Self {
             home,
             packages: couch_integrations::Store::new(directory),
-            endpoints: Mutex::new(HashMap::new()),
-            catalog_generations: Mutex::new(HashMap::new()),
-            children: Mutex::new(HashMap::new()),
-            pairings: Mutex::new(HashMap::new()),
-            paired_at: Mutex::new(HashMap::new()),
-            unreadable_keys: Mutex::new(HashSet::new()),
+            endpoints: RankedMutex::new(HashMap::new()),
+            catalog_generations: RankedMutex::new(HashMap::new()),
+            children: RankedMutex::new(HashMap::new()),
+            pairings: RankedMutex::new(HashMap::new()),
+            paired_at: RankedMutex::new(HashMap::new()),
+            unreadable_keys: RankedMutex::new(HashSet::new()),
             identity_rebuilds: AtomicU64::new(0),
             #[cfg(test)]
             lister: Mutex::new(None),
@@ -973,6 +983,7 @@ impl Runtime {
         if queued.elapsed() >= couch_plugin::QUEUE_TTL {
             return Err(Error::Expired.into());
         }
+        lock_order::calling_out("a package is asked something");
         let (response, rotated) = endpoint.request_child_full(kind, request)?;
         // A key the device issued while answering. Written here, under the
         // connection's lock, before the body goes back, so nothing can read a
@@ -1104,6 +1115,7 @@ impl Runtime {
             }
             let keep_alive = manifest.keep_alive;
             let policy = HostPolicy::for_package(uid, gid);
+            lock_order::calling_out("a package child is started");
             let endpoint = Arc::new(Endpoint::start_paired(
                 &directory,
                 manifest,
@@ -1246,6 +1258,7 @@ impl Runtime {
         generation: &str,
         settings: &Value,
     ) -> Result<Vec<couch_sdk::Child>, Failure> {
+        lock_order::calling_out("a package is asked for its children");
         #[cfg(test)]
         if let Some(lister) = self
             .lister
@@ -1510,6 +1523,7 @@ impl Runtime {
         connection: &str,
         plugin: &str,
     ) -> Result<Box<dyn PairChild>, PairError> {
+        lock_order::calling_out("a package is started to pair");
         #[cfg(test)]
         if let Some(scripted) = self
             .scripted_pairing
@@ -1608,7 +1622,7 @@ impl Runtime {
         let slot = Arc::new(PairingSlot {
             token: token.clone(),
             cancelled: std::sync::atomic::AtomicBool::new(false),
-            session: Mutex::new(session),
+            session: RankedMutex::new(session),
         });
         let replaced = {
             let mut pairings = self
@@ -1682,6 +1696,7 @@ impl Runtime {
             }
             _ => (),
         }
+        lock_order::calling_out("a package is asked for the next step of a pairing");
         let step = match session.child.as_mut() {
             Some(child) => child.step(input),
             None => Err(Failure::from(Error::Transport)),
@@ -3074,8 +3089,10 @@ mod pairing_tests {
     /// Move a session's clocks back, as if the browser had gone quiet or the
     /// window had run out.
     fn age(runtime: &Runtime, connection: &str, by: Duration) {
-        let pairings = runtime.pairings.lock().unwrap();
-        let mut session = pairings[connection].session.lock().unwrap();
+        // The slot first and the map let go, as everything else does: a
+        // session is never waited for while the map is held (`lock_order`).
+        let slot = runtime.pairings.lock().unwrap()[connection].clone();
+        let mut session = slot.session.lock().unwrap();
         session.deadline -= by;
         session.last_poll -= by;
     }
