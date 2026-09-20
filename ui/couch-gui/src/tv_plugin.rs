@@ -64,12 +64,27 @@ pub(crate) fn layout(config: &couch_model::Config, device: &couch_model::Device)
     })
 }
 
+/// The panel does no pairing of its own (T3): this is the whole of what it
+/// offers instead, on the toast, the packaged control screen's status line
+/// and a packaged light row's detail.
+pub(crate) const PAIRING_HINT: &str = "Open Couch in a browser to pair";
+
 /// What the panel says when a packaged device's request fails: Couch's own
 /// sentence for the code, and under it the package's line when it gave one
 /// (protocol 3; the host has already held it to 160 bytes of printable text).
 /// The sentence comes first because it is the part that is always there, and
 /// the part a one-line surface keeps.
+///
+/// `Unpaired` is the one code that never shows the package's own line:
+/// rendering the sentence, the package's line and [`PAIRING_HINT`] together
+/// takes three lines, which do not fit the 72px toast bar (checked by
+/// rendering it - the card grows past its own border rather than wrapping).
+/// Two lines do, so `Unpaired` keeps Couch's sentence and the hint, the same
+/// pair on every surface that shows it.
 pub(crate) fn refusal(failure: &couch_plugin::Failure) -> String {
+    if failure.code == couch_plugin::Error::Unpaired {
+        return format!("{}\n{PAIRING_HINT}", failure.code);
+    }
     let said = failure
         .reason
         .as_ref()
@@ -387,6 +402,38 @@ mod tests {
         assert_eq!(
             crate::lights::tv_connection(&config, "avr").as_deref(),
             Some("plugin:avr")
+        );
+    }
+
+    /// `refusal` is what both the toast (`activity_buttons::plugin_failure`)
+    /// and this screen's own status line are built from, so what it does for
+    /// `Unpaired` reaches both: Couch's sentence and the browser hint, never
+    /// the package's own line, because the panel does no pairing of its own.
+    #[test]
+    fn an_unpaired_refusal_gives_the_status_line_the_browser_hint_not_the_reason() {
+        use couch_plugin::{Error, Failure, Reason};
+        assert_eq!(
+            refusal(&Failure::from(Error::Unpaired)),
+            format!("{}\n{PAIRING_HINT}", Error::Unpaired)
+        );
+        assert_eq!(
+            refusal(&Failure {
+                code: Error::Unpaired,
+                reason: Some(Reason::Message {
+                    text: "Pair this TV again".into()
+                }),
+            }),
+            format!("{}\n{PAIRING_HINT}", Error::Unpaired)
+        );
+        // Every other code keeps carrying the package's own line, unchanged.
+        assert_eq!(
+            refusal(&Failure {
+                code: Error::Rejected,
+                reason: Some(Reason::Message {
+                    text: "The TV is locked".into()
+                }),
+            }),
+            format!("{}\nThe TV is locked", Error::Rejected)
         );
     }
 

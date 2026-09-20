@@ -271,6 +271,11 @@ struct Entry {
     /// An activity pinned above the devices: its glyph index and the
     /// "source · room" caption the area page's strip shows for it.
     activity: Option<(i32, String)>,
+    /// This round's status read named this row `Unpaired`: the panel does no
+    /// pairing of its own, so the row's detail says so instead of the
+    /// generic "Unavailable" a fresh read leaves for a child the read simply
+    /// has not answered yet.
+    unpaired: bool,
 }
 enum Operation {
     IrCheck(Id, String, bool, Arc<couch_model::Config>, Input),
@@ -399,6 +404,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
             plugin: None,
             media: false,
             activity: Some((a.kind.glyph_index(), activity_caption(config, a))),
+            unpaired: false,
         })
         .collect();
     entries.extend(room.devices.iter().filter_map(|d| {
@@ -417,6 +423,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                 plugin: Some(row),
                 media: false,
                 activity: None,
+                unpaired: false,
             });
         }
         match integration.as_ref() {
@@ -433,6 +440,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                     plugin: None,
                     media: false,
                     activity: None,
+                    unpaired: false,
                 })
             }
             Some(Integration::Hue { light_id }) if !light_id.starts_with("scene:") => Some(Entry {
@@ -445,6 +453,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                 plugin: None,
                 media: false,
                 activity: None,
+                unpaired: false,
             }),
             Some(Integration::Matter { device }) => Some(Entry {
                 name: d.name.clone(),
@@ -456,6 +465,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                 plugin: None,
                 media: false,
                 activity: None,
+                unpaired: false,
             }),
             _ => Some(Entry {
                 name: d.name.clone(),
@@ -467,6 +477,7 @@ fn configured_in(config: &couch_model::Config, room: &Id) -> Result<Vec<Entry>, 
                 plugin: None,
                 media: matches!(integration, Some(Integration::Sonos { .. })),
                 activity: None,
+                unpaired: false,
             }),
         }
     }));
@@ -539,6 +550,10 @@ fn read_plugin_rows(entries: &mut [Entry], ask: Ask) {
                 ) {
                     silent.push(row.connection.clone());
                 }
+                // The panel does no pairing of its own: the row says so
+                // instead of the generic "Unavailable" a read that simply
+                // has not answered yet leaves.
+                e.unpaired = failure.code == couch_plugin::Error::Unpaired;
             }
         }
     }
@@ -828,7 +843,9 @@ impl Controller {
                 .as_ref()
                 .map(DeviceState::description)
                 .unwrap_or_else(|| {
-                    if self.refreshing {
+                    if e.unpaired {
+                        "Needs pairing".into()
+                    } else if self.refreshing {
                         "Checking status…".into()
                     } else {
                         "Unavailable".into()
@@ -2130,6 +2147,38 @@ mod tests {
         assert!(entries.iter().all(|e| e.state.is_none()));
     }
 
+    /// `Unpaired` is not a connection failure either - every row is still
+    /// asked - but it is the one refusal a plugin row remembers, so its
+    /// detail can say "Needs pairing" instead of the generic "Unavailable".
+    #[test]
+    fn a_status_read_that_answers_unpaired_marks_only_that_row() {
+        let config = packaged();
+        let mut entries = configured_in(&config, &Id::new("living-room")).unwrap();
+        let mut asked = 0;
+        read_plugin_rows(&mut entries, &mut |_, request, _| {
+            asked += 1;
+            match request.resource() {
+                Some("lamp/2") => Err(couch_plugin::Error::Unpaired.into()),
+                _ => Err(couch_plugin::Error::Unsupported.into()),
+            }
+        });
+        assert_eq!(asked, 3);
+        assert!(entries.iter().all(|e| e.state.is_none()));
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.id.as_str(), e.unpaired))
+                .collect::<Vec<_>>(),
+            [
+                ("plugin:bridge/lamp/1", false),
+                ("plugin:bridge/lamp/2", true),
+                ("plugin:bridge/cover/1", false),
+                ("device:heat", false),
+                ("device:avr", false),
+            ]
+        );
+    }
+
     /// A level is written as the typed action the child's kind declares, and
     /// the state the write acknowledged is what the row then shows.
     #[test]
@@ -2479,6 +2528,49 @@ mod tests {
                 // The bridge had already failed to answer this round.
                 "Reading lamp - Unavailable",
                 "Blind - Open · 60% open",
+                // The thermostat and the receiver keep their device rows and
+                // the packaged screen behind them.
+                "Heating - Press OK for controls",
+                "Theater AVR - Press OK for controls"
+            ]
+        );
+    }
+
+    /// The panel does no pairing of its own (T3): a packaged row this
+    /// round's read named `Unpaired` says so, not the generic "Unavailable"
+    /// a read that simply has not answered yet leaves the other rows with.
+    #[test]
+    fn a_row_told_it_needs_pairing_says_so() {
+        const NAME: &str = "lights::tests::a_row_told_it_needs_pairing_says_so";
+        if std::env::var_os("COUCH_TEST_UNPAIRED_ROOM").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_UNPAIRED_ROOM", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let config = packaged();
+        let shown = draw_room(
+            &config,
+            "living-room",
+            |entries| {
+                entries[1].unpaired = true;
+            },
+            "room-packaged-unpaired.png",
+        );
+        assert_eq!(
+            shown,
+            [
+                "Desk lamp - Unavailable",
+                "Reading lamp - Needs pairing",
+                "Blind - Unavailable",
                 // The thermostat and the receiver keep their device rows and
                 // the packaged screen behind them.
                 "Heating - Press OK for controls",
