@@ -72,6 +72,9 @@ impl Hue {
                         on,
                         brightness_percent,
                         dimmable,
+                        // A whole room has no one colour temperature to show.
+                        mirek: None,
+                        mirek_range: None,
                     },
                     resource_kind: "room".into(),
                     room_name: name.into(),
@@ -100,6 +103,8 @@ impl Hue {
                     on: None,
                     brightness_percent: None,
                     dimmable: false,
+                    mirek: None,
+                    mirek_range: None,
                 },
                 resource_kind: "scene".into(),
                 room_name: room_name.into(),

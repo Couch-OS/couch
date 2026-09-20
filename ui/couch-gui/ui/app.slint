@@ -1,5 +1,6 @@
 import { Camera } from "screens/camera.slint";
 import { Thermostat } from "screens/thermostat.slint";
+import { LightScreen } from "screens/light.slint";
 import { ActivityPages, ActivityTile } from "screens/activity_pages.slint";
 export { ActivityTile }
 import { Television, TvChoice } from "screens/tv.slint";
@@ -279,6 +280,32 @@ export component App inherits Window {
     in-out property <int> light-scene-count;
     in-out property <string> light-scene-label;
     in-out property <string> light-room-id;
+
+    // --- the light / blind control screen -------------------------------------
+    // Opened with OK on a room row that has more than on and off behind it.
+    // Every value is worked out in lights.rs; see screens/light.slint.
+    in-out property <bool> light-screen-shown: false;
+    in-out property <string> light-screen-title;
+    in-out property <string> light-screen-room;
+    in-out property <string> light-screen-state;
+    in-out property <bool> light-screen-active;
+    in-out property <string> light-screen-level-label: "BRIGHTNESS";
+    in-out property <string> light-screen-level;
+    in-out property <int> light-screen-level-percent;
+    in-out property <bool> light-screen-level-known;
+    in-out property <bool> light-screen-adjustable;
+    in-out property <bool> light-screen-cover;
+    in-out property <bool> light-screen-can-stop;
+    in-out property <bool> light-screen-tunable;
+    in-out property <string> light-screen-kelvin;
+    in-out property <int> light-screen-mirek-percent;
+    in-out property <bool> light-screen-mirek-known;
+    in-out property <int> light-screen-focus;
+    in-out property <int> light-screen-button;
+    in-out property <string> light-screen-detail;
+    in-out property <bool> light-screen-pending;
+    callback light-screen-action(string, int);
+    public function focus-light-screen() { light-screen-page.take-focus(); }
     changed chooser-shown => { if (root.chooser-shown) { fs.focus(); } else if (root.light-shown) { light-page.take-focus(); } }
     public function focus-light() { light-page.take-focus(); }
     /// The room page's scroll destination and the current place of its focus
@@ -568,6 +595,22 @@ export component App inherits Window {
         back => {root.light-back();}
     }
 
+    light-screen-page := LightScreen {
+        width:parent.width; height:parent.height;
+        visible:root.light-screen-shown; shown:root.light-screen-shown;
+        title:root.light-screen-title; room:root.light-screen-room; state:root.light-screen-state;
+        active:root.light-screen-active;
+        level-label:root.light-screen-level-label; level:root.light-screen-level;
+        level-percent:root.light-screen-level-percent; level-known:root.light-screen-level-known;
+        adjustable:root.light-screen-adjustable;
+        cover:root.light-screen-cover; can-stop:root.light-screen-can-stop;
+        tunable:root.light-screen-tunable; kelvin:root.light-screen-kelvin;
+        mirek-percent:root.light-screen-mirek-percent; mirek-known:root.light-screen-mirek-known;
+        selected:root.light-screen-focus; button:root.light-screen-button;
+        detail:root.light-screen-detail; pending:root.light-screen-pending;
+        action(name,index) => { root.light-screen-action(name,index); }
+    }
+
     television := Television {
         visible:root.tv-shown;shown:root.tv-shown;android-tv:root.tv-android;apple-tv:root.tv-apple;tizen:root.tv-tizen;infrared:root.tv-ir;sonos:root.tv-sonos;generic:root.tv-generic;kind-label:root.tv-kind-label;can-power:root.tv-can-power;can-input:root.tv-can-input;can-command:root.tv-can-command;tray-selected<=>root.tv-tray-selected;
         width:parent.width;height:parent.height;
@@ -819,7 +862,7 @@ export component App inherits Window {
         caption: root.brightness-label;
         value: root.light-brightness-percent;
         percentage: true;
-        shown: root.brightness-shown && root.light-shown && !root.chooser-shown;
+        shown: root.brightness-shown && root.light-shown && !root.chooser-shown && !root.light-screen-shown;
     }
     VolumeOverlay {
         visible: root.feedback-enabled;

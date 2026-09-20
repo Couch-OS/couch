@@ -100,6 +100,45 @@ impl Session {
     fn toggle(&self, id: &str) -> Result<Light> {
         self.command(id, None)
     }
+    /// Colour temperature, written straight through. It is kept out of
+    /// `command` on purpose: the settling guard there is about power and
+    /// level, and a lamp's mirek is never guessed from a press - the screen
+    /// carries its own pending target for the second the bridge takes.
+    fn set_mirek(&self, id: &str, mirek: u16) -> Result<Light> {
+        let cached = {
+            let c = self.cache.lock().unwrap();
+            c.fresh().then(|| c.lights.get(id).cloned()).flatten()
+        };
+        let mut state = match cached {
+            Some(s) => s,
+            None => self.client.control_state(id)?,
+        };
+        if state.on.is_none() {
+            return Err(Error::Unavailable);
+        }
+        {
+            let mut c = self.cache.lock().unwrap();
+            c.generation += 1;
+            c.commanding = true;
+        }
+        let result = self
+            .client
+            .command_for_state(&state, couch_ha::Command::Mirek(mirek));
+        let mut c = self.cache.lock().unwrap();
+        c.commanding = false;
+        c.generation += 1;
+        if let Err(e) = result {
+            c.invalidate();
+            c.dirty = true;
+            return Err(e);
+        }
+        // Hue turns the lamp on to show a colour temperature, so say so.
+        state.on = Some(true);
+        state.mirek = Some(mirek);
+        c.dirty = true;
+        c.lights.insert(id.into(), state.clone());
+        Ok(state)
+    }
     fn command(&self, id: &str, brightness: Option<u8>) -> Result<Light> {
         let cached = {
             let c = self.cache.lock().unwrap();
@@ -237,6 +276,14 @@ impl Live {
     }
     pub fn toggle(&self, id: &str) -> Result<Light> {
         self.session()?.toggle(id)
+    }
+    /// Colour temperature, in mirek. A room's grouped light and a scene have
+    /// no range of their own, so neither takes one.
+    pub fn mirek(&self, id: &str, mirek: u16) -> Result<Light> {
+        if id.starts_with("scene:") || id.starts_with("room:") {
+            return Err(Error::ColourTemperature);
+        }
+        self.session()?.set_mirek(id, mirek)
     }
 }
 fn poll(weak: Weak<Session>) {
@@ -391,6 +438,8 @@ mod tests {
             on: Some(false),
             brightness_percent: Some(56),
             dimmable: true,
+            mirek: None,
+            mirek_range: None,
         };
         let mut cache = Cache::default();
         cache.apply_snapshot(vec![off.clone()], Instant::now());
@@ -431,6 +480,8 @@ mod tests {
             on: Some(true),
             brightness_percent: Some(56),
             dimmable: true,
+            mirek: None,
+            mirek_range: None,
         };
         let mut cache = Cache::default();
         cache.pending.insert(
@@ -494,6 +545,8 @@ mod tests {
                 on: Some(true),
                 brightness_percent: Some(50),
                 dimmable: true,
+                mirek: None,
+                mirek_range: None,
             },
         );
         let session = Session {
@@ -571,6 +624,8 @@ mod tests {
                 on: Some(true),
                 brightness_percent: Some(50),
                 dimmable: true,
+                mirek: None,
+                mirek_range: None,
             },
         );
         let session = Session {
@@ -646,6 +701,8 @@ mod tests {
                 on: Some(false),
                 brightness_percent: Some(0),
                 dimmable: false,
+                mirek: None,
+                mirek_range: None,
             },
         );
         let session = Arc::new(Session {

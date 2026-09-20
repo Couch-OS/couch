@@ -14,10 +14,15 @@ One bridge connection is supported per remote.
 3. Open **Rooms & devices**, create or open a room, then choose the saved Hue
    connection under **Add devices to this room**. Search the discovered lights and
    click **Add to this room**. Discovery never assigns devices automatically.
-4. Open that room on the remote. Devices appear in one flat list. Highlight a light
-   and press OK to toggle it. Tapping selects a row, matching room navigation.
-   Physical Back returns home. Use
-   **Show light controls** on an assigned device in the web editor for brightness.
+4. Open that room on the remote. Devices appear in one flat list. Highlight a
+   light and press **Power** to switch it on or off. Press **OK** to open its
+   controls: brightness, and colour temperature on a light whose bridge reports
+   a range for it, shown in Kelvin from warm to cool. Left and right adjust the
+   highlighted control there, and on the row itself they still dim the light in
+   place. A row whose OK opens controls shows a small chevron and keeps its
+   state text ("On · 40%"). A light that can only be switched keeps OK as the
+   switch it was. Tapping selects a row, matching room navigation. Physical
+   Back returns to the room with the same row still highlighted.
    Zero-percent brightness means off.
 
 Unreachable lights display as unavailable. Commands are acknowledged by the
@@ -77,8 +82,9 @@ real household-light command testing remains pending.
 
 Room names and devices render from local configuration immediately. Device rows
 match the home room list’s cards, icons, typography and moving focus ring. The room
-name appears in the status bar, with no duplicate heading above the devices. OK
-toggles the focused light; physical Back returns home with a 180 ms slide.
+name appears in the status bar, with no duplicate heading above the devices.
+Power switches the focused light, OK opens its controls, and physical Back
+returns home with a 180 ms slide.
 
 The GUI starts a credential-scoped Hue session in the background. A pinned HTTPS
 connection subscribes to `/eventstream/clip/v2`. Add/update/delete events trigger
@@ -86,7 +92,7 @@ background state snapshots, preserving connectivity information as well as light
 state. This version refreshes snapshots on events rather than merging partial
 resource payloads. Commands use a separate, reusable HTTPS connection.
 
-With a valid cached state, OK sends only a PUT. The row adopts the target after
+With a valid cached state, a switch sends only a PUT. The row adopts the target after
 bridge acknowledgement; this does not prove the bulb has finished fading. Missing
 or expired state falls back to a fresh read; known-unavailable lights are refused.
 Failures invalidate the cache. Snapshot generations prevent an older response from
@@ -114,8 +120,9 @@ were preserved. No household lights were changed by automated fixture tests.
 
 In **Rooms & devices**, open a Couch room and choose the Hue connection. The
 **Hue controls** selector switches between individual lights and **Hue rooms**.
-Adding a Hue room creates one grouped control; OK toggles its grouped-light
-service, and Volume Up/Down adjusts its brightness in 5% steps. Brightness support
+Adding a Hue room creates one grouped control; Power and OK switch its
+grouped-light service, and Volume Up/Down adjusts its brightness in 5% steps.
+A whole Hue room has no one colour temperature, so it is not offered one. Brightness support
 and the current level come from the bridge’s grouped-light dimming state, using
 the same push-maintained cache as individual lights. It does not
 create or rename Couch rooms or duplicate all the bridge room's lights.

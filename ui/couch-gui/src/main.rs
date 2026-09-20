@@ -21,6 +21,7 @@ mod evdev;
 mod home;
 mod input;
 mod keypad;
+mod light_screen;
 mod lights;
 mod media_player;
 mod mic;
@@ -92,6 +93,7 @@ enum Overlay {
     Activity,
     Camera,
     Thermostat,
+    Light,
     Tv,
     Player,
     Room,
@@ -110,9 +112,19 @@ impl Overlay {
     fn device(self) -> bool {
         matches!(
             self,
-            Overlay::Camera | Overlay::Thermostat | Overlay::Tv | Overlay::Player
+            Overlay::Camera | Overlay::Thermostat | Overlay::Light | Overlay::Tv | Overlay::Player
         )
     }
+}
+/// What a short Power press says while an activity runs and nothing on screen
+/// wants the key. It is the only place the new rule is taught, so it names the
+/// activity the hold would end.
+fn hold_to_end(config: Option<&couch_model::Config>, activity: &str) -> String {
+    let name = config
+        .and_then(|config| config.activities.iter().find(|a| a.id.as_str() == activity))
+        .map(|a| a.name.as_str())
+        .unwrap_or("the activity");
+    format!("Hold Power to end {name}")
 }
 fn overlay(app: &App) -> Option<Overlay> {
     Some(if app.get_activity_busy() {
@@ -121,6 +133,8 @@ fn overlay(app: &App) -> Option<Overlay> {
         Overlay::Camera
     } else if app.get_thermostat_shown() {
         Overlay::Thermostat
+    } else if app.get_light_screen_shown() {
+        Overlay::Light
     } else if app.get_tv_shown() {
         Overlay::Tv
     } else if app.get_player_shown() {
@@ -462,6 +476,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     activity: false,
                     kind: 0,
                     power_known: false,
+                    controls: false,
                     icon: slint::Image::default(),
                 })
                 .collect();
@@ -497,6 +512,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         activity: false,
                         kind: 0,
                         power_known: false,
+                        controls: false,
                         icon: slint::Image::default(),
                     })
                     .collect::<Vec<_>>(),
@@ -536,6 +552,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         activity: false,
                         kind: 0,
                         power_known: false,
+                        controls: false,
                         icon: slint::Image::default(),
                     })
                     .collect::<Vec<_>>(),
@@ -942,6 +959,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.get_player_shown(),
             app.get_tv_shown(),
             app.get_thermostat_shown(),
+            app.get_light_screen_shown(),
         )
     };
     let mut last_feedback_page = feedback_page(&app);
@@ -960,10 +978,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
     let mut back_hold = input::BackHold::default();
+    // The Power key is timed here, like the Back and menu holds.
+    let mut power_key = input::PowerKey::default();
     let exit_device = |app: &App| match overlay(app) {
         Some(Overlay::Activity) => app.invoke_cancel_activity(),
         Some(Overlay::Camera) => app.invoke_close_camera(),
         Some(Overlay::Thermostat) => app.invoke_thermostat_action("close".into(), 0),
+        Some(Overlay::Light) => app.invoke_light_screen_action("close".into(), 0),
         Some(Overlay::Tv) => app.invoke_tv_action("close".into()),
         Some(Overlay::Player) => {
             app.set_player_panel(0);
@@ -994,6 +1015,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         back_hold.context(back_context);
         if back_hold.poll(now_monotonic_us()) {
             exit_device(&app);
+        }
+        // A held Power key ends the running activity from anywhere, at the
+        // threshold a mapped long press uses. With no activity to end the hold
+        // does nothing, and the tap is still delivered when the key comes up.
+        if power_key.hold_due(now_monotonic_us(), app.get_activity_running()) {
+            app.invoke_end_activity();
         }
         let replay = button_controls.next_replay();
         let replayed = replay.is_some();
@@ -1045,6 +1072,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         screen.blank(true);
                         standby = Standby::Off;
                         println!("couch-gui: standby: sleep on side power");
+                    }
+                }
+                continue;
+            }
+            // The Power key's tap, now that the hold has been ruled out.
+            // Neither edge was dispatched on the way down: until the key comes
+            // up a tap and the start of a hold are the same press.
+            if press.released && press.code == keypad::KEY_POWER && !replayed {
+                if let Some(down) = power_key.release() {
+                    // Whatever is on screen gets the key first: a highlighted
+                    // row's Power, or an activity that maps the key itself.
+                    let mapped = button_controls.handle(&app, &down);
+                    button_controls.handle(&app, &press);
+                    let row = !mapped && light_controls.power_press(&app);
+                    match input::power_tap(mapped, row, app.get_activity_running()) {
+                        input::PowerTap::Hint => toast(
+                            hold_to_end(
+                                connections::config().as_deref(),
+                                app.get_active_activity().as_str(),
+                            ),
+                            3,
+                        ),
+                        // The binding and the row have already been given it.
+                        input::PowerTap::Mapped
+                        | input::PowerTap::Row
+                        | input::PowerTap::Nothing => {}
                     }
                 }
                 continue;
@@ -1165,8 +1218,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !replayed && button_controls.handle(&app, &press) {
                 continue;
             }
-            if press.code == 60 && app.get_activity_running() && !press.repeat {
-                app.invoke_end_activity();
+            // See the release edge above: the down edge only starts the clock.
+            // A replayed press is one `activity_buttons` handed back, and has
+            // been through this already.
+            if press.code == keypad::KEY_POWER && !replayed {
+                power_key.press(&press, now_monotonic_us());
                 continue;
             }
             if press.menu == Some(true) && !app.get_pair_shown() {
@@ -1985,6 +2041,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
+mod power_hint_tests {
+    use super::*;
+    /// The sentence a short Power press raises while an activity runs and
+    /// nothing on screen wants the key: it names the activity, because naming
+    /// it is how the new hold gets taught.
+    #[test]
+    fn the_hint_names_the_activity_the_hold_would_end() {
+        let config: couch_model::Config = serde_json::from_value(serde_json::json!({
+            "schema_version":1,
+            "rooms":[{"id":"den","name":"Den","devices":[]}],
+            "activities":[{"id":"movie","name":"Movie night","room":"den"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            hold_to_end(Some(&config), "movie"),
+            "Hold Power to end Movie night"
+        );
+        // An activity that has gone, and no configuration at all, still say
+        // the thing that matters: the key has to be held.
+        assert_eq!(
+            hold_to_end(Some(&config), "gone"),
+            "Hold Power to end the activity"
+        );
+        assert_eq!(hold_to_end(None, "movie"), "Hold Power to end the activity");
+    }
+}
+
+#[cfg(test)]
 mod overlay_tests {
     use super::*;
 
@@ -2041,6 +2125,10 @@ mod overlay_tests {
             (
                 Box::new(|a: &App, v| a.set_thermostat_shown(v)),
                 Overlay::Thermostat,
+            ),
+            (
+                Box::new(|a: &App, v| a.set_light_screen_shown(v)),
+                Overlay::Light,
             ),
             (Box::new(|a: &App, v| a.set_tv_shown(v)), Overlay::Tv),
             (

@@ -15,6 +15,10 @@ export struct ChoiceItem {
     // (0 audio bars, 1 play triangle) and `detail` is its "source · room".
     activity: bool,
     kind: int,
+    // OK on this row opens a screen rather than switching it: a light with a
+    // brightness or a colour temperature, a blind, a device with controls of
+    // its own. The row keeps its state text and shows a chevron.
+    controls: bool,
 }
 
 // A page, for the things that used to be a horizontal scroller.
