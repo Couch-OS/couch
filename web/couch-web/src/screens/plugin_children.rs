@@ -407,7 +407,14 @@ fn quietly(
 /// answering from the remote's five-minute cache. `once` is for a screen that
 /// needs the listing but did not ask for it: it does nothing if the connection
 /// has been listed already.
-pub(super) fn load(app: App, state: State, connection: String, refresh: bool, once: bool) {
+pub(super) fn load(
+    app: App,
+    state: State,
+    pairing: super::plugin_pairing::State,
+    connection: String,
+    refresh: bool,
+    once: bool,
+) {
     let listings = state.listings;
     // Deferred, because this is called while the screen is being built and a
     // listing is not something to start during a render.
@@ -450,6 +457,7 @@ pub(super) fn load(app: App, state: State, connection: String, refresh: bool, on
                         if error.unauthorized {
                             app.paired.set(Some(false));
                         }
+                        super::plugin_pairing::noticed(pairing, &connection, error);
                         entry.message = refusal(error);
                     }
                 }
@@ -478,6 +486,7 @@ fn listing_of(state: State, connection: &str) -> Option<Listing> {
 
 /// The "Add to this room" panel for a packaged connection that lists devices.
 pub(super) fn picker(app: App, house: Arc<Config>, connection: Connection, room: Id) -> AnyView {
+    let pairing = expect_context::<super::plugin_pairing::State>();
     let state = expect_context::<State>();
     let picking = expect_context::<super::device_picker::State>();
     let id = connection.id.to_string();
@@ -487,7 +496,7 @@ pub(super) fn picker(app: App, house: Arc<Config>, connection: Connection, room:
         .find(|r| r.id == room)
         .map(|r| r.name.clone())
         .unwrap_or_default();
-    load(app, state, id.clone(), false, false);
+    load(app, state, pairing, id.clone(), false, false);
 
     // OWNER DECISION, applied once the listing is here and only until the
     // person chooses a room for themselves.
@@ -545,7 +554,7 @@ pub(super) fn picker(app: App, house: Arc<Config>, connection: Connection, room:
             <option value="">"All types"</option>
             {move ||kinds_for_select().kinds.into_iter().map(|k|view!{<option value=k.kind.clone()>{k.label.clone()}</option>}).collect_view()}
         </select></label>
-        <button class="ghost" disabled=move ||busy_for_refresh() on:click=move |_|load(app,state,refresh_id.clone(),true,false)>"Refresh devices"</button>
+        <button class="ghost" disabled=move ||busy_for_refresh() on:click=move |_|load(app,state,pairing,refresh_id.clone(),true,false)>"Refresh devices"</button>
         {super::connections::field("Search devices",picking.filter,"Filter by name or room")}
         <label class="field">"Room from the integration"<select aria-label="Room from the integration" prop:value=move ||state.hint.get()
             on:change=move |e|{state.hint_chosen.set(true);state.hint.set(event_target_value(&e));}>
@@ -855,13 +864,15 @@ pub(super) fn controls(app: App, config: &Config, device: &Device) -> AnyView {
         return ().into_any();
     };
     let state = expect_context::<State>();
+    let pairing = expect_context::<super::plugin_pairing::State>();
+    let held = StoredValue::new(connection_id.to_string());
     let connection = config.connection(connection_id);
     let label = connection
         .map(super::connections::label)
         .unwrap_or_else(|| connection_id.to_string());
     let kind = config.device_child_kind(&device.integration);
     let id = connection_id.to_string();
-    load(app, state, id.clone(), false, true);
+    load(app, state, pairing, id.clone(), false, true);
 
     // OWNER DECISION: a saved device the connection has stopped listing is
     // badged where it lives, and only ever removed by hand.
@@ -914,13 +925,13 @@ pub(super) fn controls(app: App, config: &Config, device: &Device) -> AnyView {
                     None,
                     BUSY_TRIES,
                     move |answer| {
-                        adopt(app, status, message, answer);
+                        adopt(app, pairing, held, status, message, answer);
                         busy.set(false);
                     },
                 );
             }
             answer => {
-                adopt(app, status, message, answer);
+                adopt(app, pairing, held, status, message, answer);
                 busy.set(false);
             }
         });
@@ -977,6 +988,9 @@ pub(super) fn controls(app: App, config: &Config, device: &Device) -> AnyView {
     };
 
     view! {<div class="child-controls">{badge}
+        // Protocol 3 (unreleased): a connection whose key the device no
+        // longer honours says so wherever it is used, not only on its page.
+        {super::plugin_pairing::banner(app,pairing,&held.get_value(),format!("/api/connections/{}/plugin",held.get_value()))}
         <p>{move ||state_line(status.get().as_ref(),component)}</p>
         <div class="actions">
             {keys.into_iter().filter(|(id,_)|matches!(id.as_str(),"on"|"off"|"toggle"|"open"|"close"|"stop"))
@@ -992,6 +1006,8 @@ pub(super) fn controls(app: App, config: &Config, device: &Device) -> AnyView {
 /// Take a status reply as the state, or show why there is none.
 fn adopt(
     app: App,
+    pairing: super::plugin_pairing::State,
+    connection: StoredValue<String>,
     status: RwSignal<Option<Value>>,
     message: RwSignal<String>,
     answer: Result<Value, api::ApiError>,
@@ -1002,6 +1018,7 @@ fn adopt(
             if error.unauthorized {
                 app.paired.set(Some(false));
             }
+            super::plugin_pairing::noticed(pairing, &connection.get_value(), &error);
             message.set(refusal(&error));
         }
     }
@@ -1154,6 +1171,8 @@ mod tests {
         let refused = |message: &str, reason| api::ApiError {
             message: message.into(),
             reason,
+            status: 502,
+            code: Some("rejected".into()),
             unauthorized: false,
             stale: false,
             busy: false,

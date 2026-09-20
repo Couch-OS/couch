@@ -45,6 +45,14 @@ impl Reason {
 pub struct ApiError {
     pub message: String,
     pub reason: Option<Reason>,
+    /// The HTTP status, for the handful of screens that have something better
+    /// to say about one refusal than about another. Zero when the remote was
+    /// never reached at all.
+    pub status: u16,
+    /// The daemon's machine-readable word for the refusal, beside `error` and
+    /// `reason`. `unpaired` is the one this app acts on: it means a pairing
+    /// is missing rather than that anything was typed wrongly.
+    pub code: Option<String>,
     /// The session is gone - expired, or the daemon restarted. The app drops
     /// back to the pairing screen rather than showing this as an edit failure,
     /// because "not paired" is not something dismissing a banner can fix.
@@ -63,6 +71,8 @@ impl ApiError {
         ApiError {
             message: message.into(),
             reason: None,
+            status: 0,
+            code: None,
             unauthorized: false,
             stale: false,
             busy: false,
@@ -260,6 +270,12 @@ async fn parse(response: gloo_net::http::Response) -> Result<Config, ApiError> {
     };
     Err(ApiError {
         unauthorized,
+        status,
+        code: body
+            .as_ref()
+            .and_then(|value| value.get("code"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         stale: status == 409 || status == 404,
         busy: status == 503,
         reason: body.as_ref().and_then(Reason::from_body),
@@ -294,6 +310,8 @@ pub async fn ha(method: &str, path: &str, body: Option<Value>) -> Result<Value, 
         return Err(ApiError {
             message: value["error"].as_str().unwrap_or("Operation failed").into(),
             reason: Reason::from_body(&value),
+            status,
+            code: value["code"].as_str().map(str::to_owned),
             unauthorized: status == 401,
             busy: status == 503,
             // Live endpoints do not carry the config revision header, but a
