@@ -211,7 +211,7 @@ impl Api {
                             // package, never from the browser. No manifest
                             // this build accepts can declare any (protocol 3,
                             // unreleased), so there are none.
-                            children.clear();
+                            *children = manifest.children;
                             *label = manifest.label;
                             *capabilities = manifest
                                 .capabilities
@@ -893,7 +893,7 @@ mod delete_tests {
         assert!(house
             .api
             .plugins
-            .execute("receiver", "sample", couch_plugin::Request::status())
+            .execute("receiver", "sample", None, couch_plugin::Request::status())
             .is_err());
         assert!(!house.folder("receiver").exists());
         // The same name again is a new connection that knows nothing.
