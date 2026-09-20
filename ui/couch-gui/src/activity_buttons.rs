@@ -2254,10 +2254,20 @@ mod tests {
             // Without a reason the words are the ones every build has shown.
             let plain = plugin_failure(&code.into());
             let worded = plugin_failure(&said(code, "The TV is locked"));
-            let text = format!("{code}\nThe TV is locked");
+            // The panel does no pairing of its own: `Unpaired` keeps its own
+            // second line - the browser hint - never the package's, because
+            // the two together are the most that fits the toast.
+            let text = if code == E::Unpaired {
+                format!("{code}\n{}", crate::tv::plugin::PAIRING_HINT)
+            } else {
+                format!("{code}\nThe TV is locked")
+            };
             if falls_through {
                 assert_eq!(plain, Failure::Unavailable(code.to_string()));
                 assert_eq!(worded, Failure::Unavailable(text));
+            } else if code == E::Unpaired {
+                assert_eq!(plain, Failure::Command(text.clone()));
+                assert_eq!(worded, Failure::Command(text));
             } else {
                 assert_eq!(plain, Failure::Command(code.to_string()));
                 assert_eq!(worded, Failure::Command(text));
@@ -2483,6 +2493,93 @@ mod tests {
             assert!(band.iter().any(|p| *p != band[0]), "the toast drew nothing");
             // Two lines stay inside the bar one line has: the page above it
             // is the page the one-line toast left.
+            let page = pixels[..680 * 480].to_vec();
+            assert!(
+                above.get_or_insert(page.clone()) == &page,
+                "{name}: the toast spilled above its bar"
+            );
+            if let Some(dir) = std::env::var_os("COUCH_CORE_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir).join(name),
+                    &bytes,
+                    480,
+                    800,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        app.hide().unwrap();
+    }
+
+    /// `Unpaired` never shows the package's own line on the toast: Couch's
+    /// sentence and [`crate::tv::plugin::PAIRING_HINT`] are the two lines the
+    /// 72px bar keeps, the same pair whether or not the package sent a
+    /// reason. `COUCH_CORE_SCREENSHOTS=<dir>` keeps the picture.
+    #[test]
+    fn an_unpaired_refusal_shows_the_browser_hint_not_the_package_reason() {
+        const NAME: &str = "activity_buttons::tests::an_unpaired_refusal_shows_the_browser_hint_not_the_package_reason";
+        if std::env::var_os("COUCH_TEST_PAIRING_TOAST").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_PAIRING_TOAST", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::{platform::WindowEvent, ComponentHandle};
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.set_feedback_enabled(true);
+        app.show().unwrap();
+        window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        let mut pixels = vec![slint::Rgb8Pixel::default(); 480 * 800];
+        let mut above: Option<Vec<slint::Rgb8Pixel>> = None;
+        for (name, failure) in [
+            (
+                "reason-toast-5-unpaired-no-reason.png",
+                couch_plugin::Error::Unpaired.into(),
+            ),
+            (
+                "reason-toast-6-unpaired-with-reason.png",
+                said(couch_plugin::Error::Unpaired, "Pair this TV again"),
+            ),
+        ] {
+            let message = match plugin_failure(&failure) {
+                Failure::Command(message) | Failure::Unavailable(message) => message,
+            };
+            // The assertion that matters: the package's line ("Pair this TV
+            // again") never reaches the toast, with or without one.
+            assert_eq!(
+                message,
+                format!(
+                    "{}\n{}",
+                    couch_plugin::Error::Unpaired,
+                    crate::tv::plugin::PAIRING_HINT
+                ),
+                "{name}"
+            );
+            app.set_toast(message.as_str().into());
+            for _ in 0..20 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(&mut pixels, 480);
+            });
+            let band = &pixels[720 * 480..760 * 480];
+            assert!(band.iter().any(|p| *p != band[0]), "the toast drew nothing");
+            // Two lines stay inside the bar one line has, the same check
+            // `a_refusal_and_its_reason_render_on_the_toast` makes.
             let page = pixels[..680 * 480].to_vec();
             assert!(
                 above.get_or_insert(page.clone()) == &page,

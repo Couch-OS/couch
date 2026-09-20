@@ -2235,25 +2235,79 @@ mod tests {
         );
     }
 
+    /// A call that comes back Busy is told, in [`Store::identity_wait`]'s own
+    /// words, to try "the next one, once whatever held the store has
+    /// finished" - so a test that wants to know what a *retried* caller sees
+    /// must retry too, the same way, rather than require every thread to win
+    /// its very first race for the lock. This retries any Busy up to a
+    /// generous overall `deadline`, so only a genuinely stuck store - never
+    /// scheduler luck - fails the test.
+    fn retry_until_free<T>(deadline: Instant, mut attempt: impl FnMut() -> Result<T>) -> T {
+        loop {
+            match attempt() {
+                Ok(value) => return value,
+                Err(error) if error.is_busy() && Instant::now() < deadline => continue,
+                Err(error) => panic!("{error}"),
+            }
+        }
+    }
+
+    /// Eight threads race the exclusive lock with no shared row to fall back
+    /// on, each bounded by [`MUTATION_LOCK_WAIT`]. Losing that race and
+    /// coming back Busy is correct, not a failure - a caller retries - so
+    /// under a loaded scheduler a thread may see it more than once before it
+    /// gets the lock. What must hold regardless of how the threads are
+    /// scheduled is the outcome: every package ends up with exactly one
+    /// user, none shared, and the table on disk agrees. A held lock
+    /// answering Busy within its bound is asserted separately with a single
+    /// call, and stays deterministic - nothing there depends on scheduling.
     #[test]
     fn users_are_allocated_under_the_store_lock_and_a_locked_store_is_busy() {
         let fixture = Fixture::new();
         let store = fixture.store();
+        // Generous relative to the 3s bound of a single call: enough retries
+        // that only a genuinely stuck store - not scheduler luck - fails
+        // this test.
+        let deadline = Instant::now() + Duration::from_secs(30);
         let threads: Vec<_> = (0..8)
             .map(|n| {
                 let store = Store::new(store.root.clone());
-                std::thread::spawn(move || store.identity(&format!("package-{n}")).unwrap().0)
+                std::thread::spawn(move || {
+                    retry_until_free(deadline, || store.identity(&format!("package-{n}"))).0
+                })
             })
             .collect();
         let mut allocated: Vec<u32> = threads.into_iter().map(|t| t.join().unwrap()).collect();
         allocated.sort_unstable();
         assert_eq!(allocated, (60000..60008).collect::<Vec<_>>());
+        // The result the threads raced to produce, read back from the table
+        // itself rather than just from what each thread returned: no two
+        // packages share a user and `next` reflects exactly what was handed
+        // out.
+        let table: Identities =
+            serde_json::from_slice(&fs::read(store.root.join(IDENTITY_FILE)).unwrap()).unwrap();
+        assert_eq!(table.next, 60008);
+        let mut ids: Vec<u32> = table.packages.values().copied().collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (60000..60008).collect::<Vec<_>>());
 
-        let held = Lock::acquire(store.root.join(".lock")).unwrap();
+        // Deterministic: this store's lock is held for the whole call, so
+        // Busy is not a race, it is the only possible answer. Taking the
+        // lock ourselves is setup, not the assertion under test, but on a
+        // loaded scheduler the previous batch's last releases can still be
+        // settling, so give that a brief, bounded chance to clear too.
+        let setup_deadline = Instant::now() + Duration::from_secs(5);
+        let held = retry_until_free(setup_deadline, || Lock::acquire(store.root.join(".lock")));
         let error = store.identity("while-locked").unwrap_err();
         assert!(error.is_busy(), "{error}");
         drop(held);
-        assert_eq!(store.identity("while-locked").unwrap(), (60008, 60008));
+        // The store's own contract: once whatever held it has finished, the
+        // next call succeeds - possibly not the very next one under load.
+        let unlocked_deadline = Instant::now() + Duration::from_secs(10);
+        assert_eq!(
+            retry_until_free(unlocked_deadline, || store.identity("while-locked")),
+            (60008, 60008)
+        );
     }
 
     /// The table sits at the store root because the release the remote can be
