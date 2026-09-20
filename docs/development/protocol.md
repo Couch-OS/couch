@@ -228,9 +228,8 @@ gate in `couch-plugin` and `couch-sdk`, described under
   told. A child's `resource_id` is 1 to 128 bytes of `[A-Za-z0-9._/+-]` read as
   segments between `/`, none empty, `.` or `..` (`couch_model::valid_resource`);
   a connection that is one device keeps the looser rule it always had. The
-  daemon, never the browser, will fill the snapshot in from the package's own
-  listing; until that step exists the device routes refuse a snapshot that
-  arrives in a request.
+  daemon, never the browser, fills the snapshot in from the package's own
+  listing: see [the daemon's side](#the-daemon-listing-the-children-of-a-connection).
 - **Light, cover and climate.** `couch_model::domain` holds the traits
   (`LightTraits`, `CoverTraits`, `ClimateTraits`) and the state a status read
   will carry (`LightState`, `CoverState`, `ClimateState`; an absent value is
@@ -515,6 +514,143 @@ protocol 1 and 2 packages (the Denon 0.2.1 manifest receives a held and a
 long-pressed `volume-up` as the bytes of a tap); the path from the panel's
 socket to a protocol 3 package and back runs in `couch-echo`'s
 `tests/protocol3.rs`, with the preview on.
+
+### The daemon: listing the children of a connection
+
+A bridge's lamps reach a person through the daemon, and everything below is
+unreachable in a shipped build: no manifest it accepts may declare a kind of
+child, so `Provider::Plugin.children` is always empty, every route here answers
+404 "This integration does not list devices", and nothing is ever stamped.
+
+**The routes**, under `/api/connections/<id>/plugin/`. The router has no query
+strings, so a child's id is the path between `children` and the verb, and the
+verb is always the last segment. Empty segments never reach the router and the
+resource grammar refuses `.` and `..`, so an id cannot climb out of its
+connection.
+
+| Route | Body | Answers |
+| --- | --- | --- |
+| `GET …/plugin/children` | - | the listing, from the cache if it is fresh |
+| `POST …/plugin/children/refresh` | - | the same, always read from the package |
+| `GET …/plugin/children/<id…>/status` | - | that child's `status` |
+| `POST …/plugin/children/<id…>/action` | `{"command":"toggle"}` | `{"accepted":true}`, or the state the write left |
+| `POST …/plugin/children/<id…>/typed-action` | a `TypedAction`, as the connection's own route takes one | the same |
+
+The listing:
+
+```json
+{"kinds": [{"kind": "light", "label": "Light", "device_kind": "light",
+            "component": "light", "capabilities": [{"id": "toggle", "label": "Toggle"}],
+            "actions": [{"action": "set_light"}]}],
+ "children": [{"id": "lamp/1", "kind": "light", "name": "Desk", "room_hint": "Study",
+               "light": {"dimmable": true, "mirek": [153, 500]},
+               "assigned": {"room": "living-room", "device": "living-lamp"}},
+              {"id": "lamp/2", "kind": "light", "name": "Reading", "assigned": null}],
+ "missing": [{"id": "lamp/9", "kind": "light", "name": "Corner lamp",
+              "assigned": {"room": "living-room", "device": "living-lamp"}}],
+ "fetched_ms": 0}
+```
+
+- `kinds` is the connection's saved snapshot of what its package declares, so
+  a page can label a kind and know which device a child becomes.
+- Each child is exactly what the package listed, plus `assigned`: `null`, or
+  `{"room":…,"device":…}` for a child already in a room, or `{"scene":…}` for
+  one already saved as a package scene.
+- `missing` is the other direction: a device or scene made from a child the
+  connection has stopped listing. Nothing is ever deleted or altered because of
+  it - the device, its keys and its scenes stay as they are - it is named so
+  the page can badge it and offer a manual Remove. `kind` is `null` for a
+  device a rollback stripped that has not healed yet.
+- `fetched_ms` is how long ago the package was asked, in milliseconds.
+
+A refusal is the `code`/`reason` body every other integration route uses. An id
+the connection does not list is 404 on these routes and 400 when a device or
+scene is being saved with it.
+
+**The cache.** One listing per connection, in memory only, read on demand and
+kept for five minutes. It is dropped when the connection's settings are saved,
+when the connection is deleted, when a reap finds it stale, and whenever the
+package selection or the settings it was read through have changed. A listing
+that ends in a protocol error retires the package's process and keeps the last
+good listing: the devices already made from it are real, and a stale list is
+more use to somebody choosing than none.
+
+Reading a listing is up to 64 round trips and up to ten seconds, and the daemon
+holds the connection's lock for all of it, so anything else aimed at that
+connection is answered `busy` while a cold listing runs. Another connection is
+not held up. **The panel never starts a listing**: it works from the saved
+devices, which carry their own snapshot, so its 750 ms queue is never behind
+one. Only the browser and the saving of a device or scene do.
+
+A listing is also the one request `Runtime::execute` refuses outright, so
+neither `plugin.sock` nor an HTTP body can start one: its limits are kept by
+`couch_plugin::list_children`, which only the daemon calls.
+
+**The kind of a request's resource.** Every request that names a child needs to
+know which kind that child is, because that is what the host's gate checks it
+against. The daemon derives it and the caller never supplies it:
+
+1. the saved configuration - a device's `child.kind` or a scene's
+   `resource.kind` - so a device already in a room works with the cache cold;
+2. failing that, the cached listing, which is how a page can try a lamp before
+   adding it;
+3. failing that, the request is refused without any I/O.
+
+Both are scoped to the connection the request named. The connection id alone
+selects the package process and its private settings, so a resource borrowed
+from another connection's device finds no kind and can never be carried to
+another connection's package - two connections may each have a `lamp/1` and
+they are not the same thing.
+
+`plugin.sock` is unchanged: `LocalRequest` is still `{connection_id, request}`,
+the resource rides inside the request as it does over HTTP, and the daemon
+derives the kind the same way.
+
+**Stamping.** A device that is one child, and a package scene, carry what they
+are; it decides which commands validate and how the row is drawn, so it is the
+package's to say. On create and on update the daemon throws away whatever the
+request carried under `child` or under a scene resource's `kind`, and fills it
+in itself from the connection's listing. A browser sends only:
+
+```json
+{"name": "Desk lamp", "integration": {"via": "connection", "connection_id": "bridge", "resource_id": "lamp/1"}}
+{"name": "Relax", "rooms": ["living-room"], "resource": {"connection_id": "bridge", "resource_id": "scene/1"}}
+```
+
+The device's kind is forced to the one its child kind says, so a lamp cannot be
+saved as a television. A scene kind cannot be saved as a device, and a device
+kind cannot be saved as a scene. An id the connection does not list is 400.
+
+Two things keep this out of the way of everything else. A connection whose
+package declares no kinds of child is never touched - which is every connection
+in a shipped build - and neither is a device of one that names no resource,
+because that device is the connection itself. And an edit that leaves the
+connection and the resource where they were keeps the snapshot already saved
+and asks the package nothing, so renaming a lamp works with its bridge
+unplugged; only a new device, or one pointed at a different child, reads the
+listing.
+
+**Healing.** A Couch without children strips a device's snapshot on the way out
+and keeps its connection and resource (`v2_projection`), so the Couch that
+reads the file next knows what the device was. The next listing read afresh
+puts the snapshot back and the device kind with it. Only devices of the
+connection just listed are looked at.
+
+**`refresh_plugin_metadata`** copies `children` from the package's manifest as
+it copies the label and the capabilities, and keeps a kind the manifest has
+dropped while a saved device or scene still says it is one. A saved snapshot is
+validated against that list, so forgetting such a kind would stop the daemon
+starting over a device nobody had touched.
+
+**A package for a newer Couch.** `couch_integrations::read_manifest` reads
+`protocol_version` on its own before parsing the manifest strictly, and a
+version above this build's says "This integration needs a newer Couch (protocol
+N)". Such a manifest cannot be parsed strictly at all - it carries tags and
+fields this build's `Manifest` does not know - and "invalid" is the wrong thing
+to say about a package that is only ahead of the remote. The feed refuses one
+before it is downloaded, from its signed metadata ("Needs a newer Couch"); this
+is the backstop for one already on the remote, and it reaches the Integrations
+page and the conversion of a former built-in through the same reader.
 
 ### The switch
 

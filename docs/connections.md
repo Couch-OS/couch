@@ -79,7 +79,13 @@ connection ID. The upstream ID is stripped before sending any command.
 External integrations use `GET /api/integrations` for the installed manifest
 catalog and `/api/connections/<id>/plugin/{settings,status,inputs,action}` for
 one connection. The action body carries one typed function string already
-declared by the installed manifest. The physical-button, sequence and custom
+declared by the installed manifest. A connection whose package offers devices
+of its own (protocol 3, unreleased, and so never in a shipped build) also has
+`/plugin/children`, `/plugin/children/refresh` and
+`/plugin/children/<id>/{status,action,typed-action}`, where `<id>` is the rest
+of the path up to the verb; every one of them answers 404 "This integration
+does not list devices" for a package that offers none. See
+[listing the children of a connection](development/protocol.md#the-daemon-listing-the-children-of-a-connection). The physical-button, sequence and custom
 page pickers use the cached capability labels; selectable inputs are loaded
 from the package when requested. On the panel, commands travel over the
 owner-only `plugin.sock` beside `config.json` to the daemon's integration host.
