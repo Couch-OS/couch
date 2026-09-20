@@ -109,6 +109,24 @@ jobs:
         run: echo "COUCH_PLAYER_SCREENSHOTS=$RUNNER_TEMP/player-screen" >> "$GITHUB_ENV"
       - run: ${{ matrix.command }}
         working-directory: ${{ matrix.workspace }}
+      # What one package's user may do to another's can only be asked with
+      # real user ids, so these cases are ignored unless they are run as root.
+      # The test binary is built as the ordinary user, so nothing root-owned
+      # lands in the cached target directory; only the binary itself runs
+      # under sudo. Ubuntu's kernel.yama.ptrace_scope is 1, which the test
+      # notices: it then skips the one assertion that needs a read between two
+      # processes to succeed, and says so.
+      - name: A package cannot reach into another package
+        if: matrix.id == 'clients'
+        working-directory: clients
+        run: |
+          cargo test --locked -p couch-plugin --features testing --test isolation --no-run
+          binary=$(cargo test --locked -p couch-plugin --features testing --test isolation \
+            --no-run --message-format=json 2>/dev/null \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "isolation")
+                     | select(.executable != null) | .executable' | tail -1)
+          echo "kernel.yama.ptrace_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo absent)"
+          sudo "$binary" --ignored --test-threads=1 --nocapture
       - uses: actions/upload-artifact@v4
         if: matrix.id == 'gui' && always()
         with:

@@ -14,6 +14,7 @@ use couch_sdk::{ClientSettings, DeviceClient, KeyPhase};
 /// A protocol 3 manifest is refused here, as it is by the host, unless the
 /// `protocol-3-preview` feature is on.
 pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
+    hide_from_other_users();
     manifest.validate()?;
     let expected: Vec<_> = C::capabilities()
         .iter()
@@ -185,6 +186,26 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                 body: response,
             },
         )?;
+    }
+}
+
+/// Give up being dumpable, which hands `/proc/<pid>` to root and closes the
+/// last way one package's user could read another's memory, open file list or
+/// environment.
+///
+/// It has to happen here, in the child, and not in the host's `pre_exec`:
+/// `execve` puts the flag back to 1 for a program the new user can read, which
+/// every package slot is. Each installed package has its own user, so this is
+/// what makes that separation real rather than nominal.
+///
+/// Best effort, and deliberately not an error: a package that cannot set it is
+/// still a working package, and a package whose stored key must be protected
+/// is checked by the host instead. Packages published before this SDK do not
+/// call it at all.
+fn hide_from_other_users() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }
 }
 
