@@ -779,10 +779,16 @@ impl Api {
             hue: Option<couch_model::HueScene>,
             #[serde(default)]
             rooms: Vec<Id>,
+            #[serde(default)]
+            resource: Option<AskedResource>,
         }
         let new: NewScene = match parse(body) {
             Ok(v) => v,
             Err(r) => return r,
+        };
+        let resource = match self.stamp_scene(new.resource.map(AskedResource::into_parts), None) {
+            Ok(resource) => resource,
+            Err(reply) => return reply,
         };
         let mut created = Id::new("");
         let reply = self.edit(if_match, |cfg| {
@@ -795,7 +801,7 @@ impl Api {
                 steps: Vec::new(),
                 hue: new.hue,
                 rooms: new.rooms,
-                resource: None,
+                resource,
             });
         });
         with_created(reply, &created)
@@ -829,9 +835,14 @@ impl Api {
             Ok(v) => v,
             Err(r) => return r,
         };
-        if new.integration.as_ref().is_some_and(carries_child) {
-            return Reply::error(400, CHILD_FROM_BROWSER);
-        }
+        // A device that is one child of a packaged connection is described by
+        // the package, never by the request: see `Api::stamp_device`.
+        let (integration, child_kind) =
+            match self.stamp_device(new.integration.unwrap_or_default(), None) {
+                Ok(stamped) => stamped,
+                Err(reply) => return reply,
+            };
+        let kind = child_kind.unwrap_or(new.kind);
         let room = Id::new(room);
         let mut created = Id::new("");
         let reply = self.edit_found(if_match, |cfg| {
@@ -843,9 +854,9 @@ impl Api {
             target.devices.push(Device {
                 id,
                 name: new.name,
-                kind: new.kind,
+                kind,
                 icon: new.icon,
-                integration: new.integration.unwrap_or_default(),
+                integration,
                 ir: new.ir,
                 bluetooth: new.bluetooth,
                 preferred_transport: new.preferred_transport,
@@ -862,21 +873,29 @@ impl Api {
         room: &str,
         device: &str,
     ) -> Reply {
-        let incoming: Device = match parse(body) {
+        let mut incoming: Device = match parse(body) {
             Ok(v) => v,
             Err(r) => return r,
         };
         let (room, device) = (Id::new(room), Id::new(device));
-        // An edit that sends back, untouched, the integration the device
-        // already has is not the browser describing a child.
-        let unchanged = self.with(|s| {
+        // What this device is a child of, as it is saved. An edit that leaves
+        // it there keeps the snapshot the package gave, so a rename works
+        // with the package stopped; anything the request said about the child
+        // is thrown away either way.
+        let saved = self.with(|s| {
             s.config()
                 .room(&room)
                 .and_then(|r| r.device(&device))
-                .is_some_and(|d| d.integration == incoming.integration)
+                .map(|d| d.integration.clone())
         });
-        if carries_child(&incoming.integration) && !unchanged {
-            return Reply::error(400, CHILD_FROM_BROWSER);
+        let (integration, child_kind) =
+            match self.stamp_device(std::mem::take(&mut incoming.integration), saved.as_ref()) {
+                Ok(stamped) => stamped,
+                Err(reply) => return reply,
+            };
+        incoming.integration = integration;
+        if let Some(kind) = child_kind {
+            incoming.kind = kind;
         }
         let mut dropped = None;
         let reply = self.edit_found(if_match, |cfg| {
@@ -942,12 +961,22 @@ impl Api {
             hue: Option<couch_model::HueScene>,
             #[serde(default)]
             rooms: Vec<Id>,
+            #[serde(default)]
+            resource: Option<AskedResource>,
         }
         let incoming: Body = match parse(body) {
             Ok(v) => v,
             Err(r) => return r,
         };
         let id = Id::new(id);
+        let saved = self.with(|s| s.config().scene(&id).and_then(|s| s.resource.clone()));
+        let resource = match self.stamp_scene(
+            incoming.resource.map(AskedResource::into_parts),
+            saved.as_ref(),
+        ) {
+            Ok(resource) => resource,
+            Err(reply) => return reply,
+        };
         self.edit_found(if_match, move |cfg| {
             let scene = cfg.scene_mut(&id)?;
             scene.name = incoming.name;
@@ -955,6 +984,7 @@ impl Api {
             scene.steps = incoming.steps;
             scene.hue = incoming.hue;
             scene.rooms = incoming.rooms;
+            scene.resource = resource;
             Some(())
         })
     }
@@ -1268,21 +1298,21 @@ impl Api {
 /// Tell the daemon to drop a bond a device no longer holds. Best effort: the
 /// configuration is already saved, and a daemon that is not running has no
 /// bond to keep either.
-/// Protocol 3 (unreleased). A device that is one child of a packaged
-/// connection carries a snapshot of what it is and can do, and a package scene
-/// carries its kind. Both decide which commands validate, so neither may be
-/// described by a browser: the daemon will fill them in from the package's own
-/// listing (the next step of protocol 3). Until it does, a device that arrives
-/// with a snapshot is refused. A scene cannot arrive with a resource at all:
-/// the scene routes read named fields and `resource` is not one of them.
-const CHILD_FROM_BROWSER: &str =
-    "A device of an integration is described by the integration, not by the request";
-
-fn carries_child(integration: &Integration) -> bool {
-    matches!(
-        integration,
-        Integration::Connection { child: Some(_), .. } | Integration::Plugin { child: Some(_), .. }
-    )
+/// Protocol 3 (unreleased). Which child of which connection a package scene
+/// is, as a request may name it: the connection and the package's own id for
+/// the scene, and nothing else. Which *kind* of scene that is decides what the
+/// scene can be told, so it is filled in by the daemon from the package's own
+/// listing (`Api::stamp_scene`); a `kind` sent with the request is read by
+/// nothing, which is what lets a page send a scene back exactly as it read it.
+#[derive(Debug, Deserialize)]
+struct AskedResource {
+    connection_id: Id,
+    resource_id: String,
+}
+impl AskedResource {
+    fn into_parts(self) -> (Id, String) {
+        (self.connection_id, self.resource_id)
+    }
 }
 
 fn forget_bond(address: Option<String>) {
@@ -1430,133 +1460,6 @@ mod activity_mapping_tests {
         assert_eq!(std::fs::read(dir.join("config.json")).unwrap(), before);
         std::fs::remove_dir_all(dir).unwrap();
     }
-    /// Protocol 3 (unreleased). The file below is one no shipped build can
-    /// come to hold: a package that declares kinds of child. It is here so
-    /// that the model itself would accept the child the browser describes, and
-    /// the refusal is this route's and nothing else's.
-    #[test]
-    fn a_browser_cannot_describe_a_child_or_a_package_scene() {
-        let dir = std::env::temp_dir().join(format!("couch-api-child-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = serde_json::to_value(Config::seed()).unwrap();
-        config["connections"] = serde_json::json!([{"id": "bridge", "name": "Bridge", "provider": {
-            "kind": "plugin", "id": "echo", "label": "Echo", "children": [
-                {"kind": "light", "label": "Light", "device_kind": "light", "component": "light",
-                 "capabilities": [{"id": "toggle", "label": "Toggle"}],
-                 "actions": [{"action": "set_light"}]},
-                {"kind": "scene", "label": "Scene", "device_kind": "other", "component": "scene",
-                 "capabilities": [{"id": "on", "label": "On"}]}]}}]);
-        let saved = serde_json::json!({"via": "connection", "connection_id": "bridge",
-            "resource_id": "lamp/1", "child": {"kind": "light", "light": {"dimmable": true}}});
-        config["rooms"][0]["devices"][4]["integration"] = saved.clone();
-        let config: Config = serde_json::from_value(config).unwrap();
-        config.validate().unwrap();
-        std::fs::write(
-            dir.join("config.json"),
-            serde_json::to_vec(&couch_model::StoredConfig::new(&config)).unwrap(),
-        )
-        .unwrap();
-        let api = Api::new(
-            Store::open(dir.join("config.json")).unwrap(),
-            Assets::embedded(),
-            Arc::new(Auth::new(dir.join("pin"), true)),
-        );
-        let device = |api: &Api, id: &str| {
-            api.with(|s| {
-                let config = s.config();
-                let found = config.devices().find(|(_, d)| d.id.as_str() == id);
-                found.map(|(_, d)| serde_json::to_value(d).unwrap())
-            })
-        };
-        let refused = |reply: &Reply| {
-            reply.status == 400
-                && String::from_utf8_lossy(&reply.body).contains("described by the integration")
-        };
-
-        // A new device that says what kind of child it is, and what it can do.
-        let described = serde_json::json!({"name": "Desk lamp", "kind": "light", "integration": {
-            "via": "connection", "connection_id": "bridge", "resource_id": "lamp/2",
-            "child": {"kind": "light", "light": {"dimmable": true}}}});
-        let before = api.with(|s| s.config().clone());
-        let reply = api.create_device(described.to_string().as_bytes(), None, "kitchen");
-        assert!(refused(&reply));
-        let mut resolved = described.clone();
-        resolved["integration"]["via"] = "plugin".into();
-        resolved["integration"]["id"] = "echo".into();
-        assert!(refused(&api.create_device(
-            resolved.to_string().as_bytes(),
-            None,
-            "kitchen"
-        )));
-        assert_eq!(api.with(|s| s.config().clone()), before);
-        // The same device without the description is what it has always been.
-        let mut plain = described.clone();
-        plain["integration"]
-            .as_object_mut()
-            .unwrap()
-            .remove("child");
-        let reply = api.create_device(plain.to_string().as_bytes(), None, "kitchen");
-        assert_eq!(reply.status, 200);
-        let created = reply.created.clone().unwrap();
-        assert!(device(&api, &created).unwrap()["integration"]
-            .get("child")
-            .is_none());
-
-        // An edit cannot add a description, or change one.
-        let mut edit = device(&api, &created).unwrap();
-        edit["integration"] = described["integration"].clone();
-        assert!(refused(&api.replace_device(
-            edit.to_string().as_bytes(),
-            None,
-            "kitchen",
-            &created
-        )));
-        let mut edit = device(&api, "living-lamp").unwrap();
-        assert_eq!(edit["integration"], saved);
-        edit["integration"]["child"]["light"]["color"] = true.into();
-        assert!(refused(&api.replace_device(
-            edit.to_string().as_bytes(),
-            None,
-            "living-room",
-            "living-lamp"
-        )));
-        // Renaming a device that already is one sends its integration back as
-        // it was, and keeps it.
-        let mut edit = device(&api, "living-lamp").unwrap();
-        edit["name"] = "Reading lamp".into();
-        let reply = api.replace_device(
-            edit.to_string().as_bytes(),
-            None,
-            "living-room",
-            "living-lamp",
-        );
-        assert_eq!(reply.status, 200);
-        let after = device(&api, "living-lamp").unwrap();
-        assert_eq!(after["name"], "Reading lamp");
-        assert_eq!(after["integration"], saved);
-
-        // A scene's routes read named fields, and `resource` is not one.
-        let body = serde_json::json!({"name": "Relax", "rooms": ["living-room"], "resource": {
-            "connection_id": "bridge", "resource_id": "scene/1", "kind": "scene"}});
-        let reply = api.create_scene(body.to_string().as_bytes(), None);
-        assert_eq!(reply.status, 200);
-        let id = Id::new(reply.created.clone().unwrap());
-        assert_eq!(
-            api.with(|s| s.config().scene(&id).unwrap().resource.clone()),
-            None
-        );
-        assert_eq!(
-            api.replace_scene(body.to_string().as_bytes(), None, id.as_str())
-                .status,
-            200
-        );
-        assert_eq!(
-            api.with(|s| s.config().scene(&id).unwrap().resource.clone()),
-            None
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
     #[test]
     fn device_order_follows_the_list_and_keeps_unnamed_devices() {
         let dir = std::env::temp_dir().join(format!("couch-api-order-{}", std::process::id()));

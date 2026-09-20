@@ -13,6 +13,10 @@ use std::{
 const IDLE: Duration = Duration::from_secs(60);
 const MAX_ENDPOINTS: usize = 64;
 const STORE_READ_WAIT: Duration = Duration::from_millis(250);
+/// How long the children of a connection stay good without being read again.
+/// A bridge's lamps are added and renamed by a person, not by a program, so
+/// minutes are the right order; the browser can always ask for them afresh.
+const CHILDREN_TTL: Duration = Duration::from_secs(5 * 60);
 
 fn store_request_error(error: couch_integrations::Error) -> Error {
     if error.is_busy() {
@@ -104,6 +108,40 @@ struct Running {
     used: Instant,
 }
 
+/// Protocol 3 (unreleased). Every child of one connection as its package last
+/// listed them, with what they were read through: a package update or a
+/// settings change makes the listing stale, because either can change what the
+/// connection has behind it.
+///
+/// Memory only. Nothing here is written to disk: what a person chooses out of
+/// a listing becomes a room device with its own snapshot, and that is the only
+/// part that has to survive a restart.
+struct Listing {
+    generation: String,
+    settings: Value,
+    at: Instant,
+    children: Vec<couch_sdk::Child>,
+}
+
+/// The children of a connection as a caller gets them.
+#[derive(Debug)]
+pub struct Children {
+    pub children: Vec<couch_sdk::Child>,
+    /// How long ago the package was asked. Zero for a listing just read.
+    pub age: Duration,
+    /// Whether the package was asked now, rather than the cache answering.
+    /// Only a listing read afresh can heal a device a rollback stripped.
+    pub fresh: bool,
+}
+
+/// How the children of a connection are read. `daemon` can never run a
+/// protocol 3 package - the guard test below is what keeps the preview out of
+/// every shipped build - so the one step that needs one is replaceable, and
+/// the daemon's own tests put a listing in its place. The real one is
+/// `Runtime::ask_package`, and it is what runs everywhere but in a test.
+#[cfg(test)]
+type Lister = Box<dyn Fn(&str) -> Result<Vec<couch_sdk::Child>, Failure> + Send + Sync>;
+
 /// Settings a package has accepted for a legacy connection, and the package
 /// selection they were accepted by.
 pub struct LegacyAdoption {
@@ -118,6 +156,9 @@ pub struct Runtime {
     packages: couch_integrations::Store,
     endpoints: Mutex<HashMap<String, Running>>,
     catalog_generations: Mutex<HashMap<String, String>>,
+    children: Mutex<HashMap<String, Listing>>,
+    #[cfg(test)]
+    lister: Mutex<Option<Lister>>,
 }
 
 impl Runtime {
@@ -130,7 +171,17 @@ impl Runtime {
             packages: couch_integrations::Store::new(directory),
             endpoints: Mutex::new(HashMap::new()),
             catalog_generations: Mutex::new(HashMap::new()),
+            children: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            lister: Mutex::new(None),
         }
+    }
+
+    /// Read this connection's children with `lister` instead of asking its
+    /// package. See [`Lister`].
+    #[cfg(test)]
+    pub fn list_with(&self, lister: Lister) {
+        *self.lister.lock().unwrap_or_else(|e| e.into_inner()) = Some(lister);
     }
 
     pub fn catalog(&self) -> Result<Vec<Manifest>, String> {
@@ -214,6 +265,9 @@ impl Runtime {
             .lock()
             .map_err(|_| "Integration registry lock failed")?
             .remove(connection);
+        // Another address is another bridge, so what the old one listed says
+        // nothing about this one.
+        self.forget_children(connection);
         Ok(redacted(&manifest, Some(&settings)))
     }
 
@@ -278,20 +332,31 @@ impl Runtime {
             .lock()
             .map_err(|_| "Integration registry lock failed")?
             .remove(connection);
+        self.forget_children(connection);
         Ok(result)
     }
 
     /// The reason a protocol 3 package gives for a refusal comes back with the
     /// code. Everything decided here, before the package is asked, is a code
     /// alone.
+    ///
+    /// `kind` is the kind of child `request`'s resource names, taken from the
+    /// saved configuration by the caller. It is what the host's gate checks
+    /// the request against and never reaches the wire; a request aimed at the
+    /// connection itself passes `None`.
     pub fn execute(
         &self,
         connection: &str,
         plugin: &str,
+        kind: Option<&str>,
         request: Request,
     ) -> Result<Response, Failure> {
         let queued = Instant::now();
-        // The bridge cannot reconfigure a child or bypass the package handshake.
+        // The bridge cannot reconfigure a child or bypass the package
+        // handshake, and it cannot ask for a listing: that is a conversation
+        // of up to 64 round trips with limits only `children` below keeps, so
+        // it is this daemon's to hold and neither `plugin.sock` nor an HTTP
+        // body can start one.
         if !matches!(
             request,
             Request::Command { .. }
@@ -309,6 +374,24 @@ impl Runtime {
             .generation(plugin)
             .map_err(|_| Error::Invalid)?;
         let settings = load_settings(&path)?.ok_or(Error::Invalid)?;
+        let endpoint = self.endpoint_for(connection, plugin, &generation, settings, queued)?;
+        if queued.elapsed() >= couch_plugin::QUEUE_TTL {
+            return Err(Error::Expired.into());
+        }
+        endpoint.request_child_detailed(kind, request)
+    }
+
+    /// The running child of this connection, started if there is not one.
+    /// The caller holds the connection's lock, so nothing else can start a
+    /// second child for the same connection while this runs.
+    fn endpoint_for(
+        &self,
+        connection: &str,
+        plugin: &str,
+        generation: &str,
+        settings: Value,
+        queued: Instant,
+    ) -> Result<Arc<Endpoint>, Failure> {
         let existing = {
             let mut endpoints = self.endpoints.lock().map_err(|_| Error::Transport)?;
             endpoints.retain(|_, entry| {
@@ -347,7 +430,7 @@ impl Runtime {
             endpoints.insert(
                 connection.to_owned(),
                 Running {
-                    generation,
+                    generation: generation.to_owned(),
                     settings,
                     endpoint: endpoint.clone(),
                     used: Instant::now(),
@@ -355,17 +438,184 @@ impl Runtime {
             );
             endpoint
         };
-        if queued.elapsed() >= couch_plugin::QUEUE_TTL {
-            return Err(Error::Expired.into());
-        }
-        endpoint.request_detailed(request)
+        Ok(endpoint)
     }
 
-    /// Stop the package child of a connection that has just been deleted.
-    /// The caller holds the connection's settings lock, which `execute` holds
-    /// for a whole request, so nothing is in flight and the last reference
-    /// goes here: the child is killed and waited for before this returns.
-    pub fn retire(&self, connection: &str) {
+    /// Protocol 3 (unreleased). Every child this connection offers: from the
+    /// cache while it is fresh, from the package otherwise. `refresh` skips
+    /// the cache.
+    ///
+    /// Reading them is up to 64 round trips and up to ten seconds, and this
+    /// holds the connection's lock for all of it, so everything else aimed at
+    /// that connection - another browser tab, the panel - is answered `busy`
+    /// while a cold listing runs. That is why the panel never asks: it works
+    /// from the saved devices, which carry their own snapshot, and only the
+    /// browser and the stamping of a new device list anything.
+    ///
+    /// A package that answers nonsense loses its process and keeps its last
+    /// good listing: the devices already made from it are real, and a stale
+    /// list is more use to the person choosing than none.
+    pub fn children(
+        &self,
+        connection: &str,
+        plugin: &str,
+        refresh: bool,
+    ) -> Result<Children, Failure> {
+        let path = self.settings_path(connection)?;
+        let lock = crate::api::connections::lock_for(&path);
+        let _guard = lock.try_lock().map_err(|_| Error::Busy)?;
+        let (generation, settings) = self.package_selection(plugin, &path)?;
+        if !refresh {
+            if let Some(cached) = self.cached_children(connection, &generation, &settings) {
+                return Ok(cached);
+            }
+        }
+        match self.ask_package(connection, plugin, &generation, &settings) {
+            Ok(children) => {
+                if let Ok(mut listings) = self.children.lock() {
+                    listings.insert(
+                        connection.to_owned(),
+                        Listing {
+                            generation,
+                            settings,
+                            at: Instant::now(),
+                            children: children.clone(),
+                        },
+                    );
+                }
+                Ok(Children {
+                    children,
+                    age: Duration::ZERO,
+                    fresh: true,
+                })
+            }
+            Err(failure) => {
+                if failure.code == Error::Protocol {
+                    self.retire_endpoint(connection);
+                }
+                Err(failure)
+            }
+        }
+    }
+
+    /// The package selection and the settings a listing is read through: what
+    /// makes a cached one stale the moment either changes.
+    fn package_selection(&self, plugin: &str, path: &Path) -> Result<(String, Value), Failure> {
+        #[cfg(test)]
+        if self
+            .lister
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            // A `daemon` test has no protocol 3 package to select. The
+            // settings are still read where there are any, so what they do to
+            // the cache is tested by the real code.
+            return Ok((String::new(), load_settings(path)?.unwrap_or(Value::Null)));
+        }
+        let generation = self
+            .packages
+            .generation(plugin)
+            .map_err(|_| Error::Invalid)?;
+        Ok((generation, load_settings(path)?.ok_or(Error::Invalid)?))
+    }
+
+    /// The cached listing, if it was read for this package selection and these
+    /// settings and is not yet [`CHILDREN_TTL`] old. Anything else is dropped
+    /// here rather than kept around to be wrong later.
+    fn cached_children(
+        &self,
+        connection: &str,
+        generation: &str,
+        settings: &Value,
+    ) -> Option<Children> {
+        let mut listings = self.children.lock().ok()?;
+        let listing = listings.get(connection)?;
+        let age = listing.at.elapsed();
+        if listing.generation != generation || &listing.settings != settings || age >= CHILDREN_TTL
+        {
+            listings.remove(connection);
+            return None;
+        }
+        Some(Children {
+            children: listing.children.clone(),
+            age,
+            fresh: false,
+        })
+    }
+
+    /// The one step a `daemon` test cannot take, because it would need a
+    /// protocol 3 package. The caller holds the connection's lock.
+    fn ask_package(
+        &self,
+        connection: &str,
+        plugin: &str,
+        generation: &str,
+        settings: &Value,
+    ) -> Result<Vec<couch_sdk::Child>, Failure> {
+        #[cfg(test)]
+        if let Some(lister) = self
+            .lister
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            return lister(connection);
+        }
+        let endpoint = self.endpoint_for(
+            connection,
+            plugin,
+            generation,
+            settings.clone(),
+            Instant::now(),
+        )?;
+        // Every limit on a listing - 1024 children, 64 pages, ten seconds, no
+        // cursor or id twice - belongs to `list_children`, and the same reader
+        // serves the tests in `clients/`.
+        couch_plugin::list_children(&mut |request| endpoint.request_detailed(request))
+            .map_err(Failure::from)
+    }
+
+    /// The kind of one child, from the cache alone. It answers for a child
+    /// nothing has been made from yet, which is how a person can try a lamp
+    /// before adding it, and it never starts a package: the browser has just
+    /// listed, or there is nothing to try.
+    pub fn cached_child_kind(&self, connection: &str, resource: &str) -> Option<String> {
+        let listings = self.children.lock().ok()?;
+        let listing = listings.get(connection)?;
+        if listing.at.elapsed() >= CHILDREN_TTL {
+            return None;
+        }
+        listing
+            .children
+            .iter()
+            .find(|child| child.id == resource)
+            .map(|child| child.kind.clone())
+    }
+
+    /// What the connection last listed, with no chance of a round trip. Used
+    /// where a listing would be wrong to start: filling in a device that is
+    /// being saved.
+    pub fn cached_child(&self, connection: &str, resource: &str) -> Option<couch_sdk::Child> {
+        let listings = self.children.lock().ok()?;
+        let listing = listings.get(connection)?;
+        if listing.at.elapsed() >= CHILDREN_TTL {
+            return None;
+        }
+        listing
+            .children
+            .iter()
+            .find(|child| child.id == resource)
+            .cloned()
+    }
+
+    fn forget_children(&self, connection: &str) {
+        if let Ok(mut listings) = self.children.lock() {
+            listings.remove(connection);
+        }
+    }
+
+    fn retire_endpoint(&self, connection: &str) {
         let retired = self
             .endpoints
             .lock()
@@ -374,11 +624,23 @@ impl Runtime {
         drop(retired);
     }
 
+    /// Stop the package child of a connection that has just been deleted.
+    /// The caller holds the connection's settings lock, which `execute` holds
+    /// for a whole request, so nothing is in flight and the last reference
+    /// goes here: the child is killed and waited for before this returns.
+    pub fn retire(&self, connection: &str) {
+        self.retire_endpoint(connection);
+        self.forget_children(connection);
+    }
+
     pub fn reap(&self) {
         if let Ok(mut endpoints) = self.endpoints.lock() {
             endpoints.retain(|_, entry| {
                 entry.used.elapsed() < IDLE || Arc::strong_count(&entry.endpoint) > 1
             });
+        }
+        if let Ok(mut listings) = self.children.lock() {
+            listings.retain(|_, listing| listing.at.elapsed() < CHILDREN_TTL);
         }
     }
 }
@@ -629,7 +891,7 @@ mod tests {
 
         for phase in [KeyPhase::Tap, KeyPhase::Repeat, KeyPhase::LongPress] {
             assert_eq!(
-                runtime.execute("receiver", "denon", Request::key("volume-up", phase)),
+                runtime.execute("receiver", "denon", None, Request::key("volume-up", phase)),
                 Ok(Response::Ok),
                 "{phase:?}"
             );
@@ -744,5 +1006,217 @@ mod tests {
             assert!(merge_settings(&manifest, None, patch).is_err());
         }
         assert_eq!(redacted(&manifest, None)["configured"], false);
+    }
+}
+
+/// Protocol 3 (unreleased): the children of a connection, as this daemon
+/// caches them.
+///
+/// No test here runs a protocol 3 package, and none can: the guard above is
+/// what keeps the preview out of every build in this workspace. The listing
+/// itself, and every way a bridge can answer nonsense, are tested against the
+/// real thing in `clients/` (`couch-echo`'s bridge and `host::list_children`).
+/// What is tested here is what this daemon does with the answer.
+#[cfg(test)]
+mod children_tests {
+    use super::*;
+    use couch_sdk::Child;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+
+    fn home(name: &str) -> PathBuf {
+        let home = std::env::temp_dir().join(format!(
+            "couch-children-{name}-{}-{:?}",
+            std::process::id(),
+            Instant::now()
+        ));
+        fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    fn lamp(id: &str, name: &str) -> Child {
+        Child::new(id, "light", name).with_light(couch_model::LightTraits {
+            dimmable: true,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_listing_is_read_once_and_then_answered_from_memory_until_it_is_refreshed() {
+        let home = home("cache");
+        let runtime = Runtime::new(home.clone());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = asked.clone();
+        runtime.list_with(Box::new(move |connection| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![lamp("lamp/1", connection)])
+        }));
+
+        let first = runtime.children("bridge", "echo", false).unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert!(first.fresh);
+        assert_eq!(first.age, Duration::ZERO);
+        assert_eq!(first.children[0].name, "bridge");
+
+        let again = runtime.children("bridge", "echo", false).unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "the cache answered");
+        assert!(!again.fresh);
+        // A second connection is its own listing, and gets its own answer.
+        assert_eq!(
+            runtime.children("other", "echo", false).unwrap().children[0].name,
+            "other"
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+
+        // Asking for it afresh always asks the package.
+        assert!(runtime.children("bridge", "echo", true).unwrap().fresh);
+        assert_eq!(asked.load(Ordering::SeqCst), 3);
+
+        // Saved settings are part of what the listing was read through: a
+        // different address is a different bridge.
+        let path = runtime.settings_path("bridge").unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        couch_sdk::save_private(&path, &json!({"host": "bridge.local"})).unwrap();
+        assert!(runtime.children("bridge", "echo", false).unwrap().fresh);
+        couch_sdk::save_private(&path, &json!({"host": "elsewhere.local"})).unwrap();
+        assert!(runtime.children("bridge", "echo", false).unwrap().fresh);
+        assert_eq!(asked.load(Ordering::SeqCst), 5);
+
+        // Retiring the connection forgets it; so does a reap once it is old.
+        assert!(!runtime.children("bridge", "echo", false).unwrap().fresh);
+        runtime.retire("bridge");
+        assert!(runtime.children("bridge", "echo", false).unwrap().fresh);
+        assert_eq!(asked.load(Ordering::SeqCst), 6);
+        runtime
+            .children
+            .lock()
+            .unwrap()
+            .get_mut("bridge")
+            .unwrap()
+            .at -= CHILDREN_TTL;
+        runtime.reap();
+        assert!(!runtime.children.lock().unwrap().contains_key("bridge"));
+        assert!(runtime.children("bridge", "echo", false).unwrap().fresh);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_listing_older_than_the_lifetime_is_read_again() {
+        let home = home("ttl");
+        let runtime = Runtime::new(home.clone());
+        runtime.list_with(Box::new(|_| Ok(vec![lamp("lamp/1", "Desk")])));
+        assert!(runtime.children("bridge", "echo", false).unwrap().fresh);
+        {
+            let mut listings = runtime.children.lock().unwrap();
+            let listing = listings.get_mut("bridge").unwrap();
+            listing.at -= CHILDREN_TTL - Duration::from_secs(1);
+        }
+        let nearly = runtime.children("bridge", "echo", false).unwrap();
+        assert!(!nearly.fresh);
+        assert!(nearly.age >= CHILDREN_TTL - Duration::from_secs(2));
+        runtime
+            .children
+            .lock()
+            .unwrap()
+            .get_mut("bridge")
+            .unwrap()
+            .at -= Duration::from_secs(2);
+        assert!(runtime.children("bridge", "echo", false).unwrap().fresh);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_bridge_that_answers_nonsense_loses_its_process_and_keeps_its_last_good_listing() {
+        let home = home("nonsense");
+        let runtime = Runtime::new(home.clone());
+        let fail = Arc::new(AtomicUsize::new(0));
+        let switch = fail.clone();
+        runtime.list_with(Box::new(move |_| {
+            if switch.load(Ordering::SeqCst) == 0 {
+                Ok(vec![lamp("lamp/1", "Desk")])
+            } else {
+                Err(Error::Protocol.into())
+            }
+        }));
+        assert_eq!(
+            runtime.children("bridge", "echo", false).unwrap().children,
+            vec![lamp("lamp/1", "Desk")]
+        );
+        fail.store(1, Ordering::SeqCst);
+        assert_eq!(
+            runtime.children("bridge", "echo", true).unwrap_err(),
+            Error::Protocol.into()
+        );
+        // The lamps already in rooms are real, and a stale list is more use to
+        // somebody choosing than none: what it last said is still there.
+        let kept = runtime.children("bridge", "echo", false).unwrap();
+        assert!(!kept.fresh);
+        assert_eq!(kept.children, vec![lamp("lamp/1", "Desk")]);
+        assert_eq!(
+            runtime.cached_child_kind("bridge", "lamp/1").as_deref(),
+            Some("light")
+        );
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn nothing_else_reaches_a_connection_while_its_children_are_being_read() {
+        let home = home("busy");
+        let runtime = Arc::new(Runtime::new(home.clone()));
+        let (started, listing_started) = mpsc::channel();
+        let (release, wait) = mpsc::channel::<()>();
+        let wait = Mutex::new(wait);
+        runtime.list_with(Box::new(move |_| {
+            started.send(()).unwrap();
+            wait.lock().unwrap().recv().unwrap();
+            Ok(vec![lamp("lamp/1", "Desk")])
+        }));
+        let listing = {
+            let runtime = runtime.clone();
+            std::thread::spawn(move || runtime.children("bridge", "echo", false))
+        };
+        listing_started.recv().unwrap();
+        // A listing is up to sixty-four round trips and up to ten seconds, and
+        // it holds the connection for all of it. That is why the panel never
+        // starts one: it works from the saved devices.
+        assert_eq!(
+            runtime.execute("bridge", "echo", None, Request::status()),
+            Err(Error::Busy.into())
+        );
+        assert_eq!(
+            runtime.children("bridge", "echo", false).unwrap_err(),
+            Error::Busy.into()
+        );
+        // Another connection is not held up by it.
+        assert_ne!(
+            runtime.execute("other", "echo", None, Request::status()),
+            Err(Error::Busy.into())
+        );
+        release.send(()).unwrap();
+        assert!(listing.join().unwrap().unwrap().fresh);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_listing_is_never_something_the_panel_or_a_browser_can_ask_for() {
+        let home = home("gate");
+        let runtime = Runtime::new(home.clone());
+        runtime.list_with(Box::new(|_| Ok(vec![lamp("lamp/1", "Desk")])));
+        // `execute` is the whole of what `plugin.sock` and the HTTP routes can
+        // reach. A listing has limits only `children` keeps, so it is refused
+        // here before a connection is even looked up.
+        for request in [
+            Request::children(None),
+            Request::children(Some("lamp/1".into())),
+        ] {
+            assert_eq!(
+                runtime.execute("bridge", "echo", None, request),
+                Err(Error::Unsupported.into())
+            );
+        }
+        assert!(runtime.children.lock().unwrap().is_empty());
+        let _ = fs::remove_dir_all(home);
     }
 }

@@ -855,13 +855,38 @@ fn audit_tree(
     }
     Ok(())
 }
+/// Enough of a manifest to tell a package written for a newer Couch from a
+/// broken one, before anything strict is asked of it. A manifest of a protocol
+/// this build does not know carries tags and fields its `Manifest` cannot read
+/// at all, so the strict parse below would call it invalid - and "invalid" is
+/// the wrong thing to say about a package that is only ahead of this remote.
+#[derive(serde::Deserialize)]
+struct Probe {
+    protocol_version: u32,
+}
+
 fn read_manifest(path: &Path) -> Result<Manifest> {
     let metadata = fs::metadata(path).map_err(|_| err("integration manifest is missing"))?;
     if !metadata.is_file() || metadata.len() > 64 * 1024 {
         return Err(err("integration manifest is not a bounded regular file"));
     }
-    serde_json::from_reader(File::open(path).map_err(|_| err("integration manifest is missing"))?)
-        .map_err(|e| err(format!("invalid integration manifest: {e}")))
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|_| err("integration manifest is missing"))?
+        .read_to_end(&mut bytes)
+        .map_err(|e| io("read integration manifest", e))?;
+    // A package the feed's signed metadata rules out is refused before it is
+    // downloaded at all. This is the backstop for one already on the remote:
+    // installed under an older rule, rolled back to, or sideloaded.
+    if let Ok(probe) = serde_json::from_slice::<Probe>(&bytes) {
+        if probe.protocol_version > couch_plugin::accepted_protocol_version() {
+            return Err(err(format!(
+                "This integration needs a newer Couch (protocol {})",
+                probe.protocol_version
+            )));
+        }
+    }
+    serde_json::from_slice(&bytes).map_err(|e| err(format!("invalid integration manifest: {e}")))
 }
 fn tree_digest(root: &Path) -> Result<String> {
     fn visit(root: &Path, relative: &Path, hash: &mut Sha256) -> Result<()> {
@@ -1132,6 +1157,73 @@ mod tests {
             version: version.into(),
             sha256: tree_digest(&path).unwrap(),
         }
+    }
+
+    /// A package written for a protocol this build does not speak says so.
+    /// Its manifest cannot be parsed strictly at all - the tags and fields it
+    /// carries are ones this `Manifest` does not know - and "invalid" would
+    /// be the wrong thing to tell a person about a package that is simply
+    /// ahead of their remote. The feed refuses such a package before it is
+    /// downloaded, from the signed metadata; this is the backstop for one
+    /// already on the remote.
+    #[test]
+    fn a_package_for_a_newer_couch_says_so_rather_than_being_called_invalid() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let path = store.slot_path("example", "9.0.0");
+        fs::create_dir_all(&path).unwrap();
+        let manifest = path.join("manifest.json");
+        let ahead = couch_plugin::accepted_protocol_version() + 1;
+        fs::write(
+            &manifest,
+            serde_json::to_vec(&serde_json::json!({
+                "protocol_version":ahead,"min_core_protocol_version":ahead,
+                "id":"example","label":"Example","version":"9.0.0",
+                "executable":"bin/plugin","capabilities":[],"settings":[],
+                "children":[{"kind":"light","label":"Light","device_kind":"light",
+                             "component":"light","capabilities":[{"id":"toggle","label":"Toggle"}]}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let error = read_manifest(&manifest).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            format!("This integration needs a newer Couch (protocol {ahead})")
+        );
+        // Everything that reads a manifest says it: installing, selecting a
+        // slot, listing the catalogue, and handing a former built-in over to
+        // its package all go through this one reader.
+        assert!(store
+            .slot(
+                "example",
+                &Slot {
+                    version: "9.0.0".into(),
+                    sha256: "0".repeat(64)
+                }
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("needs a newer Couch"));
+
+        // A manifest that is simply broken is still invalid, and one this
+        // build does speak is read as it always was.
+        fs::write(&manifest, b"{\"protocol_version\":1,").unwrap();
+        assert!(read_manifest(&manifest)
+            .unwrap_err()
+            .to_string()
+            .starts_with("invalid integration manifest"));
+        fs::write(
+            &manifest,
+            serde_json::to_vec(&serde_json::json!({
+                "protocol_version":couch_plugin::PROTOCOL_VERSION,
+                "id":"example","label":"Example","version":"9.0.0",
+                "executable":"bin/plugin","capabilities":[],"settings":[]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_manifest(&manifest).unwrap().version, "9.0.0");
     }
 
     #[test]
