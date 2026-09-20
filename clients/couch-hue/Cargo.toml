@@ -15,3 +15,5 @@ url = "2"
 
 [dev-dependencies]
 tiny_http = "0.12"
+# Throwaway bridge certificates for tests/pinned_certificate.rs.
+rcgen = "0.13"
