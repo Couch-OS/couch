@@ -104,7 +104,9 @@ struct Selection {
 /// the user of a package already installed. `next` only ever moves forward, so
 /// a removed package keeps its row and a later package with the same id cannot
 /// inherit a user something else once ran as.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Deliberately not `Default`: an empty table starts at the first user of the
+/// range, never at zero, and [`Identities::fresh`] is the only way to make one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Identities {
     next: u32,
