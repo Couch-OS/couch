@@ -292,10 +292,12 @@ your own `supports`.
 unreleased and switched off: a protocol 1 or 2 manifest that declares one is
 invalid, and a protocol 3 manifest is refused. See the
 [protocol reference](development/protocol.md#protocol-3-unreleased-and-switched-off).
-The same goes for `Error::Unpaired`, `Error::because` and
-`DeviceClient::execute_phased`: they compile, and a protocol 1 or 2 package that
-uses them still sends exactly the bytes it always sent (`Unpaired` leaves as
-`rejected`, the reason is dropped, every key is a tap).
+The same goes for `Error::Unpaired`, `Error::because`,
+`DeviceClient::execute_phased` and everything under
+[One connection, many children](#one-connection-many-children) below: they
+compile, and a protocol 1 or 2 package that uses them still sends exactly the
+bytes it always sent (`Unpaired` leaves as `rejected`, the reason is dropped,
+every key is a tap, and a manifest that declares children is invalid).
 
 Dynamic functions - `input:<id>` and `app:<id>` - are **not** listed here.
 Declare them by overriding `supports_input` / `supports_app`, which are asked
@@ -334,6 +336,58 @@ Never put a credential in one - these strings reach the browser and the panel.
 
 `Error::retryable()` is true only for `Transport`. `Timeout` is deliberately
 not retryable.
+
+### One connection, many children
+
+Protocol 3, unreleased and switched off. Most devices are one connection and
+one device. A bridge - a Hue hub, Home Assistant, a Protect controller - is one
+connection and many, and Couch calls those its *children*. A client that has
+none implements nothing here: every method below has a default that refuses,
+`child_kinds()` is empty, and the bytes such a client puts on the wire are
+unchanged.
+
+A package declares the *kinds* of child it offers, not the children
+themselves: what a kind is called, what kind of room device it becomes, which
+built-in control it is drawn with (`light`, `cover`, `climate` or `scene`), the
+commands it takes and the one typed action that goes with its control. They go
+in the manifest's `children` and in `child_kinds()`, and `serve` refuses to
+start if the two lists differ, exactly as it does for capabilities and actions.
+
+```rust
+fn child_kinds() -> &'static [couch_model::PluginChildKind];
+fn children(&mut self, cursor: Option<&str>) -> Result<ChildPage>;
+fn child_command(&mut self, resource: &str, function: &Function, phase: KeyPhase)
+    -> Result<Option<Status>>;
+fn child_action(&mut self, resource: &str, action: TypedAction) -> Result<Option<Status>>;
+fn child_status(&mut self, resource: &str) -> Result<Status>;
+```
+
+`children` returns one page. If the device hands you everything at once, let
+`ChildPage::fill(all, cursor)` do the cutting: it stops at 32 children or 48
+KiB of serialized page, whichever comes first, always returns at least one
+child while any are left, and uses the id of the first child of the next page
+as the cursor - so paging is stable as long as your ids are, and a cursor
+naming no child is `Error::Invalid`. A page with a cursor is never empty, and
+the host reads at most 1024 children over at most 64 pages in ten seconds
+before it decides the listing will never end and retires you.
+
+A `Child` is an id, a kind, a name, an optional room hint, and the traits of
+this particular lamp, blind or thermostat. Keep the ids stable: they are saved
+with the room device and are how a binding made today still names the same lamp
+tomorrow.
+
+`child_command` and `child_action` answer `Ok(None)`, or `Ok(Some(status))`
+with the state the child is in afterwards, which saves the panel a read after
+every slider move. The host has already checked that the resource is well
+spelt and that the child's kind declares what is being asked, so what is left
+to you is the device. `dim:30`, `position:40` and `mode:heat` never arrive as
+commands: the host turns each into the typed action the kind declares before it
+writes anything.
+
+`couch_plugin::testing_v3::children` is the admission case: it lists twice and
+compares, checks the paging ends where the count says it should, refuses an
+unknown resource, and proves a write's acknowledgement agrees with the next
+read and that a kind never answers for another.
 
 ### 4. Tests, with no device
 

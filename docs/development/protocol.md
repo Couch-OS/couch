@@ -253,23 +253,29 @@ gate in `couch-plugin` and `couch-sdk`, described under
   scene kind) is a scene that belongs to a package. It has no steps and is not
   a Hue scene; `Scene.hue` is unchanged.
 
-  None of this can be declared yet: `couch-plugin` refuses the three components
-  in every manifest and the three actions in a protocol 1 or 2 manifest, and the
-  gate names protocol 3 for them. Listing children, addressing one on the wire
-  and the manifest's `children` are the next step.
+  A package declares all of this in its manifest, in `children`, and only a
+  protocol 3 manifest may: the three components, the three actions and
+  `children` itself are all invalid in a protocol 1 or 2 manifest, so no
+  package Couch can already run is ever asked to list a child or told about
+  one.
 - **`integration_config_v3`.** The saved configuration gains a third layer for
   whatever a protocol 2 core cannot read; see
   [Compatibility and independent source](https://github.com/Couch-OS/couch/blob/main/docs/integration-architecture.md#protocol-3-layer-unreleased).
 
 ### On the wire
 
-Four additions, each of which is absent from the bytes whenever it says nothing
-new, because every protocol 1 and 2 package refuses unknown fields:
+Every addition is absent from the bytes whenever it says nothing new, because
+every protocol 1 and 2 package refuses unknown fields:
 
 ```json
 {"method":"command","function":"x:info","phase":"long_press"}
 {"type":"error","code":"unpaired","reason":{"kind":"message","text":"Pair this TV again"}}
 {"type":"error","code":"invalid","reason":{"kind":"invalid_setting","field":"port","text":"The port must not be 0"}}
+{"method":"children","cursor":"room/9d2b7c10"}
+{"type":"children","children":[{"id":"5f0c9a52","kind":"light","name":"Desk","room_hint":"Study","light":{"dimmable":true,"mirek":[153,500]}}],"next":"room/9d2b7c10"}
+{"method":"status","resource":"5f0c9a52"}
+{"method":"action","action":{"action":"set_light","brightness":30},"resource":"5f0c9a52"}
+{"type":"status","status":{"light":{"on":true,"brightness":30,"mirek":366}}}
 ```
 
 - **`phase`** on `command`: `repeat` or `long_press`. A tap is never written,
@@ -282,13 +288,54 @@ new, because every protocol 1 and 2 package refuses unknown fields:
   error without a reason is written exactly as before.
 - **`unpaired`**, a tenth error code: the device wants pairing again.
 - **`x:` functions**, declared as capabilities like any other.
+- **`children`**, a request for one page of the children behind this
+  connection, and the `children` response that answers it. `cursor` is absent
+  on the first page; `next` is absent on the last one, and a page that carries
+  a cursor is never empty. A page holds at most 32 children, a whole listing
+  at most 1024 over at most 64 pages, and the host gives the listing ten
+  seconds end to end. A cursor that comes round again, a page that is too big,
+  an empty page with a cursor, the same id twice anywhere in the listing, a
+  kind the manifest never declared, traits that are not the ones that kind's
+  control has, or an id that is not a resource: every one of them is a
+  protocol error and the package is retired. `couch_plugin::list_children`
+  owns all of it, so no caller has to.
+- **`resource`** on `command`, `action` and `status`: which child of the
+  connection the request is for. It is the id the package itself gave out in
+  its listing, and the same grammar as a saved `resource_id`. A request that
+  names one carries nothing else new - the kind is *not* on the wire, because
+  the package knows what its own children are and Couch only has to know what
+  it may say to them.
+- **light, cover and climate state** on `status`, which only a request that
+  named a child can get back. A write that named a child may be answered with
+  the state the child is in afterwards (`status` instead of `ok`), which saves
+  the panel a second round trip after a slider; a plain `ok` stays legal and
+  the caller then reads.
+
+A level is the one thing that changes shape on the way out. `dim:30`,
+`position:40` and `mode:heat` are ordinary commands in a button map, in a scene
+step and in the configuration file, because that is what a person binds and
+what the file has always held. Aimed at a child, the host turns each one into
+the typed action that child's kind declares - `set_light` with a brightness,
+`set_cover` with a position, `set_climate` with a mode - and it does so in the
+gate and nowhere else, so no caller has to know which children are lamps. Aimed
+at the connection itself the command is untouched and passes or fails on the
+connection's own capabilities exactly as it did before protocol 3; the golden
+bytes for all three are pinned. A level whose kind is drawn with another
+control is `unsupported` before any I/O, and whether this *particular* lamp can
+be dimmed at all was decided earlier still, when the key was bound
+(`ChildSnapshot::accepts`).
 
 In the SDK a client says these with `Error::Unpaired`,
 `Error::Invalid.because(Reason::InvalidSetting { .. })` and
 `DeviceClient::execute_phased`, whose default ignores the phase.
 `Host::request_detailed`, `Endpoint::request_detailed` and
 `local_request_detailed` return a `Failure { code, reason }`; `request` and
-`local_request` keep their signatures and return the code alone.
+`local_request` keep their signatures and return the code alone. A request that
+names a child goes through `request_child_detailed(kind, request)` instead: the
+kind is what the gate checks against and is never written. On the package's
+side the defaulted `DeviceClient::child_kinds`, `children`, `child_command`,
+`child_action` and `child_status` answer for one child at a time; see
+[`docs/client-sdk.md`](../client-sdk.md).
 
 ### What a protocol 1 or 2 package never sees
 
@@ -300,11 +347,23 @@ manifest, in one place (`Host::request_detailed`), before any I/O:
 - an `x:` function is `unsupported`, as is one a protocol 3 package did not
   declare, and a protocol 1 or 2 manifest that declares one is invalid;
 - `requires(&Request)` names the oldest protocol a request can be sent to, and
-  anything newer than the package is `unsupported` without a round trip.
+  anything newer than the package is `unsupported` without a round trip. It is
+  3 for a listing, for any request that names a child, and for the three child
+  actions, which is what keeps `resource` and `children` out of the bytes a
+  published package reads;
+- a `status` **with** a resource is the one frame an old package would not
+  refuse. Its `Status` was a unit variant, and serde lets a unit variant ignore
+  the fields of an internally tagged frame even with `deny_unknown_fields`, so
+  such a child would answer for the whole connection as though no child had
+  been named. Nothing on the package's side can prevent that; the host's gate
+  is the only thing that does, and `wire_mirror` asserts it.
 
 In the other direction, a `reason` or the `unpaired` code from a protocol 1 or
 2 package is a protocol error and retires the child, as a `volume_db` reading
-from a protocol 1 package always has. From a protocol 3 package, a reason whose
+from a protocol 1 package always has. So is a listing, a light, cover or
+climate reading, and a `status` as the answer to a write - the last needs no
+version rule of its own, because only a request that named a child may be
+answered that way and such a package is never sent one. From a protocol 3 package, a reason whose
 text is too long or has control characters, or whose `field` is not a declared
 setting, does the same. The SDK's `serve` follows the manifest as well, not the
 SDK it was built with: a protocol 1 or 2 package built with a newer SDK drops a
@@ -397,9 +456,18 @@ cd clients
 cargo test --features couch-plugin/protocol-3-preview,couch-echo/protocol-3-preview
 ```
 
-`couch-echo` has a fixture for it, `couch-plugin-echo-v3` (`src/v3.rs`,
-`tests/protocol3.rs`), built only with the feature: it declares `x:info`, passes
-the key phase to its fake television, and explains its refusals.
+`couch-echo` has two fixtures for it, built only with the feature and both in
+`src/v3.rs`, exercised by `tests/protocol3.rs`. `couch-plugin-echo-v3` is the
+television: it declares `x:info`, passes the key phase to its fake set, and
+explains its refusals. `couch-plugin-echo-bridge` is a connection with
+children: seventy lamps, three room groups, five scenes, a blind and a
+thermostat - eighty children, which is three pages - all in memory, where a
+write is acknowledged with the state it left behind. Its `hostile` setting
+picks one of four ways a bridge can fail to end a listing (a cursor that comes
+round again, an oversized page, a kind it never declared, the same child on two
+pages); each one is a protocol error and costs the package its process.
+`couch_plugin::testing_v3::children` is the admission case a real package with
+children will use.
 
 Cargo unifies features across a build, so a single dependency that enabled the
 feature, even a dev-dependency, would enable it for everything built with it.
@@ -421,5 +489,7 @@ Both print nothing.
 - [`clients/couch-plugin/src/protocol.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/protocol.rs)
 - [`clients/couch-plugin/src/manifest.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/manifest.rs)
 - [`clients/couch-sdk/src/client.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-sdk/src/client.rs)
+- [`clients/couch-sdk/src/children.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-sdk/src/children.rs)
+- [`model/couch-model/src/domain.rs`](https://github.com/Couch-OS/couch/blob/main/model/couch-model/src/domain.rs)
 - [`model/couch-model/src/commands.rs`](https://github.com/Couch-OS/couch/blob/main/model/couch-model/src/commands.rs)
 - [`model/couch-model/src/storage.rs`](https://github.com/Couch-OS/couch/blob/main/model/couch-model/src/storage.rs)

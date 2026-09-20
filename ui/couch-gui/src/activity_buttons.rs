@@ -664,9 +664,7 @@ pub(crate) fn execute_with_input(
         };
         return match crate::tv::plugin::ask_detailed(
             connection_id.as_str(),
-            couch_plugin::Request::Action {
-                action: couch_model::TypedAction::SetVolumeDb { tenths },
-            },
+            couch_plugin::Request::action(couch_model::TypedAction::SetVolumeDb { tenths }),
         ) {
             // Part of a hold: the lane reads the level once it goes quiet.
             Ok(couch_plugin::Response::Ok) => Ok(Outcome {
@@ -772,7 +770,7 @@ fn power_toggle(
             Some(Integration::Plugin { connection_id, .. }) => {
                 match crate::tv::plugin::ask_detailed(
                     connection_id.as_str(),
-                    couch_plugin::Request::Status,
+                    couch_plugin::Request::status(),
                 ) {
                     Ok(couch_plugin::Response::Status { status }) => Plan::Observed(status.on),
                     Ok(_) => return Err("The integration returned an invalid status".into()),
@@ -1239,7 +1237,7 @@ fn plugin_level(
     match couch_plugin::local_request(
         &crate::home::path("plugin.sock"),
         connection,
-        couch_plugin::Request::Status,
+        couch_plugin::Request::status(),
         couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
     ) {
         Ok(couch_plugin::Response::Status { status }) => {

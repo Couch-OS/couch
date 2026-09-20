@@ -39,3 +39,6 @@ local command	{"connection_id":"living-room-avr","request":{"method":"command","
 local status	{"connection_id":"living-room-avr","request":{"method":"status"}}
 local inputs	{"connection_id":"living-room-avr","request":{"method":"inputs"}}
 local action	{"connection_id":"living-room-avr","request":{"method":"action","action":{"action":"set_volume_db","tenths":-345}}}
+request level dim:30	{"id":3,"body":{"method":"command","function":"dim:30"}}
+request level position:40	{"id":3,"body":{"method":"command","function":"position:40"}}
+request level mode:heat	{"id":3,"body":{"method":"command","function":"mode:heat"}}

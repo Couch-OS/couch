@@ -65,6 +65,8 @@ echo
 echo "control: the old child really does refuse a frame with a new field"
 COUCH_ADMISSION_BINARY_ECHO="$echo_binary" suite -p couch-echo --test plugin -- \
   --ignored --exact control_a_child_built_from_the_published_sdk_exits_on_a_key_phase
+COUCH_ADMISSION_BINARY_ECHO="$echo_binary" suite -p couch-echo --test plugin -- \
+  --ignored --exact control_a_child_built_from_the_published_sdk_exits_on_a_child_of_a_connection
 
 echo
 echo "control: the suites really do run the executable they are given"

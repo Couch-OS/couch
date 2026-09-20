@@ -120,7 +120,7 @@ impl From<couch_sdk::Error> for Failure {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Hello {
@@ -136,15 +136,37 @@ pub enum Request {
         /// a frame without it reads as a tap.
         #[serde(default, skip_serializing_if = "KeyPhase::is_tap")]
         phase: KeyPhase,
+        /// Protocol 3. Which child of the connection this is for. Absent for
+        /// the connection itself, which is every request a protocol 1 or 2
+        /// package can be sent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resource: Option<String>,
     },
     Action {
         action: couch_sdk::TypedAction,
+        /// Protocol 3. See [`Request::Command`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resource: Option<String>,
     },
-    Status,
+    /// Protocol 3 turned this from a unit variant into a struct variant with
+    /// one skipped field. Serde writes an internally tagged struct variant
+    /// whose every field is skipped exactly as it writes a unit variant, so
+    /// `{"method":"status"}` is still the byte for byte frame a published
+    /// package reads, and that package's unit variant still reads it.
+    Status {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resource: Option<String>,
+    },
     Inputs,
+    /// Protocol 3. One page of the children behind this connection, starting
+    /// after nothing (`None`) or at a cursor the package gave out.
+    Children {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+    },
 }
 impl Request {
-    /// A command as every protocol sends it: a tap.
+    /// A command as every protocol sends it: a tap, to the connection itself.
     pub fn command(function: impl Into<String>) -> Self {
         Self::key(function, KeyPhase::Tap)
     }
@@ -154,6 +176,48 @@ impl Request {
         Self::Command {
             function: function.into(),
             phase,
+            resource: None,
+        }
+    }
+    /// A status read of the connection itself.
+    pub fn status() -> Self {
+        Self::Status { resource: None }
+    }
+    /// A typed action on the connection itself.
+    pub fn action(action: couch_sdk::TypedAction) -> Self {
+        Self::Action {
+            action,
+            resource: None,
+        }
+    }
+    /// Protocol 3: one page of the connection's children.
+    pub fn children(cursor: Option<String>) -> Self {
+        Self::Children { cursor }
+    }
+    /// Protocol 3: the same request, aimed at one child of the connection.
+    ///
+    /// Only a command, a typed action and a status read can name a child;
+    /// anything else is returned as it was, and the gate refuses what it must.
+    pub fn at(mut self, resource: impl Into<String>) -> Self {
+        match &mut self {
+            Self::Command { resource: at, .. }
+            | Self::Action { resource: at, .. }
+            | Self::Status { resource: at } => *at = Some(resource.into()),
+            Self::Hello { .. } | Self::Configure { .. } | Self::Inputs | Self::Children { .. } => {
+                ()
+            }
+        }
+        self
+    }
+    /// Which child this request names, if any.
+    pub fn resource(&self) -> Option<&str> {
+        match self {
+            Self::Command { resource, .. }
+            | Self::Action { resource, .. }
+            | Self::Status { resource } => resource.as_deref(),
+            Self::Hello { .. } | Self::Configure { .. } | Self::Inputs | Self::Children { .. } => {
+                None
+            }
         }
     }
 }
@@ -169,6 +233,13 @@ pub enum Response {
     },
     Inputs {
         inputs: Vec<Selectable>,
+    },
+    /// Protocol 3. One page of children, and the cursor for the next page if
+    /// there is one. A page with a cursor is never empty.
+    Children {
+        children: Vec<couch_sdk::Child>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
     },
     Error {
         code: Error,
