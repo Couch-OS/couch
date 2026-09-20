@@ -21,6 +21,11 @@ name = "couch-plugin-echo-v3"
 path = "src/bin/couch-plugin-echo-v3.rs"
 required-features = ["protocol-3-preview"]
 
+[[bin]]
+name = "couch-plugin-echo-bridge"
+path = "src/bin/couch-plugin-echo-bridge.rs"
+required-features = ["protocol-3-preview"]
+
 [[test]]
 name = "protocol3"
 required-features = ["protocol-3-preview"]

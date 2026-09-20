@@ -5,8 +5,10 @@
 //! Denon, Sonos and Kodi packages in the feed were built from. Like the
 //! originals they refuse unknown fields and unknown variants, which is what
 //! makes them a fair stand-in for an old child (its `Request`) and an old
-//! host (its `Response`). `Manifest`, `Status`, `Selectable` and `TypedAction`
-//! are this tree's: this change does not touch them.
+//! host (its `Response`). `TypedAction` is frozen here too, since protocol 3
+//! gave couch-model three more of them; `Manifest`, `Status` and `Selectable`
+//! are this tree's, because a package's own bytes are pinned by the golden
+//! file and none of those refuses an unknown field.
 //!
 //! Two directions, and both go through the same gate the host uses
 //! (`host::admit`, `host::accept`) and the same shaping `serve` uses
@@ -30,6 +32,14 @@ use serde_json::json;
 mod old {
     use crate::{Manifest, Selectable, Status};
     use serde::{Deserialize, Serialize};
+
+    /// The one typed action 00ab4da knew. couch-model has three more since
+    /// protocol 3, step T2, and an old child cannot read any of them.
+    #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+    #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+    pub enum TypedAction {
+        SetVolumeDb { tenths: i16 },
+    }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
@@ -62,7 +72,7 @@ mod old {
         Hello { protocol_version: u32 },
         Configure { settings: serde_json::Value },
         Command { function: String },
-        Action { action: couch_sdk::TypedAction },
+        Action { action: TypedAction },
         Status,
         Inputs,
     }
@@ -136,13 +146,11 @@ fn requests() -> Vec<Request> {
         Request::Configure {
             settings: json!({"host":"avr.local","unknown":1}),
         },
-        Request::Status,
+        Request::status(),
         Request::Inputs,
     ];
     for tenths in [-805, -800, -345, 180] {
-        requests.push(Request::Action {
-            action: TypedAction::SetVolumeDb { tenths },
-        });
+        requests.push(Request::action(TypedAction::SetVolumeDb { tenths }));
     }
     for phase in [KeyPhase::Tap, KeyPhase::Repeat, KeyPhase::LongPress] {
         for function in [
@@ -169,7 +177,7 @@ fn whatever_the_host_sends_a_protocol_1_or_2_package_an_old_child_reads_as_its_o
         let mut sent = 0;
         for (index, request) in requests().into_iter().enumerate() {
             let asked = serde_json::to_string(&request).unwrap();
-            let Ok(request) = admit(&manifest, request) else {
+            let Ok(request) = admit(&manifest, None, request) else {
                 continue;
             };
             sent += 1;
@@ -180,6 +188,18 @@ fn whatever_the_host_sends_a_protocol_1_or_2_package_an_old_child_reads_as_its_o
             .unwrap();
             assert!(!bytes.contains("phase"), "v{version} {asked}: {bytes}");
             assert!(!bytes.contains("\"x:"), "v{version} {asked}: {bytes}");
+            // Protocol 3, step T2: a child of a connection, a listing of them,
+            // and the three actions that drive one.
+            for word in [
+                "resource",
+                "children",
+                "cursor",
+                "set_light",
+                "set_cover",
+                "set_climate",
+            ] {
+                assert!(!bytes.contains(word), "v{version} {asked}: {bytes}");
+            }
             let child: old::Envelope<old::Request> = serde_json::from_str(&bytes)
                 .unwrap_or_else(|e| panic!("v{version} old child refuses {bytes}: {e}"));
             assert_eq!(serde_json::to_string(&child).unwrap(), bytes);
@@ -214,13 +234,145 @@ fn a_phase_or_a_package_named_button_would_have_killed_an_old_child() {
     let v3 = manifest(3);
     for phase in [KeyPhase::Repeat, KeyPhase::LongPress] {
         for function in ["volume-up", "x:info"] {
-            let sent = admit(&v3, Request::key(function, phase)).unwrap();
+            let sent = admit(&v3, None, Request::key(function, phase)).unwrap();
             assert!(matches!(sent, Request::Command { phase: kept, .. } if kept == phase));
         }
     }
     assert_eq!(
-        admit(&v3, Request::command("x:undeclared")).err(),
+        admit(&v3, None, Request::command("x:undeclared")).err(),
         Some(Error::Unsupported)
+    );
+}
+
+/// Everything protocol 3, step T2 added to a request: naming one child of a
+/// connection, and asking for the list of them.
+fn child_requests() -> Vec<Request> {
+    let light = TypedAction::SetLight {
+        on: Some(true),
+        brightness: Some(40),
+        mirek: None,
+        xy: None,
+    };
+    let mut requests = vec![
+        Request::status().at("lamp-01"),
+        Request::command("toggle").at("lamp-01"),
+        Request::key("toggle", KeyPhase::Repeat).at("lamp-01"),
+        Request::command("dim:30").at("lamp-01"),
+        Request::action(TypedAction::SetVolumeDb { tenths: -345 }).at("lamp-01"),
+        Request::action(light).at("lamp-01"),
+        Request::children(None),
+        Request::children(Some("lamp-32".into())),
+    ];
+    // ...and the three actions with no resource at all, which an old package
+    // could not have declared and must never be sent either.
+    for action in [
+        light,
+        TypedAction::SetCover { position: 40 },
+        TypedAction::SetClimate {
+            target_tenths: Some(215),
+            low_tenths: None,
+            high_tenths: None,
+            mode: None,
+        },
+    ] {
+        requests.push(Request::action(action));
+    }
+    requests
+}
+
+/// The gate is the whole defence here, and for one of these it is the only
+/// one: an old child's `Status` was a unit variant, and serde lets a unit
+/// variant ignore the fields of an internally tagged frame even with
+/// `deny_unknown_fields`. Such a child would read a status frame that names a
+/// lamp as a status of the whole bridge and answer it.
+#[test]
+fn a_child_of_a_connection_is_never_named_to_a_protocol_1_or_2_package() {
+    for version in [1, 2] {
+        let manifest = manifest(version);
+        for request in child_requests() {
+            let asked = serde_json::to_string(&request).unwrap();
+            // Whatever the caller claims the kind is, and whether or not the
+            // package would have understood it.
+            for kind in [None, Some("light"), Some("ghost")] {
+                assert_eq!(
+                    admit(&manifest, kind, request.clone()).err(),
+                    Some(Error::Unsupported),
+                    "v{version} {kind:?} {asked}"
+                );
+            }
+        }
+    }
+
+    // What the gate is keeping in. Everything below would kill an old child...
+    let silent = Request::status().at("lamp-01");
+    for request in child_requests() {
+        let bytes = serde_json::to_string(&request).unwrap();
+        if serde_json::to_string(&silent).unwrap() == bytes {
+            continue;
+        }
+        assert!(
+            serde_json::from_str::<old::Request>(&bytes).is_err(),
+            "an old child could read {bytes}"
+        );
+    }
+    // ...except this one, which it reads as the status of the whole
+    // connection and answers.
+    let bytes = serde_json::to_string(&silent).unwrap();
+    assert_eq!(bytes, r#"{"method":"status","resource":"lamp-01"}"#);
+    assert!(matches!(
+        serde_json::from_str::<old::Request>(&bytes).expect("an old child reads it"),
+        old::Request::Status
+    ));
+
+    // And a resource-less status is still the byte-for-byte frame it was when
+    // it was a unit variant here too, which is why the golden file did not
+    // move.
+    assert_eq!(
+        serde_json::to_string(&Request::status()).unwrap(),
+        r#"{"method":"status"}"#
+    );
+    assert!(matches!(
+        serde_json::from_str::<Request>(r#"{"method":"status"}"#).unwrap(),
+        Request::Status { resource: None }
+    ));
+
+    // A protocol 3 package is sent all of it, once its manifest says so.
+    let mut v3 = manifest(3);
+    v3.children = vec![couch_sdk::PluginChildKind {
+        kind: "light".into(),
+        label: "Lamp".into(),
+        device_kind: couch_sdk::couch_model::DeviceKind::Light,
+        component: couch_sdk::couch_model::ChildComponent::Light,
+        capabilities: vec![couch_sdk::couch_model::PluginCapability {
+            id: "toggle".into(),
+            label: "Toggle".into(),
+        }],
+        actions: vec![PluginActionSchema::SetLight {}],
+    }];
+    v3.actions.push(PluginActionSchema::SetLight {});
+    // Only a build with the switch on would accept such a manifest at all;
+    // the gate itself does not depend on it.
+    #[cfg(feature = "protocol-3-preview")]
+    assert_eq!(v3.validate(), Ok(()));
+    let sent: Vec<Request> = child_requests()
+        .into_iter()
+        .filter_map(|request| admit(&v3, Some("light"), request).ok())
+        .collect();
+    // status, toggle, a held toggle, dim:30 as an action, the light action,
+    // two listings, and the connection's own light action.
+    assert_eq!(sent.len(), 8, "{sent:?}");
+    assert!(
+        sent.iter().any(|request| matches!(
+            request,
+            Request::Action {
+                action: TypedAction::SetLight {
+                    brightness: Some(30),
+                    ..
+                },
+                resource: Some(_)
+            }
+        )),
+        "the gate did not turn dim:30 into a brightness"
     );
 }
 
@@ -243,12 +395,12 @@ fn old_responses() -> Vec<(Request, old::Response)> {
             old::Response::Ok,
         ),
         (
-            Request::Status,
+            Request::status(),
             old::Response::Status {
                 status: Status::default(),
             },
         ),
-        (Request::Status, old::Response::Status { status }),
+        (Request::status(), old::Response::Status { status }),
         (
             Request::Inputs,
             old::Response::Inputs {
@@ -258,7 +410,7 @@ fn old_responses() -> Vec<(Request, old::Response)> {
     ];
     for code in old::ERRORS {
         all.push((Request::command("power-on"), old::Response::Error { code }));
-        all.push((Request::Status, old::Response::Error { code }));
+        all.push((Request::status(), old::Response::Error { code }));
     }
     all
 }
@@ -279,7 +431,7 @@ fn whatever_an_old_child_answers_this_host_reads_accepts_and_would_write_the_sam
         if version == 2 {
             for volume_db in [VolumeDb::Reading { tenths: -345 }, VolumeDb::Minimum] {
                 answers.push((
-                    Request::Status,
+                    Request::status(),
                     old::Response::Status {
                         status: Status {
                             volume_db: Some(volume_db),
@@ -289,9 +441,7 @@ fn whatever_an_old_child_answers_this_host_reads_accepts_and_would_write_the_sam
                 ));
             }
             answers.push((
-                Request::Action {
-                    action: TypedAction::SetVolumeDb { tenths: -345 },
-                },
+                Request::action(TypedAction::SetVolumeDb { tenths: -345 }),
                 old::Response::Ok,
             ));
         }
@@ -375,7 +525,7 @@ fn a_protocol_1_or_2_package_built_with_this_sdk_answers_in_bytes_an_old_host_re
                     format!(r#"{{"id":9,"body":{{"type":"error","code":"{expected}"}}}}"#)
                 );
                 // And this host accepts it from that package.
-                assert_eq!(accept(&manifest, &Request::Status, &response), Ok(()));
+                assert_eq!(accept(&manifest, &Request::status(), &response), Ok(()));
             }
         }
     }
@@ -399,7 +549,7 @@ fn protocol_3_words_from_a_protocol_1_or_2_package_are_a_protocol_error() {
             },
         ] {
             assert_eq!(
-                accept(&manifest, &Request::Status, &response),
+                accept(&manifest, &Request::status(), &response),
                 Err(Error::Protocol),
                 "v{version} {response:?}"
             );
@@ -431,7 +581,7 @@ fn protocol_3_words_from_a_protocol_1_or_2_package_are_a_protocol_error() {
         (setting("undeclared", "No".into()), Err(Error::Protocol)),
     ] {
         assert_eq!(
-            accept(&v3, &Request::Status, &response),
+            accept(&v3, &Request::status(), &response),
             expected,
             "{response:?}"
         );
@@ -445,7 +595,7 @@ fn protocol_3_words_from_a_protocol_1_or_2_package_are_a_protocol_error() {
                     reason: reason.clone(),
                 },
             );
-            assert_eq!(accept(&v3, &Request::Status, &shaped), Ok(()));
+            assert_eq!(accept(&v3, &Request::status(), &shaped), Ok(()));
             assert!(matches!(shaped, Response::Error { code: kept, .. } if kept == *code));
         }
     }

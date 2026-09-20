@@ -137,7 +137,7 @@ fn timeout_does_not_retry_and_a_later_explicit_request_can_reconnect() {
     );
     assert_eq!(device.requests(), ["CMD volume-up"]);
     assert!(matches!(
-        endpoint.request(Request::Status),
+        endpoint.request(Request::status()),
         Ok(Response::Status { .. })
     ));
     assert_eq!(device.requests(), ["CMD volume-up", "GET STATUS"]);
@@ -287,9 +287,23 @@ fn control_a_child_built_from_the_published_sdk_exits_on_a_key_phase() {
     .unwrap();
     let answer: serde_json::Value = couch_plugin::read_frame(&mut output).unwrap();
     assert_eq!(answer["id"], 2);
+    // Protocol 3, step T2: a status frame that names one child of a
+    // connection. This is the dangerous one. That child's `Status` was a unit
+    // variant, and serde lets a unit variant ignore the fields of an
+    // internally tagged frame even with `deny_unknown_fields`, so it does NOT
+    // exit: it answers, for the whole connection, as if no child had been
+    // named. Nothing on the child's side can prevent that, which is why the
+    // host's gate never writes it (`wire_mirror`).
     couch_plugin::write_frame(
         &mut input,
-        &json!({"id":3,"body":{"method":"command","function":"volume-up","phase":"repeat"}}),
+        &json!({"id":3,"body":{"method":"status","resource":"lamp-01"}}),
+    )
+    .unwrap();
+    let answer: serde_json::Value = couch_plugin::read_frame(&mut output).unwrap();
+    assert_eq!(answer["id"], 3);
+    couch_plugin::write_frame(
+        &mut input,
+        &json!({"id":4,"body":{"method":"command","function":"volume-up","phase":"repeat"}}),
     )
     .unwrap();
     assert!(
@@ -297,4 +311,49 @@ fn control_a_child_built_from_the_published_sdk_exits_on_a_key_phase() {
         "the child answered a frame it should not have been able to read"
     );
     assert_eq!(child.wait().unwrap().code(), Some(1));
+}
+
+/// The other half of the control above, and the reason the gate exists: a
+/// child of a connection, a listing of one, and the three actions that drive
+/// one are all frames the published SDK's child cannot read. Ignored here for
+/// the same reason: run against THIS tree's executable it would prove nothing.
+#[test]
+#[ignore = "run by tools/tests/old-package-wire.sh against an old executable"]
+fn control_a_child_built_from_the_published_sdk_exits_on_a_child_of_a_connection() {
+    use std::process::{Command, Stdio};
+    for (index, body) in [
+        json!({"method":"command","function":"volume-up","resource":"lamp-01"}),
+        json!({"method":"action","action":{"action":"set_volume_db","tenths":-345},"resource":"lamp-01"}),
+        json!({"method":"action","action":{"action":"set_light","brightness":30}}),
+        json!({"method":"action","action":{"action":"set_cover","position":40}}),
+        json!({"method":"action","action":{"action":"set_climate","target_tenths":215}}),
+        json!({"method":"children"}),
+        json!({"method":"children","cursor":"lamp-32"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let p = Package::new();
+        let mut child = Command::new(p.root.join("bin/couch-plugin-echo"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        let mut output = child.stdout.take().unwrap();
+        couch_plugin::write_frame(
+            &mut input,
+            &json!({"id":1,"body":{"method":"hello","protocol_version":1}}),
+        )
+        .unwrap();
+        let hello: serde_json::Value = couch_plugin::read_frame(&mut output).unwrap();
+        assert_eq!(hello["body"]["type"], "hello");
+        couch_plugin::write_frame(&mut input, &json!({"id":2,"body":body})).unwrap();
+        assert!(
+            couch_plugin::read_frame::<_, serde_json::Value>(&mut output).is_err(),
+            "case {index}: the child answered a frame it should not have been able to read"
+        );
+        assert_eq!(child.wait().unwrap().code(), Some(1));
+    }
 }
