@@ -894,13 +894,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(
-            runtime.execute("conn", "sample", Request::Status),
+            runtime.execute("conn", "sample", Request::status()),
             Err(Error::Busy.into())
         );
         drop(lock);
         // Whatever the child then says, the refusal is no longer the store's.
         assert_ne!(
-            runtime.execute("conn", "sample", Request::Status),
+            runtime.execute("conn", "sample", Request::status()),
             Err(Error::Busy.into())
         );
         runtime.retire("conn");
