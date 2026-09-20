@@ -184,9 +184,12 @@ default to a minimum core protocol version of 1.
 
 Protocol 3 is being built in steps on `dev`. It is **switched off**: the host
 accepts protocol 1 and 2 manifests only, the feed accepts only those, and no
-released or development build can install a protocol 3 package. Everything in
-this section may change until the step that switches it on. Do not write a
-package against it yet.
+released or ordinary development build can install a protocol 3 package. The
+one exception is a preview build made on purpose for a single development
+remote, which is labelled, signed and refused as described under
+[A preview build for one development remote](#a-preview-build-for-one-development-remote).
+Everything in this section may change until the step that switches it on. Do
+not write a package against it yet.
 
 What exists so far is vocabulary in `couch-model`, so that a Couch which later
 saves protocol 3 content can always be rolled back, and the wire types and host
@@ -872,7 +875,8 @@ pub const fn accepted_protocol_version() -> u32; // 2, or 3 with the feature
 `Manifest::validate` accepts `1..=accepted_protocol_version()`. With the feature
 off, which is every build that ships, a manifest that says 3 is `incompatible`
 (a package that needs a newer Couch) on the host and in `serve`, and nothing is
-executed. Only tests turn it on:
+executed. Tests turn it on, and so does the one deliberate preview build
+described below:
 
 ```sh
 cd clients
@@ -920,6 +924,84 @@ cargo tree --manifest-path ui/Cargo.toml -e features -i couch-plugin | grep prot
 ```
 
 Both print nothing.
+
+### A preview build for one development remote
+
+A real protocol 3 package can only be tried on hardware by a daemon that admits
+protocol 3. There is one way to make such a daemon, and every step after it is
+built to keep that daemon on the one development remote it was made for.
+
+**Making it.** On the release host:
+
+```sh
+COUCH_PROTOCOL_3_PREVIEW=dev-remote-only tools/build-release.sh
+```
+
+The value has to be exactly `dev-remote-only`; anything else that is not empty
+is a usage error (exit 2) and not an ordinary build. The script prints a banner
+first and last. It passes the variable to `tools/build-webui.sh`, which builds
+`couch-confd` alone with `-p couch-confd --features
+couch-plugin/protocol-3-preview`, the form CI uses. Everything else -
+`couch-gui`, `couch-system`, `couch-sonos`, `couch-coreelec`, the Bluetooth
+binaries - is built exactly as in an ordinary build: only the daemon reads a
+manifest. `tools/build-webui.sh --host` takes the same variable.
+
+**The marker.** A Cargo feature shows in no file name, tree hash or version. So
+a daemon that admits protocol 3 says so in its own bytes: a `#[used]` static in
+`daemon/couch-confd/src/assets.rs` holds the line
+`COUCH-PREVIEW-BUILD protocol-3`, and its value is computed from
+`accepted_protocol_version() > PROTOCOL_VERSION`, not from a second `cfg`, so it
+cannot be separated from the switch. An ordinary daemon does not contain the
+line at all. It survives the release profile (LTO, one codegen unit, `strip`)
+on the ARM target. A test in that file reads its own test binary and asserts
+the line is there exactly when the switch is on, whichever way it was built.
+
+After **every** build, preview or not, `tools/build-webui.sh` searches the
+daemon it just built (`grep -a -F`) and stops unless the line is present
+exactly when a preview was asked for. That is also what catches a preview
+daemon left in `daemon/target` by an earlier build. `tools/build-release.sh`
+checks again at the end, and checks that no other binary carries the line.
+Cargo keys its artefacts on the feature set, so going from a preview build to
+an ordinary one in the same target directory recompiles `couch-plugin` and
+`couch-confd`; the check is there so that nobody has to take that on trust.
+
+**The label.** `build.json` holds the version and nothing else, and the update
+channels are decided from the version, so the version is the label:
+`v0.1.0-alpha.<date>.<N>.p3.dev`. `dev` keeps it off the Alpha and Stable
+channels; `p3` says what it is. It sorts above `<N>.dev` and below
+`<N+1>.dev`, so the next ordinary dev build replaces it
+(`docs/runtime-updates.md`, "Release channels"). The remote's panel shows
+`.p3.dev`; the web UI shows the whole version, and a red notice, "Protocol 3
+preview build. Development remote only.", on the Updates and Integrations
+pages whenever the installed version has a `p3` identifier.
+
+**What refuses what.**
+
+| Where | Refuses |
+|-------|---------|
+| `couch_updates::bundle`, the only code that holds the signing seed | A `couch-confd` carrying the line under any version whose prerelease lacks a `p3` or a `dev` identifier, or that the Alpha or Stable channel would take: "A protocol 3 preview runtime may only be signed as a .p3.dev build". An ordinary `couch-confd` under a version with a `p3` identifier: "Only a protocol 3 preview runtime may be signed as a .p3.dev build; this couch-confd is an ordinary one". Nothing is written in either case. The bytes searched are the bytes archived. |
+| `tools/release/update_floor.py --tree` | A tree whose `couch-confd` carries the line, unless `--allow-preview` is given. |
+| `tools/release/runtime_inventory.py` | Nothing, but `payload-inventory.json` records `"preview_features": ["protocol-3"]` (`[]` for an ordinary daemon) and lists the preview among the release blockers. |
+| `tools/build-webui.sh`, `tools/build-release.sh` | A daemon whose marker does not match what was asked for, and the marker in any other binary. |
+
+`tools/release/verify_integration_set.py` needs no change and gives no
+protection here: it compares source trees at the contract paths, the marker is
+in none of them, and a Cargo feature is not a source change. The publisher's
+check is the one that matters. It is in the `couch-updates` binary, so the
+publisher on the signing machine has to be rebuilt from a tree that has it
+(`cargo build --release -p couch-updates` in `daemon`) before it protects
+anything.
+
+**What the preview daemon still says.** `couch-confd
+--supports-integration-protocol=1` and `=2` exit 0 and `=3` does not, exactly
+as in an ordinary build. That answer is what package installation scripts and
+the release evidence rely on, protocol 3 is not released, and the preview must
+not teach anything to believe otherwise.
+
+**Afterwards.** The preview release is deleted from GitHub as soon as the test
+session ends - any other remote on the Dev channel would be offered it
+meanwhile - and the remote is moved to the next ordinary dev build, or rolled
+back.
 
 ## Source references
 

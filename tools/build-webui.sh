@@ -14,6 +14,10 @@ set -e
 cd "$(dirname "$0")/.."
 # The daemon links couch-sonos, so it carries the developer key too.
 . tools/sonos-build-env.sh
+# COUCH_PROTOCOL_3_PREVIEW=dev-remote-only builds the daemon with protocol 3
+# switched on; every build, of either kind, is checked for the marker below.
+. tools/protocol-3-preview-env.sh
+preview_banner
 
 TARGET=${TARGET:-armv7-unknown-linux-musleabihf}
 [ "$1" = "--host" ] && TARGET=host
@@ -33,9 +37,18 @@ COUCH_WEB_DIST_DIGEST=$(cd web/couch-web/dist && find . -type f | LC_ALL=C sort 
     { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
 export COUCH_WEB_DIST_DIGEST
 
+# An ordinary build is the whole daemon workspace with default features. A
+# preview build is couch-confd alone with the one feature that is the switch,
+# in the form CI uses (.github/workflows/integration-admission.yml); `-p` is
+# what lets a workspace build name another package's feature. Cargo keys its
+# artefacts on the feature set, so going from one kind of build to the other
+# relinks the daemon, and check_preview_marker below proves it each time.
+CONFD_ONLY_WITH_PROTOCOL_3=
+[ "$PREVIEW" = no ] ||
+    CONFD_ONLY_WITH_PROTOCOL_3='-p couch-confd --features couch-plugin/protocol-3-preview'
 if [ "$TARGET" = host ]; then
     echo "= daemon/couch-confd -> host"
-    ( cd daemon && cargo build --release )
+    ( cd daemon && cargo build --release $CONFD_ONLY_WITH_PROTOCOL_3 )
     BIN=daemon/target/release/couch-confd
 else
     # rust-lld links the final binary; ring's C needs the ARM musl compiler
@@ -44,7 +57,7 @@ else
     rustup target list --installed | grep -qx "$TARGET" || {
         echo "no $TARGET toolchain: rustup target add $TARGET"; exit 1; }
     echo "= daemon/couch-confd -> $TARGET"
-    ( cd daemon && cargo build --release --target "$TARGET" )
+    ( cd daemon && cargo build --release --target "$TARGET" $CONFD_ONLY_WITH_PROTOCOL_3 )
     BIN=daemon/target/$TARGET/release/couch-confd
 fi
 
@@ -60,6 +73,9 @@ for f in web/couch-web/dist/couch-web-*; do
     }
 done
 
+# Protocol 3 is on in this daemon exactly when it was asked for.
+check_preview_marker "$BIN" "$PREVIEW"
+
 # The sizes are the point of the exercise: everything here is downloaded over
 # the remote's own WiFi or stored on its flash, so a build that quietly doubled
 # is worth seeing at the end of every run.
@@ -71,3 +87,4 @@ for f in web/couch-web/dist/*; do
 done
 printf "  %-46s %7s\n" "couch-confd ($TARGET)" "$(wc -c < "$BIN" | tr -d ' ')"
 echo "  $BIN"
+preview_banner

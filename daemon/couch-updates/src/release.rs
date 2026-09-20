@@ -518,6 +518,52 @@ mod tests {
         let dev = version("v0.1.0-alpha.20260913.122.dev").unwrap();
         let next = version("v0.1.0-alpha.20260914.130").unwrap();
         assert!(alpha < dev && dev < next);
+        // A protocol 3 preview build of the same number sits above that dev
+        // build and below the next one, so an ordinary dev build with the next
+        // number always replaces it. Identifiers compare part by part; `191p3`
+        // would be one alphanumeric part and would sort above every number.
+        let dev = version("v0.1.0-alpha.20260920.191.dev").unwrap();
+        let preview = version("v0.1.0-alpha.20260920.191.p3.dev").unwrap();
+        let next_dev = version("v0.1.0-alpha.20260920.192.dev").unwrap();
+        let next_alpha = version("v0.1.0-alpha.20260920.192").unwrap();
+        assert!(version("v0.1.0-alpha.20260920.191").unwrap() < dev);
+        assert!(dev < preview && preview < next_alpha && next_alpha < next_dev);
+        assert!(version("v0.1.0-alpha.20260920.191p3.dev").unwrap() > next_dev);
+    }
+    #[test]
+    fn a_protocol_3_preview_build_is_offered_on_the_dev_channel_only() {
+        let tag = "v0.1.0-alpha.20260920.191.p3.dev";
+        let preview = version(tag).unwrap();
+        assert!(accepts(Channel::Dev, &preview));
+        assert!(!accepts(Channel::Alpha, &preview));
+        assert!(!accepts(Channel::Stable, &preview));
+        // Without `dev` the same tag would be an Alpha build, which is why the
+        // publisher insists on both identifiers for a preview runtime.
+        assert!(accepts(
+            Channel::Alpha,
+            &version("v0.1.0-alpha.20260920.191.p3").unwrap()
+        ));
+        // The whole selection, as a remote on `.190` runs it.
+        let installed = "v0.1.0-alpha.20260920.190";
+        let mut release = listing(tag, false);
+        release["prerelease"] = serde_json::json!(true);
+        for (channel, offered) in [
+            (Channel::Stable, false),
+            (Channel::Alpha, false),
+            (Channel::Dev, true),
+        ] {
+            let (runtime, _) = select_listed(vec![release.clone()], channel, installed).unwrap();
+            assert_eq!(
+                runtime.map(|item| item.tag),
+                offered.then(|| tag.to_owned())
+            );
+        }
+        // And a remote on the preview build is offered the next ordinary dev
+        // build, which is how it leaves the preview again.
+        let mut next = listing("v0.1.0-alpha.20260920.192.dev", false);
+        next["prerelease"] = serde_json::json!(true);
+        let (runtime, _) = select_listed(vec![next], Channel::Dev, tag).unwrap();
+        assert_eq!(runtime.unwrap().tag, "v0.1.0-alpha.20260920.192.dev");
     }
     #[test]
     fn channels_take_what_they_should() {

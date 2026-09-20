@@ -12,6 +12,23 @@ branches and channels fit. Checks are triggered by opening the paired web
 UI and limited to once per six hours during a service session. Downloads and
 installation always require the user's choice.
 
+One more identifier has a fixed meaning. A tag of the form
+`v0.1.0-alpha.<date>.<N>.p3.dev` is a **protocol 3 preview build**: a runtime
+whose `couch-confd` was built with the unreleased integration protocol switched
+on, for one development remote and one test session
+([SDK and protocol](development/protocol.md#a-preview-build-for-one-development-remote)).
+The rule is enforced where the signing seed is, in both directions: the
+publisher signs such a runtime only under a version with both a `p3` and a
+`dev` identifier, and signs no other runtime under a version with `p3` in it
+(see [Publishing](#publishing)). Because of `dev` it is a Dev-channel build and
+nothing else; it sorts above `<N>.dev` and below `<N+1>.dev`, so the next
+ordinary dev build replaces it. `<N>p3` would be wrong: it is one alphanumeric
+identifier and sorts above every number. The panel shows `.p3.dev`, and the web
+UI shows a red notice on the Updates and Integrations pages. Like every `.dev`
+tag it is **not private** to updaters older than the Dev channel (see
+[What this cost, twice](#what-this-cost-twice)): the release is deleted as soon
+as the session ends.
+
 The same operations are available on the remote itself under **Settings →
 Updates** (hold Menu on the home screen): the installed build, the channel
 (left/right switches Stable and Alpha), **Check for updates** with a one-glance
@@ -338,6 +355,21 @@ cargo run --manifest-path daemon/Cargo.toml -p couch-updates -- \
 The publisher emits `couch-VERSION-ha100-runtime.tar.gz` and
 `couch-VERSION-ha100-update.json`. Attach both to the matching versioned GitHub
 release in `Couch-OS/couch`; mark alpha tags as prereleases.
+
+The publisher reads the `couch-confd` it is about to archive and looks for the
+line a daemon built with protocol 3 switched on carries
+(`COUCH-PREVIEW-BUILD protocol-3`). If it is there, the version must be a
+`.p3.dev` one - a `p3` and a `dev` identifier in the prerelease, and a version
+neither the Alpha nor the Stable channel would take - or the publisher stops
+with "A protocol 3 preview runtime may only be signed as a .p3.dev build". If it
+is not there, a version with a `p3` identifier is refused as well, so the label
+is never a lie. Nothing is written when it refuses. The check is part of the
+`couch-updates` binary: rebuild the publisher (`cargo build --release -p
+couch-updates` in `daemon`) on the signing machine before relying on it.
+`python3 tools/release/update_floor.py --tree CLEAN_RUNTIME` makes the same
+search before the seed is involved and refuses a preview tree unless
+`--allow-preview` is given, and `tools/release/runtime_inventory.py` records
+`preview_features` in `payload-inventory.json`.
 
 A boot payload is signed from the public boot directory and the clean runtime of
 the same version (for the OS baseline it is bound to):
