@@ -48,12 +48,22 @@ variables.
 Each installed package runs as a user of its own. The package store keeps the
 table in `uids.json` at its root: one row per package id, allocated in order
 from 60000 to 64999, group id equal to user id, written under the store's
-exclusive lock, and never handed out twice. A removed package keeps its row, so
-a package installed later can never inherit a user something else once ran as.
+exclusive lock, and never held by two packages at once. A removed package
+keeps its row, so a package installed later does not inherit a user something
+else once ran as; the only two things that reuse a number are the range
+running out, which drops the rows of packages that are no longer installed and
+takes the lowest free number, and a table too damaged to read, which is
+rebuilt from the sorted installed ids. A rebuild is counted, and the daemon
+retires its package children when the count moves, so each comes back as the
+user the table now gives it.
+
 A package is given its user when it is installed, and packages installed by an
-older Couch are given theirs in one pass when the daemon starts. A store that
-is busy, or out of users, is an error the caller reports: no package is ever
-quietly started as another package's user.
+older Couch are given theirs in one pass when the daemon starts. A busy store
+is a busy answer that the next key press retries; a range genuinely full is an
+error that says so and is not retried, because waiting changes nothing; a
+table that cannot be written keeps the number in memory for the life of the
+daemon and says so in the log. No package is ever quietly started as another
+package's user, or as the 65534 they used to share.
 
 On a root-started HA100 daemon, the host clears inherited groups, drops the
 child to that user and group, enables `no_new_privs`, sets `RLIMIT_CORE` to
@@ -70,10 +80,13 @@ package file changes mode, so a core rolled back to a release that knows
 nothing of the table runs every package exactly as it did, all under one user,
 and leaves `uids.json` alone.
 
-This is privilege separation, not a sandbox for hostile code: a package still
-reaches the LAN, still sees that other processes exist, and two connections of
-the same package still share a user. What is and is not enforced is listed
-under [Isolation between packages](integration-packages.md#isolation-between-packages).
+On the HA100's 3.18 kernel there is no Yama and `/proc` carries no `hidepid`,
+so what one package cannot do to another comes from the user difference alone;
+being undumpable is what separates two connections of one package, and only
+for packages rebuilt against this SDK. This is privilege separation, not a
+sandbox for hostile code: a package still reaches the LAN and still sees that
+other processes exist. What is and is not enforced is listed under
+[Isolation between packages](integration-packages.md#isolation-between-packages).
 
 The installer invokes `apk` in a temporary root, verifies signatures, disables
 scripts and network access during extraction, and accepts only the integration
