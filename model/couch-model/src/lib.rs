@@ -78,6 +78,7 @@ pub use remote::RemoteSettings;
 mod icon;
 mod id;
 mod integration_migration;
+mod legacy_commands;
 mod seed;
 mod storage;
 pub use integration_migration::{

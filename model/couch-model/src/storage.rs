@@ -1091,6 +1091,55 @@ mod tests {
         }
     }
 
+    /// The `.130`-era shape `build/webui-review-empty.json` still has: a
+    /// scene step naming `"bright"`, which no release has ever run. `.188`
+    /// refuses it exactly as this tree does before `Config::migrate_commands`
+    /// runs; both accept `dim:100`, which is what that rewrite leaves behind.
+    /// A full crossload state was not added for this
+    /// (`tools/tests/config-crossload.sh`) because every existing state
+    /// starts from a config only this tree can build; this reuses the
+    /// frozen `.188` mirror in `release_188` instead, the way the tests
+    /// above already do.
+    #[test]
+    fn a_legacy_bright_step_is_refused_by_release_188_and_migrating_it_fixes_that() {
+        let mut config = Config::default();
+        config.rooms.push(crate::Room {
+            id: "kitchen".into(),
+            name: "Kitchen".into(),
+            icon: None,
+            devices: vec![crate::Device::new(
+                "kitchen-hue".into(),
+                "Kitchen light",
+                crate::DeviceKind::Light,
+            )
+            .with_integration(Integration::Hue {
+                light_id: "1".into(),
+            })],
+        });
+        config.scenes.push(crate::Scene {
+            id: "dinner".into(),
+            name: "Dinner".into(),
+            icon: None,
+            steps: vec![crate::Action::new(Id::new("kitchen-hue"), "bright")],
+            hue: None,
+            resource: None,
+            rooms: vec![],
+        });
+        let before = serde_json::to_vec(&Stored188::new(&config)).unwrap();
+        let old: release_188::Envelope = serde_json::from_slice(&before).unwrap();
+        assert_eq!(
+            old.holds().refusal(),
+            Some("cannot parse \"bright\"".into())
+        );
+
+        assert!(config.migrate_commands());
+        assert_eq!(config.scenes[0].steps[0].command, "dim:100");
+        assert!(config.validate().is_ok());
+        let after = serde_json::to_vec(&Stored188::new(&config)).unwrap();
+        let old: release_188::Envelope = serde_json::from_slice(&after).unwrap();
+        assert_eq!(old.holds().refusal(), None);
+    }
+
     fn named(ids: &[&str]) -> Vec<crate::PluginCapability> {
         ids.iter()
             .map(|id| crate::PluginCapability {
