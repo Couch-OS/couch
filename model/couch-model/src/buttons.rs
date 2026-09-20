@@ -380,6 +380,7 @@ mod tests {
             supports_inputs: false,
             presentation: vec![],
             actions: vec![],
+            child: None,
         };
         assert_eq!(
             function_choices(&integration),
@@ -416,6 +417,7 @@ mod tests {
             supports_inputs: false,
             presentation: vec![],
             actions: vec![],
+            child: None,
         };
         assert_eq!(
             function_choices(&integration),

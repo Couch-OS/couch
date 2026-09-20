@@ -207,11 +207,38 @@ impl Function {
         if let Integration::Plugin {
             capabilities,
             supports_inputs,
+            actions,
+            child,
             ..
         } = integration
         {
             if let Self::Input(id) = self {
                 return *supports_inputs && valid_input_id(id);
+            }
+            // Protocol 3 (unreleased). A level sent to a child is a typed
+            // action the host makes from it, so what decides is the action its
+            // kind declares and what this particular child can do, never a
+            // capability spelt `dim:30`.
+            if let Some(child) = child {
+                let declares = |kind| crate::PluginActionSchema::find(actions, kind).is_some();
+                match self {
+                    Self::Dim(_) => {
+                        return declares(crate::ActionKind::SetLight)
+                            && child.light.is_some_and(|traits| traits.dimmable)
+                    }
+                    Self::Position(_) => {
+                        return declares(crate::ActionKind::SetCover)
+                            && child.cover.is_some_and(|traits| traits.position)
+                    }
+                    Self::Mode(mode) => {
+                        return declares(crate::ActionKind::SetClimate)
+                            && child.climate.as_ref().is_some_and(|traits| {
+                                crate::ClimateMode::from_name(mode)
+                                    .is_some_and(|mode| traits.modes.contains(&mode))
+                            })
+                    }
+                    _ => {}
+                }
             }
             if matches!(self, Self::Custom(id) if !valid_custom_id(id)) {
                 return false;
@@ -537,6 +564,7 @@ pub(crate) mod tests {
             supports_inputs: true,
             presentation: alloc::vec![],
             actions: alloc::vec![],
+            child: None,
         };
         let info = Function::parse("x:info").unwrap();
         assert!(info.supports(&plugin(&["x:info"])));
@@ -578,6 +606,7 @@ pub(crate) mod tests {
             Integration::Connection {
                 connection_id: "player".into(),
                 resource_id: "".into(),
+                child: None,
             },
         ] {
             assert!(!info.supports(&integration), "{}", integration.via());

@@ -90,6 +90,23 @@ impl Config {
                     Some("light" | "cover")
                 )
             }
+            // Protocol 3 (unreleased): a light or cover that is a child of a
+            // packaged connection, when its kind declares `toggle`.
+            Some(Integration::Plugin {
+                child: Some(_),
+                capabilities,
+                ..
+            }) => {
+                capabilities.iter().any(|c| c.id == "toggle")
+                    && self
+                        .device_child_kind(&device.integration)
+                        .is_some_and(|kind| {
+                            matches!(
+                                kind.component,
+                                crate::ChildComponent::Light | crate::ChildComponent::Cover
+                            )
+                        })
+            }
             _ => false,
         }
     }
@@ -331,18 +348,21 @@ mod tests {
             Integration::Connection {
                 connection_id: "ha".into(),
                 resource_id: "light.desk".into(),
+                child: None,
             },
         );
         let cover = Device::new(Id::new("c"), "C", crate::DeviceKind::Blind).with_integration(
             Integration::Connection {
                 connection_id: "ha".into(),
                 resource_id: "cover.desk".into(),
+                child: None,
             },
         );
         let climate = Device::new(Id::new("t"), "T", crate::DeviceKind::Thermostat)
             .with_integration(Integration::Connection {
                 connection_id: "ha".into(),
                 resource_id: "climate.desk".into(),
+                child: None,
             });
         let hue = Device::new(Id::new("h"), "H", crate::DeviceKind::Light).with_integration(
             Integration::Hue {
