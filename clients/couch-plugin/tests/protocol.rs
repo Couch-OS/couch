@@ -220,6 +220,86 @@ fn only_a_protocol_3_manifest_may_name_buttons_of_its_own() {
     }
 }
 
+/// couch-model learnt three typed actions and three components in protocol 3,
+/// step T2, and a manifest is parsed with couch-model's types. Until the wire
+/// for them exists no manifest may declare a component, and a protocol 1 or 2
+/// manifest may not declare an action either, so no released package can be
+/// sent one. Each of these was a parse error before the model knew the words.
+#[test]
+fn light_cover_and_climate_are_in_no_manifest_an_older_package_could_send() {
+    use couch_plugin::{Component, PluginActionSchema, TypedAction};
+    let p = Package::new();
+    let schemas = [
+        PluginActionSchema::SetLight {},
+        PluginActionSchema::SetCover {},
+        PluginActionSchema::SetClimate {},
+    ];
+    let actions = [
+        TypedAction::SetLight {
+            on: Some(true),
+            brightness: None,
+            mirek: None,
+            xy: None,
+        },
+        TypedAction::SetCover { position: 40 },
+        TypedAction::SetClimate {
+            target_tenths: Some(215),
+            low_tenths: None,
+            high_tenths: None,
+            mode: None,
+        },
+    ];
+    for manifest in [p.manifest.clone(), v2_manifest(p.manifest.clone())] {
+        assert!(manifest.validate().is_ok());
+        for (schema, action) in schemas.into_iter().zip(actions) {
+            let mut declares = manifest.clone();
+            declares.actions = vec![schema];
+            assert_eq!(
+                declares.validate(),
+                Err(Error::Invalid),
+                "protocol {} {schema:?}",
+                manifest.protocol_version
+            );
+            assert_eq!(
+                manifest.validate_action(action),
+                Err(Error::Unsupported),
+                "protocol {} {action:?}",
+                manifest.protocol_version
+            );
+            assert_eq!(
+                couch_plugin::requires(&Request::Action { action }),
+                couch_plugin::NEXT_PROTOCOL_VERSION
+            );
+        }
+        for component in [
+            Component::Light {
+                label: "Lamp".into(),
+            },
+            Component::Cover {
+                label: "Blind".into(),
+            },
+            Component::Climate {
+                label: "Heating".into(),
+            },
+        ] {
+            let mut declares = manifest.clone();
+            declares.presentation = vec![component.clone()];
+            assert_eq!(
+                declares.validate(),
+                Err(Error::Invalid),
+                "protocol {} {component:?}",
+                manifest.protocol_version
+            );
+        }
+    }
+    assert_eq!(
+        couch_plugin::requires(&Request::Action {
+            action: TypedAction::SetVolumeDb { tenths: -345 }
+        }),
+        2
+    );
+}
+
 /// Protocol 3 is unreleased. Without the `protocol-3-preview` feature, which
 /// no shipped crate enables, its manifest is a package that needs a newer
 /// Couch, whatever else it says, and nothing is executed.

@@ -1307,6 +1307,7 @@ mod tests {
                     label: "Now playing".into(),
                     field: couch_model::PluginStatusField::Title,
                 }],
+                children: vec![],
             },
         });
         let device = config
@@ -1318,6 +1319,7 @@ mod tests {
         device.integration = Integration::Connection {
             connection_id: "community-tv".into(),
             resource_id: String::new(),
+            child: None,
         };
         let target = plugin_target(&config, config.activities[0].id.as_str()).unwrap();
         assert_eq!(target.connection, "community-tv");

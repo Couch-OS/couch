@@ -54,8 +54,13 @@ use serde::{Deserialize, Serialize};
 
 pub mod buttons;
 pub mod commands;
+pub mod domain;
 pub mod volume;
 pub use commands::KeyPhase;
+pub use domain::{
+    valid_resource, ChildComponent, ChildSnapshot, ClimateMode, ClimateState, ClimateTraits,
+    CoverState, CoverTraits, LightState, LightTraits, PluginChildKind, SceneResource, TempUnit,
+};
 pub use volume::{ActionKind, PluginActionSchema, TypedAction, VolumeDb};
 mod shortcuts;
 pub use shortcuts::{Shortcut, ShortcutAction, SHORTCUT_BUTTONS};
@@ -224,6 +229,10 @@ pub struct Scene {
     pub steps: Vec<Action>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hue: Option<HueScene>,
+    /// Protocol 3 (unreleased): the scene belongs to a package and is recalled
+    /// by sending `on` to that child. It has no steps and is not a Hue scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<SceneResource>,
     #[serde(default)]
     pub rooms: Vec<RoomId>,
 }

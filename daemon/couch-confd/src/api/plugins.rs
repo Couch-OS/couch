@@ -42,6 +42,7 @@ impl Api {
                 supports_inputs,
                 presentation,
                 actions,
+                ..
             } = &mut connection.provider
             {
                 let Some(manifest) = manifests.iter().find(|manifest| &manifest.id == id) else {

@@ -201,10 +201,17 @@ impl Api {
                     supports_inputs,
                     presentation,
                     actions,
+                    children,
                 } = &mut input.provider
                 {
                     match self.plugins.manifest(id) {
                         Ok(manifest) => {
+                            // Like everything else in this snapshot, the kinds
+                            // of child a connection offers come from the
+                            // package, never from the browser. No manifest
+                            // this build accepts can declare any (protocol 3,
+                            // unreleased), so there are none.
+                            children.clear();
                             *label = manifest.label;
                             *capabilities = manifest
                                 .capabilities

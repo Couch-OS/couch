@@ -111,6 +111,12 @@ C|v1+v2|v1+v2|protocol 2: dB control, spaced input
 D|v1+v2+v3|v1+v2|protocol 3: x: ids in all six places
 E|v1+v2+v3|v1+v2|D on a connection the Denon pilot converted
 F|v1+v3|v1|x: ids on a protocol 1 package (no v2 layer)
+H|v1+v3|v1|children: lights, a group, a package scene
+I|v1+v2+v3|v1+v2|H on a package with controls of its own
+J|v1+v3|v1|children: a blind and a thermostat
+K|v1+v3|v1|a package scene that an area lists
+L|v1+v2+v3|v1+v2|I on a connection the Denon pilot converted
+M|v1+v3|v1|a connection that is itself a lamp
 STATES
 
 echo
@@ -130,8 +136,8 @@ Cd|C on a connection the Denon pilot converted
 STATES
 
 echo
-echo "G: x: ids this tree must refuse to save"
-"$new" refuses || { failures=$((failures + 1)); problems+="    an x: id was accepted where no package declares it"$'\n'; }
+echo "G: what this tree must refuse to save"
+"$new" refuses || { failures=$((failures + 1)); problems+="    something in G was accepted"$'\n'; }
 
 echo
 if [ "$failures" -gt 0 ]; then

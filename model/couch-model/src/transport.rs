@@ -128,6 +128,7 @@ mod tests {
                         Integration::Connection {
                             connection_id: "lg".into(),
                             resource_id: String::new(),
+                            child: None,
                         },
                     )
                 },

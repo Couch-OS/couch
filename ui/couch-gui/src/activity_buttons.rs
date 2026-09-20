@@ -1477,6 +1477,7 @@ mod tests {
             supports_inputs: true,
             presentation: vec![],
             actions: vec![],
+            children: vec![],
         };
         for (id, provider) in [
             ("avr-package", plugin),
@@ -1506,6 +1507,7 @@ mod tests {
                 .with_integration(Integration::Connection {
                     connection_id: id.into(),
                     resource_id: String::new(),
+                    child: None,
                 }),
             );
         }
@@ -1597,6 +1599,7 @@ mod tests {
             .with_integration(Integration::Connection {
                 connection_id: "box".into(),
                 resource_id: String::new(),
+                child: None,
             }),
         );
         config.validate().unwrap();
@@ -2183,6 +2186,7 @@ mod tests {
                         .with_integration(Integration::Connection {
                             connection_id: "lg".into(),
                             resource_id: String::new(),
+                            child: None,
                         })
                 },
             ],
