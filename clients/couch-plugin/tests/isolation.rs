@@ -229,6 +229,35 @@ fn a_different_user_is_not_what_closes_proc() {
     );
 }
 
+/// A policy naming root is a bug in whatever built it - a store that somehow
+/// answered zero, a caller passing a default it should not have. The spawn
+/// fails rather than starting a package as root, and the check lives in
+/// `pre_exec`, so it holds however the policy was arrived at.
+#[test]
+#[ignore = "needs root: there is nothing to drop from otherwise"]
+fn a_package_is_never_started_as_root() {
+    if !root() {
+        eprintln!("not root: nothing was asserted");
+        return;
+    }
+    let package = Package::probe();
+    for (uid, gid) in [(0, 0), (0, FIRST), (FIRST, 0)] {
+        assert!(
+            Host::spawn_with_policy(
+                &package.root,
+                &package.manifest,
+                Duration::from_secs(5),
+                HostPolicy::for_package(uid, gid),
+            )
+            .is_err(),
+            "a package was started as uid {uid} gid {gid}"
+        );
+    }
+    // The same package under a real user still starts, so what was refused
+    // above is the policy and not the package.
+    assert_eq!(ask(&mut package.start(FIRST), "self", ""), describe(FIRST));
+}
+
 #[test]
 fn a_child_is_only_called_undumpable_when_that_can_be_told_apart() {
     if root() {
