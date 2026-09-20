@@ -123,11 +123,8 @@ jobs:
           cargo test --locked -p couch-plugin --features testing --test isolation --no-run
           binary=$(cargo test --locked -p couch-plugin --features testing --test isolation \
             --no-run --message-format=json 2>/dev/null \
-            | python3 -c 'import json,sys
-for line in sys.stdin:
-    item = json.loads(line)
-    if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "isolation":
-        print(item["executable"])' | tail -1)
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "isolation")
+                     | select(.executable != null) | .executable' | tail -1)
           echo "kernel.yama.ptrace_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo absent)"
           sudo "$binary" --ignored --test-threads=1 --nocapture
       - uses: actions/upload-artifact@v4
