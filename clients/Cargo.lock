@@ -585,6 +585,7 @@ version = "0.1.0"
 dependencies = [
  "couch-ha",
  "couch-sdk",
+ "rcgen",
  "rustls",
  "serde",
  "serde_json",

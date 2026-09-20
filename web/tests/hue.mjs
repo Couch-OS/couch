@@ -8,8 +8,9 @@ import {resolve} from 'node:path';
 import {chromium} from '../../build/webui-review/node_modules/playwright/index.mjs';
 const dir=await mkdtemp(resolve('build/hue-test-'));const settings=`${dir}/connection.json`;
 execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',`${dir}/key.pem`,'-out',`${dir}/cert.pem`,'-days','1','-subj','/CN=fixture-bridge'],{stdio:'ignore'});
-const id='00000000-0000-0000-0000-000000000001';let pressed=false,power=true,brightness=50,connected=true,reject=false;const commands=[];
+const id='00000000-0000-0000-0000-000000000001';let pressed=false,power=true,brightness=50,connected=true,reject=false;const commands=[];let served=0;
 const mock=https.createServer({key:await readFile(`${dir}/key.pem`),cert:await readFile(`${dir}/cert.pem`)},async(req,res)=>{
+ served++;
  let text='';for await(const c of req)text+=c;res.setHeader('Content-Type','application/json');
  const send=v=>res.end(JSON.stringify(v));
  if(req.url==='/api' && req.method==='POST'){assert.equal(JSON.parse(text).devicetype,'couch#remote');send(pressed?[{success:{username:'test-secret'}}]:[{error:{type:101,description:'link button not pressed'}}]);return;}
@@ -89,6 +90,12 @@ try{
  assert.equal((await fetch(`${base}/api/connections/${hueConnection}`,{method:'DELETE'})).status,422);
  await page.screenshot({path:'build/hue-scenes-web.png',fullPage:true});
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'build/webui-review/hue-mobile.png',fullPage:true});
- const corrupt=JSON.parse(before);corrupt.certificate[0]^=1;await writeFile(settings,JSON.stringify(corrupt));assert.equal((await api('lights')).status,502);await writeFile(settings,before);
+ // A wrong pin must stop the daemon talking to the bridge at all, and must not
+ // be relearned. Corrupt the certificate the connection actually saved, and
+ // watch the next request never arrive.
+ const corrupt=JSON.parse(before);corrupt.certificate[0]^=1;await writeFile(saved,JSON.stringify(corrupt));
+ const reached=served;assert.equal((await api('lights')).status,502);assert.equal(served,reached);
+ assert.equal(await readFile(saved,'utf8'),JSON.stringify(corrupt));
+ await writeFile(saved,before);assert.equal((await api('lights')).status,200);assert.equal(served,reached+1);
  assert.deepEqual(errors,[]);console.log('PASS: HTTPS pairing, link-button errors, pinned certificate rejection, private settings, discovery, on/off/brightness, unreachable lights, Hue error envelopes, room controls, scene import/search/filter/assignment and mobile UI');
 }finally{if(browser)await browser.close();daemon.kill();mock.closeAllConnections();await new Promise(r=>mock.close(r));await rm(dir,{recursive:true,force:true});}
