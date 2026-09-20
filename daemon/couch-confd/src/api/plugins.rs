@@ -350,17 +350,24 @@ impl Api {
         if kinds.is_empty() || resource_id.is_empty() {
             return Ok((integration, None));
         }
+        // An edit that does not move the device to another child is a rename,
+        // and a rename asks the package nothing at all: the device keeps what
+        // it was saved as, whether that is a snapshot or - for one a rollback
+        // stripped, which the next listing heals - nothing.
         let unchanged = saved.and_then(parts).and_then(|(was, had, child)| {
             (was == &connection_id && had == resource_id).then_some(child)
         });
-        if let Some(snapshot) = unchanged.flatten() {
-            let device_kind = kinds
-                .iter()
-                .find(|kind| kind.kind == snapshot.kind)
-                .map(|kind| kind.device_kind);
-            set_child(&mut integration, Some(snapshot.clone()));
+        if let Some(snapshot) = unchanged {
+            let device_kind = snapshot.and_then(|snapshot| {
+                kinds
+                    .iter()
+                    .find(|kind| kind.kind == snapshot.kind)
+                    .map(|kind| kind.device_kind)
+            });
+            set_child(&mut integration, snapshot.cloned());
             return Ok((integration, device_kind));
         }
+        // What the request said this child is has been read by nothing.
         let _ = described;
         let plugin = match self.plugin_id(connection_id.as_str()) {
             Some(plugin) => plugin,
@@ -1101,6 +1108,46 @@ mod children_tests {
         );
         assert_eq!(device(&api, "living-lamp")["integration"], saved);
         assert_eq!(device(&api, "living-lamp")["kind"], "light");
+
+        // A device a rollback stripped has no snapshot yet. Renaming it is
+        // still a rename: it is not refused because the bridge is down, and
+        // the next listing is what heals it.
+        {
+            let mut store = api.store.lock().unwrap();
+            store
+                .mutate(None, |config| {
+                    config.rooms[0].devices[4].integration = serde_json::from_value(
+                        json!({"via": "connection", "connection_id": "bridge",
+                               "resource_id": "lamp/1"}),
+                    )
+                    .unwrap();
+                })
+                .unwrap();
+        }
+        let mut edit = device(&api, "living-lamp");
+        edit["name"] = "Corner lamp".into();
+        assert_eq!(
+            api.replace_device(
+                edit.to_string().as_bytes(),
+                None,
+                "living-room",
+                "living-lamp"
+            )
+            .status,
+            200
+        );
+        assert!(device(&api, "living-lamp")["integration"]
+            .get("child")
+            .is_none());
+        {
+            let mut store = api.store.lock().unwrap();
+            store
+                .mutate(None, |config| {
+                    config.rooms[0].devices[4].integration =
+                        serde_json::from_value(saved.clone()).unwrap();
+                })
+                .unwrap();
+        }
 
         // Pointing the device at another child is not a rename: the package
         // is asked, and it is not there.
