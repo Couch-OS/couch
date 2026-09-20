@@ -22,9 +22,9 @@ pub use couch_sdk::{
     ActionKind, KeyPhase, PluginActionSchema, Reason, Selectable, Status, TypedAction, VolumeDb,
 };
 pub use host::{
-    local_request, local_request_detailed, read_frame_timeout, requires, write_frame_timeout,
-    Endpoint, Host, HostPolicy, LocalRequest, QUEUE_CAPACITY, QUEUE_TTL, REQUEST_TIMEOUT,
-    STARTUP_TIMEOUT,
+    is_non_dumpable, local_request, local_request_detailed, read_frame_timeout, requires,
+    write_frame_timeout, Endpoint, Host, HostPolicy, LocalRequest, QUEUE_CAPACITY, QUEUE_TTL,
+    REQUEST_TIMEOUT, STARTUP_TIMEOUT,
 };
 pub use manifest::{Capability, FieldKind, Manifest, SettingField};
 pub use protocol::{

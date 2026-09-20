@@ -1,6 +1,6 @@
 //! Shared external integration ownership for HTTP and the panel's private socket.
 //! Settings remain daemon-owned; children receive only their own connection data.
-use couch_plugin::{Endpoint, Error, Failure, FieldKind, Manifest, Request, Response};
+use couch_plugin::{Endpoint, Error, Failure, FieldKind, HostPolicy, Manifest, Request, Response};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -71,8 +71,14 @@ impl From<couch_integrations::Error> for Refusal {
 /// Start the package and let it check these settings. Configure contacts no
 /// device, so what comes back is about the settings alone; a protocol 3
 /// package may say which one.
-fn check_settings(directory: &Path, manifest: &Manifest, settings: &Value) -> Result<(), Failure> {
-    let mut host = couch_plugin::Host::spawn(directory, manifest, Duration::from_secs(3))?;
+fn check_settings(
+    directory: &Path,
+    manifest: &Manifest,
+    settings: &Value,
+    policy: HostPolicy,
+) -> Result<(), Failure> {
+    let mut host =
+        couch_plugin::Host::spawn_with_policy(directory, manifest, Duration::from_secs(3), policy)?;
     match host.request_detailed(Request::Configure {
         settings: settings.clone(),
     })? {
@@ -125,12 +131,30 @@ impl Runtime {
         let directory = std::env::var_os("COUCH_INTEGRATIONS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join("integrations"));
-        Self {
+        let runtime = Self {
             home,
             packages: couch_integrations::Store::new(directory),
             endpoints: Mutex::new(HashMap::new()),
             catalog_generations: Mutex::new(HashMap::new()),
+        };
+        // Packages installed by an older Couch have no user of their own yet.
+        // Give them one here, once, rather than have the first key press of
+        // the day wait for the store's exclusive lock. A store that has never
+        // held a package is left alone: there is nothing to name.
+        if runtime.packages.root().join("state").is_dir() {
+            if let Err(error) = runtime.packages.assign_identities() {
+                eprintln!("couch-confd: cannot give integration packages their own users: {error}");
+            }
         }
+        runtime
+    }
+
+    /// Who this package's children run as. No fallback: a store that cannot
+    /// say is reported, and the caller refuses rather than start a package
+    /// under a user that belongs to another one.
+    fn policy(&self, plugin: &str) -> Result<HostPolicy, couch_integrations::Error> {
+        let (uid, gid) = self.packages.identity(plugin)?;
+        Ok(HostPolicy::for_package(uid, gid))
     }
 
     pub fn catalog(&self) -> Result<Vec<Manifest>, String> {
@@ -185,6 +209,10 @@ impl Runtime {
         plugin: &str,
         patch: Value,
     ) -> Result<Value, Refusal> {
+        // Before the lease: allocating a user of its own for a package seen
+        // for the first time needs the store's exclusive lock, which a lease
+        // held here would block.
+        let policy = self.policy(plugin)?;
         // Admission validates every saved connection before activating a new
         // package. Keep its selection stable until these settings are durable,
         // so validation by an old child cannot race a package activation.
@@ -199,7 +227,7 @@ impl Runtime {
         let settings = merge_settings(&manifest, saved.as_ref(), patch)?;
         // Configure validates the adapter's typed settings without requiring an
         // online TV. Do not save a schema-valid but unusable host/port.
-        check_settings(&directory, &manifest, &settings)?;
+        check_settings(&directory, &manifest, &settings, policy)?;
         let parent = path.parent().ok_or("Invalid settings path")?;
         fs::create_dir_all(parent).map_err(|_| "Cannot create connection settings directory")?;
         #[cfg(unix)]
@@ -227,11 +255,12 @@ impl Runtime {
         package: &str,
         settings: Value,
     ) -> Result<LegacyAdoption, Refusal> {
+        let policy = self.policy(package)?;
         let _lease = self.packages.read_lease()?;
         let (directory, manifest) = self.packages.resolve_wait(package, STORE_READ_WAIT)?;
         let generation = self.packages.generation(package)?;
         let settings = manifest.with_defaults(settings)?;
-        check_settings(&directory, &manifest, &settings)
+        check_settings(&directory, &manifest, &settings, policy)
             .map_err(|failure| named(&manifest, failure))?;
         Ok(LegacyAdoption {
             package: package.to_owned(),
@@ -336,7 +365,14 @@ impl Runtime {
                 .resolve_wait(plugin, STORE_READ_WAIT.min(remaining))
                 .map_err(store_request_error)?;
             manifest.validate_settings(&settings)?;
-            let endpoint = Arc::new(Endpoint::start(&directory, manifest, settings.clone())?);
+            let policy = self.policy(plugin).map_err(store_request_error)?;
+            let endpoint = Arc::new(Endpoint::start_as(
+                &directory,
+                manifest,
+                settings.clone(),
+                couch_plugin::REQUEST_TIMEOUT,
+                policy,
+            )?);
             let mut endpoints = self.endpoints.lock().map_err(|_| Error::Transport)?;
             if endpoints.len() >= MAX_ENDPOINTS {
                 return Err(Error::Busy.into());

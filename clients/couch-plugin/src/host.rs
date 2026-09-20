@@ -40,8 +40,14 @@ const DEFAULT_SUPPLEMENTARY_GIDS: &[libc::gid_t] = &[];
 
 /// The production policy drops root before exec on Linux. Unprivileged host
 /// development inherits its uid. This is privilege separation, not a sandbox:
-/// integrations still share a uid and can access the LAN.
-#[derive(Clone, Copy, Debug)]
+/// an integration can still reach the LAN, and it can still see that other
+/// processes exist.
+///
+/// The default is the one every package shared before each installed package
+/// had a user of its own. It is still what an out-of-tree caller and every
+/// test gets; the daemon and the package store hand [`HostPolicy::for_package`]
+/// the identity the store allocated for that package.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostPolicy {
     pub uid: u32,
     pub gid: u32,
@@ -57,6 +63,21 @@ impl Default for HostPolicy {
     }
 }
 impl HostPolicy {
+    /// One installed package's own user and group, with exactly the
+    /// supplementary groups the shared default had: nothing a package could do
+    /// before becomes impossible because it stopped being 65534.
+    ///
+    /// The identity itself comes from the package store, which allocates it
+    /// once per package id and never reuses it. Nothing on disk is owned by
+    /// these ids, so an older Couch that knows nothing about them still runs
+    /// every package.
+    pub const fn for_package(uid: u32, gid: u32) -> Self {
+        Self {
+            uid,
+            gid,
+            supplementary_gids: DEFAULT_SUPPLEMENTARY_GIDS,
+        }
+    }
     /// The complete supplementary set applied while dropping privileges.
     ///
     /// Couch's ARMv7 musl target carries Android's `AID_INET` (3003) so an
@@ -64,6 +85,29 @@ impl HostPolicy {
     /// Other targets receive no supplementary groups.
     pub const fn supplementary_gids(self) -> &'static [libc::gid_t] {
         self.supplementary_gids
+    }
+}
+
+/// Whether a child has made itself undumpable, as the kernel reports it:
+/// `/proc/<pid>/environ` belongs to root rather than to the process's own user.
+///
+/// `None` when that cannot be read as an answer - anywhere but Linux, or when
+/// this process is not root, where a child shares this process's user and the
+/// ownership says nothing. Nothing decides anything on this yet; it is how the
+/// host will check a package that stores a pairing key.
+pub fn is_non_dumpable(pid: u32) -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        if unsafe { libc::geteuid() } != 0 {
+            return None;
+        }
+        let owner = std::fs::metadata(format!("/proc/{pid}/environ")).ok()?.uid();
+        Some(owner == 0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
     }
 }
 
@@ -160,6 +204,17 @@ impl Host {
         unsafe {
             command.pre_exec(move || {
                 if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // No core file, ever: a crashing package would otherwise write
+                // whatever it held in memory to a file under its own user.
+                // Lowering a limit needs no privilege, so this is done before
+                // the drop and survives execve.
+                let no_core = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                if libc::setrlimit(libc::RLIMIT_CORE, &no_core) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 #[cfg(target_os = "linux")]
@@ -456,9 +511,26 @@ impl Endpoint {
         settings: serde_json::Value,
         timeout: Duration,
     ) -> Result<Self> {
+        Self::start_as(
+            package_dir,
+            manifest,
+            settings,
+            timeout,
+            HostPolicy::default(),
+        )
+    }
+    /// The endpoint an installed package gets: every child of it, including
+    /// the replacement started after a failure, runs under this policy.
+    pub fn start_as(
+        package_dir: &Path,
+        manifest: Manifest,
+        settings: serde_json::Value,
+        timeout: Duration,
+        policy: HostPolicy,
+    ) -> Result<Self> {
         let package_dir: PathBuf = package_dir.into();
         let settings = manifest.with_defaults(settings)?;
-        let mut host = Host::spawn(&package_dir, &manifest, STARTUP_TIMEOUT)?;
+        let mut host = Host::spawn_with_policy(&package_dir, &manifest, STARTUP_TIMEOUT, policy)?;
         host.configure(settings.clone())?;
         host.set_timeout(timeout)?;
         let (sender, receiver) = mpsc::sync_channel::<Pending>(QUEUE_CAPACITY);
@@ -471,12 +543,17 @@ impl Endpoint {
                         continue;
                     }
                     if !host.is_alive() {
-                        let replacement = Host::spawn(&package_dir, &manifest, STARTUP_TIMEOUT)
-                            .and_then(|mut h| {
-                                h.configure(settings.clone())?;
-                                h.set_timeout(timeout)?;
-                                Ok(h)
-                            });
+                        let replacement = Host::spawn_with_policy(
+                            &package_dir,
+                            &manifest,
+                            STARTUP_TIMEOUT,
+                            policy,
+                        )
+                        .and_then(|mut h| {
+                            h.configure(settings.clone())?;
+                            h.set_timeout(timeout)?;
+                            Ok(h)
+                        });
                         match replacement {
                             Ok(replacement) => host = replacement,
                             Err(error) => {

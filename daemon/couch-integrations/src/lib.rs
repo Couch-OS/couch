@@ -26,6 +26,18 @@ use std::{
 };
 
 pub const DEFAULT_ROOT: &str = "/opt/couch/integrations";
+/// Every installed package's own user, at the store root rather than under
+/// `state/`, where each entry is a package id, or inside a selection file,
+/// which is `deny_unknown_fields`. An older Couch reads neither: its recovery
+/// pass deletes only `.staging-*` here and its listing reads only `state/`, so
+/// this file is simply ignored after a rollback and the packages run as they
+/// did before, all under one user.
+pub const IDENTITY_FILE: &str = "uids.json";
+/// Well above every Alpine system account in the OS image and well below
+/// 65534, so a package's user can never be mistaken for `nobody` or collide
+/// with one the image adds later.
+const FIRST_PACKAGE_UID: u32 = 60000;
+const LAST_PACKAGE_UID: u32 = 64999;
 /// Trust only the Couch integration signing key by default. Alpine's system
 /// repository keys authorize OS packages and must not also authorize plugins.
 pub const DEFAULT_KEYS_DIR: &str = "/opt/couch/integration-keys/official";
@@ -82,6 +94,48 @@ struct Selection {
     active: Option<Slot>,
     previous: Option<Slot>,
 }
+/// Which user each installed package runs as.
+///
+/// A table and not a hash of the id: two packages must never share a user, and
+/// a custom repository could otherwise name a package so that it hashes onto
+/// the user of a package already installed. `next` only ever moves forward, so
+/// a removed package keeps its row and a later package with the same id cannot
+/// inherit a user something else once ran as.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Identities {
+    next: u32,
+    packages: std::collections::BTreeMap<String, u32>,
+}
+impl Identities {
+    fn fresh() -> Self {
+        Self {
+            next: FIRST_PACKAGE_UID,
+            packages: std::collections::BTreeMap::new(),
+        }
+    }
+    /// A table Couch did not write, or wrote and then lost half of, is
+    /// replaced rather than repaired. Nothing on disk is owned by these users,
+    /// so the worst a rebuild costs is that a package's running children are
+    /// replaced by children under a different user.
+    fn usable(&self) -> bool {
+        (FIRST_PACKAGE_UID..=LAST_PACKAGE_UID.saturating_add(1)).contains(&self.next)
+            && self.packages.len() <= (LAST_PACKAGE_UID - FIRST_PACKAGE_UID + 1) as usize
+            && self.packages.keys().all(|id| valid_component(id))
+            && self
+                .packages
+                .values()
+                .all(|uid| (FIRST_PACKAGE_UID..self.next).contains(uid))
+            && {
+                let mut seen: Vec<u32> = self.packages.values().copied().collect();
+                seen.sort_unstable();
+                let before = seen.len();
+                seen.dedup();
+                seen.len() == before
+            }
+    }
+}
+
 /// The file a feed's signed metadata promises for a package: checked after
 /// the download and before apk is asked to open it.
 #[derive(Clone, Debug)]
@@ -162,6 +216,100 @@ impl Store {
         Ok(ReadLease {
             _lock: Lock::acquire_shared_wait(self.root.join(".lock"), MUTATION_LOCK_WAIT)?,
         })
+    }
+    /// The user and group one package's children run as, allocating it if this
+    /// package has never run before.
+    ///
+    /// A package that already has a row is answered under the shared lock, so
+    /// a key press never waits for an exclusive one; only the first sight of a
+    /// package takes it. There is no fallback: a store that cannot say who a
+    /// package is is busy or out of users, and the caller refuses the request
+    /// rather than start it as somebody else.
+    ///
+    /// Callers that hold a lease must ask before taking it. The daemon does,
+    /// and the startup pass means a lease holder finds every installed package
+    /// already allocated.
+    pub fn identity(&self, id: &str) -> Result<(u32, u32)> {
+        if !valid_component(id) {
+            return Err(err("invalid integration id"));
+        }
+        self.layout()?;
+        {
+            let _lock = Lock::acquire_shared_wait(self.root.join(".lock"), MUTATION_LOCK_WAIT)?;
+            if let Some(uid) = self.identities().packages.get(id) {
+                return Ok((*uid, *uid));
+            }
+        }
+        let _lock = Lock::acquire_wait(self.root.join(".lock"), MUTATION_LOCK_WAIT, libc::LOCK_EX)?;
+        self.identity_locked(id)
+    }
+    /// Give every installed package a user once, at daemon start, so the first
+    /// key press of the day finds a table it only has to read. Packages
+    /// installed before this Couch have no row and would otherwise each take
+    /// the exclusive lock at the moment they are first used.
+    pub fn assign_identities(&self) -> Result<()> {
+        self.layout()?;
+        let _lock = Lock::acquire_wait(self.root.join(".lock"), MUTATION_LOCK_WAIT, libc::LOCK_EX)?;
+        let mut table = self.identities();
+        let installed: Vec<String> = fs::read_dir(self.root.join("state"))
+            .map_err(|e| io("read integration selections", e))?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|id| valid_component(id))
+            .collect();
+        let mut changed = false;
+        for id in installed {
+            if table.packages.contains_key(&id) {
+                continue;
+            }
+            allocate(&mut table, &id)?;
+            changed = true;
+        }
+        if changed {
+            self.write_identities(&table)?;
+        }
+        Ok(())
+    }
+    /// The table as it should be read, under a lock the caller already holds.
+    /// An absent, unreadable or inconsistent table reads as an empty one and
+    /// is rewritten by the next allocation.
+    fn identities(&self) -> Identities {
+        let path = self.root.join(IDENTITY_FILE);
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            return Identities::fresh();
+        };
+        if !metadata.is_file()
+            || metadata.len() > 512 * 1024
+            || metadata.permissions().mode() & 0o022 != 0
+        {
+            return Identities::fresh();
+        }
+        match fs::read(&path).map(|bytes| serde_json::from_slice::<Identities>(&bytes)) {
+            Ok(Ok(table)) if table.usable() => table,
+            _ => Identities::fresh(),
+        }
+    }
+    fn write_identities(&self, table: &Identities) -> Result<()> {
+        atomic_write(
+            &self.root.join(IDENTITY_FILE),
+            &serde_json::to_vec(table).map_err(|e| err(e.to_string()))?,
+        )?;
+        // The table is not a secret and every reader of it is root; what
+        // matters is that no other user may write it.
+        fs::set_permissions(
+            self.root.join(IDENTITY_FILE),
+            fs::Permissions::from_mode(0o644),
+        )
+        .map_err(|e| io("protect integration user table", e))
+    }
+    fn identity_locked(&self, id: &str) -> Result<(u32, u32)> {
+        let mut table = self.identities();
+        if let Some(uid) = table.packages.get(id) {
+            return Ok((*uid, *uid));
+        }
+        let uid = allocate(&mut table, id)?;
+        self.write_identities(&table)?;
+        Ok((uid, uid))
     }
     /// A local sideload remains authenticated: it must be signed by a key in
     /// `keys_dir`. This is intentionally not an `--allow-untrusted` escape.
@@ -338,8 +486,14 @@ impl Store {
         self.slot(id, &previous)?;
         let path = self.slot_path(id, &previous.version);
         let manifest = read_manifest(&path.join("manifest.json"))?;
-        let mut candidate = couch_plugin::Host::spawn(&path, &manifest, Duration::from_secs(3))
-            .map_err(|e| err(format!("rollback integration handshake failed: {e}")))?;
+        let (uid, gid) = self.identity_locked(id)?;
+        let mut candidate = couch_plugin::Host::spawn_with_policy(
+            &path,
+            &manifest,
+            Duration::from_secs(3),
+            couch_plugin::HostPolicy::for_package(uid, gid),
+        )
+        .map_err(|e| err(format!("rollback integration handshake failed: {e}")))?;
         self.check_saved_settings(&mut candidate, &manifest)?;
         drop(candidate);
         self.select(
@@ -440,9 +594,17 @@ impl Store {
         {
             return Err(err("manifest executable is not a regular file"));
         }
-        let mut candidate =
-            couch_plugin::Host::spawn(&package_root, &manifest, Duration::from_secs(3))
-                .map_err(|e| err(format!("integration handshake failed: {e}")))?;
+        // The user this package will run as from now on, allocated before the
+        // version it came with is admitted, so the check below is made by a
+        // child of exactly the identity the daemon will start later.
+        let (uid, gid) = self.identity_locked(id)?;
+        let mut candidate = couch_plugin::Host::spawn_with_policy(
+            &package_root,
+            &manifest,
+            Duration::from_secs(3),
+            couch_plugin::HostPolicy::for_package(uid, gid),
+        )
+        .map_err(|e| err(format!("integration handshake failed: {e}")))?;
         self.check_saved_settings(&mut candidate, &manifest)?;
         drop(candidate);
         let digest = tree_digest(&package_root)?;
@@ -765,6 +927,18 @@ impl Lock {
             std::thread::sleep(remaining.min(Duration::from_millis(5)));
         }
     }
+}
+/// The next user, never one that has been handed out before in this store.
+fn allocate(table: &mut Identities, id: &str) -> Result<u32> {
+    let uid = table.next;
+    if uid > LAST_PACKAGE_UID {
+        return Err(err(
+            "no user is left for another integration package; remove one and reinstall",
+        ));
+    }
+    table.next = uid + 1;
+    table.packages.insert(id.to_owned(), uid);
+    Ok(uid)
 }
 fn validate_manifest(manifest: &Manifest) -> Result<()> {
     manifest
@@ -1429,6 +1603,168 @@ mod tests {
         fs::set_permissions(payload.join("tmp"), fs::Permissions::from_mode(0o1777)).unwrap();
         assert!(store.audit(&staging, "example").is_err());
         assert!(audit_payload(&payload).is_err());
+    }
+
+    #[test]
+    fn every_package_gets_one_user_of_its_own_and_keeps_it() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        assert_eq!(store.identity("denon").unwrap(), (60000, 60000));
+        assert_eq!(store.identity("sonos").unwrap(), (60001, 60001));
+        assert_eq!(store.identity("kodi").unwrap(), (60002, 60002));
+        // The same package asked again is the same user, from the file and
+        // not from anything remembered in this process.
+        let reopened = Store::new(store.root.clone());
+        assert_eq!(reopened.identity("denon").unwrap(), (60000, 60000));
+        assert_eq!(reopened.identity("sonos").unwrap(), (60001, 60001));
+        let table: serde_json::Value =
+            serde_json::from_slice(&fs::read(store.root.join(IDENTITY_FILE)).unwrap()).unwrap();
+        assert_eq!(
+            table,
+            serde_json::json!({"next":60003,"packages":{"denon":60000,"kodi":60002,"sonos":60001}})
+        );
+        assert_eq!(
+            fs::metadata(store.root.join(IDENTITY_FILE))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o644
+        );
+        assert!(store.identity("../escape").is_err());
+    }
+
+    #[test]
+    fn a_removed_package_keeps_its_user_and_a_new_one_never_inherits_it() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        assert_eq!(store.identity("denon").unwrap(), (60000, 60000));
+        assert_eq!(store.identity("sonos").unwrap(), (60001, 60001));
+        store.remove("sonos").unwrap();
+        assert_eq!(store.identity("kodi").unwrap(), (60002, 60002));
+        // Reinstalling the removed package gets the row it always had, which
+        // is the one thing a recycled user could not promise.
+        assert_eq!(store.identity("sonos").unwrap(), (60001, 60001));
+    }
+
+    #[test]
+    fn a_missing_or_damaged_user_table_is_rebuilt_rather_than_repaired() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        assert_eq!(store.identity("denon").unwrap(), (60000, 60000));
+        for damage in [
+            "".as_bytes(),
+            b"{\"next\":60001,\"packages\":{\"denon\"",
+            // Two packages on one user, a user outside the range, a counter
+            // that went backwards, and a field this Couch does not know.
+            br#"{"next":60002,"packages":{"denon":60000,"sonos":60000}}"#,
+            br#"{"next":60002,"packages":{"denon":70000}}"#,
+            br#"{"next":60000,"packages":{"denon":60000}}"#,
+            br#"{"next":60001,"packages":{"denon":60000},"colour":"red"}"#,
+        ] {
+            fs::write(store.root.join(IDENTITY_FILE), damage).unwrap();
+            assert_eq!(store.identity("denon").unwrap(), (60000, 60000));
+            assert_eq!(store.identity("sonos").unwrap(), (60001, 60001));
+            fs::remove_file(store.root.join(IDENTITY_FILE)).unwrap();
+        }
+        assert_eq!(store.identity("denon").unwrap(), (60000, 60000));
+    }
+
+    #[test]
+    fn the_last_user_in_the_range_is_handed_out_and_then_the_store_says_so() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        store
+            .write_identities(&Identities {
+                next: LAST_PACKAGE_UID,
+                packages: Default::default(),
+            })
+            .unwrap();
+        assert_eq!(
+            store.identity("last").unwrap(),
+            (LAST_PACKAGE_UID, LAST_PACKAGE_UID)
+        );
+        let error = store.identity("one-too-many").unwrap_err();
+        assert!(error.to_string().contains("no user is left"), "{error}");
+        assert!(!error.is_busy());
+        // Never a quiet fall back to the user every package used to share.
+        assert_eq!(store.identity("last").unwrap().0, LAST_PACKAGE_UID);
+    }
+
+    #[test]
+    fn users_are_allocated_under_the_store_lock_and_a_locked_store_is_busy() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let store = Store::new(store.root.clone());
+                std::thread::spawn(move || store.identity(&format!("package-{n}")).unwrap().0)
+            })
+            .collect();
+        let mut allocated: Vec<u32> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        allocated.sort_unstable();
+        assert_eq!(allocated, (60000..60008).collect::<Vec<_>>());
+
+        let held = Lock::acquire(store.root.join(".lock")).unwrap();
+        let error = store.identity("while-locked").unwrap_err();
+        assert!(error.is_busy(), "{error}");
+        drop(held);
+        assert_eq!(store.identity("while-locked").unwrap(), (60008, 60008));
+    }
+
+    /// The table sits at the store root because the release the remote can be
+    /// rolled back to reads only `state/` and deletes only `.staging-*`. This
+    /// is that claim, made against this store's own code paths.
+    #[test]
+    fn an_older_couch_neither_lists_nor_deletes_the_user_table() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let installed = slot(&store, "1.0.0");
+        store
+            .select(
+                "example",
+                &Selection {
+                    active: Some(installed),
+                    previous: None,
+                },
+            )
+            .unwrap();
+        let before: Vec<String> = store.list().unwrap().into_iter().map(|m| m.id).collect();
+        store.assign_identities().unwrap();
+        assert_eq!(store.identity("example").unwrap(), (60000, 60000));
+        let after: Vec<String> = store.list().unwrap().into_iter().map(|m| m.id).collect();
+        assert_eq!(before, after);
+        assert_eq!(after, vec!["example".to_owned()]);
+        assert_eq!(store.resolve("example").unwrap().1.version, "1.0.0");
+        // The recovery pass an older Couch runs before every install: the
+        // table is not `.staging-*`, so it survives untouched.
+        let bytes = fs::read(store.root.join(IDENTITY_FILE)).unwrap();
+        store.recover().unwrap();
+        assert_eq!(fs::read(store.root.join(IDENTITY_FILE)).unwrap(), bytes);
+        // And the layout check an older Couch makes still passes with it there.
+        assert!(store.layout().is_ok());
+    }
+
+    #[test]
+    fn the_startup_pass_names_what_is_installed_and_changes_nothing_else() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let installed = slot(&store, "1.0.0");
+        store
+            .select(
+                "example",
+                &Selection {
+                    active: Some(installed),
+                    previous: None,
+                },
+            )
+            .unwrap();
+        store.assign_identities().unwrap();
+        let after_first = fs::read(store.root.join(IDENTITY_FILE)).unwrap();
+        assert_eq!(store.identity("example").unwrap(), (60000, 60000));
+        // A second pass has nothing to give out and must not rewrite the file.
+        store.assign_identities().unwrap();
+        assert_eq!(fs::read(store.root.join(IDENTITY_FILE)).unwrap(), after_first);
     }
 
     #[test]
