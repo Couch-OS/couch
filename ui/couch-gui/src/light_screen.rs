@@ -37,8 +37,9 @@ pub(crate) fn kelvin(mirek: u16) -> u32 {
 ///
 /// The step is a twentieth of this light's own range, so the whole range is
 /// about twenty presses whatever the lamp's limits are, and never finer than
-/// five mirek. Right is cooler, which is a *lower* mirek: the bar on screen
-/// runs warm to cool, so the key and the picture travel the same way.
+/// five mirek. A positive delta is cooler, which is a *lower* mirek: the bar
+/// on screen runs warm at the bottom to cool at the top, so the up key, the
+/// marker and the rising Kelvin read-out all travel the same way.
 pub(crate) fn mirek_step(
     light: &Light,
     target: Option<u16>,
@@ -58,7 +59,8 @@ pub(crate) fn mirek_step(
 }
 
 /// Where a mirek sits on the screen's warm-to-cool bar, as a percentage: 0 is
-/// this lamp's warmest, 100 its coolest.
+/// this lamp's warmest, at the bottom of the bar, and 100 its coolest, at the
+/// top.
 fn mirek_position(range: (u16, u16), mirek: u16) -> i32 {
     let (cool, warm) = range;
     if warm <= cool {
@@ -103,6 +105,25 @@ pub(crate) struct View {
     /// A sentence under the controls: why an adjustment was refused, or what
     /// this device cannot do.
     pub detail: String,
+    /// The one line at the bottom that teaches this screen's keys.
+    pub hint: String,
+}
+
+/// The line along the bottom of the screen.
+///
+/// It names the two keys that are new here - volume for the bar on the left,
+/// channel for the one on the right - and it has to be one line at 480 pixels,
+/// so a lamp without a colour temperature spends the room it saves on Back
+/// instead.
+fn hint(cover: bool, tunable: bool) -> String {
+    if cover {
+        "Vol: position · Power: open/close · Back: room"
+    } else if tunable {
+        "Vol: brightness · Ch: warmth · Power: on/off"
+    } else {
+        "Vol: brightness · Power: on/off · Back: room"
+    }
+    .to_owned()
 }
 
 /// The screen for one row.
@@ -132,6 +153,7 @@ pub(crate) fn view(
         cover: declared.cover,
         can_stop: declared.can_stop,
         tunable: !declared.cover && declared.mirek.is_some(),
+        hint: hint(declared.cover, !declared.cover && declared.mirek.is_some()),
         ..View::default()
     };
     match state {
@@ -168,6 +190,9 @@ pub(crate) fn view(
                 } else {
                     String::new()
                 },
+                // What the lamp itself reports, not what its row declared: a
+                // Hue light declares nothing and still tunes.
+                hint: hint(false, tunable),
                 ..base
             }
         }
@@ -193,6 +218,7 @@ pub(crate) fn view(
                 } else {
                     String::new()
                 },
+                hint: hint(true, false),
                 ..base
             }
         }
@@ -302,6 +328,8 @@ mod tests {
         // 370 of 153..500, measured from the warm end.
         assert_eq!(tunable.mirek_percent, 37);
         assert_eq!(tunable.detail, "");
+        // The line at the bottom teaches the two keys this screen adds.
+        assert_eq!(tunable.hint, "Vol: brightness · Ch: warmth · Power: on/off");
 
         // A pending press moves the screen before the light has answered.
         let pressed = view(
@@ -328,6 +356,9 @@ mod tests {
         assert_eq!(plain.level, "—");
         assert!(!plain.level_known && !plain.adjustable && !plain.tunable);
         assert_eq!(plain.detail, "This light has only on and off.");
+        // No colour temperature, so the channel keys are not offered and the
+        // room they leave goes to Back.
+        assert_eq!(plain.hint, "Vol: brightness · Power: on/off · Back: room");
 
         // Unavailable is unavailable: no level, no colour, no invented off.
         let mut gone = lamp(true, Some((153, 500)));
@@ -349,6 +380,7 @@ mod tests {
         // The range is still declared, so the control is still drawn - with
         // nothing in it, which is the honest picture.
         assert!(dark.tunable);
+        assert_eq!(dark.hint, "Vol: brightness · Ch: warmth · Power: on/off");
 
         // And a row with no reading at all is the same picture.
         assert_eq!(
@@ -371,6 +403,10 @@ mod tests {
         );
         assert!(unread.cover && unread.can_stop && !unread.tunable);
         assert_eq!(unread.level_label, "OPEN POSITION");
+        assert_eq!(
+            unread.hint,
+            "Vol: position · Power: open/close · Back: room"
+        );
     }
 
     #[test]
@@ -392,6 +428,7 @@ mod tests {
         assert_eq!(open.level, "60%");
         assert!(open.cover && open.can_stop && open.adjustable && open.active);
         assert!(!open.tunable);
+        assert_eq!(open.hint, "Vol: position · Power: open/close · Back: room");
         let simple = view(
             "Blind",
             "",

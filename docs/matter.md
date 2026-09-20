@@ -34,7 +34,8 @@ In the room view on the remote, OK on a Matter light with a Level Control
 cluster opens its controls, where the brightness can be set; Power switches it,
 and left/right on the row still dims it in place. A device with only on and off
 keeps OK as a switch. Matter lamps offer brightness only: the controller reads
-and writes on/off and level, so the controls show no colour temperature. Activities, scenes and physical
+and writes on/off and level, so the controls show one brightness bar, no colour
+temperature, and the channel keys do nothing there. Activities, scenes and physical
 button mappings can use `on`, `off`, `toggle` and a `dim:<n>` level, the last
 only on an endpoint with a Level Control cluster. A mapped `toggle` reads the
 state first and turns the device on if it will not say. The room view, the

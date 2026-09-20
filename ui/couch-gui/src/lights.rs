@@ -367,8 +367,10 @@ pub struct Controller {
     screen_focus: i32,
     screen_button: i32,
     /// What the screen was last drawn from, so a poll that changed nothing
-    /// does not touch a property (docs/slint-notes.md).
-    last_screen: Option<crate::light_screen::View>,
+    /// does not touch a property (docs/slint-notes.md). The highlight is part
+    /// of it: it is not in the view, and a press that moved only the highlight
+    /// used to compare equal here and never reach the screen.
+    last_screen: Option<(crate::light_screen::View, i32, i32)>,
     /// A sentence for the main loop's toast, raised by a row press.
     notice: Option<String>,
 }
@@ -1260,15 +1262,21 @@ impl Controller {
             format!("{room} · {source}")
         }
     }
-    /// Whether the open screen has a second control under the level: a colour
-    /// temperature, or a blind's three buttons.
-    fn screen_has_second_control(&self, entry: &Entry) -> bool {
+    /// Whether the open screen is a blind: one bar with three buttons under
+    /// it, rather than one or two bars.
+    fn screen_cover(&self, entry: &Entry) -> bool {
+        matches!(entry.state, Some(DeviceState::Cover(_))) || declared(entry).cover
+    }
+    /// Whether the open screen has a colour temperature at all. The channel
+    /// keys ask this before anything else: on a lamp that only dims they do
+    /// nothing, rather than saying so on every press of a held key.
+    fn screen_tunable(&self, entry: &Entry) -> bool {
         match entry.state.as_ref() {
             Some(DeviceState::Light(light)) => light.mirek_range.is_some(),
-            Some(DeviceState::Cover(_)) => true,
-            _ => {
+            Some(_) => false,
+            None => {
                 let declared = declared(entry);
-                declared.cover || declared.mirek.is_some()
+                !declared.cover && declared.mirek.is_some()
             }
         }
     }
@@ -1315,30 +1323,55 @@ impl Controller {
         match name {
             "close" => return self.close_screen(app, false),
             "home" => return self.close_screen(app, true),
+            // Left and right walk the controls now that the bars stand up: on
+            // a lamp the two bars, on a blind the bar and then each of its
+            // three buttons, which is one chain of four places.
             "focus" => {
-                let second = self
-                    .entries
-                    .get(row)
-                    .is_some_and(|entry| self.screen_has_second_control(entry));
-                self.screen_focus = if second {
-                    (self.screen_focus + index).clamp(0, 1)
-                } else {
-                    0
+                let Some(entry) = self.entries.get(row) else {
+                    return;
                 };
+                if self.screen_cover(entry) {
+                    let at = if self.screen_focus == 0 {
+                        0
+                    } else {
+                        1 + self.screen_button
+                    };
+                    let at = (at + index).clamp(0, 3);
+                    self.screen_focus = i32::from(at > 0);
+                    self.screen_button = (at - 1).max(0);
+                } else if self.screen_tunable(entry) {
+                    self.screen_focus = (self.screen_focus + index).clamp(0, 1);
+                } else {
+                    self.screen_focus = 0;
+                }
             }
             "focus-level" => self.screen_focus = 0,
             "focus-colour" => self.screen_focus = 1,
+            // Up and down adjust the highlighted bar. A blind has only one, so
+            // they keep moving it even while one of its buttons is highlighted.
             "step" => {
-                let cover = self.entries.get(row).is_some_and(|entry| {
-                    matches!(entry.state, Some(DeviceState::Cover(_))) || declared(entry).cover
-                });
-                match (self.screen_focus, cover) {
-                    // On a blind the second row is three buttons, so left and
-                    // right move between them rather than adjusting anything.
-                    (1, true) => self.screen_button = (self.screen_button + index).clamp(0, 2),
-                    (1, false) => self.adjust_mirek(app, row, index),
+                let tunable = self
+                    .entries
+                    .get(row)
+                    .is_some_and(|entry| self.screen_tunable(entry));
+                if self.screen_focus == 1 && tunable {
+                    self.adjust_mirek(app, row, index);
+                } else {
                     // The step the rows use, so the two agree.
-                    _ => self.adjust_brightness(app, row, index.signum() * 5),
+                    self.adjust_brightness(app, row, index.signum() * 5);
+                }
+            }
+            // The volume keys are the brightness bar and the channel keys the
+            // colour temperature, wherever the highlight is. A lamp with no
+            // colour temperature simply has nothing for the channel keys.
+            "level" => self.adjust_brightness(app, row, index.signum() * 5),
+            "warmth" => {
+                if self
+                    .entries
+                    .get(row)
+                    .is_some_and(|entry| self.screen_tunable(entry))
+                {
+                    self.adjust_mirek(app, row, index);
                 }
             }
             "toggle" => {
@@ -1441,9 +1474,11 @@ impl Controller {
         if !detail.is_empty() {
             view.detail = detail.to_string();
         }
-        if self.last_screen.as_ref() == Some(&view) {
+        let drawn = (view, self.screen_focus, self.screen_button);
+        if self.last_screen.as_ref() == Some(&drawn) {
             return;
         }
+        let view = &drawn.0;
         app.set_light_screen_title(view.title.as_str().into());
         app.set_light_screen_room(view.room.as_str().into());
         app.set_light_screen_state(view.state.as_str().into());
@@ -1460,13 +1495,14 @@ impl Controller {
         app.set_light_screen_mirek_percent(view.mirek_percent);
         app.set_light_screen_mirek_known(view.mirek_known);
         app.set_light_screen_detail(view.detail.as_str().into());
+        app.set_light_screen_hint(view.hint.as_str().into());
         app.set_light_screen_focus(self.screen_focus);
         app.set_light_screen_button(self.screen_button);
         app.set_light_screen_pending(
             self.busy.as_deref() == Some(id.as_str())
                 || self.pending_level(&id).is_some() && self.brightness_flight.is_some(),
         );
-        self.last_screen = Some(view);
+        self.last_screen = Some(drawn);
     }
     /// The row on this index the Power key switches. An activity row, a
     /// device with a screen of its own and a thermostat are not: their Power
@@ -3395,7 +3431,9 @@ mod tests {
         app: &crate::App,
         config: &couch_model::Config,
         room: &str,
-        row: usize,
+        // The row OK opens, and how many times right is pressed once the
+        // screen is up, so a picture can show the second control highlighted.
+        open: (usize, usize),
         fill: impl Fn(&mut Vec<Entry>),
         name: &str,
     ) -> Vec<String> {
@@ -3415,8 +3453,11 @@ mod tests {
         app.set_light_shown(true);
         app.set_feedback_enabled(true);
         controller.update_rows(app, true);
-        app.set_light_index(row as i32);
-        controller.open_screen(app, row);
+        app.set_light_index(open.0 as i32);
+        controller.open_screen(app, open.0);
+        for _ in 0..open.1 {
+            controller.screen_action(app, "focus", 1);
+        }
         for _ in 0..20 {
             slint::platform::update_timers_and_animations();
             std::thread::sleep(Duration::from_millis(16));
@@ -3451,6 +3492,7 @@ mod tests {
             app.get_light_screen_level().to_string(),
             app.get_light_screen_kelvin().to_string(),
             app.get_light_screen_detail().to_string(),
+            app.get_light_screen_hint().to_string(),
         ]
     }
 
@@ -3506,7 +3548,7 @@ mod tests {
                 &app,
                 &config,
                 "living-room",
-                0,
+                (0, 0),
                 |entries| state(
                     entries,
                     0,
@@ -3521,7 +3563,8 @@ mod tests {
                 "BRIGHTNESS",
                 "40%",
                 "2700 K",
-                ""
+                "",
+                "Vol: brightness · Ch: warmth · Power: on/off"
             ]
         );
         // A lamp that only dims: no colour temperature is offered at all.
@@ -3531,7 +3574,7 @@ mod tests {
                 &app,
                 &config,
                 "living-room",
-                1,
+                (1, 0),
                 |entries| state(
                     entries,
                     1,
@@ -3546,7 +3589,8 @@ mod tests {
                 "BRIGHTNESS",
                 "70%",
                 "—",
-                ""
+                "",
+                "Vol: brightness · Power: on/off · Back: room"
             ]
         );
         // One that is not answering: no level, no colour, no invented off.
@@ -3556,7 +3600,7 @@ mod tests {
                 &app,
                 &config,
                 "living-room",
-                1,
+                (1, 0),
                 |_| {},
                 "light-screen-3-unavailable.png",
             ),
@@ -3567,7 +3611,8 @@ mod tests {
                 "BRIGHTNESS",
                 "—",
                 "—",
-                ""
+                "",
+                "Vol: brightness · Power: on/off · Back: room"
             ]
         );
         // A blind: the same screen with a position on it and its own buttons.
@@ -3577,7 +3622,7 @@ mod tests {
                 &app,
                 &config,
                 "living-room",
-                2,
+                (2, 0),
                 |entries| state(
                     entries,
                     2,
@@ -3592,11 +3637,207 @@ mod tests {
                 "OPEN POSITION",
                 "60%",
                 "—",
-                ""
+                "",
+                "Vol: position · Power: open/close · Back: room"
+            ]
+        );
+        // The same tunable lamp with right pressed once: the highlight is on
+        // the colour temperature, which is what left and right now do.
+        assert_eq!(
+            draw_screen(
+                &window,
+                &app,
+                &config,
+                "living-room",
+                (0, 1),
+                |entries| state(
+                    entries,
+                    0,
+                    serde_json::json!({"light":{"on":true,"brightness":40,"mirek":370}})
+                ),
+                "light-screen-5-colour-highlighted.png",
+            ),
+            [
+                "Desk lamp",
+                "Living room · Hue bridge",
+                "On · 40%",
+                "BRIGHTNESS",
+                "40%",
+                "2700 K",
+                "",
+                "Vol: brightness · Ch: warmth · Power: on/off"
             ]
         );
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The keys on the open screen, now that the bars stand up.
+    ///
+    /// Volume is the brightness bar and channel the colour temperature,
+    /// whichever bar is highlighted; up and down adjust the highlighted bar
+    /// and left and right move between them. Everything goes through the same
+    /// optimistic queue the rows use, so a held key leaves one target behind,
+    /// not a press-by-press backlog.
+    #[test]
+    fn volume_is_brightness_and_channel_is_warmth_wherever_the_highlight_is() {
+        const NAME: &str =
+            "lights::tests::volume_is_brightness_and_channel_is_warmth_wherever_the_highlight_is";
+        if std::env::var_os("COUCH_TEST_SCREEN_KEYS").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_SCREEN_KEYS", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let config = packaged();
+        let _window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let mut controller = Controller::install(&app);
+        let room = Id::new("living-room");
+        let mut entries = configured_in(&config, &room).unwrap();
+        let read = |entries: &mut Vec<Entry>, i: usize, status: serde_json::Value| {
+            let row = entries[i].plugin.clone().unwrap();
+            let id = entries[i].id.clone();
+            let name = entries[i].name.clone();
+            let mut state = row.state(&name, &reading(status)).unwrap();
+            state.set_id(id);
+            entries[i].state = Some(state);
+        };
+        read(
+            &mut entries,
+            0,
+            serde_json::json!({"light":{"on":true,"brightness":40,"mirek":370}}),
+        );
+        read(
+            &mut entries,
+            1,
+            serde_json::json!({"light":{"on":true,"brightness":70}}),
+        );
+        read(
+            &mut entries,
+            2,
+            serde_json::json!({"cover":{"open":true,"position":60}}),
+        );
+        controller.entries = entries;
+        controller.room = Some(room);
+        app.set_light_shown(true);
+        let levels = |c: &Controller| c.brightness_pending.iter().cloned().collect::<Vec<_>>();
+        let mireks = |c: &Controller| c.mirek_pending.iter().cloned().collect::<Vec<_>>();
+
+        // The lamp that dims and tunes.
+        controller.open_screen(&app, 0);
+        let lamp = "plugin:bridge/lamp/1".to_string();
+        assert_eq!(controller.screen_focus, 0);
+        // Volume up, with the brightness bar highlighted: the row's own step.
+        controller.screen_action(&app, "level", 1);
+        assert_eq!(levels(&controller), [(lamp.clone(), 45)]);
+        // Right moves the highlight to the colour temperature, and volume is
+        // still brightness there. A held key coalesces: one target, the last.
+        controller.screen_action(&app, "focus", 1);
+        assert_eq!(controller.screen_focus, 1);
+        controller.screen_action(&app, "level", 1);
+        controller.screen_action(&app, "level", 1);
+        assert_eq!(levels(&controller), [(lamp.clone(), 55)]);
+        controller.screen_action(&app, "level", -1);
+        assert_eq!(levels(&controller), [(lamp.clone(), 50)]);
+
+        // Channel is the colour temperature, a twentieth of the lamp's
+        // 153..500 range a press, and it too keeps only the latest target.
+        controller.screen_action(&app, "warmth", 1);
+        assert_eq!(mireks(&controller), [(lamp.clone(), 353)]);
+        controller.screen_action(&app, "warmth", 1);
+        assert_eq!(mireks(&controller), [(lamp.clone(), 336)]);
+        controller.screen_action(&app, "warmth", -1);
+        assert_eq!(mireks(&controller), [(lamp.clone(), 353)]);
+        // Held to either end, it stops at the lamp's own limits.
+        for _ in 0..40 {
+            controller.screen_action(&app, "warmth", 1);
+        }
+        assert_eq!(mireks(&controller), [(lamp.clone(), 153)]);
+        for _ in 0..40 {
+            controller.screen_action(&app, "warmth", -1);
+        }
+        assert_eq!(mireks(&controller), [(lamp.clone(), 500)]);
+        // And back on the brightness bar the channel keys still reach the
+        // colour temperature: neither key cares where the highlight is.
+        controller.screen_action(&app, "focus", -1);
+        assert_eq!(controller.screen_focus, 0);
+        controller.screen_action(&app, "warmth", 1);
+        assert_eq!(mireks(&controller), [(lamp.clone(), 483)]);
+        assert_eq!(app.get_light_screen_detail(), "");
+
+        // The D-pad, turned with the bars: up and down adjust whichever bar is
+        // highlighted, left and right move between them and go no further.
+        controller.screen_action(&app, "step", 1);
+        assert_eq!(levels(&controller), [(lamp.clone(), 55)]);
+        controller.screen_action(&app, "focus", 1);
+        controller.screen_action(&app, "step", -1);
+        assert_eq!(mireks(&controller), [(lamp.clone(), 500)]);
+        controller.screen_action(&app, "focus", 1);
+        assert_eq!(controller.screen_focus, 1);
+        controller.screen_action(&app, "focus", -1);
+        controller.screen_action(&app, "focus", -1);
+        assert_eq!(controller.screen_focus, 0);
+
+        // A lamp that only dims has no colour temperature, so the channel keys
+        // do nothing at all - not even a sentence saying so.
+        controller.brightness_pending.clear();
+        controller.mirek_pending.clear();
+        controller.open_screen(&app, 1);
+        let plain = "plugin:bridge/lamp/2".to_string();
+        controller.screen_action(&app, "warmth", 1);
+        controller.screen_action(&app, "warmth", -1);
+        assert!(mireks(&controller).is_empty());
+        assert_eq!(app.get_light_screen_detail(), "");
+        // Its highlight stays on the one bar it has, and up and down and the
+        // volume keys both reach it.
+        controller.screen_action(&app, "focus", 1);
+        assert_eq!(controller.screen_focus, 0);
+        controller.screen_action(&app, "step", 1);
+        assert_eq!(levels(&controller), [(plain.clone(), 75)]);
+        controller.screen_action(&app, "level", 1);
+        assert_eq!(levels(&controller), [(plain, 80)]);
+
+        // A blind: volume is its open position, and left and right walk the
+        // bar and then its three buttons, which is one chain of four places.
+        controller.brightness_pending.clear();
+        controller.mirek_pending.clear();
+        controller.open_screen(&app, 2);
+        let blind = "plugin:bridge/cover/1".to_string();
+        controller.screen_action(&app, "level", 1);
+        assert_eq!(levels(&controller), [(blind.clone(), 65)]);
+        controller.screen_action(&app, "warmth", 1);
+        assert!(mireks(&controller).is_empty());
+        for (index, focus, button) in [
+            (1, 1, 0),
+            (1, 1, 1),
+            (1, 1, 2),
+            (1, 1, 2),
+            (-1, 1, 1),
+            (-1, 1, 0),
+            (-1, 0, 0),
+            (-1, 0, 0),
+        ] {
+            controller.screen_action(&app, "focus", index);
+            assert_eq!(
+                (controller.screen_focus, controller.screen_button),
+                (focus, button)
+            );
+        }
+        // Up and down keep moving the only bar a blind has, even while one of
+        // its buttons is highlighted.
+        controller.screen_action(&app, "focus", 1);
+        controller.screen_action(&app, "step", 1);
+        assert_eq!(levels(&controller), [(blind, 70)]);
     }
 
     /// The whole way in and out: OK on a row opens its screen, Power still

@@ -303,6 +303,7 @@ export component App inherits Window {
     in-out property <int> light-screen-focus;
     in-out property <int> light-screen-button;
     in-out property <string> light-screen-detail;
+    in-out property <string> light-screen-hint;
     in-out property <bool> light-screen-pending;
     callback light-screen-action(string, int);
     public function focus-light-screen() { light-screen-page.take-focus(); }
@@ -607,7 +608,8 @@ export component App inherits Window {
         tunable:root.light-screen-tunable; kelvin:root.light-screen-kelvin;
         mirek-percent:root.light-screen-mirek-percent; mirek-known:root.light-screen-mirek-known;
         selected:root.light-screen-focus; button:root.light-screen-button;
-        detail:root.light-screen-detail; pending:root.light-screen-pending;
+        detail:root.light-screen-detail; hint:root.light-screen-hint;
+        pending:root.light-screen-pending;
         action(name,index) => { root.light-screen-action(name,index); }
     }
 
