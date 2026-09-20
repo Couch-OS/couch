@@ -25,6 +25,10 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
     if manifest.id != C::KIND
         || manifest.capabilities != expected
         || manifest.actions != C::actions()
+        // Protocol 3: the kinds of child the manifest declares and the ones
+        // this client answers for have to be the same list, for the same
+        // reason the capabilities do.
+        || manifest.children != C::child_kinds()
     {
         return Err(Error::Invalid);
     }
@@ -65,48 +69,98 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                     Ok(Response::Ok)
                 }
                 request => {
+                    // A child of this connection is protocol 3 vocabulary. A
+                    // package built with this SDK but serving an older
+                    // manifest never answers to one, whoever asks.
+                    let child = request.resource().map(str::to_owned);
+                    if !explains && (child.is_some() || matches!(request, Request::Children { .. }))
+                    {
+                        return Err(Error::Unsupported.into());
+                    }
+                    if child
+                        .as_deref()
+                        .is_some_and(|id| !couch_sdk::couch_model::valid_resource(id))
+                    {
+                        return Err(Error::Invalid.into());
+                    }
                     // Refuse undeclared input/commands before opening a socket.
                     // A button the package names itself (`x:`) passes only
-                    // if this manifest declares it, like any other.
-                    if let Request::Command { function, .. } = &request {
-                        let parsed = couch_sdk::couch_model::commands::Function::parse(function)
+                    // if this manifest declares it, like any other. A child's
+                    // command is declared by its kind, which the host has
+                    // already checked; here it only has to be a function.
+                    let mut function = None;
+                    if let Request::Command { function: id, .. } = &request {
+                        let parsed = couch_sdk::couch_model::commands::Function::parse(id)
                             .ok_or(Error::Unsupported)?;
-                        if !manifest.supports(function) || !C::supports(&parsed) {
+                        if child.is_none() && (!manifest.supports(id) || !C::supports(&parsed)) {
                             return Err(Error::Unsupported.into());
                         }
+                        function = Some(parsed);
                     }
-                    if let Request::Action { action } = &request {
-                        manifest.validate_action(*action)?;
-                        C::validate_action(*action)?;
+                    if let Request::Action { action, .. } = &request {
+                        if child.is_none() {
+                            manifest.validate_action(*action)?;
+                            C::validate_action(*action)?;
+                        } else if !action.is_valid() {
+                            return Err(Error::Invalid.into());
+                        }
                     }
                     if matches!(request, Request::Inputs) && !manifest.supports_inputs {
+                        return Err(Error::Unsupported.into());
+                    }
+                    if matches!(request, Request::Children { .. }) && manifest.children.is_empty() {
                         return Err(Error::Unsupported.into());
                     }
                     if client.is_none() {
                         client = Some(C::connect(settings.as_ref().ok_or(Error::Invalid)?)?);
                     }
                     let client_ref = client.as_mut().ok_or(Error::Transport)?;
-                    let result = match request {
-                        Request::Command { function, phase } => {
+                    let shape = |status: couch_sdk::Status| shaped(&manifest, status);
+                    let result = match (request, child) {
+                        (
+                            Request::Command {
+                                function: id,
+                                phase,
+                                ..
+                            },
+                            None,
+                        ) => {
                             // The host never sends an older package a phase.
                             let phase = if explains { phase } else { KeyPhase::Tap };
-                            client_ref
-                                .command_phased(&function, phase)
-                                .map(|()| Response::Ok)
+                            client_ref.command_phased(&id, phase).map(|()| Response::Ok)
                         }
-                        Request::Action { action } => {
+                        (Request::Command { phase, .. }, Some(resource)) => client_ref
+                            .child_command(
+                                &resource,
+                                function.as_ref().ok_or(couch_sdk::Error::Unsupported)?,
+                                phase,
+                            )
+                            .map(|status| answered(status.map(shape))),
+                        (Request::Action { action, .. }, None) => {
                             client_ref.action(action).map(|()| Response::Ok)
                         }
-                        Request::Status => client_ref.status().map(|mut status| {
-                            // A v1 SDK adapter retains its exact wire contract.
-                            if manifest.protocol_version == 1 {
-                                status.volume_db = None;
-                            }
-                            Response::Status { status }
-                        }),
-                        Request::Inputs => client_ref
+                        (Request::Action { action, .. }, Some(resource)) => client_ref
+                            .child_action(&resource, action)
+                            .map(|status| answered(status.map(shape))),
+                        (Request::Status { .. }, None) => {
+                            client_ref.status().map(|status| Response::Status {
+                                status: shape(status),
+                            })
+                        }
+                        (Request::Status { .. }, Some(resource)) => client_ref
+                            .child_status(&resource)
+                            .map(|status| Response::Status {
+                                status: shape(status),
+                            }),
+                        (Request::Inputs, _) => client_ref
                             .inputs()
                             .map(|inputs| Response::Inputs { inputs }),
+                        (Request::Children { cursor }, _) => client_ref
+                            .children(cursor.as_deref())
+                            .map(|page| Response::Children {
+                                children: page.children,
+                                next: page.next,
+                            }),
                         _ => unreachable!(),
                     };
                     if result.as_ref().is_err_and(|error| {
@@ -131,6 +185,29 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                 body: response,
             },
         )?;
+    }
+}
+
+/// A status, as a package of this manifest's protocol may report it: a
+/// protocol 1 adapter never mentions decibels, and only protocol 3 knows what
+/// a lamp, a blind or a thermostat is.
+fn shaped(manifest: &Manifest, mut status: couch_sdk::Status) -> couch_sdk::Status {
+    if manifest.protocol_version == 1 {
+        status.volume_db = None;
+    }
+    if manifest.protocol_version < NEXT_PROTOCOL_VERSION {
+        status.light = None;
+        status.cover = None;
+        status.climate = None;
+    }
+    status
+}
+
+/// A write that was acknowledged with the child's state, or plainly.
+fn answered(status: Option<couch_sdk::Status>) -> Response {
+    match status {
+        Some(status) => Response::Status { status },
+        None => Response::Ok,
     }
 }
 
