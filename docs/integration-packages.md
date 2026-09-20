@@ -151,6 +151,21 @@ What this does **not** do:
 - It is not a defence against a package that means harm. It is separation
   between packages that are merely independent of one another.
 
+**How long a child lives, and how many there are.** A package's child is
+started when its connection is asked for something and reaped when it has been
+idle for a minute. A manifest may say `keep_alive` (protocol 3, unreleased, so
+no package here does) and keep its child through that reaping - only while a
+room device still refers to its connection, and for at most **eight always-on
+package processes** on the remote. One connection is one child, so a package
+with three connections would be three of the eight; beyond the cap the least
+recently used are reaped as any other idle child is. It changes nothing above:
+the child is the
+same process, under the same user, with the same empty environment and no
+writable directory. Pairing is the one thing that runs a *second* child of a
+package at once, for at most five minutes, so that the connection keeps working
+on the key it already has while a new one is being made; the two share a user,
+like any two connections of one package.
+
 Nothing on disk is given to these users, and no package file changes owner or
 mode, so a core rolled back to a release that predates all this runs every
 package as it did before, under the one user, and ignores `uids.json`.

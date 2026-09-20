@@ -1,6 +1,7 @@
 use super::{parse, Api, Reply};
+use crate::plugins::PairError;
 use couch_model::{ChildComponent, Id, Integration, PluginChildKind, Provider, SceneResource};
-use couch_plugin::{Error, Failure, LocalRequest, Request, Response};
+use couch_plugin::{Error, Failure, LocalRequest, PairInput, Request, Response};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -139,6 +140,27 @@ impl Api {
             })
         })
         .or_else(|| self.plugins.cached_child_kind(connection, resource))
+    }
+
+    /// Every connection a room device still refers to. The only thing a
+    /// package's `keep_alive` is honoured for: a connection nothing points at
+    /// is reaped like any other when it goes idle.
+    ///
+    /// A **set**, read in one pass, because the reaper has to have the answer
+    /// before it locks the package registry. Asking this while holding the
+    /// registry would take the configuration store's lock in that order,
+    /// which is the opposite of the order a connection being deleted takes
+    /// them in (store first, then registry), and the two would wait on each
+    /// other for good.
+    pub(super) fn connections_in_use(&self) -> std::collections::HashSet<String> {
+        self.with(|s| {
+            s.config()
+                .devices()
+                .filter_map(|(_, device)| {
+                    parts(&device.integration).map(|(connection_id, ..)| connection_id.to_string())
+                })
+                .collect()
+        })
     }
 
     fn plugin_request(&self, connection: &str, request: Request) -> Result<Response, Failure> {
@@ -484,6 +506,22 @@ impl Api {
                 },
             };
         }
+        // Protocol 3 (unreleased). Pairing: the dialog's three calls, and
+        // the one that forgets what came out of them. Every one of them is
+        // refused for a package that does not pair, which is every package a
+        // shipped build can run.
+        if let ["pair", rest @ ..] = path {
+            return self.pair_route(method, connection, &id, rest, body);
+        }
+        if path == ["credential"] {
+            if method != "DELETE" {
+                return Reply::error(405, "Use DELETE to forget a pairing");
+            }
+            return match self.plugins.forget_credential(connection, &id) {
+                Ok(()) => Reply::json(200, &json!({"paired": false})),
+                Err(error) => pair_refused(error),
+            };
+        }
         // Protocol 3 (unreleased). One child of this connection. The router
         // has no query strings, so the child's id is the path between
         // `children` and the verb, which is always the last segment; empty
@@ -526,6 +564,79 @@ impl Api {
             _ => return Reply::error(404, "Unknown integration operation"),
         };
         answered(self.plugin_request(connection, request))
+    }
+
+    /// Protocol 3 (unreleased). `…/plugin/pair`, `…/plugin/pair/<session>`.
+    ///
+    /// The session in the path is the one Couch minted, not the one the
+    /// package named for itself: a browser never learns the package's, and a
+    /// package can never name a session that reaches another connection.
+    fn pair_route(
+        &self,
+        method: &str,
+        connection: &str,
+        plugin: &str,
+        rest: &[&str],
+        body: &[u8],
+    ) -> Reply {
+        match (method, rest) {
+            ("POST", []) => {
+                // Only a start asks the store whether this package pairs.
+                // Continuing or cancelling is answered by whether the session
+                // is there, which no package that does not pair can have, so
+                // a poll never waits on a store an install is holding.
+                if !self.plugins.pairs(plugin) {
+                    return Reply::error(400, NO_PAIRING);
+                }
+                #[derive(Deserialize, Default)]
+                #[serde(deny_unknown_fields)]
+                struct Start {
+                    /// What to pair with, over whatever is saved. Not saved
+                    /// here: only a `done` that corrects them writes any.
+                    #[serde(default)]
+                    settings: Value,
+                }
+                let input: Start = match empty_or(body) {
+                    Ok(value) => value,
+                    Err(reply) => return reply,
+                };
+                let patch = match input.settings {
+                    Value::Null => json!({}),
+                    settings => settings,
+                };
+                match self.plugins.pair_start(connection, plugin, patch) {
+                    Ok(started) => Reply::json(
+                        200,
+                        &json!({"session": started.session, "step": started.step,
+                                "expires_in": started.expires_in}),
+                    ),
+                    Err(error) => pair_refused(error),
+                }
+            }
+            ("POST", [session]) => {
+                #[derive(Deserialize, Default)]
+                #[serde(deny_unknown_fields)]
+                struct Continue {
+                    /// What the person typed, for a prompt that asked. Absent
+                    /// for a poll.
+                    #[serde(default)]
+                    input: Option<PairInput>,
+                }
+                let body: Continue = match empty_or(body) {
+                    Ok(value) => value,
+                    Err(reply) => return reply,
+                };
+                match self.plugins.pair_continue(connection, session, body.input) {
+                    Ok(step) => Reply::json(200, &json!({ "step": step })),
+                    Err(error) => pair_refused(error),
+                }
+            }
+            ("DELETE", [session]) => {
+                self.plugins.pair_cancel(connection, session);
+                Reply::json(200, &json!({"cancelled": true}))
+            }
+            _ => Reply::error(404, "Unknown integration operation"),
+        }
     }
 
     /// `…/plugin/children/<id…>/{status,action,typed-action}`.
@@ -628,7 +739,10 @@ impl Api {
             .spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(10));
                 let Some(api) = weak.upgrade() else { break };
-                api.plugins.reap();
+                // What `keep_alive` is measured against, read before the
+                // package registry is locked: see `connections_in_use`.
+                let in_use = api.connections_in_use();
+                api.plugins.reap(&|connection| in_use.contains(connection));
             })?;
         Ok(())
     }
@@ -638,6 +752,43 @@ impl Api {
 /// package offers no children, which is every package a shipped build runs.
 const NO_CHILDREN: &str = "This integration does not list devices";
 const UNKNOWN_CHILD: &str = "This integration does not offer that device";
+/// What every route under `…/plugin/pair` and `…/plugin/credential` says when
+/// the connection's package describes no way of pairing, which is every
+/// package a shipped build can run.
+const NO_PAIRING: &str = "This integration does not pair";
+const NO_SESSION: &str = "That pairing is no longer in progress";
+
+/// An empty body is the same as `{}` on the pairing routes: a poll carries
+/// nothing, and neither does a cancel.
+fn empty_or<T: serde::de::DeserializeOwned + Default>(body: &[u8]) -> Result<T, Reply> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(T::default());
+    }
+    parse(body)
+}
+
+/// How a refused pairing call answers. A refusal a package or the host gave
+/// keeps the `code`/`reason` body every other integration route uses; the
+/// rest are Couch's own sentences.
+fn pair_refused(error: PairError) -> Reply {
+    match error {
+        PairError::DoesNotPair => Reply::error(400, NO_PAIRING),
+        PairError::TooMany => Reply::error(
+            409,
+            "Too many devices are being paired at once; finish one and try again",
+        ),
+        PairError::Unknown => Reply::error(404, NO_SESSION),
+        PairError::BadInput => Reply::error(400, "That is not what this device asked for"),
+        PairError::Refused(refusal) => match &refusal.failure {
+            Some(failure) => refused(status_for(failure.code), failure),
+            None => Reply::error(400, refusal.text),
+        },
+        PairError::Storage(error) => Reply::error(
+            500,
+            format!("Couch could not save what this pairing gave it: {error}"),
+        ),
+    }
+}
 
 /// One device or package scene made from a child of a connection.
 struct Assigned {
@@ -1566,6 +1717,274 @@ mod children_tests {
         };
         assert_eq!(kind, None);
         assert_eq!(parts(&integration).unwrap().2, None);
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+/// Protocol 3 (unreleased): the four routes a pairing dialog uses, and what
+/// they answer.
+///
+/// The conversation is scripted (`Runtime::pair_with`) because a `daemon` test
+/// can never run a protocol 3 package; the routes, the bodies and the statuses
+/// are the live ones. A real package paired through these same routes over
+/// HTTP is `tools/tests/integrations-e2e.py --pairing`.
+#[cfg(test)]
+mod pairing_tests {
+    use super::*;
+    use crate::{assets::Assets, auth::Auth, plugins::PairChild, store::Store};
+    use couch_model::Config;
+    use couch_plugin::{
+        CodeAlphabet, Credential, Failure, Manifest, PairPrompt, PairStep, Pairing,
+    };
+    use std::{collections::VecDeque, path::PathBuf, sync::Mutex};
+
+    #[derive(Default)]
+    struct Conversation {
+        steps: VecDeque<Result<PairStep, Failure>>,
+        asked: usize,
+        cancelled: usize,
+    }
+    struct Scripted(Arc<Mutex<Conversation>>);
+    impl PairChild for Scripted {
+        fn start(
+            &mut self,
+            _settings: Value,
+            _credential: Option<&Credential>,
+        ) -> Result<PairStep, Failure> {
+            self.0.lock().unwrap().next()
+        }
+        fn step(&mut self, _input: Option<couch_plugin::PairInput>) -> Result<PairStep, Failure> {
+            let mut script = self.0.lock().unwrap();
+            script.asked += 1;
+            script.next()
+        }
+        fn cancel(&mut self) {
+            self.0.lock().unwrap().cancelled += 1;
+        }
+    }
+    impl Conversation {
+        fn next(&mut self) -> Result<PairStep, Failure> {
+            self.steps
+                .pop_front()
+                .unwrap_or_else(|| Err(Error::Transport.into()))
+        }
+    }
+
+    fn manifest() -> Manifest {
+        serde_json::from_value(json!({
+            "protocol_version": 1,
+            "id": "sample", "label": "Sample", "version": "1.0.0", "executable": "plugin",
+            "capabilities": [], "settings": [
+                {"id":"host","label":"Host","kind":"text","required":true},
+                {"id":"port","label":"Port","kind":"integer","default":23}
+            ]
+        }))
+        .unwrap()
+    }
+
+    /// One packaged connection, its settings already saved.
+    fn fixture(name: &str) -> (PathBuf, Api) {
+        let dir = std::env::temp_dir().join(format!(
+            "couch-api-pairing-{name}-{}-{:?}",
+            std::process::id(),
+            std::time::Instant::now()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let mut config = serde_json::to_value(Config::seed()).unwrap();
+        config["connections"] = json!([{"id": "tv", "name": "TV", "provider": {
+            "kind": "plugin", "id": "sample", "label": "Sample"}}]);
+        let config: Config = serde_json::from_value(config).unwrap();
+        fs::write(
+            dir.join("config.json"),
+            serde_json::to_vec(&couch_model::StoredConfig::new(&config)).unwrap(),
+        )
+        .unwrap();
+        let api = Api::new(
+            Store::open(dir.join("config.json")).unwrap(),
+            Assets::embedded(),
+            Arc::new(Auth::new(dir.join("pin"), true)),
+        );
+        let settings = dir.join("connections/tv/plugin-connection.json");
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        couch_sdk::save_private(&settings, &json!({"host": "tv.local", "port": 23})).unwrap();
+        (dir, api)
+    }
+
+    fn script(api: &Api, steps: Vec<Result<PairStep, Failure>>) -> Arc<Mutex<Conversation>> {
+        let script = Arc::new(Mutex::new(Conversation {
+            steps: steps.into(),
+            ..Default::default()
+        }));
+        let handle = script.clone();
+        api.plugins.pair_with(
+            manifest(),
+            Pairing {
+                required: true,
+                max_seconds: 120,
+            },
+            "1",
+            move |_| Ok(Box::new(Scripted(handle.clone())) as Box<dyn PairChild>),
+        );
+        script
+    }
+
+    fn body(reply: &Reply) -> Value {
+        serde_json::from_slice(&reply.body).unwrap()
+    }
+    fn route(api: &Api, method: &str, path: &[&str], input: &str) -> Reply {
+        api.plugin_route(method, "tv", path, input.as_bytes())
+    }
+
+    #[test]
+    fn the_pairing_routes_are_exactly_what_the_dialog_reads() {
+        let (dir, api) = fixture("routes");
+        let script = script(
+            &api,
+            vec![
+                Ok(PairStep::waiting(
+                    PairPrompt::press_button().saying("The button is on top"),
+                    2000,
+                )),
+                Ok(PairStep::waiting(
+                    PairPrompt::enter_code(4, CodeAlphabet::Digits).saying("It is on the screen"),
+                    0,
+                )),
+                Ok(PairStep::done(
+                    Credential::new(json!({"key": "s3cret"})).unwrap(),
+                    "Paired with the hall television",
+                )),
+            ],
+        );
+
+        let reply = route(
+            &api,
+            "POST",
+            &["pair"],
+            r#"{"settings":{"host":"tv.local"}}"#,
+        );
+        assert_eq!(reply.status, 200, "{}", body(&reply));
+        let started = body(&reply);
+        let session = started["session"].as_str().unwrap().to_owned();
+        assert_eq!(session.len(), 32);
+        assert_eq!(
+            started["step"],
+            json!({"step": "waiting",
+                   "prompt": {"kind": "press_button", "message": "The button is on top"},
+                   "poll_after_ms": 2000})
+        );
+        assert!(started["expires_in"].as_u64().unwrap() <= 120);
+
+        // A poll, which carries nothing at all.
+        let reply = route(&api, "POST", &["pair", &session], "");
+        assert_eq!(reply.status, 200, "{}", body(&reply));
+        assert_eq!(
+            body(&reply),
+            json!({"step": {"step": "waiting",
+                   "prompt": {"kind": "enter_code", "message": "It is on the screen",
+                              "length": 4, "alphabet": "digits"},
+                   "poll_after_ms": 0}})
+        );
+
+        // A code that is not the shape the prompt asked for never reaches the
+        // package.
+        let reply = route(
+            &api,
+            "POST",
+            &["pair", &session],
+            r#"{"input":{"kind":"code","code":"04a7"}}"#,
+        );
+        assert_eq!(reply.status, 400);
+        assert_eq!(
+            body(&reply)["error"],
+            "That is not what this device asked for"
+        );
+        assert_eq!(script.lock().unwrap().asked, 1);
+
+        // The right one does, and what comes back carries no key.
+        let reply = route(
+            &api,
+            "POST",
+            &["pair", &session],
+            r#"{"input":{"kind":"code","code":"0417"}}"#,
+        );
+        assert_eq!(reply.status, 200);
+        assert_eq!(
+            body(&reply),
+            json!({"step": {"step": "done", "summary": "Paired with the hall television",
+                            "settings": {"settings": {"host": "tv.local", "port": 23},
+                                         "configured": true, "secrets": []}}})
+        );
+        assert!(!String::from_utf8_lossy(&reply.body).contains("s3cret"));
+
+        // The session is over; cancelling it again is still an answer.
+        let reply = route(&api, "POST", &["pair", &session], "");
+        assert_eq!(reply.status, 404);
+        assert_eq!(body(&reply)["error"], NO_SESSION);
+        let reply = route(&api, "DELETE", &["pair", &session], "");
+        assert_eq!(reply.status, 200);
+        assert_eq!(body(&reply), json!({"cancelled": true}));
+
+        // What a browser can read about the connection afterwards.
+        assert!(api
+            .with(|s| serde_json::to_string(s.config()).unwrap())
+            .find("s3cret")
+            .is_none());
+        // Forgetting it says so, and it is idempotent.
+        for _ in 0..2 {
+            let reply = route(&api, "DELETE", &["credential"], "");
+            assert_eq!(reply.status, 200, "{}", body(&reply));
+            assert_eq!(body(&reply), json!({"paired": false}));
+        }
+        assert!(!dir.join("connections/tv/plugin-credential.json").exists());
+        assert!(!dir.join("connections/tv/plugin-pairing.json").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn settings_the_package_will_not_take_are_refused_before_a_pairing_starts() {
+        let (dir, api) = fixture("settings");
+        script(
+            &api,
+            vec![Ok(PairStep::waiting(PairPrompt::press_button(), 2000))],
+        );
+        let reply = route(&api, "POST", &["pair"], r#"{"settings":{"port":"twenty"}}"#);
+        assert_eq!(reply.status, 400);
+        assert_eq!(body(&reply)["code"], "invalid");
+        let reply = route(&api, "POST", &["pair"], r#"{"settings":{"nonsense":1}}"#);
+        assert_eq!(reply.status, 400);
+        // A body this route does not know is refused as any other is.
+        let reply = route(&api, "POST", &["pair"], r#"{"settings":{},"extra":1}"#);
+        assert_eq!(reply.status, 400);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The whole of it, in a shipped build. No manifest such a build accepts
+    /// may declare a way of pairing, so every route says so and the settings
+    /// reply is byte for byte the one it always was.
+    #[test]
+    fn with_the_switch_off_this_connection_does_not_pair_at_all() {
+        assert_eq!(
+            couch_plugin::accepted_protocol_version(),
+            couch_plugin::PROTOCOL_VERSION
+        );
+        let (dir, api) = fixture("off");
+        // Starting one, and forgetting a key, say what the package is.
+        for (method, path) in [("POST", vec!["pair"]), ("DELETE", vec!["credential"])] {
+            let reply = api.plugin_route(method, "tv", &path, b"");
+            assert_eq!(reply.status, 400, "{method} {path:?}");
+            assert_eq!(body(&reply)["error"], NO_PAIRING, "{method} {path:?}");
+        }
+        // Continuing or cancelling asks the package nothing at all - the
+        // session is the whole gate, and a package that does not pair can
+        // never have one - so an invented session is simply not there.
+        let session = ["pair", "0123456789abcdef0123456789abcdef"];
+        let reply = api.plugin_route("POST", "tv", &session, b"");
+        assert_eq!(reply.status, 404);
+        assert_eq!(body(&reply)["error"], NO_SESSION);
+        let reply = api.plugin_route("DELETE", "tv", &session, b"");
+        assert_eq!(reply.status, 200);
+        assert_eq!(body(&reply), json!({"cancelled": true}));
+        assert_eq!(route(&api, "GET", &["credential"], "").status, 405);
         let _ = fs::remove_dir_all(dir);
     }
 }
