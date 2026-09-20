@@ -1,5 +1,7 @@
 # Protocol 3, step T2 "Children and domain controls": implementation plan (approved 2026-09-19)
 
+Status: complete (couch #242, #246, #249, #252, #253).
+
 Studied at origin/dev 1956198 (T1 PR1 #237 and PR2 #240 merged; T1 PR3 in progress — land it before T2 PR-A/B because of literal churn).
 
 ## Owner decisions (Bryan, 2026-09-19)

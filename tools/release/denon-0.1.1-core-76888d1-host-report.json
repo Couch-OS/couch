@@ -8,7 +8,7 @@
     "v1_handshake": "passed",
     "v2_action_refused_for_v1": "passed"
   },
-  "core_commit": "952edf4b9ee07062d3b5b81ac35ce56e38931f4e",
+  "core_commit": "76888d108d7b323121eed9905231c9b73ca14d57",
   "hardware_validation": false,
   "http_panel_device_connections": 1,
   "kind": "couch-integration-host-test-report",
