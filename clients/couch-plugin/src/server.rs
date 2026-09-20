@@ -1,8 +1,9 @@
 use crate::{
-    protocol::Envelope, read_frame, write_frame, Error, Failure, Manifest, Request, Response,
-    Result, NEXT_PROTOCOL_VERSION,
+    protocol::{Envelope, ReplyEnvelope},
+    read_frame, write_frame, Error, Failure, Manifest, Request, Response, Result,
+    NEXT_PROTOCOL_VERSION,
 };
-use couch_sdk::{ClientSettings, DeviceClient, KeyPhase};
+use couch_sdk::{ClientSettings, Credential, DeviceClient, KeyPhase, PairFlow};
 
 /// Run an SDK integration over stdin/stdout. Configure validates settings and
 /// clears prior state; the first actual device operation connects lazily.
@@ -39,8 +40,17 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
     let mut output = stdout.lock();
     let mut hello = false;
     let mut settings: Option<C::Settings> = None;
+    let mut credential: Option<Credential> = None;
     let mut client: Option<C> = None;
     let explains = manifest.protocol_version >= NEXT_PROTOCOL_VERSION;
+    // Only a package that declared pairing takes a key, starts a flow, or ever
+    // writes one back. The host refuses all three from anyone else, so this is
+    // the child's half of the same rule.
+    let pairs = manifest.pairs();
+    // At most one conversation, numbered so a stale step from a dialog that
+    // was already replaced names a session this package no longer has.
+    let mut flow: Option<(String, Box<dyn PairFlow>)> = None;
+    let mut sessions: u64 = 0;
     let mut last_id = 0;
     loop {
         let envelope: Envelope<Request> = read_frame(&mut input)?;
@@ -48,6 +58,13 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
             return Err(Error::Protocol);
         }
         last_id = envelope.id;
+        // A key the device rotated, taken after the request it was discovered
+        // by and never on a handshake, a configure or a pairing step.
+        let mut rotated: Option<Credential> = None;
+        let ordinary = !matches!(
+            envelope.body,
+            Request::Hello { .. } | Request::Configure { .. }
+        ) && !envelope.body.is_pairing();
         let response = (|| -> std::result::Result<Response, Failure> {
             match envelope.body {
                 Request::Hello { protocol_version } => {
@@ -60,13 +77,75 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                     })
                 }
                 _ if !hello => Err(Error::Incompatible.into()),
-                Request::Configure { settings: value } => {
+                Request::Configure {
+                    settings: value,
+                    credential: key,
+                } => {
+                    if key.is_some() && !pairs {
+                        return Err(Error::Unsupported.into());
+                    }
                     let value = manifest.with_defaults(value)?;
                     let parsed: C::Settings =
                         serde_json::from_value(value).map_err(|_| Error::Invalid)?;
                     parsed.validate()?;
                     settings = Some(parsed);
+                    credential = key;
                     client = None;
+                    Ok(Response::Ok)
+                }
+                // Pairing needs a handshake and nothing else: a connection
+                // becomes usable by being paired, so there may be no settings
+                // yet and never a client.
+                Request::PairStart {
+                    settings: value,
+                    credential: existing,
+                } => {
+                    if !pairs {
+                        return Err(Error::Unsupported.into());
+                    }
+                    let value = manifest.with_defaults(value)?;
+                    let parsed: C::Settings =
+                        serde_json::from_value(value).map_err(|_| Error::Invalid)?;
+                    parsed.validate()?;
+                    // A second start replaces the first, whatever it was
+                    // doing: the host only ever has one dialog open.
+                    if let Some((_, mut previous)) = flow.take() {
+                        previous.cancel();
+                    }
+                    let mut started = C::pair_start(&parsed, existing.as_ref())?;
+                    let step = started.step(None)?;
+                    sessions += 1;
+                    let session = format!("p{sessions}");
+                    if !step.is_final() {
+                        flow = Some((session.clone(), started));
+                    }
+                    Ok(Response::Pairing { session, step })
+                }
+                Request::PairContinue { session, input } => {
+                    if !pairs {
+                        return Err(Error::Unsupported.into());
+                    }
+                    // A step for a conversation this package is not having.
+                    if flow.as_ref().is_none_or(|(held, _)| *held != session) {
+                        return Err(Error::Invalid.into());
+                    }
+                    let (_, running) = flow.as_mut().ok_or(Error::Invalid)?;
+                    let step = running.step(input)?;
+                    if step.is_final() {
+                        flow = None;
+                    }
+                    Ok(Response::Pairing { session, step })
+                }
+                Request::PairCancel { session } => {
+                    if !pairs {
+                        return Err(Error::Unsupported.into());
+                    }
+                    if flow.as_ref().is_none_or(|(held, _)| *held != session) {
+                        return Err(Error::Invalid.into());
+                    }
+                    if let Some((_, mut cancelled)) = flow.take() {
+                        cancelled.cancel();
+                    }
                     Ok(Response::Ok)
                 }
                 request => {
@@ -113,7 +192,10 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                         return Err(Error::Unsupported.into());
                     }
                     if client.is_none() {
-                        client = Some(C::connect(settings.as_ref().ok_or(Error::Invalid)?)?);
+                        client = Some(C::connect_with(
+                            settings.as_ref().ok_or(Error::Invalid)?,
+                            credential.as_ref(),
+                        )?);
                     }
                     let client_ref = client.as_mut().ok_or(Error::Transport)?;
                     let shape = |status: couch_sdk::Status| shaped(&manifest, status);
@@ -179,11 +261,27 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
             }
         })()
         .unwrap_or_else(|failure| refusal(&manifest, failure));
+        // A key the device rotated under us, asked for once the request it
+        // was discovered by is answered. Only on an ordinary request, and only
+        // from a package that declared pairing: the host refuses it anywhere
+        // else and would retire this child for sending it.
+        if pairs && ordinary {
+            if let Some(client) = client.as_mut() {
+                rotated = client.take_credential().filter(Credential::fits);
+                if rotated.is_some() {
+                    // A rotation replaces the key this child was configured
+                    // with, so the next connect uses it whether or not the
+                    // daemon managed to write it.
+                    credential = rotated.clone();
+                }
+            }
+        }
         write_frame(
             &mut output,
-            &Envelope {
+            &ReplyEnvelope {
                 id: envelope.id,
                 body: response,
+                store_credential: rotated,
             },
         )?;
     }
