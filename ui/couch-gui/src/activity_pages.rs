@@ -26,6 +26,10 @@ pub(super) struct PluginTarget {
     pub room: String,
     pub device: String,
     pub connection: String,
+    /// Which child of that connection this device is, if it is one. Empty for
+    /// a device that is the connection itself, which is every packaged device
+    /// a shipped remote can have.
+    pub resource: String,
     pub label: String,
     pub capabilities: Vec<PluginCapability>,
     pub actions: Vec<PluginActionSchema>,
@@ -299,7 +303,13 @@ impl Pages {
             at: std::time::Instant::now(),
             generation: self.generation.load(Ordering::SeqCst),
             connection: plugin.target.connection.clone(),
-            request,
+            // A child of the connection is named; a device that is the
+            // connection sends the frame it always did.
+            request: if plugin.target.resource.is_empty() {
+                request
+            } else {
+                request.at(plugin.target.resource.as_str())
+            },
         });
         app.set_custom_activity_status(if result.is_ok() {
             message.into()
@@ -824,6 +834,7 @@ mod tests {
     fn volume_view() -> PluginView {
         PluginView {
             target: PluginTarget {
+                resource: String::new(),
                 activity: "Listen".into(),
                 room: "Living room".into(),
                 device: "receiver".into(),
@@ -915,6 +926,7 @@ mod tests {
     fn plugin_presentation_uses_native_pages_and_live_state() {
         let view = PluginView {
             target: PluginTarget {
+                resource: String::new(),
                 activity: "Listen".into(),
                 room: "Living room".into(),
                 device: "receiver".into(),
@@ -983,6 +995,7 @@ mod tests {
         let mut pages = Pages::new();
         pages.plugin = Some(PluginView {
             target: PluginTarget {
+                resource: String::new(),
                 activity: "New activity".into(),
                 room: "Living room".into(),
                 device: "receiver".into(),
