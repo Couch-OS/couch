@@ -3,9 +3,10 @@ use couch_plugin::{
 };
 use serde_json::json;
 use std::{
-    io::Cursor,
+    io::{Cursor, Write},
     os::unix::fs::{symlink, PermissionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
@@ -27,9 +28,10 @@ impl Package {
         Self { root, manifest }
     }
     fn script(&self, text: &str) {
-        let path = self.root.join("bin/plugin");
-        std::fs::write(&path, format!("#!/bin/sh\n{text}\n")).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(
+            &self.root.join("bin/plugin"),
+            format!("#!/bin/sh\n{text}\n").as_bytes(),
+        );
     }
     fn hello(&self) -> String {
         print_frame(&json!({"id":1,"body":{"type":"hello","manifest":self.manifest}}))
@@ -39,6 +41,29 @@ impl Drop for Package {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+/// Writes a package executable without this process ever holding a descriptor
+/// open for writing it.
+///
+/// Linux refuses `execve` with ETXTBSY (errno 26) while anyone has the file
+/// open for writing, and `Host::spawn` reports that as `Error::Transport`.
+/// Spawning forks first, and the fork inherits every descriptor this process
+/// had open at that moment until its own exec closes it, so one test thread
+/// writing its own script is still a writer of that script from the point of
+/// view of another test thread's fork. Let a short-lived child hold the
+/// writing descriptor instead: nothing this process forks can inherit it. The
+/// shared admission fixture avoids the same race by linking the Cargo
+/// artifact, which it never writes.
+fn write_executable(path: &Path, bytes: &[u8]) {
+    let mut writer = Command::new("/bin/sh")
+        .args(["-c", r#"exec /bin/cat > "$1""#, "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer.stdin.take().unwrap().write_all(bytes).unwrap();
+    assert!(writer.wait().unwrap().success(), "write {}", path.display());
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 fn print_bytes(bytes: &[u8]) -> String {
     let escaped: String = bytes.iter().map(|b| format!("\\{:03o}", b)).collect();
