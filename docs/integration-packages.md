@@ -87,6 +87,56 @@ are OS packages, so the OS is where they belong. Even so, the step first runs
 installs; if it would upgrade or remove anything the image shipped with, it
 stops.
 
+## Isolation between packages
+
+Every package used to run as the same user, 65534. Each installed package now
+gets a user of its own: a number between 60000 and 64999, written down in
+`uids.json` at the root of the package store the first time Couch sees that
+package, and never given to a second one. Removing a package keeps its row, so
+a package installed a year later cannot end up as the user an old one ran as.
+The group is the same number as the user.
+
+On the remote's kernel, this is what that buys between two *different*
+packages:
+
+- Neither can attach a debugger to the other, read `/proc/<pid>/mem` or
+  `/proc/<pid>/environ`, look at its open files or its memory map, or copy
+  memory out of it another way.
+- Neither can send the other a signal.
+- Neither can read a file the other owns, nor a file only root can read -
+  which is where Couch keeps connection settings and keys.
+- Neither can write a core file. A package that crashes leaves no copy of what
+  it held in memory on the disk.
+- Neither can gain privileges by running something else: `no_new_privs` is
+  set, as it always was.
+
+Most of that rests on one thing the package itself does: `couch_plugin::serve`
+makes the process undumpable as its first act, which hands `/proc/<pid>` to
+root. The host cannot do it on the package's behalf - `execve` puts the flag
+back. Packages published before this SDK were not built with that call and
+stay dumpable. That is accepted: they hold no key of their own, and a read
+across two different users is refused by the kernel regardless.
+
+What this does **not** do:
+
+- It does not hide that other processes exist. Any package can list `/proc`
+  and see every process on the remote, with its command line and its user.
+- It does not restrict the network. A package can reach anything on the LAN,
+  and anything on the Internet, exactly as before.
+- It does not separate two connections of the *same* package. Both children
+  are that package's user and can read each other.
+- It is not a defence against a package that means harm. It is separation
+  between packages that are merely independent of one another.
+
+Nothing on disk is given to these users, and no package file changes owner or
+mode, so a core rolled back to a release that predates all this runs every
+package as it did before, under the one user, and ignores `uids.json`.
+
+Not done, and worth doing later: mounting `/proc` with `hidepid=2` so that a
+package sees only its own processes, a small seccomp deny-list covering the
+calls a device integration never needs, and per-user firewall rules so that a
+package can only reach the device it is configured for.
+
 ## Building and installing
 
 Build the supplied plugin binaries with:

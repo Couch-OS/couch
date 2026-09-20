@@ -43,12 +43,37 @@ explicit request may restart a failed child.
 
 Private settings live beside the house configuration in the connection store.
 They travel over the inherited socket, never in arguments or environment
-variables. On a root-started HA100 daemon, the host clears inherited groups,
-drops the child to UID and primary GID 65534, enables `no_new_privs`, and grants
-only the `AID_INET` supplemental group needed for ordinary network sockets.
-Other root-started targets receive no supplemental groups. Non-root development
-hosts retain their existing credentials. Plugins share an unprivileged UID and
-LAN access; this is privilege separation, not a sandbox for hostile code.
+variables.
+
+Each installed package runs as a user of its own. The package store keeps the
+table in `uids.json` at its root: one row per package id, allocated in order
+from 60000 to 64999, group id equal to user id, written under the store's
+exclusive lock, and never handed out twice. A removed package keeps its row, so
+a package installed later can never inherit a user something else once ran as.
+A package is given its user when it is installed, and packages installed by an
+older Couch are given theirs in one pass when the daemon starts. A store that
+is busy, or out of users, is an error the caller reports: no package is ever
+quietly started as another package's user.
+
+On a root-started HA100 daemon, the host clears inherited groups, drops the
+child to that user and group, enables `no_new_privs`, sets `RLIMIT_CORE` to
+zero, and grants only the `AID_INET` supplemental group needed for ordinary
+network sockets. Other root-started targets receive no supplemental groups.
+Non-root development hosts retain their existing credentials, and the
+per-package user simply does not apply there. The package's own half of it is
+in the SDK: `serve` makes the child undumpable before anything else, which is
+what puts `/proc/<pid>` beyond every other user's reach. It has to happen in
+the child, because `execve` undoes it.
+
+Nothing on disk belongs to these users. No package file is chowned and no
+package file changes mode, so a core rolled back to a release that knows
+nothing of the table runs every package exactly as it did, all under one user,
+and leaves `uids.json` alone.
+
+This is privilege separation, not a sandbox for hostile code: a package still
+reaches the LAN, still sees that other processes exist, and two connections of
+the same package still share a user. What is and is not enforced is listed
+under [Isolation between packages](integration-packages.md#isolation-between-packages).
 
 The installer invokes `apk` in a temporary root, verifies signatures, disables
 scripts and network access during extraction, and accepts only the integration
