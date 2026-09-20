@@ -68,7 +68,7 @@ pub fn picker(app: App, config: &Config, room: &Id) -> AnyView {
 
 fn assigned(cfg: &Config, connection: &Connection, resource: &str) -> Option<String> {
     cfg.devices().find_map(|(r,d)|{
-        let same=matches!(&d.integration,Integration::Connection{connection_id,resource_id} if connection_id==&connection.id && resource_id==resource)
+        let same=matches!(&d.integration,Integration::Connection{connection_id,resource_id,..} if connection_id==&connection.id && resource_id==resource)
             || match cfg.resolve_integration(&d.integration){Some(Integration::Hue{light_id})=>connection.provider==Provider::Hue && light_id==format!("{}/{resource}",connection.id),Some(Integration::HomeAssistant{entity_id})=>connection.provider==Provider::HomeAssistant && entity_id==format!("{}/{resource}",connection.id),Some(Integration::Matter{device})=>connection.provider==Provider::Matter && device==format!("{}/{resource}",connection.id),Some(Integration::Kodi{host,port})=>connection.provider==Provider::Kodi{host,port},_=>false};
         same.then(||r.name.clone())
     })

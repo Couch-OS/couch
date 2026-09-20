@@ -215,6 +215,7 @@ mod tests {
             .with_integration(Integration::Connection {
                 connection_id: "ha".into(),
                 resource_id: "climate.living".into(),
+                child: None,
             }),
         );
         // A receiver behind an installed integration package.
@@ -228,6 +229,7 @@ mod tests {
                 supports_inputs: true,
                 presentation: vec![],
                 actions: vec![],
+                children: vec![],
             },
         });
         config
@@ -243,6 +245,7 @@ mod tests {
                 .with_integration(Integration::Connection {
                     connection_id: "avr".into(),
                     resource_id: String::new(),
+                    child: None,
                 }),
             );
         let upstairs = config.areas[1].id.clone();
@@ -345,6 +348,7 @@ mod tests {
                 .resolve_integration(&Integration::Connection {
                     connection_id: "avr".into(),
                     resource_id: String::new(),
+                    child: None,
                 })
                 .unwrap()
         ));
