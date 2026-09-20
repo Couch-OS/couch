@@ -406,7 +406,10 @@ fn stored_name(name: &str) -> bool {
 /// Keep trying until the deadline, a couple of seconds for the whole deletion:
 /// a status read or a command may be passing through, a pairing that waits on
 /// somebody's TV is not worth waiting for.
-fn patiently<T>(deadline: std::time::Instant, mut attempt: impl FnMut() -> Option<T>) -> Option<T> {
+pub(crate) fn patiently<T>(
+    deadline: std::time::Instant,
+    mut attempt: impl FnMut() -> Option<T>,
+) -> Option<T> {
     loop {
         if let Some(value) = attempt() {
             return Some(value);
@@ -844,6 +847,73 @@ mod delete_tests {
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
+    /// The two locks this file and `plugins.rs` hold are taken in one order
+    /// and one order only: the configuration store first, then the package
+    /// registry. A deletion does exactly that. The ten-second sweep has to
+    /// read the configuration too - it is what says which connections a
+    /// device still refers to - and it reads it **before** it locks the
+    /// registry, never while holding it. Taken the other way round, one
+    /// sweep and one delete would wait on each other for good, and every
+    /// configuration read on the remote would queue behind them.
+    #[test]
+    fn a_sweep_never_holds_the_package_registry_while_it_reads_the_configuration() {
+        use std::time::{Duration, Instant};
+        let house = House::new("sweep-order", json!({"schema_version":1,"revision":0}));
+        let pids = house.home.join("pids");
+        install_sample(&house.home, &pids);
+        assert_eq!(
+            house.create(
+                json!({"name":"Receiver","provider":{"kind":"plugin","id":"sample","label":""}})
+            ),
+            "receiver"
+        );
+        assert_eq!(
+            house
+                .api
+                .connection_route(
+                    "POST",
+                    &["receiver", "plugin", "settings"],
+                    br#"{"host":"avr.invalid"}"#,
+                    None,
+                )
+                .status,
+            200
+        );
+        assert_eq!(
+            house
+                .api
+                .connection_route("GET", &["receiver", "plugin", "status"], b"", None)
+                .status,
+            200
+        );
+        // A child that nothing will ask for again, which is what `keep_alive`
+        // makes of one.
+        house.api.plugins.keep_alive_for_test("receiver");
+
+        // The configuration is held, as it is while a deletion saves.
+        let held = house.api.store.lock().unwrap();
+        std::thread::scope(|scope| {
+            let sweeping = scope.spawn(|| {
+                let in_use = house.api.connections_in_use();
+                house
+                    .api
+                    .plugins
+                    .reap(&|connection| in_use.contains(connection));
+            });
+            // The sweep is now waiting for the configuration. While it does,
+            // anything that needs a package child has to get through.
+            std::thread::sleep(Duration::from_millis(200));
+            let at = Instant::now();
+            house.api.plugins.retire("receiver");
+            assert!(
+                at.elapsed() < Duration::from_secs(2),
+                "the sweep was holding the package registry while it waited"
+            );
+            drop(held);
+            sweeping.join().unwrap();
+        });
+    }
+
     #[test]
     fn a_packaged_connection_loses_its_settings_and_its_running_child() {
         let house = House::new("packaged", json!({"schema_version":1,"revision":0}));
@@ -866,6 +936,11 @@ mod delete_tests {
         );
         let settings = house.folder("receiver").join("plugin-connection.json");
         assert!(fs::read_to_string(&settings).unwrap().contains("private"));
+        // Protocol 3 (unreleased): a pairing key and the line beside it live
+        // in the same folder and go the same way. Nothing a shipped build
+        // runs writes them; planted here so the removal is stated.
+        let key = house.stored("receiver", "plugin-credential.json");
+        let paired = house.stored("receiver", "plugin-pairing.json");
         let status =
             house
                 .api
@@ -889,6 +964,7 @@ mod delete_tests {
 
         assert!(!alive(child));
         assert!(!settings.exists() && !house.folder("receiver").exists());
+        assert!(!key.exists() && !paired.exists());
         // The panel's route to the package finds neither connection nor child.
         assert!(house
             .api

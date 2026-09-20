@@ -652,6 +652,212 @@ before it is downloaded, from its signed metadata ("Needs a newer Couch"); this
 is the backstop for one already on the remote, and it reaches the Integrations
 page and the conversion of a former built-in through the same reader.
 
+### The daemon: pairing a connection
+
+A package describes the steps; Couch draws the dialog, collects what the person
+types and keeps the key. None of this is reachable in a shipped build: only a
+protocol 3 manifest may declare `pairing`, and no protocol 3 manifest is
+accepted, so every route below answers 400 "This integration does not pair" and
+`paired` is absent from the settings reply.
+
+**The routes**, under `/api/connections/<id>/plugin/`, inside the connection's
+read gate like every other one there.
+
+| Route | Body | Answers |
+| --- | --- | --- |
+| `POST …/plugin/pair` | `{"settings": {…}}`, or nothing | `{"session": …, "step": …, "expires_in": …}` |
+| `POST …/plugin/pair/<session>` | `{"input": {…}}`, or nothing | `{"step": …}` |
+| `DELETE …/plugin/pair/<session>` | - | `{"cancelled": true}` |
+| `DELETE …/plugin/credential` | - | `{"paired": false}` |
+
+Only the first and the last ask the package store anything, because only they
+have to know what the package is. Continuing and cancelling are answered by
+whether the session is there, and a package that does not pair can never have
+one - so a poll is never refused because an install happens to be holding the
+store, and with the switch off a continue is 404 and a cancel is
+`{"cancelled": true}` rather than "does not pair".
+
+`<session>` is 128 bits of the host's own, in hexadecimal. It is **not** the
+session the package minted for itself, which never leaves the host, and it only
+means anything on the connection it was issued for.
+
+`settings` on `pair_start` is what the package is asked to pair with: whatever
+the person has typed, merged over what is saved. It is **not saved** - a
+pairing that fails leaves the connection exactly as it was - so a page that
+wants the typed settings kept saves them through `POST …/plugin/settings`
+first. Settings the manifest refuses are 400 before anything is started.
+
+Every step:
+
+```json
+{"step":"waiting","prompt":{"kind":"press_button","message":"The button is on top"},"poll_after_ms":2000}
+{"step":"waiting","prompt":{"kind":"approve_on_device"},"poll_after_ms":2000}
+{"step":"waiting","prompt":{"kind":"enter_code","message":"It is on the screen","length":4,"alphabet":"digits"},"poll_after_ms":0}
+{"step":"done","summary":"Paired with the hall television","settings":{"settings":{"host":"tv.local","port":9299},"configured":true,"secrets":[]}}
+{"step":"failed","reason":"wrong_code","message":"That was not the code on the screen"}
+```
+
+A `done` may also carry `warning`, one sentence of Couch's own, and only when
+something beside the key could not be kept - settings the device corrected
+that would not save, or that the manifest refused. It is **absent** from every
+ordinary pairing. The key itself is stored either way: it is the device's and
+it is good, and the alternative to saying this would be answering `done` over
+settings that were quietly dropped.
+
+A prompt is exactly what the package sent, `message` and all, and `message` is
+absent when it said nothing. **A `done` never carries the key**: it is taken out
+inside `Runtime`, before anything in `api/` can see it, and what is left is the
+summary and the redacted settings view the settings route answers with.
+`reason` is one of `unreachable`, `refused`, `wrong_code`, `timed_out` and
+`unsupported`; `message` is absent unless the package wrote one.
+
+Statuses: 400 for settings the manifest refuses (the `code`/`reason` body every
+other integration route uses), 400 "This integration does not pair", 400 "That
+is not what this device asked for" for an input the prompt did not ask for, 404
+"That pairing is no longer in progress", 409 when eight pairings are already in
+flight, 503 while a call on the same session is still out, and 500 if the key
+cannot be written. A cancel is idempotent: it answers `{"cancelled": true}`
+whether or not there was anything to cancel.
+
+`GET …/plugin/settings` gains three keys, and only for a package that pairs:
+
+```json
+{"settings": {"host": "tv.local"}, "configured": true, "secrets": [],
+ "paired": true, "pairing": {"required": true}, "summary": "Paired with the hall television"}
+```
+
+`paired` is whether the key file exists; `pairing.required` is the manifest's;
+`summary` is the line the pairing left and is absent until there is one.
+
+**The session.** One pairing per connection, eight across the remote. A second
+start on a connection cancels and replaces the first, and the first token stops
+working. The child is this pairing's own - never in the endpoint registry, so no
+reap, package update or settings write takes it away - and it is never restarted:
+a package that stops answering ends the attempt as `failed {"reason":
+"unreachable"}`. **The connection's ordinary child keeps serving on the old key
+throughout**, so a television that is working keeps working while it is being
+paired again.
+
+A package that is **updated or removed** while one of its connections is being
+paired ends that attempt: `failed {"reason": "unsupported"}` with Couch's own
+sentence, and nothing written. Which version is selected is read from the
+package's state file, never through the store's lock, so an install running
+somewhere else on the remote - which holds that lock for seconds - does not end
+a pairing; a store that cannot say just now is "unknown", not "it moved".
+
+**A pairing that has been ended writes nothing, whatever the package says
+next.** A call may be inside the package for up to twelve seconds. A cancel, a
+second start, a deleted connection or a sweep takes the session out of the map
+and marks it, without waiting: the call sees that the moment the package
+answers, tells the package its conversation is over and stores nothing - not
+even a `done` that arrived a millisecond too late.
+
+Each call gets the ordinary twelve second request timeout. The attempt as a
+whole gets `min(pairing.max_seconds, 300)` seconds. A dialog that polls and then
+stops - the tab was closed, the browser was killed - ends the attempt after
+`max(3 × poll_after_ms, 15 s)` of silence; a prompt waiting for a typed code has
+only the overall deadline, because a person typing is not a browser that has
+gone. The existing ten-second reaper sweeps both, tells the package with two
+seconds to hear it, and kills the child.
+
+**The locks.** A pairing call does not hold the connection's settings lock while
+it is talking to the package, so a status read on the same connection is not
+answered `busy` for twelve seconds. Only the write at the end takes it, and it
+waits fifteen seconds for it: the key is already in hand and asking the device
+again would mean pairing again. If it is still busy the result is parked and the
+dialog is told to come back in a second with the prompt it was already showing;
+the next poll retries the write and the package is never asked twice.
+
+**What a `done` writes**, in this order: the key to
+`connections/<id>/plugin-credential.json` (atomic, mode 0600, in a folder forced
+to 0700, under the same lock as `plugin-connection.json`); then, only if the
+step carried corrected settings, those settings through `with_defaults` and
+`validate_settings`; then `plugin-pairing.json`, `{"summary": …, "paired_at":
+…}`, which is not a secret and is removed with the key. The connection's child
+is then dropped, so the next request starts one configured with the new key.
+**A pairing that fails, is cancelled or runs out writes nothing at all**, and a
+key that was already there is untouched.
+
+`plugin-pairing.json` also records **which package** the key was made for. A
+connection whose package has been changed since is not paired: what the old one
+left behind is not a key the new one can use, and handing it over would be
+handing one package's secret to another. A file an earlier Couch wrote names no
+package and is taken at face value.
+
+**A key Couch cannot read is a key Couch has not got.** A credential file that
+is corrupt, truncated or over the limit counts as absent - said in the log once,
+not once per key press - so the connection answers `unpaired`, the settings page
+still loads and "Pair again" is reachable. Refusing the request instead would
+strand the connection with no way back, and it would do so for a protocol 1 or 2
+package too, which never asked for a key at all.
+
+**A line a package asks Couch to show is shown to a person**, and a person's
+screen is not where a key goes. A `summary`, a prompt line or a failure message
+that carries any string of eight characters or more out of the key - the one
+being handed over, or the one Couch already held - ends the attempt, stores
+nothing and retires the child.
+
+**Nothing of this is in `config.json`.** `paired` is derived from the file and
+the rules come from the live manifest, so a paired connection's configuration is
+byte for byte an unpaired one's and a rollback needs no new projection rule. The
+key is never returned over HTTP, never logged, and is not in the configuration
+export or the recovery export, which are both built from `config.json` alone.
+Deleting the connection removes it with the rest of the folder.
+
+**Forgetting a pairing** (`DELETE …/plugin/credential`) removes Couch's copy and
+the line beside it under the connection's lock, along with any half-written
+temporary either write left behind, drops the child and any pairing in flight,
+and **says nothing to the device**: Couch cannot revoke what it was given, and a
+television that still lists Couch as paired is the device's business. The
+pairing in flight is ended before the lock is taken, not after, so a pairing
+that is finishing and a forget cannot wait on each other.
+
+**`unpaired` without a package process.** When the manifest says
+`pairing.required` and there is no key, a request is refused `unpaired` (409)
+before a child is started at all - the same answer the package would give,
+without the process.
+
+**A key the device rotated** (`store_credential` beside a reply) is written
+under the connection's lock before the body is returned, and only then: on the
+reply to a `command`, `action`, `status` or `inputs` request, on the
+connection's ordinary child, when a key is already there (a rotation cannot
+create a pairing), when it is within the 16 KiB limit, and when no pairing on
+that connection has finished since the request was queued. Anything else is
+logged, without the key, and dropped. A failure to write it still returns the
+reading: the device answered.
+
+The host also lets a key ride on a `children` reply, but the daemon reads a
+listing through `Endpoint::request_detailed`, which drops it, so **a key offered
+on a listing is never stored**. That is deliberate: a listing is up to
+sixty-four round trips and the daemon would have no one reply to write it
+against.
+
+Once it is written, the connection's child is **left standing but counted as
+stale**, so the next request starts one configured from the file. It has to be:
+the endpoint keeps its own copy of the key for the replacement child it launches
+after a failure, and that copy is the one from before the rotation.
+
+**`plugin.sock` is untouched.** `Runtime::execute` is the whole of what the
+panel's socket and the HTTP command routes reach, and it has only ever accepted
+`command`, `action`, `status` and `inputs`; every pairing request and
+`configure` are `unsupported` there, as they were.
+
+**`keep_alive`.** A manifest that declares it exempts that connection's child
+from the two idle retains, and from nothing else. It is honoured only while a
+room device still refers to the connection, and for at most **eight always-on
+package processes** at once - one connection is one child, so a package with
+three connections would be three of the eight. Beyond that cap the least
+recently used lose the exemption and are reaped exactly as any other idle child
+is, and so does one whose package has since been updated or removed, which
+nothing else would notice because a pinned child is never asked for anything.
+
+The reaper works out which connections a device still refers to **before** it
+locks the package registry, never while holding it. Deleting a connection takes
+the configuration store and then the registry, in that order; a sweep that asked
+the configuration from inside the registry would take them the other way round,
+and one sweep and one delete would wait on each other for good while every
+configuration read on the remote queued behind them.
+
 ### The switch
 
 `couch-plugin` has one Cargo feature, `protocol-3-preview`. It is off by

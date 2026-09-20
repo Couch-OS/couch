@@ -119,6 +119,19 @@ jobs:
         run: tools/tests/old-package-wire.sh
       - name: Exercise daemon, package, HTTP, panel, and fake device together
         run: python3 tools/tests/integrations-e2e.py
+      # Protocol 3 is switched off in every build that ships, so the one place
+      # a real pairing package can be driven through the daemon's own routes
+      # is here, with both sides built with the preview feature. The guard
+      # tests above run with the ordinary feature set and stay green.
+      - name: Pair a real protocol 3 package end to end
+        run: |
+          cargo build --locked --manifest-path clients/Cargo.toml -p couch-echo \
+            --bin couch-plugin-echo-pair --features couch-echo/protocol-3-preview
+          cargo build --locked --manifest-path daemon/Cargo.toml -p couch-confd \
+            --features couch-plugin/protocol-3-preview
+          python3 tools/tests/integrations-e2e.py \
+            --confd daemon/target/debug/couch-confd \
+            --echo-pair clients/target/debug/couch-plugin-echo-pair
 
   management-browser:
     needs: changes
