@@ -17,6 +17,7 @@ pub enum Error {
     Unavailable,
     UnsupportedBrightness,
     InvalidBrightness,
+    UnsupportedColourTemperature,
     UnsupportedOperation,
     InvalidPosition,
     InvalidTemperature,
@@ -33,6 +34,7 @@ impl fmt::Display for Error {
             Self::Unavailable => "The entity is unavailable or its state is unknown",
             Self::UnsupportedBrightness => "This light does not support brightness",
             Self::InvalidBrightness => "Brightness must be between 0 and 100 percent",
+            Self::UnsupportedColourTemperature => "This light does not support colour temperature",
             Self::UnsupportedOperation => "This device does not support that operation in its current mode",
             Self::InvalidPosition => "Position must be between 0 and 100 percent",
             Self::InvalidTemperature => "Temperature must be within the thermostat limits and the low target must not exceed the high target",
@@ -60,6 +62,24 @@ pub struct Light {
     pub on: Option<bool>,
     pub brightness_percent: Option<u8>,
     pub dimmable: bool,
+    /// Colour temperature in mirek, where the light reports one. Absent while
+    /// the light is off or in a colour mode that is not a white one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirek: Option<u16>,
+    /// The mirek range the light accepts, coolest first, the way a packaged
+    /// child's `LightTraits::mirek` has it. `None` means the light is not
+    /// tunable, and nothing offers to tune it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirek_range: Option<(u16, u16)>,
+}
+/// Colour temperature the way people read it. Mirek is what every bridge
+/// speaks; Kelvin is what a lamp's box says.
+pub fn kelvin_of(mirek: u16) -> u16 {
+    (1_000_000u32 / u32::from(mirek).max(1)).clamp(1, u32::from(u16::MAX)) as u16
+}
+/// The other way round, for a Home Assistant service call.
+pub fn mirek_of(kelvin: u32) -> u16 {
+    (1_000_000u32 / kelvin.max(1)).clamp(1, u32::from(u16::MAX)) as u16
 }
 impl Light {
     pub fn from_state(v: &Value) -> Option<Self> {
@@ -93,12 +113,42 @@ impl Light {
         } else {
             None
         };
+        // Home Assistant reports colour temperature in Kelvin now and in
+        // mireds on older installations. Either says the same thing; the
+        // range is only believed when both ends are there and ordered.
+        let mired = |kelvin: &str, mireds: &str| {
+            attrs[kelvin]
+                .as_u64()
+                .filter(|k| *k > 0)
+                .map(|k| mirek_of(k as u32))
+                .or_else(|| {
+                    attrs[mireds]
+                        .as_u64()
+                        .filter(|m| (1..=u64::from(u16::MAX)).contains(m))
+                        .map(|m| m as u16)
+                })
+        };
+        // A Kelvin minimum is the warm end, which is the *largest* mirek.
+        let mirek_range = match (
+            mired("max_color_temp_kelvin", "min_mireds"),
+            mired("min_color_temp_kelvin", "max_mireds"),
+        ) {
+            (Some(cool), Some(warm)) if cool <= warm => Some((cool, warm)),
+            _ => None,
+        };
+        let mirek = mirek_range
+            .filter(|_| on == Some(true))
+            .and_then(|(cool, warm)| {
+                mired("color_temp_kelvin", "color_temp").filter(|m| (cool..=warm).contains(m))
+            });
         Some(Self {
             entity_id: id.into(),
             name: attrs["friendly_name"].as_str().unwrap_or(id).into(),
             on,
             brightness_percent,
             dimmable,
+            mirek,
+            mirek_range,
         })
     }
 }
@@ -151,6 +201,8 @@ pub enum Command {
     On,
     Off,
     Brightness(u8),
+    /// Colour temperature in mirek. Only for a light that reports a range.
+    Mirek(u16),
 }
 
 pub struct HomeAssistant {
@@ -271,6 +323,21 @@ impl HomeAssistant {
                     return Err(Error::UnsupportedBrightness);
                 }
                 ("turn_on", json!({"entity_id":id,"brightness_pct":p}))
+            }
+            // Written in Kelvin: `color_temp` in mireds is on its way out of
+            // Home Assistant, and every install that has the Kelvin attributes
+            // takes the Kelvin parameter.
+            Command::Mirek(m) => {
+                let Some((cool, warm)) = current.mirek_range else {
+                    return Err(Error::UnsupportedColourTemperature);
+                };
+                if !(cool..=warm).contains(&m) {
+                    return Err(Error::UnsupportedColourTemperature);
+                }
+                (
+                    "turn_on",
+                    json!({"entity_id":id,"color_temp_kelvin":kelvin_of(m)}),
+                )
             }
         };
         self.service("light", service, data)
@@ -423,6 +490,81 @@ mod tests {
                 json!({"entity_id":"light.test","brightness_pct":37})
             )
         );
+    }
+    /// Colour temperature, both ways: Home Assistant reports it in Kelvin now
+    /// and in mireds on older installations, and a write goes out in Kelvin.
+    #[test]
+    fn colour_temperature_is_read_either_way_and_written_in_kelvin() {
+        let kelvin = json!({"entity_id":"light.test","state":"on","attributes":{
+            "friendly_name":"Test light","brightness":128,
+            "supported_color_modes":["color_temp"],
+            "color_temp_kelvin":2700,"min_color_temp_kelvin":2000,"max_color_temp_kelvin":6535}});
+        let light = Light::from_state(&kelvin).unwrap();
+        // 2000 K is the warm end, which is the largest mirek.
+        assert_eq!(light.mirek_range, Some((153, 500)));
+        assert_eq!(light.mirek, Some(370));
+        // The same light on an older Home Assistant, in mireds.
+        let mireds = json!({"entity_id":"light.test","state":"on","attributes":{
+            "friendly_name":"Test light","brightness":128,
+            "supported_color_modes":["color_temp"],
+            "color_temp":370,"min_mireds":153,"max_mireds":500}});
+        assert_eq!(Light::from_state(&mireds).unwrap().mirek, Some(370));
+        assert_eq!(
+            Light::from_state(&mireds).unwrap().mirek_range,
+            Some((153, 500))
+        );
+        // A light with no range is not tunable, and a reading outside the
+        // range it did give is not a reading of it.
+        let plain = state("on", json!(["brightness"]));
+        assert_eq!(Light::from_state(&plain).unwrap().mirek_range, None);
+        assert_eq!(Light::from_state(&plain).unwrap().mirek, None);
+        let colour = json!({"entity_id":"light.test","state":"on","attributes":{
+            "friendly_name":"Test light","supported_color_modes":["color_temp"],
+            "color_temp_kelvin":1000,"min_color_temp_kelvin":2000,"max_color_temp_kelvin":6535}});
+        assert_eq!(Light::from_state(&colour).unwrap().mirek, None);
+        // An off light keeps no colour temperature: it has none to show.
+        let mut off = kelvin.clone();
+        off["state"] = json!("off");
+        assert_eq!(Light::from_state(&off).unwrap().mirek, None);
+        assert_eq!(
+            Light::from_state(&off).unwrap().mirek_range,
+            Some((153, 500))
+        );
+
+        // The write: turn_on with the Kelvin the mirek stands for.
+        let (url, s) = server(vec![(200, kelvin.clone()), (200, json!([]))]);
+        HomeAssistant::new(&url, "test-secret")
+            .unwrap()
+            .command("light.test", Command::Mirek(250))
+            .unwrap();
+        let sent = s.join().unwrap();
+        assert_eq!(sent[1].1, "/api/services/light/turn_on");
+        assert_eq!(
+            sent[1].2,
+            json!({"entity_id":"light.test","color_temp_kelvin":4000})
+        );
+
+        // Outside the light's range, and on a light with no range at all, the
+        // command is refused rather than sent.
+        for (reply, mirek) in [(kelvin, 600u16), (state("on", json!(["brightness"])), 250)] {
+            let (url, s) = server(vec![(200, reply)]);
+            assert_eq!(
+                HomeAssistant::new(&url, "test-secret")
+                    .unwrap()
+                    .command("light.test", Command::Mirek(mirek)),
+                Err(Error::UnsupportedColourTemperature)
+            );
+            assert_eq!(s.join().unwrap().len(), 1);
+        }
+    }
+    #[test]
+    fn mirek_and_kelvin_are_the_same_number_seen_from_two_sides() {
+        assert_eq!(kelvin_of(370), 2702);
+        assert_eq!(mirek_of(2702), 370);
+        assert_eq!(mirek_of(6535), 153);
+        // Nothing divides by zero, whatever a bridge says.
+        assert_eq!(kelvin_of(0), 65535);
+        assert_eq!(mirek_of(0), 65535);
     }
     #[test]
     fn zero_brightness_is_explicit_off() {

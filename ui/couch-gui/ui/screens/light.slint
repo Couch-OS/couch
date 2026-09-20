@@ -1,0 +1,149 @@
+import { Theme } from "../theme.slint";
+import { MediaBack } from "../widgets/media-back.slint";
+import { FocusRing } from "../components/focus_ring.slint";
+
+// One device screen for every light and blind, whatever drives it: built-in
+// Hue, Home Assistant, Matter or a packaged child. The room row behind it
+// keeps its highlight, so Back lands where the press came from.
+//
+// The whole screen is driven from properties: nothing here reads a device, and
+// every number arrives already worked out (lights.rs), including the two bar
+// fills, which are percentages so that Slint never has to divide a range.
+export component LightScreen inherits Rectangle {
+    in property <bool> shown;
+    in property <string> title;
+    // "Living room · Philips Hue" - where it is and what drives it.
+    in property <string> room;
+    // "On · 40%", "Off", "Unavailable", "Open · 60% open".
+    in property <string> state;
+    in property <bool> active;
+    // "BRIGHTNESS" or "OPEN POSITION", and the big reading under it.
+    in property <string> level-label;
+    in property <string> level;
+    in property <int> level-percent;
+    in property <bool> level-known;
+    in property <bool> adjustable;
+    // A blind is drawn with the same shape, and its own three buttons.
+    in property <bool> cover;
+    in property <bool> can-stop;
+    // Only a light that reports a mirek range is offered a colour temperature.
+    in property <bool> tunable;
+    in property <string> kelvin;
+    // 0 is the warm end of this lamp's own range, 100 the cool end.
+    in property <int> mirek-percent;
+    in property <bool> mirek-known;
+    // 0 the level, 1 the colour temperature or the blind's buttons.
+    in property <int> selected;
+    // Which of Open / Stop / Close is selected while focus is 1.
+    in property <int> button;
+    in property <string> detail;
+    in property <bool> pending;
+    callback action(string, int);
+    public function take-focus() { keys.focus(); }
+    background: Theme.bg;
+
+    property <length> card-x: 24px;
+    property <length> card-w: root.width - 48px;
+
+    MediaBack { x: 24px; y: 22px; activate => { root.action("close", 0); } }
+    Text { x: 88px; y: 27px; width: parent.width - 112px; height: 28px; text: root.title; font-size: 21px; font-weight: 600; color: Theme.text; overflow: elide; }
+    Text { x: 88px; y: 59px; width: parent.width - 112px; height: 24px; text: root.room; font-size: 16px; color: Theme.text-secondary; overflow: elide; }
+
+    Rectangle {
+        x: (parent.width - 80px) / 2; y: 104px; width: 80px; height: 80px; border-radius: 40px;
+        background: root.active ? Theme.accent-bg : Theme.surface-icon;
+        border-width: 1px; border-color: root.active ? Theme.border-raised : Theme.border-icon;
+        Image {
+            x: 22px; y: 22px; width: 36px; height: 36px;
+            source: root.cover ? @image-url("../../../../assets/lucide/blinds.svg") : @image-url("../../../../assets/lucide/lightbulb.svg");
+            colorize: root.active ? Theme.accent : Theme.text-secondary;
+        }
+    }
+    Text { x: 24px; y: 196px; width: parent.width - 48px; height: 28px; text: root.pending ? "Updating…" : root.state; horizontal-alignment: center; font-size: 20px; color: root.active ? Theme.accent : Theme.text-secondary; }
+    Text { x: 24px; y: 238px; width: parent.width - 48px; height: 26px; text: root.level-label; horizontal-alignment: center; font-size: 16px; letter-spacing: 2px; color: Theme.text-secondary; }
+    Text { x: 24px; y: 274px; width: parent.width - 48px; height: 96px; text: root.level; horizontal-alignment: center; vertical-alignment: center; font-size: 76px; font-weight: 700; color: root.level-known && root.adjustable ? Theme.text : Theme.text-secondary; }
+
+    // --- the level, which is brightness on a lamp and position on a blind ---
+    Rectangle {
+        x: root.card-x; y: 388px; width: root.card-w; height: 74px;
+        background: Theme.surface; border-width: 1px;
+        border-color: root.selected == 0 ? Theme.accent : Theme.border; border-radius: Theme.r-card;
+        Image { x: 18px; y: 25px; width: 24px; height: 24px; source: root.cover ? @image-url("../../../../assets/lucide/move-vertical.svg") : @image-url("../../../../assets/lucide/sun-medium.svg"); colorize: Theme.text-secondary; }
+        Rectangle {
+            x: 54px; y: 33px; width: parent.width - 76px; height: 8px; border-radius: Theme.r-meter;
+            background: Theme.surface-icon;
+            Rectangle {
+                x: 0px; y: 0px; height: parent.height; border-radius: Theme.r-meter;
+                width: root.level-known ? parent.width * root.level-percent / 100 : 0px;
+                background: Theme.accent;
+            }
+        }
+        TouchArea { clicked => { root.action("focus-level", 0); } }
+        FocusRing { focused: root.selected == 0; radius-inner: Theme.r-card; box-width: parent.width; box-height: parent.height; }
+    }
+
+    // --- colour temperature, only where the light reports a range -----------
+    if root.tunable: Rectangle {
+        x: root.card-x; y: 480px; width: root.card-w; height: 104px;
+        background: Theme.surface; border-width: 1px;
+        border-color: root.selected == 1 ? Theme.accent : Theme.border; border-radius: Theme.r-card;
+        Text { x: 20px; y: 16px; width: parent.width - 150px; height: 26px; text: "Colour temperature"; font-size: 18px; color: Theme.text-secondary; }
+        Text { x: parent.width - 150px; y: 12px; width: 130px; height: 34px; text: root.kelvin; horizontal-alignment: right; font-size: 28px; font-weight: 600; color: root.mirek-known ? Theme.text : Theme.text-secondary; }
+        Rectangle {
+            x: 20px; y: 62px; width: parent.width - 40px; height: 10px; border-radius: Theme.r-meter;
+            // Warm on the left, cool on the right: the direction the right
+            // arrow travels, so the key and the picture agree.
+            background: @linear-gradient(90deg, #FFB463 0%, #FFE9C8 45%, #FFFFFF 62%, #C9DCFF 100%);
+            Rectangle {
+                y: -4px; width: 4px; height: 18px; border-radius: 2px;
+                x: root.mirek-known ? (parent.width - 4px) * root.mirek-percent / 100 : 0px;
+                background: root.mirek-known ? Theme.text : transparent;
+                border-width: 1px; border-color: root.mirek-known ? Theme.bg : transparent;
+            }
+        }
+        Text { x: 20px; y: 78px; width: 80px; height: 20px; text: "WARM"; font-size: 12px; letter-spacing: 1.4px; color: Theme.text-tertiary; }
+        Text { x: parent.width - 100px; y: 78px; width: 80px; height: 20px; text: "COOL"; horizontal-alignment: right; font-size: 12px; letter-spacing: 1.4px; color: Theme.text-tertiary; }
+        TouchArea { clicked => { root.action("focus-colour", 0); } }
+        FocusRing { focused: root.selected == 1; radius-inner: Theme.r-card; box-width: parent.width; box-height: parent.height; }
+    }
+
+    // --- a blind's own buttons ----------------------------------------------
+    if root.cover: Rectangle {
+        x: root.card-x; y: 480px; width: root.card-w; height: 74px; background: transparent;
+        for name[i] in ["Open", "Stop", "Close"]: Rectangle {
+            x: i * (parent.width / 3); width: parent.width / 3 - 10px; height: parent.height;
+            background: root.selected == 1 && root.button == i ? Theme.accent-bg : Theme.surface;
+            border-width: 1px; border-radius: Theme.r-card;
+            border-color: root.selected == 1 && root.button == i ? Theme.accent : Theme.border;
+            Text {
+                width: parent.width; height: parent.height; text: name;
+                horizontal-alignment: center; vertical-alignment: center; font-size: 20px;
+                color: i == 1 && !root.can-stop ? Theme.text-disabled : Theme.text;
+            }
+            TouchArea { clicked => { root.action("cover", i); } }
+        }
+    }
+
+    Text { x: 36px; y: 618px; width: parent.width - 72px; height: 72px; text: root.detail; font-size: 18px; color: Theme.text-secondary; wrap: word-wrap; horizontal-alignment: center; }
+    Text {
+        x: 36px; y: 720px; width: parent.width - 72px; height: 48px; horizontal-alignment: center;
+        text: root.cover ? "OK opens and closes · Power too · Back to the room" : "OK turns it on and off · Power too · Back to the room";
+        font-size: 15px; color: Theme.text-tertiary; wrap: word-wrap;
+    }
+
+    keys := FocusScope {
+        enabled: root.shown;
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.action("close", 0); return accept; }
+            if (e.text == Key.Home) { root.action("home", 0); return accept; }
+            if (e.text == Key.Return) { root.action(root.selected == 1 && root.cover ? "cover" : "toggle", root.button); return accept; }
+            if (e.text == Key.UpArrow) { root.action("focus", -1); return accept; }
+            if (e.text == Key.DownArrow) { root.action("focus", 1); return accept; }
+            // Left/right and the volume keys are the same adjustment, the way
+            // they are on the room's rows.
+            if (e.text == Key.RightArrow || e.text == Key.F23) { root.action("step", 1); return accept; }
+            if (e.text == Key.LeftArrow || e.text == Key.F24) { root.action("step", -1); return accept; }
+            return accept;
+        }
+    }
+}

@@ -21,6 +21,7 @@ mod evdev;
 mod home;
 mod input;
 mod keypad;
+mod light_screen;
 mod lights;
 mod media_player;
 mod mic;
@@ -92,6 +93,7 @@ enum Overlay {
     Activity,
     Camera,
     Thermostat,
+    Light,
     Tv,
     Player,
     Room,
@@ -110,7 +112,7 @@ impl Overlay {
     fn device(self) -> bool {
         matches!(
             self,
-            Overlay::Camera | Overlay::Thermostat | Overlay::Tv | Overlay::Player
+            Overlay::Camera | Overlay::Thermostat | Overlay::Light | Overlay::Tv | Overlay::Player
         )
     }
 }
@@ -131,6 +133,8 @@ fn overlay(app: &App) -> Option<Overlay> {
         Overlay::Camera
     } else if app.get_thermostat_shown() {
         Overlay::Thermostat
+    } else if app.get_light_screen_shown() {
+        Overlay::Light
     } else if app.get_tv_shown() {
         Overlay::Tv
     } else if app.get_player_shown() {
@@ -952,6 +956,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.get_player_shown(),
             app.get_tv_shown(),
             app.get_thermostat_shown(),
+            app.get_light_screen_shown(),
         )
     };
     let mut last_feedback_page = feedback_page(&app);
@@ -976,6 +981,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Overlay::Activity) => app.invoke_cancel_activity(),
         Some(Overlay::Camera) => app.invoke_close_camera(),
         Some(Overlay::Thermostat) => app.invoke_thermostat_action("close".into(), 0),
+        Some(Overlay::Light) => app.invoke_light_screen_action("close".into(), 0),
         Some(Overlay::Tv) => app.invoke_tv_action("close".into()),
         Some(Overlay::Player) => {
             app.set_player_panel(0);
@@ -2116,6 +2122,10 @@ mod overlay_tests {
             (
                 Box::new(|a: &App, v| a.set_thermostat_shown(v)),
                 Overlay::Thermostat,
+            ),
+            (
+                Box::new(|a: &App, v| a.set_light_screen_shown(v)),
+                Overlay::Light,
             ),
             (Box::new(|a: &App, v| a.set_tv_shown(v)), Overlay::Tv),
             (

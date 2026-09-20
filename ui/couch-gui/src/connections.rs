@@ -186,6 +186,11 @@ impl HueFleet {
             .brightness(raw, level)
             .map_err(|e| e.to_string())
     }
+    /// Colour temperature, in mirek, for a Hue light that declares a range.
+    pub fn mirek(&self, resource: &str, mirek: u16) -> Result<couch_ha::Light, String> {
+        let (id, raw) = split(resource);
+        self.get(id)?.mirek(raw, mirek).map_err(|e| e.to_string())
+    }
     pub fn reset(&self) {
         for client in self.clients.lock().unwrap().values() {
             client.reset();
@@ -228,6 +233,10 @@ impl MatterFleet {
             on: light.on,
             brightness_percent: light.brightness_percent,
             dimmable: light.dimmable,
+            // The Matter controller reads on/off and level only: no colour
+            // temperature is offered for a Matter lamp.
+            mirek: None,
+            mirek_range: None,
         }
     }
     pub fn lights(&self) -> Vec<couch_ha::Light> {
