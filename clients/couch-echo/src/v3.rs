@@ -564,3 +564,419 @@ impl DeviceClient for EchoBridge {
         Ok(Some(self.start(resource)?.status()))
     }
 }
+
+// ---------------------------------------------------------------------------
+// A television that has to be paired: the pairing fixture.
+// ---------------------------------------------------------------------------
+//
+// Three prompts, one fake device, and the whole of `PairFlow`. The television
+// speaks four more lines than the one above:
+//
+//   -> PAIR button           <- PROMPT button
+//   -> PAIR button           <- WAIT
+//   -> PAIR button           <- PAIRED {"key":"0f1e2d"}
+//   -> PAIR code             <- PROMPT code 4 digits
+//   -> PAIR code 0417        <- ERR wrong code
+//   -> PAIR cancel           <- OK
+//
+// `ERR expired` is the device's own window closing, `ERR refused` is a no. The
+// key never reaches the settings, the log or the wire in either direction
+// except as `Credential`, which prints as `Credential(..)`.
+
+use couch_sdk::{CodeAlphabet, Credential, PairFailure, PairFlow, PairInput, PairPrompt, PairStep};
+
+/// How long Couch waits between two polls of this television. Well inside the
+/// bounds the host enforces, so the fixture is never the thing that breaks
+/// them; `couch-plugin-echo-pair-hostile` is what does that on purpose.
+pub const POLL_MS: u32 = 500;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PairingSettings {
+    pub host: String,
+    #[serde(default = "crate::default_port")]
+    pub port: u16,
+    /// Which prompt this television asks for: `button`, `approve` or `code`.
+    #[serde(default)]
+    pub mode: String,
+    /// Whether it hands out a new key on the next reading.
+    #[serde(default)]
+    pub rotate: bool,
+}
+
+impl PairingSettings {
+    /// The address this television actually answers on. A person may type it
+    /// absolutely (`avr.local.`) or in any case; the set is reached either way.
+    fn address(&self) -> String {
+        self.host.trim_end_matches('.').to_lowercase()
+    }
+    fn television(&self) -> Settings {
+        Settings {
+            host: self.address(),
+            port: self.port,
+            token: String::new(),
+        }
+    }
+    /// The settings this television would rather Couch saved: its own name in
+    /// the one spelling it uses. A real package corrects a port, or an address
+    /// it was redirected to; this one returns the address it actually reached,
+    /// which is enough to prove Couch takes them and re-validates them.
+    fn normalised(&self) -> serde_json::Value {
+        serde_json::json!({
+            "host": self.address(),
+            "port": self.port,
+            "mode": self.mode,
+            "rotate": self.rotate,
+        })
+    }
+}
+
+impl ClientSettings for PairingSettings {
+    const FILE_PREFIX: &'static str = "echo-pair";
+
+    fn validate(&self) -> Result<()> {
+        if !matches!(self.mode.as_str(), "button" | "approve" | "code") {
+            return Err(Error::Invalid.because(Reason::InvalidSetting {
+                field: "mode".into(),
+                text: "Not a way this television knows how to pair".into(),
+            }));
+        }
+        self.television().validate()
+    }
+}
+
+/// Come back in half a second, or - for a code - when the person submits it.
+fn waiting(prompt: PairPrompt) -> PairStep {
+    let after = if prompt.is_code() { 0 } else { POLL_MS };
+    PairStep::waiting(prompt, after)
+}
+
+/// One pairing conversation with one television.
+pub struct EchoPairFlow {
+    tv: EchoTv,
+    settings: PairingSettings,
+    /// The last prompt, so a `WAIT` can repeat it without the device having
+    /// to say it again.
+    prompt: Option<PairPrompt>,
+}
+
+impl EchoPairFlow {
+    fn interpret(&mut self, reply: String) -> Result<PairStep> {
+        if let Some(rest) = reply.strip_prefix("PROMPT ") {
+            let mut words = rest.split_whitespace();
+            let prompt = match words.next() {
+                Some("button") => {
+                    PairPrompt::press_button().saying("The PAIR button is under the screen")
+                }
+                Some("approve") => {
+                    PairPrompt::approve_on_device().saying("Say yes on the television")
+                }
+                Some("code") => {
+                    let length: u8 = words
+                        .next()
+                        .and_then(|word| word.parse().ok())
+                        .ok_or(Error::Protocol)?;
+                    let alphabet = match words.next() {
+                        Some("digits") => CodeAlphabet::Digits,
+                        Some("hex") => CodeAlphabet::Hex,
+                        Some("alphanumeric") => CodeAlphabet::Alphanumeric,
+                        _ => return Err(Error::Protocol),
+                    };
+                    PairPrompt::enter_code(length, alphabet).saying("The code is on the screen")
+                }
+                _ => return Err(Error::Protocol),
+            };
+            self.prompt = Some(prompt.clone());
+            return Ok(waiting(prompt));
+        }
+        if reply == "WAIT" {
+            let prompt = self.prompt.clone().ok_or(Error::Protocol)?;
+            return Ok(waiting(prompt));
+        }
+        if let Some(body) = reply.strip_prefix("PAIRED ") {
+            let value: serde_json::Value =
+                serde_json::from_str(body).map_err(|_| Error::Protocol)?;
+            let credential = Credential::new(value)?;
+            return Ok(
+                PairStep::done(credential, format!("Paired with {}", self.settings.host))
+                    .with_settings(self.settings.normalised()),
+            );
+        }
+        Ok(match reply.as_str() {
+            "ERR expired" => {
+                PairStep::failed(PairFailure::TimedOut).because("The television stopped waiting")
+            }
+            "ERR wrong code" => PairStep::failed(PairFailure::WrongCode)
+                .because("That was not the code on the screen"),
+            "ERR refused" => {
+                PairStep::failed(PairFailure::Refused).because("The television said no")
+            }
+            "ERR unreachable" => PairStep::failed(PairFailure::Unreachable),
+            other => match other.strip_prefix("ERR ") {
+                Some(text) => PairStep::failed(PairFailure::Refused).because(text),
+                None => return Err(Error::Protocol),
+            },
+        })
+    }
+}
+
+impl PairFlow for EchoPairFlow {
+    fn step(&mut self, input: Option<PairInput>) -> Result<PairStep> {
+        let line = match input {
+            Some(PairInput::Code { code }) => format!("PAIR code {code}"),
+            None => format!("PAIR {}", self.settings.mode),
+        };
+        let reply = self.tv.request(&line)?;
+        self.interpret(reply)
+    }
+
+    fn cancel(&mut self) {
+        // Best effort, and never an error: nothing is stored either way.
+        let _ = self.tv.request("PAIR cancel");
+    }
+}
+
+/// A television Couch has to be paired with before it will answer.
+pub struct EchoPairTv {
+    tv: EchoTv,
+    /// The key Couch handed over on configure. Without one this television
+    /// answers `unpaired`, which is how a case proves the key arrives.
+    credential: Option<Credential>,
+    /// Whether the next reading hands out a new key, and the one it hands out.
+    rotate: bool,
+    rotated: Option<Credential>,
+}
+
+impl DeviceClient for EchoPairTv {
+    type Settings = PairingSettings;
+
+    const KIND: &'static str = "echo-pair";
+    const LABEL: &'static str = "Echo TV that pairs (protocol 3 fixture)";
+
+    fn capabilities() -> &'static [Capability] {
+        &[("power-on", "Power on"), ("power-off", "Power off")]
+    }
+
+    fn connect(settings: &PairingSettings) -> Result<Self> {
+        Self::connect_with(settings, None)
+    }
+
+    fn connect_with(settings: &PairingSettings, credential: Option<&Credential>) -> Result<Self> {
+        settings.validate()?;
+        Ok(Self {
+            tv: EchoTv::connect(&settings.television())?,
+            credential: credential.cloned(),
+            rotate: settings.rotate,
+            rotated: None,
+        })
+    }
+
+    fn pair_start(
+        settings: &PairingSettings,
+        _existing: Option<&Credential>,
+    ) -> Result<Box<dyn PairFlow>> {
+        settings.validate()?;
+        Ok(Box::new(EchoPairFlow {
+            tv: EchoTv::connect(&settings.television())?,
+            settings: settings.clone(),
+            prompt: None,
+        }))
+    }
+
+    fn execute(&mut self, function: &Function) -> Result<()> {
+        self.paired()?;
+        match self.tv.request(&format!("CMD {}", function.id()))?.as_str() {
+            "OK" => Ok(()),
+            "ERR unpaired" => Err(Error::Unpaired.because(Reason::Message {
+                text: "Pair this television again".into(),
+            })),
+            _ => Err(Error::Rejected),
+        }
+    }
+
+    fn status(&mut self) -> Result<Status> {
+        self.paired()?;
+        let status = self.tv.status()?;
+        // The television issued a new key while answering. It is handed to
+        // Couch beside this reply and never put in the reply itself, and it
+        // is issued once: a package that offered one on every reply would
+        // have Couch rewriting the same file for ever.
+        if self.rotate {
+            self.rotate = false;
+            self.rotated = Some(Credential::new(serde_json::json!({"key": "rotated-0002"}))?);
+        }
+        Ok(status)
+    }
+
+    fn take_credential(&mut self) -> Option<Credential> {
+        self.rotated.take()
+    }
+}
+
+impl EchoPairTv {
+    fn paired(&self) -> Result<()> {
+        if self.credential.is_none() {
+            return Err(Error::Unpaired.because(Reason::Message {
+                text: "This television has not been paired".into(),
+            }));
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A package that answers nonsense: the hostile pairing fixture.
+// ---------------------------------------------------------------------------
+//
+// Written by hand rather than through `couch_plugin::serve`, and that is the
+// point. `serve` cannot emit any of this - its constructors clamp a step, it
+// mints the session itself and it never attaches a key to a reply that may not
+// carry one - so a fixture built on it could not stand in for the adversary
+// the host is defending against. A package may be written in any language, and
+// this one is the shape of one that was written badly, or maliciously.
+//
+// Five ways, and the split matters. The host sees the first four in the single
+// answer and retires the child itself. The fifth it cannot see at all: a
+// package that copies its own key into a reading is leaking it, and only
+// someone who knows the key - the harness, the daemon - can tell.
+
+use couch_plugin::{read_frame, write_frame, Credential as WireCredential, MAX_CREDENTIAL_BYTES};
+use serde_json::json;
+
+/// Which way this package misbehaves. Named in its `hostile` setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HostilePairing {
+    #[default]
+    None,
+    /// A key larger than Couch will store.
+    Oversized,
+    /// A step that names a session nobody asked about.
+    WrongSession,
+    /// A wait no dialog could draw: poll again in no time at all.
+    BadPoll,
+    /// A key attached to the reply to `configure`, which may never carry one.
+    CredentialOnConfigure,
+    /// The key itself, copied into a later reading. The host cannot see this;
+    /// the harness can.
+    LeaksCredential,
+}
+
+impl HostilePairing {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "" | "none" => Self::None,
+            "oversized" => Self::Oversized,
+            "wrong_session" => Self::WrongSession,
+            "bad_poll" => Self::BadPoll,
+            "credential_on_configure" => Self::CredentialOnConfigure,
+            "leaks_credential" => Self::LeaksCredential,
+            _ => return None,
+        })
+    }
+}
+
+/// The key this package issues, so a test can look for it where it must not be.
+pub const HOSTILE_KEY: &str = "leaked-0f1e2d";
+
+fn hostile_credential(mode: HostilePairing) -> serde_json::Value {
+    match mode {
+        // Comfortably over the limit, and still a well formed object.
+        HostilePairing::Oversized => json!({"key": "a".repeat(MAX_CREDENTIAL_BYTES)}),
+        _ => json!({ "key": HOSTILE_KEY }),
+    }
+}
+
+/// Serve the hostile fixture: the protocol by hand, over stdin and stdout.
+///
+/// Returns when the host closes the stream or sends something this fixture
+/// does not answer, exactly as `serve` does.
+pub fn serve_hostile(manifest_json: &str) -> std::result::Result<(), ()> {
+    let manifest: serde_json::Value = serde_json::from_str(manifest_json).map_err(|_| ())?;
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut input = stdin.lock();
+    let mut output = stdout.lock();
+    let mut mode = HostilePairing::None;
+    let mut session = String::new();
+    loop {
+        let frame: serde_json::Value = read_frame(&mut input).map_err(|_| ())?;
+        let id = frame["id"].clone();
+        let body = &frame["body"];
+        let mut store: Option<serde_json::Value> = None;
+        let response = match body["method"].as_str() {
+            Some("hello") => json!({"type":"hello","manifest": manifest}),
+            Some("configure") => {
+                mode = body["settings"]["hostile"]
+                    .as_str()
+                    .and_then(HostilePairing::parse)
+                    .unwrap_or_default();
+                if mode == HostilePairing::CredentialOnConfigure {
+                    // A key on the one reply that may never carry one. This
+                    // also covers a package that simply echoes back the key it
+                    // was just configured with.
+                    store = Some(hostile_credential(mode));
+                }
+                json!({"type":"ok"})
+            }
+            Some("pair_start") => {
+                session = "p1".into();
+                json!({"type":"pairing","session":"p1","step": first_step(mode)})
+            }
+            Some("pair_continue") => {
+                let named = match mode {
+                    // A session nobody is having, which is the whole trick.
+                    HostilePairing::WrongSession => "p9".to_owned(),
+                    _ => session.clone(),
+                };
+                json!({"type":"pairing","session": named, "step": json!({
+                    "step":"done",
+                    "credential": hostile_credential(mode),
+                    "summary":"Paired with the hostile set"
+                })})
+            }
+            Some("pair_cancel") => json!({"type":"ok"}),
+            Some("status") => {
+                let status = if mode == HostilePairing::LeaksCredential {
+                    // The key, in a field meant for what is on the screen.
+                    json!({"on": true, "title": format!("key={HOSTILE_KEY}")})
+                } else {
+                    json!({ "on": true })
+                };
+                json!({"type":"status","status": status})
+            }
+            Some("command") => json!({"type":"ok"}),
+            _ => json!({"type":"error","code":"unsupported"}),
+        };
+        let mut reply = json!({"id": id, "body": response});
+        if let Some(store) = store {
+            reply["store_credential"] = store;
+        }
+        write_frame(&mut output, &reply).map_err(|_| ())?;
+    }
+}
+
+fn first_step(mode: HostilePairing) -> serde_json::Value {
+    match mode {
+        // A key too large, straight away.
+        HostilePairing::Oversized => json!({
+            "step":"done",
+            "credential": hostile_credential(mode),
+            "summary":"Paired with the hostile set"
+        }),
+        // Come back in no time at all, for a prompt that resolves by itself.
+        HostilePairing::BadPoll => json!({
+            "step":"waiting",
+            "prompt":{"kind":"press_button"},
+            "poll_after_ms":0
+        }),
+        _ => json!({
+            "step":"waiting",
+            "prompt":{"kind":"press_button"},
+            "poll_after_ms":500
+        }),
+    }
+}
+
+/// So a test can build the very credential this fixture issues.
+pub fn hostile_key() -> WireCredential {
+    WireCredential::new(json!({ "key": HOSTILE_KEY })).expect("a small credential")
+}
