@@ -1147,3 +1147,17 @@ h2 .count,h3 .count {
 }
 .integration-reading strong { color:var(--accent); }
 .integration-component select { min-width:12rem; }
+
+/* Protocol 3 (unreleased): the children of one packaged connection. The
+   picker reuses .discovered-device; these are the parts it does not have. */
+.confirm-add { border:2px solid var(--accent); }
+.confirm-add h3 { margin:0 0 .6rem; }
+.confirm-add .rows { max-height:280px; overflow-y:auto; }
+.confirm-add .row { padding:6px 0; }
+button.add-all { margin-bottom:8px; }
+.child-gone { background:#f7ece8; border-color:#e2c3bc; }
+.discovered-devices.gone { margin-top:16px; }
+.child-controls { margin:12px 0; min-width:0; }
+.child-controls > p { margin:6px 0; }
+.child-controls .field { margin:14px 0; }
+.child-controls input[type=range] { width:100%; min-width:0; margin:6px 0; accent-color:var(--accent); height:32px; }

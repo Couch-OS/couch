@@ -835,7 +835,12 @@ fn resolve_target(
     if matches!(integration, Some(couch_model::Integration::Sonos { .. })) {
         return Ok((format!("sonos:{id}"), Some(id.into())));
     }
+    // A packaged light or blind is a room row, not a screen: the room list is
+    // where its level lives, so this never opens the packaged screen for one.
     if matches!(integration, Some(couch_model::Integration::Plugin { .. })) {
+        if !crate::lights::opens_packaged_screen(config, device) {
+            return Err("This device does not have TV controls".into());
+        }
         return Ok((format!("plugin:{id}"), Some(id.into())));
     }
     let provider = match integration {
