@@ -72,6 +72,19 @@ const MAX_PAIRINGS: usize = 8;
 /// the idle reaper at once (the owner's cap). Beyond it the least recently
 /// used lose the exemption and are reaped as anything else is.
 const MAX_KEEP_ALIVE: usize = 8;
+/// How long a request waits for the one ahead of it on the same connection.
+///
+/// A connection answers one request at a time, and until a real bridge with
+/// forty-eight lamps was on the other end a second request was simply told
+/// "busy". With the panel reading a row every few seconds and a phone open on
+/// the same connection that refused one read in ten, and half of them with
+/// eight readers, though a read is answered in about thirty milliseconds. A
+/// short wait lets those through in turn. It is a fraction of
+/// [`couch_plugin::QUEUE_TTL`], so a request that waited is still worth
+/// sending, and short enough that four requests waiting behind a connection
+/// that has really stalled give the API's four workers back in a quarter of
+/// a second. The lock is still only ever tried, never waited on.
+const REQUEST_LOCK_WAIT: Duration = Duration::from_millis(250);
 /// How long the write that ends a pairing waits for the connection's settings
 /// lock. Longer than any request that could be holding it, because the key is
 /// already in hand and asking the device again would mean pairing again.
@@ -995,7 +1008,9 @@ impl Runtime {
         }
         let path = self.settings_path(connection)?;
         let lock = crate::api::connections::lock_for(&path);
-        let _guard = lock.try_lock().map_err(|_| Error::Busy)?;
+        let _guard =
+            crate::api::connections::patiently(queued + REQUEST_LOCK_WAIT, || lock.try_lock().ok())
+                .ok_or(Error::Busy)?;
         let generation = self
             .packages
             .generation(plugin)
@@ -1201,7 +1216,9 @@ impl Runtime {
     ) -> Result<Children, Failure> {
         let path = self.settings_path(connection)?;
         let lock = crate::api::connections::lock_for(&path);
-        let _guard = lock.try_lock().map_err(|_| Error::Busy)?;
+        let deadline = Instant::now() + REQUEST_LOCK_WAIT;
+        let _guard = crate::api::connections::patiently(deadline, || lock.try_lock().ok())
+            .ok_or(Error::Busy)?;
         let (generation, settings) = self.package_selection(plugin, &path)?;
         if !refresh {
             if let Some(cached) = self.cached_children(connection, &generation, &settings) {
@@ -2701,6 +2718,54 @@ mod tests {
             runtime.execute("conn", "sample", None, Request::status()),
             Err(Error::Busy.into())
         );
+        runtime.retire("conn");
+        let _ = fs::remove_dir_all(home);
+    }
+
+    /// Two things asking one connection at nearly the same moment is the
+    /// ordinary case - the panel reading a row while a phone has the page open -
+    /// and the second one waits its turn. Only a connection that stays held is
+    /// busy.
+    #[test]
+    fn a_request_just_behind_another_waits_its_turn_and_a_long_one_is_still_busy() {
+        let home = home_with_a_package("wait-briefly", "sample");
+        let runtime = Runtime::new(home.clone());
+        let settings = runtime.settings_path("conn").unwrap();
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        couch_sdk::save_private(&settings, &json!({"host":"tv.local","port":23})).unwrap();
+        let lock = crate::api::connections::lock_for(&settings);
+
+        let hold = |time: Duration| {
+            let lock = lock.clone();
+            let (held, holding) = std::sync::mpsc::channel();
+            let holder = std::thread::spawn(move || {
+                let _guard = lock.lock().unwrap();
+                held.send(()).unwrap();
+                std::thread::sleep(time);
+            });
+            holding.recv().unwrap();
+            holder
+        };
+
+        let passing = hold(REQUEST_LOCK_WAIT / 3);
+        assert_ne!(
+            runtime.execute("conn", "sample", None, Request::status()),
+            Err(Error::Busy.into()),
+            "a request that is passing through is waited for"
+        );
+        passing.join().unwrap();
+
+        let stuck = hold(REQUEST_LOCK_WAIT * 3);
+        let asked = Instant::now();
+        assert_eq!(
+            runtime.execute("conn", "sample", None, Request::status()),
+            Err(Error::Busy.into())
+        );
+        assert!(
+            asked.elapsed() < REQUEST_LOCK_WAIT * 2,
+            "and one that is not gives the worker back"
+        );
+        stuck.join().unwrap();
         runtime.retire("conn");
         let _ = fs::remove_dir_all(home);
     }
