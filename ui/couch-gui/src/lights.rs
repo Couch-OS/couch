@@ -193,7 +193,7 @@ fn cover_row(name: &str, traits: Option<&CoverTraits>, state: &CoverState) -> Co
 /// saved about itself, so a lamp keeps its row instead of turning into a
 /// device with a screen; a child that saved nothing at all is treated as a
 /// light, which shows "Unavailable" and opens nothing.
-pub(crate) fn child_component(
+fn child_component(
     config: &couch_model::Config,
     integration: &Integration,
     child: &ChildSnapshot,
@@ -1287,6 +1287,8 @@ impl Controller {
                     // Without this the next poll would resend immediately and
                     // spin against a connection that is busy for a moment.
                     self.last_brightness_send = Instant::now();
+                    // The row said "Updating…" while the request was out.
+                    self.update_rows(app, false);
                 }
                 Ok(Answer::State(s)) => {
                     self.cache.put(s.clone());
@@ -1750,6 +1752,17 @@ mod tests {
         assert!(cache.get("b/cover.office").is_some());
         assert!(cache.get("cover.office").is_none());
     }
+    /// Protocol 3 is unreleased and the panel is never built with its preview
+    /// switched on, so no connection can declare children and no device can be
+    /// saved as one: nothing here changes what a user sees today.
+    #[test]
+    fn the_panel_is_never_built_with_the_protocol_3_preview() {
+        assert_eq!(
+            couch_plugin::accepted_protocol_version(),
+            couch_plugin::PROTOCOL_VERSION
+        );
+    }
+
     /// A bridge that offers children, and a receiver that is a connection of
     /// its own: the two shapes a packaged connection has.
     fn packaged() -> couch_model::Config {
