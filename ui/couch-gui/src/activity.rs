@@ -142,10 +142,12 @@ fn plugin_target(config: &Config, id: &str) -> Option<pages::PluginTarget> {
     match config.resolve_integration(&device.integration)? {
         Integration::Plugin {
             connection_id,
+            resource_id,
             capabilities,
             actions,
             supports_inputs,
             presentation,
+            child,
             ..
         } => {
             let label = config
@@ -157,6 +159,14 @@ fn plugin_target(config: &Config, id: &str) -> Option<pages::PluginTarget> {
                 room,
                 device: device.id.to_string(),
                 connection: connection_id.to_string(),
+                // A saved `resource_id` alone is part of a connection's own
+                // settings (a receiver's zone); only a child is named on the
+                // wire.
+                resource: if child.is_some() {
+                    resource_id
+                } else {
+                    String::new()
+                },
                 label,
                 capabilities,
                 actions,

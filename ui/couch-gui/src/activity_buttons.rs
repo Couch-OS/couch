@@ -448,7 +448,7 @@ fn connection_worker(
     let matter = connections::matter();
     let mut generation = current.load(Ordering::SeqCst);
     // A packaged device whose level is owed a read once its keys stop.
-    let mut settle: Option<(String, String, Option<DbScale>)> = None;
+    let mut settle: Option<(Integration, String, Option<DbScale>)> = None;
     // Its last observed decibel level, in tenths: what a held volume key is
     // predicted from, the way a brightness hold moves its card before the
     // light has answered. Every real reading replaces it.
@@ -469,8 +469,8 @@ fn connection_worker(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // The lane has been quiet for a poll: a held volume key is
                 // over. One read for the card, at the level it ended on.
-                if let Some((connection, target, scale)) = settle.take() {
-                    if let Some((reading, observed)) = plugin_level(&connection, &target, scale) {
+                if let Some((integration, target, scale)) = settle.take() {
+                    if let Some((reading, observed)) = plugin_level(&integration, &target, scale) {
                         level = observed;
                         let _ = reply.try_send((generation, Feedback::Volume(reading)));
                     }
@@ -496,9 +496,10 @@ fn connection_worker(
                 let integration = d.network_integration(&r.config)?;
                 let scale = DbScale::of(&integration);
                 match integration {
-                    Integration::Plugin { connection_id, .. } => {
-                        Some((connection_id.to_string(), d.name.clone(), scale))
-                    }
+                    // The whole integration, not just its connection: the read
+                    // that settles the card has to name the same child the
+                    // keys did.
+                    plugin @ Integration::Plugin { .. } => Some((plugin, d.name.clone(), scale)),
                     _ => None,
                 }
             });
@@ -658,12 +659,14 @@ pub(crate) fn execute_with_input(
         .ok_or("Mapped device was removed")?;
     if let Some(tenths) = action.command.strip_prefix(SET_VOLUME_DB) {
         let tenths: i16 = tenths.parse().map_err(|_| "Unsupported button function")?;
-        let Some(Integration::Plugin { connection_id, .. }) = device.network_integration(config)
+        let Some(integration @ Integration::Plugin { .. }) = device.network_integration(config)
         else {
             return Err("Unsupported button function".into());
         };
-        return match crate::tv::plugin::ask_detailed(
-            connection_id.as_str(),
+        // `ask_device` aims the frame at the child the device is; a device
+        // that is the connection itself sends the bytes it always did.
+        return match crate::tv::plugin::ask_device(
+            &integration,
             couch_plugin::Request::action(couch_model::TypedAction::SetVolumeDb { tenths }),
         ) {
             // Part of a hold: the lane reads the level once it goes quiet.
@@ -767,11 +770,8 @@ fn power_toggle(
         Plan::Toggle
     } else {
         match device.network_integration(config) {
-            Some(Integration::Plugin { connection_id, .. }) => {
-                match crate::tv::plugin::ask_detailed(
-                    connection_id.as_str(),
-                    couch_plugin::Request::status(),
-                ) {
+            Some(integration @ Integration::Plugin { .. }) => {
+                match crate::tv::plugin::ask_device(&integration, couch_plugin::Request::status()) {
                     Ok(couch_plugin::Response::Status { status }) => Plan::Observed(status.on),
                     Ok(_) => return Err("The integration returned an invalid status".into()),
                     Err(failure) => return Err(crate::tv::plugin::refusal(&failure)),
@@ -1189,12 +1189,16 @@ fn send_network(
         }
         .map(|_| Outcome::default())
         .map_err(Failure::Command),
-        Integration::Plugin { connection_id, .. } => {
-            // How the key was pressed goes with it. The daemon's host sends a
-            // phase only to a protocol 3 package; every other package is sent
-            // the tap it always was, byte for byte.
-            let result = crate::tv::plugin::ask_detailed(
-                connection_id.as_str(),
+        Integration::Plugin { .. } => {
+            // How the key was pressed goes with it, and which child of the
+            // connection it is for. The daemon's host sends a phase only to a
+            // protocol 3 package; every other package is sent the tap it
+            // always was, byte for byte. A level on a child (`dim:30`,
+            // `position:40`, `mode:heat`) goes as the plain command it is:
+            // the one host gate turns it into the typed action the child's
+            // kind declares.
+            let result = crate::tv::plugin::ask_device(
+                &integration,
                 couch_plugin::Request::key(command.id(), phase),
             );
             match result {
@@ -1208,7 +1212,7 @@ fn send_network(
                 }),
                 Ok(couch_plugin::Response::Ok) => {
                     let level = sound
-                        .then(|| plugin_level(connection_id.as_str(), &name, scale))
+                        .then(|| plugin_level(&integration, &name, scale))
                         .flatten();
                     Ok(Outcome {
                         observed_db: level.as_ref().and_then(|(_, tenths)| *tenths),
@@ -1228,18 +1232,14 @@ fn send_network(
     }
 }
 
-/// Ask a packaged device for its level, for the volume card.
+/// Ask a packaged device for its level, for the volume card. The read is
+/// aimed at the child the device is, exactly as the command was.
 fn plugin_level(
-    connection: &str,
+    integration: &Integration,
     target: &str,
     scale: Option<DbScale>,
 ) -> Option<(VolumeReading, Option<i16>)> {
-    match couch_plugin::local_request(
-        &crate::home::path("plugin.sock"),
-        connection,
-        couch_plugin::Request::status(),
-        couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
-    ) {
+    match crate::tv::plugin::ask_device(integration, couch_plugin::Request::status()) {
         Ok(couch_plugin::Response::Status { status }) => {
             let tenths = match (status.muted, status.volume_db.as_ref()) {
                 (Some(true), _) => None,

@@ -87,16 +87,67 @@ pub(crate) fn ask_detailed(
     connection: &str,
     request: Request,
 ) -> Result<Response, couch_plugin::Failure> {
-    couch_plugin::local_request_detailed(
-        &crate::home::path("plugin.sock"),
+    ask_within(
         connection,
         request,
         couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
     )
 }
 
-fn ask(connection: &str, request: Request) -> Result<Response, String> {
-    ask_detailed(connection, request).map_err(|failure| refusal(&failure))
+/// [`ask_detailed`] with a deadline of its own: the room list gives a status
+/// read far less than a command's, because a room full of rows is read one
+/// after another on one worker.
+pub(crate) fn ask_within(
+    connection: &str,
+    request: Request,
+    timeout: Duration,
+) -> Result<Response, couch_plugin::Failure> {
+    couch_plugin::local_request_detailed(
+        &crate::home::path("plugin.sock"),
+        connection,
+        request,
+        timeout,
+    )
+}
+
+/// Which child of its connection a packaged device is, if it is one.
+///
+/// A device that *is* the connection - a receiver, a TV - names nothing, and
+/// every frame sent for it is the one a protocol 1 or 2 package has always
+/// read, byte for byte. A saved `resource_id` alone does not make a child:
+/// `zone1` on a receiver is part of the connection's own settings.
+pub(crate) fn resource(integration: &Integration) -> Option<&str> {
+    match integration {
+        Integration::Plugin {
+            resource_id,
+            child: Some(_),
+            ..
+        } => Some(resource_id),
+        _ => None,
+    }
+}
+
+/// `request`, aimed at the child this device is; unchanged for a device that
+/// is the connection itself.
+pub(crate) fn aimed(request: Request, integration: &Integration) -> Request {
+    match resource(integration) {
+        Some(child) => request.at(child),
+        None => request,
+    }
+}
+
+/// One request for a packaged device, aimed at the child it is.
+///
+/// The connection is taken from the device's own resolved integration, so a
+/// child's name can never be carried to another connection's package.
+pub(crate) fn ask_device(
+    integration: &Integration,
+    request: Request,
+) -> Result<Response, couch_plugin::Failure> {
+    let Integration::Plugin { connection_id, .. } = integration else {
+        return Err(couch_plugin::Error::Invalid.into());
+    };
+    ask_detailed(connection_id.as_str(), aimed(request, integration))
 }
 
 /// The function a screen action means for this device, given its last status.
@@ -207,16 +258,18 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         .devices()
         .find(|(_, d)| d.id.as_str() == id)
         .ok_or("Device was removed")?;
-    let Some(Integration::Plugin {
-        connection_id,
-        supports_inputs,
-        ..
-    }) = config.resolve_integration(&device.integration)
+    let integration = config
+        .resolve_integration(&device.integration)
+        .ok_or("Selected device is no longer a packaged integration")?;
+    let Integration::Plugin {
+        supports_inputs, ..
+    } = &integration
     else {
         return Err("Selected device is no longer a packaged integration".into());
     };
-    let connection = connection_id.as_str();
-    let read = || match ask(connection, Request::status())? {
+    let supports_inputs = *supports_inputs;
+    let ask = |request| ask_device(&integration, request).map_err(|f| refusal(&f));
+    let read = || match ask(Request::status())? {
         Response::Status { status } => Ok(status),
         _ => Err("The integration returned an invalid status".to_string()),
     };
@@ -229,14 +282,17 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         if !current() {
             return Ok(None);
         }
-        match ask(connection, Request::command(function))? {
+        match ask(Request::command(function))? {
             Response::Ok => {}
+            // A write to a child may be acknowledged with the state it left
+            // it in; this screen reads the status straight after anyway.
+            Response::Status { .. } => {}
             _ => return Err("The integration returned an invalid response".into()),
         }
     }
     let status = read()?;
     let inputs = if supports_inputs {
-        match ask(connection, Request::Inputs) {
+        match ask(Request::Inputs) {
             Ok(Response::Inputs { inputs }) => inputs,
             _ => vec![],
         }
@@ -332,6 +388,77 @@ mod tests {
             crate::lights::tv_connection(&config, "avr").as_deref(),
             Some("plugin:avr")
         );
+    }
+
+    /// Which frames name a child and which do not. This is the one place the
+    /// panel decides it, so every request it makes - a row key, a volume
+    /// write, a status read, the packaged screen - inherits the answer.
+    #[test]
+    fn only_a_child_is_named_and_a_receivers_frames_are_unchanged() {
+        let config = denon();
+        let (_, device) = config.devices().next().unwrap();
+        let receiver = config.resolve_integration(&device.integration).unwrap();
+        assert_eq!(resource(&receiver), None);
+        // A receiver with a zone saved on it is still the connection itself:
+        // `zone1` is part of its settings, not a child, and its frames are
+        // the bytes a protocol 2 package has always read.
+        let mut zoned = config.clone();
+        zoned.rooms[0].devices[0].integration = Integration::Connection {
+            connection_id: "theater-avr".into(),
+            resource_id: "zone1".into(),
+            child: None,
+        };
+        zoned.validate().unwrap();
+        let (_, device) = zoned.devices().next().unwrap();
+        let zoned = zoned.resolve_integration(&device.integration).unwrap();
+        assert_eq!(resource(&zoned), None);
+        for request in [
+            Request::status(),
+            Request::key("volume-up", couch_model::KeyPhase::Repeat),
+            Request::action(couch_model::TypedAction::SetVolumeDb { tenths: -395 }),
+            Request::Inputs,
+        ] {
+            assert_eq!(aimed(request.clone(), &zoned), request);
+            assert_eq!(
+                serde_json::to_string(&aimed(request.clone(), &receiver)).unwrap(),
+                serde_json::to_string(&request).unwrap()
+            );
+        }
+
+        // A child of a bridge: every frame that can name one does.
+        let bridge: couch_model::Config = serde_json::from_value(serde_json::json!({
+            "schema_version":1,
+            "connections":[{"id":"bridge","name":"Hue bridge","provider":{"kind":"plugin",
+                "id":"hue","label":"Philips Hue","children":[
+                    {"kind":"light","label":"Light","device_kind":"light","component":"light",
+                     "capabilities":[{"id":"toggle","label":"Toggle"}],
+                     "actions":[{"action":"set_light"}]}]}}],
+            "rooms":[{"id":"living-room","name":"Living room","devices":[
+                {"id":"desk","name":"Desk lamp","kind":"light","integration":{"via":"connection",
+                    "connection_id":"bridge","resource_id":"lamp/1",
+                    "child":{"kind":"light","light":{"dimmable":true}}}}]}]
+        }))
+        .unwrap();
+        bridge.validate().unwrap();
+        let (_, device) = bridge.devices().next().unwrap();
+        let child = bridge.resolve_integration(&device.integration).unwrap();
+        assert_eq!(resource(&child), Some("lamp/1"));
+        assert_eq!(
+            aimed(Request::status(), &child),
+            Request::status().at("lamp/1")
+        );
+        // A level on a child goes as the plain command it is; the host gate
+        // is what turns it into the typed action.
+        assert_eq!(
+            aimed(Request::key("dim:30", couch_model::KeyPhase::Tap), &child),
+            Request::Command {
+                function: "dim:30".into(),
+                phase: couch_model::KeyPhase::Tap,
+                resource: Some("lamp/1".into())
+            }
+        );
+        // Nothing that cannot name a child is changed by aiming it.
+        assert_eq!(aimed(Request::Inputs, &child), Request::Inputs);
     }
 
     #[test]

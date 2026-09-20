@@ -1,6 +1,7 @@
 //! Scene recall and room-scoped channel navigation; network work stays off the GUI thread.
 use crate::App;
 use couch_model::{Config, Id, Provider};
+use couch_plugin::{Request, Response};
 use slint::ComponentHandle;
 use std::{
     cell::RefCell,
@@ -26,6 +27,56 @@ pub struct Controller {
 }
 fn config() -> Result<std::sync::Arc<Config>, String> {
     crate::connections::config().ok_or_else(|| "Cannot read scenes".into())
+}
+
+/// One request to the daemon's panel socket, for a scene that belongs to a
+/// package. The tests put a closure here in place of the socket.
+type Ask<'a> = &'a mut dyn FnMut(&str, Request) -> Result<Response, couch_plugin::Failure>;
+
+fn plugin_scene(connection: &str, request: Request) -> Result<Response, couch_plugin::Failure> {
+    crate::tv::plugin::ask_detailed(connection, request)
+}
+
+/// Recall one scene: a Hue scene through the bridge, a package's scene by
+/// sending `on` to that child of its connection. Both appear side by side on
+/// a room's Scenes button; which one this is was decided when it was saved.
+fn recall(cfg: &Config, id: &Id, ask: Ask) -> Result<(), String> {
+    let scene = cfg.scene(id).ok_or("Scene was removed")?;
+    if let Some(resource) = &scene.resource {
+        if !cfg
+            .connection(&resource.connection_id)
+            .is_some_and(|c| matches!(c.provider, Provider::Plugin { .. }))
+        {
+            return Err("The integration this scene belongs to was removed".into());
+        }
+        return match ask(
+            resource.connection_id.as_str(),
+            Request::command("on").at(resource.resource_id.as_str()),
+        ) {
+            // A scene has no state to report back; either answer means the
+            // package took it.
+            Ok(Response::Ok | Response::Status { .. }) => Ok(()),
+            Ok(_) => Err("The integration returned an invalid response".into()),
+            Err(failure) => Err(crate::tv::plugin::refusal(&failure)),
+        };
+    }
+    let hue = scene
+        .hue
+        .as_ref()
+        .ok_or("Device-step scenes are not supported yet")?;
+    if !cfg
+        .connection(&hue.connection_id)
+        .is_some_and(|c| c.provider == Provider::Hue)
+    {
+        return Err("Hue connection was removed".into());
+    }
+    couch_hue::settings::Settings::load(&crate::connections::file(
+        hue.connection_id.as_str(),
+        "hue",
+    ))
+    .and_then(|s| s.client())
+    .and_then(|c| c.recall_scene(&hue.scene_id))
+    .map_err(|e| e.to_string())
 }
 
 fn next_scene(ids: &[Id], current: Option<&Id>, delta: i32) -> Option<Id> {
@@ -56,27 +107,7 @@ impl Controller {
         let (events, rx) = mpsc::channel();
         std::thread::spawn(move || {
             while let Ok((sequence, id)) = requests.recv() {
-                let result = (|| -> Result<(), String> {
-                    let cfg = config()?;
-                    let scene = cfg.scene(&id).ok_or("Scene was removed")?;
-                    let hue = scene
-                        .hue
-                        .as_ref()
-                        .ok_or("Device-step scenes are not supported yet")?;
-                    if !cfg
-                        .connection(&hue.connection_id)
-                        .is_some_and(|c| c.provider == Provider::Hue)
-                    {
-                        return Err("Hue connection was removed".into());
-                    }
-                    couch_hue::settings::Settings::load(&crate::connections::file(
-                        hue.connection_id.as_str(),
-                        "hue",
-                    ))
-                    .and_then(|s| s.client())
-                    .and_then(|c| c.recall_scene(&hue.scene_id))
-                    .map_err(|e| e.to_string())
-                })();
+                let result = config().and_then(|cfg| recall(&cfg, &id, &mut plugin_scene));
                 let _ = events.send((sequence, result));
             }
         });
@@ -219,6 +250,93 @@ mod tests {
         assert!(app.get_scene_feedback_shown());
         assert_eq!(app.get_scene_feedback_status(), "Scene activated");
     }
+    /// A scene that belongs to a package is recalled by sending `on` to that
+    /// child of its connection, and it sits on the room's Scenes button
+    /// beside any Hue scene.
+    #[test]
+    fn a_package_scene_is_recalled_by_sending_on_to_its_child() {
+        let config: Config = serde_json::from_value(serde_json::json!({"schema_version":1,
+            "connections":[
+                {"id":"bridge","name":"Hue bridge","provider":{"kind":"plugin","id":"hue","label":"Philips Hue",
+                    "children":[{"kind":"scene","label":"Scene","device_kind":"other","component":"scene",
+                        "capabilities":[{"id":"on","label":"On"}]}]}},
+                {"id":"hue","name":"Built-in Hue","provider":{"kind":"hue"}}],
+            "rooms":[{"id":"living-room","name":"Living room","devices":[]}],
+            "scenes":[
+                {"id":"relax","name":"Relax","rooms":["living-room"],
+                 "resource":{"connection_id":"bridge","resource_id":"scene/1","kind":"scene"}},
+                {"id":"bright","name":"Bright","rooms":["living-room"],
+                 "hue":{"connection_id":"hue","scene_id":"9d2b7c10-35aa-4c0e-8a57-6e1f0b94d2c3"}},
+                {"id":"steps","name":"Steps","rooms":["living-room"]}]})).unwrap();
+        config.validate().unwrap();
+        // Both scenes belong to the room, so the Scenes button offers both.
+        assert_eq!(
+            config
+                .scenes
+                .iter()
+                .filter(|s| s.rooms.contains(&Id::new("living-room")))
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Relax", "Bright", "Steps"]
+        );
+        let mut sent = Vec::new();
+        recall(&config, &Id::new("relax"), &mut |connection, request| {
+            sent.push((connection.to_owned(), request));
+            Ok(Response::Ok)
+        })
+        .unwrap();
+        assert_eq!(
+            sent,
+            [(
+                "bridge".to_string(),
+                Request::Command {
+                    function: "on".into(),
+                    phase: couch_model::KeyPhase::Tap,
+                    resource: Some("scene/1".into())
+                }
+            )]
+        );
+        // A write the package acknowledged with a state is still a yes.
+        recall(&config, &Id::new("relax"), &mut |_, _| {
+            Ok(Response::Status {
+                status: couch_plugin::Status::default(),
+            })
+        })
+        .unwrap();
+        // A refusal is the package's sentence, not a silent failure.
+        let refused = recall(&config, &Id::new("relax"), &mut |_, _| {
+            Err(couch_plugin::Error::Transport.into())
+        });
+        assert_eq!(
+            refused.err().as_deref(),
+            Some("The integration could not be reached")
+        );
+        // Nothing is sent for a scene that is not a package's.
+        let never = &mut |_: &str, _: Request| -> Result<Response, couch_plugin::Failure> {
+            panic!("no package may be asked")
+        };
+        assert_eq!(
+            recall(&config, &Id::new("steps"), never).err().as_deref(),
+            Some("Device-step scenes are not supported yet")
+        );
+        assert_eq!(
+            recall(&config, &Id::new("gone"), never).err().as_deref(),
+            Some("Scene was removed")
+        );
+        // The connection the scene named is checked before anything is sent.
+        let mut moved = config;
+        moved
+            .connections
+            .iter_mut()
+            .find(|c| c.id.as_str() == "bridge")
+            .unwrap()
+            .provider = Provider::Hue;
+        assert_eq!(
+            recall(&moved, &Id::new("relax"), never).err().as_deref(),
+            Some("The integration this scene belongs to was removed")
+        );
+    }
+
     #[test]
     fn cycling_wraps_and_handles_empty_or_removed_selections() {
         let ids = vec![Id::new("relax"), Id::new("bright"), Id::new("night")];
