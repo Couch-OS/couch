@@ -25,9 +25,11 @@ mod wire_mirror;
 pub use couch_sdk::couch_model::{valid_resource, ChildComponent};
 pub use couch_sdk::couch_model::{PluginComponent as Component, PluginStatusField as StatusField};
 pub use couch_sdk::{
-    ActionKind, Child, ChildPage, ChildSnapshot, ClimateMode, ClimateState, ClimateTraits,
-    CoverState, CoverTraits, KeyPhase, LightState, LightTraits, PluginActionSchema,
-    PluginChildKind, Reason, Selectable, Status, TypedAction, VolumeDb, MAX_PAGE,
+    valid_session, ActionKind, Child, ChildPage, ChildSnapshot, ClimateMode, ClimateState,
+    ClimateTraits, CodeAlphabet, CoverState, CoverTraits, Credential, KeyPhase, LightState,
+    LightTraits, PairFailure, PairFlow, PairInput, PairPrompt, PairStep, PluginActionSchema,
+    PluginChildKind, Reason, Selectable, Status, TypedAction, VolumeDb, MAX_CODE_LENGTH,
+    MAX_CREDENTIAL_BYTES, MAX_PAGE, MAX_PAIR_TEXT, MAX_POLL_MS, MAX_SESSION, MIN_POLL_MS,
 };
 pub use host::{
     is_non_dumpable, list_children, local_request, local_request_detailed, read_frame_timeout,
@@ -35,7 +37,7 @@ pub use host::{
     CHILD_LISTING_DEADLINE, MAX_CHILDREN, MAX_CHILD_PAGES, QUEUE_CAPACITY, QUEUE_TTL,
     REQUEST_TIMEOUT, STARTUP_TIMEOUT,
 };
-pub use manifest::{Capability, FieldKind, Manifest, SettingField};
+pub use manifest::{Capability, FieldKind, Manifest, Pairing, SettingField};
 pub use protocol::{
     accepted_protocol_version, read_frame, write_frame, Error, Failure, Request, Response, Result,
     MAX_FRAME, NEXT_PROTOCOL_VERSION, PROTOCOL_VERSION,

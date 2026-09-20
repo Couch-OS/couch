@@ -66,6 +66,42 @@ pub struct Manifest {
     /// of a published manifest are unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<PluginChildKind>,
+    /// Protocol 3 (unreleased): this package pairs, and how long one attempt
+    /// may take. Absent for every package there is today, and then never
+    /// written. A package that does not declare it is never sent a pairing
+    /// request and may never be told a key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing: Option<Pairing>,
+    /// Protocol 3 (unreleased): keep this package's child alive between
+    /// requests rather than reaping it when the connection goes idle. For a
+    /// device that costs seconds to reconnect to; the daemon caps how many
+    /// packages may ask.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub keep_alive: bool,
+}
+
+/// How a package pairs.
+///
+/// `required` says a connection is unusable until Couch holds a key for it,
+/// so the daemon answers `unpaired` without starting the package at all.
+/// `max_seconds` is how long the package wants one attempt to last; Couch
+/// gives it that, and never more than [`Pairing::MAX_SECONDS`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pairing {
+    #[serde(default)]
+    pub required: bool,
+    pub max_seconds: u16,
+}
+
+impl Pairing {
+    pub const MIN_SECONDS: u16 = 10;
+    /// Five minutes, the owner's cap. A package may ask for less.
+    pub const MAX_SECONDS: u16 = 300;
+
+    pub fn is_valid(&self) -> bool {
+        (Self::MIN_SECONDS..=Self::MAX_SECONDS).contains(&self.max_seconds)
+    }
 }
 
 fn protocol_one() -> u32 {
@@ -143,6 +179,13 @@ impl Manifest {
             // package Couch can already run will ever be asked to list them.
             || (self.protocol_version < NEXT_PROTOCOL_VERSION && !self.children.is_empty())
             || !valid_child_kinds(&self.children)
+            // Pairing and a kept-alive child arrived with protocol 3, like
+            // children and `x:` ids: an older manifest that declares either is
+            // invalid, so no package Couch can already run is ever sent a
+            // pairing request, told a key, or exempted from the idle reaper.
+            || (self.protocol_version < NEXT_PROTOCOL_VERSION
+                && (self.pairing.is_some() || self.keep_alive))
+            || self.pairing.is_some_and(|pairing| !pairing.is_valid())
         {
             return Err(Error::Invalid);
         }
@@ -243,6 +286,15 @@ impl Manifest {
         label(text)
             && self.protocol_version >= NEXT_PROTOCOL_VERSION
             && PluginActionSchema::find(&self.actions, kind).is_some()
+    }
+
+    /// Whether this package may be sent a pairing request and told a key.
+    ///
+    /// Both at once, deliberately: `pairing` is only valid on a protocol 3
+    /// manifest, so this is the single question the gate asks before it lets
+    /// a credential or a `pair_*` request out.
+    pub fn pairs(&self) -> bool {
+        self.protocol_version >= NEXT_PROTOCOL_VERSION && self.pairing.is_some()
     }
 
     /// The kind of child this resource is, as this manifest declares it.

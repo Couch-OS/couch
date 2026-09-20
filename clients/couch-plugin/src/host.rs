@@ -1,11 +1,14 @@
 use crate::{
-    protocol::Envelope, read_frame, write_frame, Error, Failure, Manifest, Request, Response,
-    Result, NEXT_PROTOCOL_VERSION,
+    protocol::{Envelope, ReplyEnvelope},
+    read_frame, write_frame, Error, Failure, Manifest, Request, Response, Result,
+    NEXT_PROTOCOL_VERSION,
 };
 use couch_sdk::{
     children::valid_cursor,
     couch_model::{commands::Function, valid_resource, ChildComponent, PluginChildKind},
-    ActionKind, KeyPhase, PluginActionSchema, TypedAction, MAX_PAGE,
+    pairing::valid_session,
+    ActionKind, Credential, KeyPhase, PairInput, PairPrompt, PairStep, PluginActionSchema,
+    TypedAction, MAX_PAGE,
 };
 use std::{
     collections::HashSet,
@@ -154,6 +157,20 @@ impl Write for DeadlineStream<'_> {
     }
 }
 
+/// The pairing conversation one host has in flight, if it has one.
+///
+/// A host owns at most one, because a package owns at most one: the daemon
+/// runs pairing in a child of its own so the connection that is already paired
+/// keeps serving on its old key. It is what makes "the session the host holds"
+/// a thing the gate can check, and it carries the last prompt so a code the
+/// person typed is measured against the prompt that asked for it before any
+/// I/O.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PairSession {
+    session: String,
+    prompt: Option<PairPrompt>,
+}
+
 pub struct Host {
     child: Child,
     stream: UnixStream,
@@ -161,6 +178,7 @@ pub struct Host {
     timeout: Duration,
     next_id: u64,
     alive: bool,
+    pairing: Option<PairSession>,
 }
 impl Host {
     pub fn spawn(package_dir: &Path, manifest: &Manifest, timeout: Duration) -> Result<Self> {
@@ -263,13 +281,26 @@ impl Host {
             timeout,
             next_id: 0,
             alive: true,
+            pairing: None,
         };
         match host.request(Request::Hello {
             protocol_version: manifest.protocol_version,
         })? {
-            Response::Hello { manifest: actual } if actual == *manifest => Ok(host),
-            _ => Err(Error::Incompatible),
+            Response::Hello { manifest: actual } if actual == *manifest => (),
+            _ => return Err(Error::Incompatible),
         }
+        // A package that stores a key has to have closed its own `/proc` entry
+        // first, which only it can do (`execve` puts the flag back). Checked
+        // once the child is up and has answered, because that is the first
+        // moment `serve` has run. Only root can read the answer: unprivileged
+        // hosts - a developer's machine, CI, every host test - share the
+        // running user with their children, where the ownership says nothing,
+        // and skip it. Packages published before that SDK stay dumpable and
+        // are unaffected: they declare no pairing.
+        if manifest.pairing.is_some() && is_non_dumpable(host.pid()) == Some(false) {
+            return Err(Error::Incompatible);
+        }
+        Ok(host)
     }
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
@@ -288,7 +319,17 @@ impl Host {
         self.child.id()
     }
     pub fn configure(&mut self, settings: serde_json::Value) -> Result<()> {
-        match self.request(Request::Configure { settings })? {
+        self.configure_with(settings, None)
+    }
+    /// [`Host::configure`] with the key Couch holds for this connection. The
+    /// gate strips it for any package that may not be told one, so this is
+    /// safe to call whatever the package is.
+    pub fn configure_with(
+        &mut self,
+        settings: serde_json::Value,
+        credential: Option<&Credential>,
+    ) -> Result<()> {
+        match self.request(Request::configure_with(settings, credential))? {
             Response::Ok => Ok(()),
             _ => Err(Error::Protocol),
         }
@@ -345,10 +386,31 @@ impl Host {
         kind: Option<&str>,
         request: Request,
     ) -> std::result::Result<Response, Failure> {
+        self.request_child_full(kind, request)
+            .map(|(response, _)| response)
+    }
+    /// [`Host::request_detailed`], keeping a key the device rotated under us.
+    ///
+    /// This is the only way a rotated key is surfaced: every other signature
+    /// drops it, so no existing caller can store one by accident and no log
+    /// line can carry one. The caller is the daemon, which writes it under the
+    /// connection's lock before returning the body.
+    pub fn request_full(
+        &mut self,
+        request: Request,
+    ) -> std::result::Result<(Response, Option<Credential>), Failure> {
+        self.request_child_full(None, request)
+    }
+    /// [`Host::request_full`] for a request that names a child.
+    pub fn request_child_full(
+        &mut self,
+        kind: Option<&str>,
+        request: Request,
+    ) -> std::result::Result<(Response, Option<Credential>), Failure> {
         if !self.alive {
             return Err(Error::Transport.into());
         }
-        let request = admit(&self.manifest, kind, request)?;
+        let request = admit(&self.manifest, kind, self.pairing.as_ref(), request)?;
         self.next_id = self.next_id.checked_add(1).ok_or(Error::Protocol)?;
         let result = (|| {
             let mut stream = DeadlineStream {
@@ -362,21 +424,97 @@ impl Host {
                     body: &request,
                 },
             )?;
-            let response: Envelope<Response> = read_frame(&mut stream)?;
-            if response.id != self.next_id {
+            let reply: ReplyEnvelope = read_frame(&mut stream)?;
+            if reply.id != self.next_id {
                 return Err(Error::Protocol);
             }
-            accept(&self.manifest, &request, &response.body)?;
-            Ok(response.body)
+            accept_reply(&self.manifest, &request, &reply)?;
+            Ok(reply)
         })();
         // Protocol/transport failures retire the stream: never consume a late
         // reply as the next request's response and never replay this request.
         if result.is_err() {
             self.terminate();
         }
-        match result? {
+        let reply = result?;
+        self.follow(&request, &reply.body);
+        match reply.body {
             Response::Error { code, reason } => Err(Failure { code, reason }),
-            response => Ok(response),
+            response => Ok((response, reply.store_credential)),
+        }
+    }
+
+    /// Keep the pairing conversation's state in step with what just happened.
+    /// The reply has already been accepted, so a session here is one the gate
+    /// agreed to.
+    fn follow(&mut self, request: &Request, response: &Response) {
+        match (request, response) {
+            (
+                Request::PairStart { .. } | Request::PairContinue { .. },
+                Response::Pairing { session, step },
+            ) => {
+                if step.is_final() {
+                    self.pairing = None;
+                } else {
+                    let prompt = match step {
+                        PairStep::Waiting { prompt, .. } => Some(prompt.clone()),
+                        _ => None,
+                    };
+                    self.pairing = Some(PairSession {
+                        session: session.clone(),
+                        prompt,
+                    });
+                }
+            }
+            // A refused start never opened one; a refused step leaves the one
+            // in flight alone, so the browser can poll again.
+            (Request::PairStart { .. }, _) | (Request::PairCancel { .. }, _) => {
+                self.pairing = None;
+            }
+            _ => (),
+        }
+    }
+
+    /// The pairing session this host is in the middle of, if any.
+    pub fn pair_session(&self) -> Option<&str> {
+        self.pairing.as_ref().map(|state| state.session.as_str())
+    }
+    /// Protocol 3: begin a pairing conversation. The session the package
+    /// names comes back with the first step and is remembered here, so every
+    /// step after it is checked against it before any I/O.
+    pub fn pair_start(
+        &mut self,
+        settings: serde_json::Value,
+        credential: Option<&Credential>,
+    ) -> std::result::Result<(String, PairStep), Failure> {
+        match self.request_detailed(Request::pair_start(settings, credential))? {
+            Response::Pairing { session, step } => Ok((session, step)),
+            _ => Err(Error::Protocol.into()),
+        }
+    }
+    /// Protocol 3: the next step of the conversation this host holds.
+    pub fn pair_continue(
+        &mut self,
+        input: Option<PairInput>,
+    ) -> std::result::Result<PairStep, Failure> {
+        let session = self
+            .pair_session()
+            .ok_or(Failure::from(Error::Invalid))?
+            .to_owned();
+        match self.request_detailed(Request::pair_continue(session, input))? {
+            Response::Pairing { step, .. } => Ok(step),
+            _ => Err(Error::Protocol.into()),
+        }
+    }
+    /// Protocol 3: end it, storing nothing. Idempotent for the caller: with no
+    /// session in flight there is nothing to cancel.
+    pub fn pair_cancel(&mut self) -> std::result::Result<(), Failure> {
+        let Some(session) = self.pair_session().map(str::to_owned) else {
+            return Ok(());
+        };
+        match self.request_detailed(Request::pair_cancel(session))? {
+            Response::Ok => Ok(()),
+            _ => Err(Error::Protocol.into()),
         }
     }
     /// Retire the package, killing its process group.
@@ -417,6 +555,7 @@ impl Drop for Host {
 pub(crate) fn admit(
     manifest: &Manifest,
     kind: Option<&str>,
+    pairing: Option<&PairSession>,
     mut request: Request,
 ) -> Result<Request> {
     let version = manifest.protocol_version;
@@ -426,6 +565,16 @@ pub(crate) fn admit(
     if let Request::Command { phase, .. } = &mut request {
         if version < NEXT_PROTOCOL_VERSION {
             *phase = KeyPhase::Tap;
+        }
+    }
+    // A key is stripped rather than refused, the same way and for the same
+    // reason as a phase: a package rolled back from protocol 3 to 2 with a
+    // credential file beside it is still configured, with today's bytes. This
+    // is the only place a credential can leave the host, so it is also what
+    // keeps `credential` out of a published package's frames.
+    if let Request::Configure { credential, .. } = &mut request {
+        if !manifest.pairs() {
+            *credential = None;
         }
     }
     // First, and before anything looks at a resource: a package is never sent
@@ -451,11 +600,80 @@ pub(crate) fn admit(
                 return Err(Error::Invalid);
             }
         }
-        Request::Configure { settings } => manifest.validate_settings(settings)?,
+        Request::Configure {
+            settings,
+            credential,
+        } => {
+            manifest.validate_settings(settings)?;
+            // A key that does not fit cannot have come from a package: it is
+            // the daemon's own file, and a request that would be refused is
+            // better refused here than after a round trip.
+            if credential.as_ref().is_some_and(|key| !key.fits()) {
+                return Err(Error::Invalid);
+            }
+        }
         Request::Action { action, .. } => manifest.validate_action(*action)?,
+        // Pairing. `requires` has already refused every package below protocol
+        // 3; this is the rest of it.
+        Request::PairStart {
+            settings,
+            credential,
+        } => {
+            if !manifest.pairs() {
+                return Err(Error::Unsupported);
+            }
+            manifest.validate_settings(settings)?;
+            if credential.as_ref().is_some_and(|key| !key.fits()) {
+                return Err(Error::Invalid);
+            }
+        }
+        Request::PairContinue { session, input } => {
+            if !manifest.pairs() {
+                return Err(Error::Unsupported);
+            }
+            let held = admit_session(pairing, session)?;
+            match input {
+                // A code is measured against the prompt that asked for it, so
+                // a mistyped one costs no round trip and a prompt that asked
+                // for nothing is never given anything.
+                Some(input) => {
+                    if !input.is_well_formed()
+                        || !held.prompt.as_ref().is_some_and(|p| p.accepts(input))
+                    {
+                        return Err(Error::Invalid);
+                    }
+                }
+                // Polling a prompt that is waiting for typed input would tell
+                // the package nothing it does not already know.
+                None => {
+                    if held.prompt.as_ref().is_some_and(PairPrompt::is_code) {
+                        return Err(Error::Invalid);
+                    }
+                }
+            }
+        }
+        Request::PairCancel { session } => {
+            if !manifest.pairs() {
+                return Err(Error::Unsupported);
+            }
+            admit_session(pairing, session)?;
+        }
         _ => (),
     }
     Ok(request)
+}
+
+/// The session a step names has to be the one this host is holding. A caller
+/// that invents one, or that carries on after a conversation ended, is asking
+/// about something that does not exist.
+fn admit_session<'a>(pairing: Option<&'a PairSession>, session: &str) -> Result<&'a PairSession> {
+    if !valid_session(session) {
+        return Err(Error::Invalid);
+    }
+    match pairing {
+        Some(held) if held.session == session => Ok(held),
+        _ => Err(Error::Invalid),
+    }
 }
 
 /// The rest of the gate, for a request that names a child, in order: the
@@ -538,6 +756,49 @@ fn level(kind: &PluginChildKind, request: Request) -> Result<Request> {
     })
 }
 
+/// The gate, after I/O, over the whole reply: the body and the one thing a
+/// package may say beside it. This is what the host calls; [`accept`] is the
+/// body's half of it.
+pub(crate) fn accept_reply(
+    manifest: &Manifest,
+    request: &Request,
+    reply: &ReplyEnvelope,
+) -> Result<()> {
+    accept(manifest, request, &reply.body)?;
+    accept_credential(manifest, request, reply.store_credential.as_ref())
+}
+
+/// A key the package says the device rotated.
+///
+/// Only a protocol 3 package that declares `pairing` may send one at all, only
+/// on the answer to an ordinary request - never a handshake, a configure or a
+/// pairing step, each of which has its own way of saying what it means - and
+/// only within the limit. Everything else is a broken package.
+fn accept_credential(
+    manifest: &Manifest,
+    request: &Request,
+    credential: Option<&Credential>,
+) -> Result<()> {
+    let Some(credential) = credential else {
+        return Ok(());
+    };
+    if !manifest.pairs() || !credential.fits() {
+        return Err(Error::Protocol);
+    }
+    match request {
+        Request::Command { .. }
+        | Request::Action { .. }
+        | Request::Status { .. }
+        | Request::Inputs
+        | Request::Children { .. } => Ok(()),
+        Request::Hello { .. }
+        | Request::Configure { .. }
+        | Request::PairStart { .. }
+        | Request::PairContinue { .. }
+        | Request::PairCancel { .. } => Err(Error::Protocol),
+    }
+}
+
 /// The gate, after I/O: what a package of this manifest's protocol may answer.
 /// Any error here retires the child.
 pub(crate) fn accept(manifest: &Manifest, request: &Request, response: &Response) -> Result<()> {
@@ -554,12 +815,29 @@ pub(crate) fn accept(manifest: &Manifest, request: &Request, response: &Response
     // a request that named a child may be answered with one.
     if version < NEXT_PROTOCOL_VERSION
         && match response {
-            Response::Children { .. } => true,
+            Response::Children { .. } | Response::Pairing { .. } => true,
             Response::Status { status } => status.is_child_state(),
             _ => false,
         }
     {
         return Err(Error::Protocol);
+    }
+    // A pairing step from a package that declared no pairing, and one whose
+    // settings the manifest would not accept. The rest of a step's bounds are
+    // in `validate_response`, which needs no manifest.
+    if let Response::Pairing { step, .. } = response {
+        if !manifest.pairs() {
+            return Err(Error::Protocol);
+        }
+        if let PairStep::Done {
+            settings: Some(settings),
+            ..
+        } = step
+        {
+            manifest
+                .validate_settings(settings)
+                .map_err(|_| Error::Protocol)?;
+        }
     }
     if let Response::Children { children, .. } = response {
         for child in children {
@@ -612,6 +890,11 @@ pub fn requires(request: &Request) -> u32 {
             NEXT_PROTOCOL_VERSION
         }
         Request::Children { .. } => NEXT_PROTOCOL_VERSION,
+        // Pairing is protocol 3 entire. Whether the package also declared
+        // `pairing` is asked next, in `admit`.
+        Request::PairStart { .. } | Request::PairContinue { .. } | Request::PairCancel { .. } => {
+            NEXT_PROTOCOL_VERSION
+        }
         _ => 1,
     }
 }
@@ -647,6 +930,22 @@ fn validate_response(request: &Request, response: &Response) -> Result<()> {
         {
             Ok(())
         }
+        // Protocol 3, pairing. The session a step names has to be the one the
+        // step belongs to: the package chooses it on the first step and has no
+        // say after that. Everything a step carries with it is bounded by the
+        // step itself; only `Done.settings` needs the manifest, and `accept`
+        // asks it.
+        (Request::PairStart { .. }, Response::Pairing { session, step })
+            if valid_session(session) && step.is_well_formed() =>
+        {
+            Ok(())
+        }
+        (Request::PairContinue { session: asked, .. }, Response::Pairing { session, step })
+            if session == asked && step.is_well_formed() =>
+        {
+            Ok(())
+        }
+        (Request::PairCancel { .. }, Response::Ok) => Ok(()),
         (Request::Children { .. }, Response::Children { children, next }) => {
             let mut seen = HashSet::new();
             if children.len() > MAX_PAGE
@@ -724,7 +1023,7 @@ struct Pending {
     /// package never does.
     kind: Option<String>,
     queued: Instant,
-    reply: SyncSender<std::result::Result<Response, Failure>>,
+    reply: SyncSender<std::result::Result<(Response, Option<Credential>), Failure>>,
 }
 /// Cloneable handle to one persistent endpoint owner and a bounded queue.
 /// A failed request is never replayed. Only a subsequent explicit request may
@@ -776,10 +1075,25 @@ impl Endpoint {
         timeout: Duration,
         policy: HostPolicy,
     ) -> Result<Self> {
+        Self::start_paired(package_dir, manifest, settings, None, timeout, policy)
+    }
+    /// [`Endpoint::start_as`] for a connection Couch holds a key for. The key
+    /// is configured into every child of this endpoint, including the
+    /// replacement started after a failure, and is stripped by the gate for
+    /// any package that may not be told one.
+    pub fn start_paired(
+        package_dir: &Path,
+        manifest: Manifest,
+        settings: serde_json::Value,
+        credential: Option<&Credential>,
+        timeout: Duration,
+        policy: HostPolicy,
+    ) -> Result<Self> {
         let package_dir: PathBuf = package_dir.into();
         let settings = manifest.with_defaults(settings)?;
+        let credential = credential.cloned();
         let mut host = Host::spawn_with_policy(&package_dir, &manifest, STARTUP_TIMEOUT, policy)?;
-        host.configure(settings.clone())?;
+        host.configure_with(settings.clone(), credential.as_ref())?;
         host.set_timeout(timeout)?;
         let (sender, receiver) = mpsc::sync_channel::<Pending>(QUEUE_CAPACITY);
         let worker = std::thread::Builder::new()
@@ -798,7 +1112,7 @@ impl Endpoint {
                             policy,
                         )
                         .and_then(|mut h| {
-                            h.configure(settings.clone())?;
+                            h.configure_with(settings.clone(), credential.as_ref())?;
                             h.set_timeout(timeout)?;
                             Ok(h)
                         });
@@ -814,8 +1128,7 @@ impl Endpoint {
                             continue;
                         }
                     }
-                    let result =
-                        host.request_child_detailed(pending.kind.as_deref(), pending.request);
+                    let result = host.request_child_full(pending.kind.as_deref(), pending.request);
                     let _ = pending.reply.send(result);
                 }
             })
@@ -843,6 +1156,23 @@ impl Endpoint {
         kind: Option<&str>,
         request: Request,
     ) -> std::result::Result<Response, Failure> {
+        self.request_child_full(kind, request)
+            .map(|(response, _)| response)
+    }
+    /// [`Endpoint::request_detailed`], keeping a key the device rotated. See
+    /// [`Host::request_full`]: every other signature drops it.
+    pub fn request_full(
+        &self,
+        request: Request,
+    ) -> std::result::Result<(Response, Option<Credential>), Failure> {
+        self.request_child_full(None, request)
+    }
+    /// [`Endpoint::request_full`] for a request that names a child.
+    pub fn request_child_full(
+        &self,
+        kind: Option<&str>,
+        request: Request,
+    ) -> std::result::Result<(Response, Option<Credential>), Failure> {
         // Endpoint identity/settings remain fixed for the lifetime of its owner.
         if matches!(request, Request::Hello { .. } | Request::Configure { .. }) {
             return Err(Error::Unsupported.into());
@@ -1032,7 +1362,7 @@ mod tests {
     #[test]
     fn the_gate_is_the_one_place_a_level_becomes_a_typed_action() {
         let manifest = bridge();
-        let sent = |kind, request| admit(&manifest, Some(kind), request);
+        let sent = |kind, request| admit(&manifest, Some(kind), None, request);
         assert_eq!(
             sent("light", Request::command("dim:30").at("lamp-1")),
             Ok(Request::Action {
@@ -1061,11 +1391,11 @@ mod tests {
             label: "Dim".into(),
         });
         assert_eq!(
-            admit(&dimmable, None, Request::command("dim:30")),
+            admit(&dimmable, None, None, Request::command("dim:30")),
             Ok(Request::command("dim:30"))
         );
         assert_eq!(
-            admit(&manifest, None, Request::command("dim:30")),
+            admit(&manifest, None, None, Request::command("dim:30")),
             Err(Error::Unsupported)
         );
     }
@@ -1139,7 +1469,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                admit(&manifest, kind, request.clone()).err(),
+                admit(&manifest, kind, None, request.clone()).err(),
                 Some(expected),
                 "{kind:?} {request:?}"
             );
@@ -1154,18 +1484,23 @@ mod tests {
             Request::children(Some("lamp-32".into())),
         ] {
             assert!(
-                admit(&manifest, Some("light"), request.clone()).is_ok(),
+                admit(&manifest, Some("light"), None, request.clone()).is_ok(),
                 "{request:?}"
             );
         }
         // A listing is refused outright by a package that offers no children.
         let childless = super::tests::manifest(3);
         assert_eq!(
-            admit(&childless, Some("light"), Request::children(None)),
+            admit(&childless, Some("light"), None, Request::children(None)),
             Err(Error::Unsupported)
         );
         assert_eq!(
-            admit(&manifest, None, Request::children(Some("a//b".into()))),
+            admit(
+                &manifest,
+                None,
+                None,
+                Request::children(Some("a//b".into()))
+            ),
             Err(Error::Invalid)
         );
     }
