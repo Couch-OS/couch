@@ -883,6 +883,7 @@ mod plugin_tests {
             reason,
             unauthorized: false,
             stale: false,
+            busy: false,
         };
         // What every daemon says today: the sentence, on the form's own line.
         assert_eq!(

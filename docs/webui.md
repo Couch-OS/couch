@@ -87,15 +87,24 @@ node web/tests/home-assistant.mjs  # an HA fixture, loopback only
 node web/tests/hue.mjs             # an HTTPS bridge fixture, loopback only
 ```
 
-`integrations.mjs` and `updates.mjs` intercept every `/api/` call instead, so
-they need no daemon at all: any static server over `web/couch-web/dist` will do,
-which is how CI runs them.
+`integrations.mjs`, `plugin-components.mjs`, `plugin-children.mjs` and
+`updates.mjs` intercept every `/api/` call instead, so they need no daemon at
+all: any static server over `web/couch-web/dist` will do, which is how CI runs
+them.
 
 ```sh
 python3 -m http.server 18093 --bind 127.0.0.1 --directory web/couch-web/dist &
 COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/integrations.mjs
+COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/plugin-components.mjs
+COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/plugin-children.mjs  # protocol 3
 COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/updates.mjs  # Updates screen copy
 ```
+
+`plugin-children.mjs` covers the part of the picker that only a protocol 3
+package can reach: listing the children of one connection, the preselected
+bridge room, "Add all shown" and its confirmation, the badge on a child that
+has stopped being listed, and the light panel over the child routes. Nothing a
+shipped build runs declares a kind of child, so it runs against a fixture.
 
 
 
