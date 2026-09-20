@@ -396,6 +396,7 @@ fn create_plugin(app: App, manifest: PluginManifest) -> AnyView {
         actions: manifest.actions,
         supports_inputs: manifest.supports_inputs,
         presentation: manifest.presentation,
+        children: vec![],
     };
     view!{<form on:submit=move |event|{event.prevent_default();let name=name.get_untracked().trim().to_string();if !name.is_empty(){create(app,json!({"name":name,"provider":provider}));}}>
         {field("Connection name",name,"Living room integration")}
@@ -412,6 +413,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
         actions,
         supports_inputs,
         presentation,
+        ..
     } = &connection.provider
     else {
         return ().into_any();
@@ -755,6 +757,9 @@ fn plugin_controls(
                 PluginComponent::StatusText{label,field}=>view!{<div class="integration-component integration-reading"><span>{label}</span><strong>{move ||plugin_status_text(&status.get(),field)}</strong></div>}.into_any(),
                 PluginComponent::Toggle{label,state:on_field,on,off}=>view!{<section class="integration-component"><h3>{label}</h3><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none()||plugin_status_bool(&status.get(),on_field).is_none() on:click=move |_|{if let Some(enabled)=plugin_status_bool(&status.get_untracked(),on_field){let command=if enabled{off.clone()}else{on.clone()};call("action",Some(json!({"command":command})));}}>{move ||match plugin_status_bool(&status.get(),on_field){Some(true)=>"Turn off",Some(false)=>"Turn on",None=>"Status unavailable"}}</button></section>}.into_any(),
                 PluginComponent::InputSelector{label}=>view!{<section class="integration-component"><h3>{label}</h3><div class="actions"><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("inputs",None)>"Refresh inputs"</button><select aria-label="Integration input" disabled=move ||live_busy.get()||inputs.with(Vec::is_empty) on:change=move |event|{let id=event_target_value(&event);if !id.is_empty(){call("action",Some(json!({"command":format!("input:{id}")})));}}><option value="">"Choose an input"</option>{move ||inputs.get().into_iter().map(|(id,name)|view!{<option value=id>{name}</option>}).collect_view()}</select></div></section>}.into_any(),
+                // Protocol 3 (unreleased): no manifest this build accepts can
+                // declare one, and the controls come with the web step.
+                PluginComponent::Light{..}|PluginComponent::Cover{..}|PluginComponent::Climate{..}=>().into_any(),
             }).collect_view()
         }}
         </section>}.into_any()
@@ -820,7 +825,9 @@ fn plugin_volume_control(
             max_tenths,
             step_tenths,
         },
-    ) = actions.into_iter().find(|s| s.is_valid())
+    ) = actions
+        .into_iter()
+        .find(|s| s.kind() == couch_model::ActionKind::SetVolumeDb && s.is_valid())
     else {
         return view!{<section class="integration-component"><h3>{label}</h3><p>"Volume control unavailable."</p></section>}.into_any();
     };

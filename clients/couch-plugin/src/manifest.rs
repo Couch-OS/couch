@@ -121,6 +121,15 @@ impl Manifest {
             || !PluginActionSchema::valid_set(&self.actions)
             || (self.protocol_version < NEXT_PROTOCOL_VERSION && self.actions.len() > 1)
             || (self.protocol_version == 1 && !self.actions.is_empty())
+            // The one typed action protocol 2 has. couch-model now parses
+            // three more (protocol 3, step T2); a protocol 1 or 2 manifest
+            // declaring one is invalid, as it was when they did not parse, so
+            // no such package can ever be sent one.
+            || (self.protocol_version < NEXT_PROTOCOL_VERSION
+                && self
+                    .actions
+                    .iter()
+                    .any(|schema| schema.kind() != ActionKind::SetVolumeDb))
         {
             return Err(Error::Invalid);
         }
@@ -189,6 +198,13 @@ impl Manifest {
                 PluginComponent::InputSelector { label: text } => {
                     label(text) && self.supports_inputs
                 }
+                // couch-model knows these since protocol 3, step T2. No
+                // manifest may declare one yet, whatever protocol it names: the
+                // wire that drives them is the next pull request, which replaces
+                // this line with a rule on the manifest's version.
+                PluginComponent::Light { .. }
+                | PluginComponent::Cover { .. }
+                | PluginComponent::Climate { .. } => false,
             };
             if !valid {
                 return Err(Error::Invalid);

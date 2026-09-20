@@ -212,6 +212,7 @@ impl Config {
                 self.rooms[room].devices[device].integration = Integration::Connection {
                     connection_id,
                     resource_id: String::new(),
+                    child: None,
                 };
                 changed = true;
             }
@@ -262,6 +263,7 @@ mod tests {
             supports_inputs: true,
             presentation: alloc::vec![],
             actions: alloc::vec![],
+            children: alloc::vec![],
         }
     }
 
@@ -387,6 +389,7 @@ mod tests {
                 Integration::Connection {
                     connection_id: Id::new("old-avr"),
                     resource_id: String::new(),
+                    child: None,
                 }
             );
         }

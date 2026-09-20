@@ -569,11 +569,9 @@ fn format_db(tenths: i16) -> String {
 }
 
 fn volume_schema(view: &PluginView) -> Option<PluginActionSchema> {
-    view.target
-        .actions
-        .iter()
-        .copied()
-        .find(|schema| schema.is_valid())
+    // By kind: a package may declare other typed actions beside this one.
+    PluginActionSchema::find(&view.target.actions, couch_model::ActionKind::SetVolumeDb)
+        .filter(|schema| schema.is_valid())
 }
 
 fn observed_volume(view: &PluginView) -> Option<i16> {
@@ -590,7 +588,10 @@ fn adjusted_volume(view: &PluginView, delta: i16) -> Option<i16> {
         min_tenths,
         max_tenths,
         step_tenths,
-    } = volume_schema(view)?;
+    } = volume_schema(view)?
+    else {
+        return None;
+    };
     // An unknown/minimum reading never becomes an invented actual value. The
     // first adjustment explicitly chooses the lowest permitted target.
     let next = view
@@ -797,6 +798,11 @@ fn plugin_pages(view: &PluginView) -> Vec<PluginPanelPage> {
                     };
                     chunk_page(label, tiles, &mut pages);
                 }
+                // Protocol 3 (unreleased): no manifest this build accepts can
+                // declare one, and the controls come with the panel step.
+                PluginComponent::Light { .. }
+                | PluginComponent::Cover { .. }
+                | PluginComponent::Climate { .. } => {}
             }
         }
     }

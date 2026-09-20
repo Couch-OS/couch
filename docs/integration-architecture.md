@@ -116,14 +116,46 @@ older host; existing v1 previous-slot fallback is unchanged.
 Protocol 3 is unreleased and switched off; this describes groundwork that may
 change until it is switched on. The envelope gains one more optional layer,
 `integration_config_v3`, written only when the configuration holds something a
-protocol 2 core cannot read. Today that is a package-named button (`x:<id>`):
-as a declared capability, inside a command group or switch, or bound to a key, a
-step, an on/off sequence, a page button or a scene. The layers beneath it are
+protocol 2 core cannot read. The first such thing is a package-named button
+(`x:<id>`): as a declared capability, inside a command group or switch, or bound
+to a key, a step, an on/off sequence, a page button or a scene. The second is the
+children of a connection, below. The layers beneath it are
 computed from one another (`integration_config_v2` is the v3 document with
 those removed, `integration_config` is the v1 projection of that, the ordinary
 fields are the legacy projection of that), so they are exactly what a released
 core writes and checks. A configuration with nothing new in it produces the
 same bytes as before.
+
+The second thing only that layer holds is the children of a connection: the
+kinds of child a package declares, the snapshot (kind and traits) saved with a
+room device that is one of them, package scenes (`Scene.resource`), the
+`set_light`, `set_cover` and `set_climate` actions, and a `light`, `cover` or
+`climate` component. A protocol 2 core ignores a field it does not know on a
+device, a connection or a scene, so none of these would stop it parsing; each is
+removed from the layer it reads because of what it would do with the rest. It
+validates a key against the connection's commands, not the kind's, so
+`dim:30` or `toggle` bound to a lamp of a bridge stops its daemon starting; what
+it did accept it would send with no resource, to the whole bridge; and it cannot
+parse the new action and component tags at all. So in the v2 layer:
+
+1. the kinds a connection declares are cleared;
+2. a child's snapshot is cleared and its `connection_id` and `resource_id` are
+   kept, so the device stays where it is;
+3. everything aimed at a child goes, whatever the command: a key stays as an
+   explicitly disabled key, steps, on and off commands and page buttons are
+   removed and the activity forgets the device; a quick-access key that toggles
+   a child is dropped, one that opens it stays;
+4. a package scene is removed, with every area's reference to it;
+5. typed actions are cut to the one that core knows, and
+6. the three components are removed.
+
+What a rolled-back remote shows, then: the lamps stay in their rooms as rows
+that do nothing (that core refuses a protocol 3 package, so nothing is sent);
+package scenes are gone until the remote is updated again; keys and steps that
+were aimed at those lamps are lost for good if the old version saves, exactly as
+`x:` bindings are. After the next update the devices heal by themselves: they
+are still there with their connection and resource, and listing the
+connection's children says again what each one is.
 
 A rolled-back protocol 2 core ignores the v3 key, loads the v2 layer, and
 validates it. If it saves, the v3 key is gone and that save is authoritative

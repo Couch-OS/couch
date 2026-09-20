@@ -200,6 +200,7 @@ impl Store {
                         device.integration = couch_model::Integration::Connection {
                             connection_id: couch_model::Id::new(id.clone()),
                             resource_id,
+                            child: None,
                         };
                         changed = true;
                     }
@@ -703,11 +704,13 @@ mod integration_storage_tests {
                 supports_inputs: false,
                 presentation: vec![],
                 actions: vec![],
+                children: vec![],
             },
         });
         config.rooms[0].devices[0].integration = Integration::Connection {
             connection_id: Id::new("external"),
             resource_id: "zone1".into(),
+            child: None,
         };
     }
     #[test]

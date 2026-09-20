@@ -2,7 +2,7 @@ use crate::{
     protocol::Envelope, read_frame, write_frame, Error, Failure, Manifest, Request, Response,
     Result, NEXT_PROTOCOL_VERSION,
 };
-use couch_sdk::{couch_model::commands::Function, KeyPhase};
+use couch_sdk::{couch_model::commands::Function, ActionKind, KeyPhase};
 use std::{
     io::{Read, Write},
     os::{
@@ -433,6 +433,12 @@ pub(crate) fn accept(manifest: &Manifest, request: &Request, response: &Response
 /// refusing the key.
 pub fn requires(request: &Request) -> u32 {
     match request {
+        // The light, cover and climate actions couch-model gained in protocol
+        // 3, step T2. An older package could not declare one either
+        // (`Manifest::validate`); this says so at the gate itself.
+        Request::Action { action } if action.kind() != ActionKind::SetVolumeDb => {
+            NEXT_PROTOCOL_VERSION
+        }
         Request::Action { .. } => 2,
         Request::Command { function, .. }
             if matches!(Function::parse(function), Some(Function::Custom(_))) =>

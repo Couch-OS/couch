@@ -157,7 +157,7 @@ impl Config {
                 supports_inputs,
                 presentation,
                 actions,
-                ..
+                children,
             } = &c.provider
             {
                 if !valid_plugin_id(id) || !valid_plugin_label(label) || capabilities.len() > 128 {
@@ -181,6 +181,19 @@ impl Config {
                         });
                     }
                     capability_ids.push(&capability.id);
+                }
+                if !crate::domain::valid_child_kinds(children) {
+                    problems.push(Problem {
+                        at: alloc::format!("connections[{i}].provider.children"),
+                        message: "External integration declares an invalid kind of device".into(),
+                    });
+                }
+                // The limit on a package's own buttons is for the package,
+                // whichever of its kinds of child names them.
+                for capability in children.iter().flat_map(|kind| &kind.capabilities) {
+                    if !capability_ids.contains(&&capability.id) {
+                        capability_ids.push(&capability.id);
+                    }
                 }
                 if capability_ids
                     .iter()
@@ -253,7 +266,38 @@ impl Config {
             }
             if let crate::Integration::Connection {
                 connection_id,
+                child: Some(child),
                 resource_id,
+            }
+            | crate::Integration::Plugin {
+                connection_id,
+                child: Some(child),
+                resource_id,
+                ..
+            } = &device.integration
+            {
+                // The resolved form of a child is what `resolve_integration`
+                // makes of one: no inputs and no screen of its own.
+                let resolved_as_a_whole_connection = matches!(
+                    &device.integration,
+                    crate::Integration::Plugin { supports_inputs, presentation, .. }
+                        if *supports_inputs || !presentation.is_empty()
+                );
+                if let Some(message) = self
+                    .child_problem(connection_id, resource_id, child, device.kind)
+                    .or(resolved_as_a_whole_connection
+                        .then_some("A device of an integration has no inputs or screen of its own"))
+                {
+                    problems.push(Problem {
+                        at: alloc::format!("rooms.{}.devices.{}.child", room.id, device.id),
+                        message: message.into(),
+                    });
+                }
+            }
+            if let crate::Integration::Connection {
+                connection_id,
+                resource_id,
+                ..
             } = &device.integration
             {
                 let at = alloc::format!("rooms.{}.devices.{}", room.id, device.id);
@@ -300,6 +344,20 @@ impl Config {
                     && scene.steps.is_empty();
                 if !valid {
                     problems.push(Problem{at:alloc::format!("scenes[{i}].hue"),message:"Choose a Hue connection and scene; bridge scenes cannot include device steps".into()});
+                }
+            }
+            if let Some(resource) = &scene.resource {
+                let valid = scene.hue.is_none()
+                    && scene.steps.is_empty()
+                    && crate::valid_resource(&resource.resource_id)
+                    && self
+                        .child_kind(&resource.connection_id, &resource.kind)
+                        .is_some_and(|kind| kind.component == crate::ChildComponent::Scene);
+                if !valid {
+                    problems.push(Problem {
+                        at: alloc::format!("scenes[{i}].resource"),
+                        message: "Choose a scene this integration offers; a package scene cannot include device steps or a Hue scene".into(),
+                    });
                 }
             }
         }
@@ -443,6 +501,43 @@ impl Config {
     }
 }
 
+impl Config {
+    /// What is wrong with a device saved as a child of a connection, if
+    /// anything. The kind has to be one the connection's package declares, so
+    /// with no such package (every shipped build: protocol 3 is switched off
+    /// and no accepted manifest can declare children) every child is refused.
+    fn child_problem(
+        &self,
+        connection: &Id,
+        resource: &str,
+        child: &crate::ChildSnapshot,
+        device_kind: crate::DeviceKind,
+    ) -> Option<&'static str> {
+        let Some(connection) = self.connection(connection) else {
+            return Some("This device refers to a missing connection");
+        };
+        let crate::Provider::Plugin { children, .. } = &connection.provider else {
+            return Some("Only a connection to an integration package has devices of its own");
+        };
+        let Some(kind) = children.iter().find(|kind| kind.kind == child.kind) else {
+            return Some("This integration does not offer that kind of device");
+        };
+        if kind.component == crate::ChildComponent::Scene {
+            return Some("A package scene belongs to a room's scenes, not to its devices");
+        }
+        if kind.device_kind != device_kind {
+            return Some("This device has to be the kind of device its integration says it is");
+        }
+        // Stricter than the rule for a connection that is one device, which
+        // has to keep loading whatever was saved before children existed.
+        if !crate::valid_resource(resource) {
+            return Some("Choose a valid device from this connection");
+        }
+        (!child.fits(kind.component))
+            .then_some("What this device can do does not fit the kind of device it is")
+    }
+}
+
 fn valid_plugin_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
@@ -499,7 +594,21 @@ fn valid_plugin_component(
         crate::PluginComponent::InputSelector { label } => {
             valid_plugin_label(label) && supports_inputs
         }
+        // Each is drawn over one typed action, as the decibel control is.
+        crate::PluginComponent::Light { label } => {
+            valid_plugin_label(label) && declares(actions, crate::ActionKind::SetLight)
+        }
+        crate::PluginComponent::Cover { label } => {
+            valid_plugin_label(label) && declares(actions, crate::ActionKind::SetCover)
+        }
+        crate::PluginComponent::Climate { label } => {
+            valid_plugin_label(label) && declares(actions, crate::ActionKind::SetClimate)
+        }
     }
+}
+
+fn declares(actions: &[crate::PluginActionSchema], kind: crate::ActionKind) -> bool {
+    crate::PluginActionSchema::find(actions, kind).is_some()
 }
 
 fn check_entity<'a>(
@@ -667,6 +776,7 @@ mod tests {
                 name: "S".to_string(),
                 icon: None,
                 steps: vec![Action::new(Id::new("ghost"), "on")],
+                resource: None,
             }],
             ..Config::default()
         };
@@ -697,6 +807,7 @@ mod tests {
                     name: "S".to_string(),
                     icon: None,
                     steps: steps.clone(),
+                    resource: None,
                 }],
                 activities: vec![crate::Activity {
                     setup: Default::default(),
@@ -744,6 +855,7 @@ mod tests {
                 crate::Integration::Connection {
                     connection_id: Id::new("package"),
                     resource_id: "".into(),
+                    child: None,
                 },
             ),
             Device::new(Id::new("direct"), "Direct", DeviceKind::MediaPlayer).with_integration(
@@ -755,6 +867,7 @@ mod tests {
                     supports_inputs: false,
                     presentation: vec![],
                     actions: vec![],
+                    child: None,
                 },
             ),
             Device::new(Id::new("lamp"), "Lamp", DeviceKind::Light).with_integration(
@@ -779,6 +892,7 @@ mod tests {
                     supports_inputs: false,
                     presentation: vec![],
                     actions: vec![],
+                    children: vec![],
                 },
             }],
             rooms: vec![living],
@@ -789,6 +903,7 @@ mod tests {
                 name: "S".to_string(),
                 icon: None,
                 steps: vec![],
+                resource: None,
             }],
             activities: vec![crate::Activity {
                 setup: Default::default(),
@@ -951,6 +1066,7 @@ mod tests {
                     crate::Integration::Connection {
                         connection_id: Id::new("ha"),
                         resource_id: entity.to_string(),
+                        child: None,
                     },
                 ));
         }
@@ -1026,5 +1142,701 @@ mod tests {
         }
         assert!(!valid_ha_resource("cover.office", DeviceKind::Light));
         assert!(!valid_ha_resource("climate.office", DeviceKind::Blind));
+    }
+}
+
+/// Protocol 3 (unreleased): children of a packaged connection as room devices,
+/// package scenes, and what a child can be told.
+#[cfg(test)]
+mod child_tests {
+    use crate::buttons::{Binding, Button};
+    use crate::commands::Function;
+    use crate::{
+        Action, ActionKind, ChildComponent, ChildSnapshot, ClimateMode, ClimateTraits, Config,
+        Connection, CoverTraits, DeviceKind, Id, Integration, LightTraits, PluginActionSchema,
+        PluginCapability, PluginChildKind, PluginComponent, Provider, Scene, SceneResource,
+        Shortcut, ShortcutAction, TempUnit,
+    };
+    use alloc::{string::String, vec, vec::Vec};
+
+    fn named(ids: &[&str]) -> Vec<PluginCapability> {
+        ids.iter()
+            .map(|id| PluginCapability {
+                id: (*id).into(),
+                label: "Label".into(),
+            })
+            .collect()
+    }
+
+    fn kinds() -> Vec<PluginChildKind> {
+        let kind = |kind: &str, device_kind, component, ids: &[&str], actions| PluginChildKind {
+            kind: kind.into(),
+            label: "Kind".into(),
+            device_kind,
+            component,
+            capabilities: named(ids),
+            actions,
+        };
+        vec![
+            kind(
+                "light",
+                DeviceKind::Light,
+                ChildComponent::Light,
+                &["on", "off", "toggle"],
+                vec![PluginActionSchema::SetLight {}],
+            ),
+            kind(
+                "plug",
+                DeviceKind::Switch,
+                ChildComponent::Light,
+                &["on", "off"],
+                vec![],
+            ),
+            kind(
+                "scene",
+                DeviceKind::Other,
+                ChildComponent::Scene,
+                &["on"],
+                vec![],
+            ),
+            kind(
+                "blind",
+                DeviceKind::Blind,
+                ChildComponent::Cover,
+                &["open", "close", "toggle"],
+                vec![PluginActionSchema::SetCover {}],
+            ),
+            kind(
+                "thermostat",
+                DeviceKind::Thermostat,
+                ChildComponent::Climate,
+                &["temperature-up"],
+                vec![PluginActionSchema::SetClimate {}],
+            ),
+        ]
+    }
+
+    fn snapshot(kind: &str) -> ChildSnapshot {
+        ChildSnapshot {
+            kind: kind.into(),
+            light: None,
+            cover: None,
+            climate: None,
+        }
+    }
+
+    fn lamp(dimmable: bool) -> ChildSnapshot {
+        ChildSnapshot {
+            light: Some(LightTraits {
+                dimmable,
+                mirek: None,
+                color: false,
+            }),
+            ..snapshot("light")
+        }
+    }
+
+    const LAMP: &str = "5f0c9a52-7d1e-4a63-9b0e-2f6d1c3a8e41";
+
+    /// The seed with a bridge-like package, and `living-lamp` as one of its
+    /// lamps.
+    fn home() -> Config {
+        let mut config = Config::seed();
+        config.connections.push(Connection {
+            id: Id::new("bridge"),
+            name: "Bridge".into(),
+            provider: Provider::Plugin {
+                id: "echo".into(),
+                label: "Echo".into(),
+                capabilities: named(&["power-on", "dim:30"]),
+                supports_inputs: true,
+                presentation: vec![],
+                actions: vec![],
+                children: kinds(),
+            },
+        });
+        config.rooms[0].devices[4].integration = child(LAMP, lamp(true));
+        config
+    }
+
+    fn child(resource: &str, snapshot: ChildSnapshot) -> Integration {
+        Integration::Connection {
+            connection_id: Id::new("bridge"),
+            resource_id: resource.into(),
+            child: Some(snapshot),
+        }
+    }
+
+    fn problem(config: &Config) -> String {
+        match config.validate() {
+            Ok(()) => String::new(),
+            Err(error) => alloc::format!("{error}"),
+        }
+    }
+
+    #[test]
+    fn a_child_resolves_to_what_its_kind_can_do_never_to_what_the_connection_can() {
+        let config = home();
+        assert_eq!(problem(&config), "");
+        let resolved = config
+            .resolve_integration(&config.rooms[0].devices[4].integration)
+            .unwrap();
+        assert_eq!(
+            resolved,
+            Integration::Plugin {
+                id: "echo".into(),
+                connection_id: Id::new("bridge"),
+                resource_id: LAMP.into(),
+                capabilities: named(&["on", "off", "toggle"]),
+                supports_inputs: false,
+                presentation: vec![],
+                actions: vec![PluginActionSchema::SetLight {}],
+                child: Some(lamp(true)),
+            }
+        );
+        assert_eq!(
+            crate::buttons::function_choices(&resolved),
+            vec![
+                ("on".into(), "Label".into()),
+                ("off".into(), "Label".into()),
+                ("toggle".into(), "Label".into())
+            ],
+            "a picker offers the kind's commands"
+        );
+        for (command, supported) in [
+            ("toggle", true),
+            ("dim:30", true),
+            ("dim:0", true),
+            ("power-on", false),
+            ("input:HDMI1", false),
+            ("position:40", false),
+            ("mode:heat", false),
+            ("volume:30", false),
+            ("x:blink", false),
+        ] {
+            assert_eq!(
+                Function::parse(command).unwrap().supports(&resolved),
+                supported,
+                "{command}"
+            );
+        }
+        // The connection as a device of its own is what it always was.
+        let whole = config
+            .resolve_integration(&Integration::Connection {
+                connection_id: Id::new("bridge"),
+                resource_id: "zone1".into(),
+                child: None,
+            })
+            .unwrap();
+        assert!(matches!(
+            &whole,
+            Integration::Plugin { capabilities, supports_inputs: true, child: None, .. }
+                if capabilities == &named(&["power-on", "dim:30"])
+        ));
+        assert!(Function::PowerOn.supports(&whole));
+        assert!(!Function::Toggle.supports(&whole));
+        assert!(
+            Function::Dim(30).supports(&whole) && !Function::Dim(31).supports(&whole),
+            "a level spelt out as a capability is still exactly that, as in every release"
+        );
+
+        // A kind the package no longer declares: the device stays, inert.
+        let gone = config
+            .resolve_integration(&child(LAMP, snapshot("strip")))
+            .unwrap();
+        assert!(matches!(
+            &gone,
+            Integration::Plugin { capabilities, actions, child: Some(_), .. }
+                if capabilities.is_empty() && actions.is_empty()
+        ));
+        assert!(crate::buttons::function_choices(&gone).is_empty());
+        for command in ["on", "toggle", "dim:30", "power-on"] {
+            assert!(!Function::parse(command).unwrap().supports(&gone));
+        }
+    }
+
+    #[test]
+    fn a_level_needs_the_action_its_kind_declares_and_a_child_that_can_take_it() {
+        let mut config = home();
+        let blind = ChildSnapshot {
+            cover: Some(CoverTraits {
+                position: true,
+                stop: false,
+            }),
+            ..snapshot("blind")
+        };
+        let thermostat = ChildSnapshot {
+            climate: Some(ClimateTraits {
+                min_tenths: 70,
+                max_tenths: 300,
+                step_tenths: 5,
+                unit: TempUnit::Celsius,
+                modes: vec![ClimateMode::Off, ClimateMode::HeatCool],
+                range: true,
+            }),
+            ..snapshot("thermostat")
+        };
+        let resolve = |config: &Config, integration: &Integration| {
+            config.resolve_integration(integration).unwrap()
+        };
+        let supports = |integration: &Integration, command: &str| {
+            Function::parse(command).unwrap().supports(integration)
+        };
+        let cover = resolve(&config, &child("cover/1", blind.clone()));
+        assert!(supports(&cover, "position:40"));
+        assert!(supports(&cover, "open"));
+        assert!(!supports(&cover, "dim:30"));
+        let fixed = ChildSnapshot {
+            cover: Some(CoverTraits::default()),
+            ..blind
+        };
+        assert!(!supports(
+            &resolve(&config, &child("cover/1", fixed)),
+            "position:40"
+        ));
+        let climate = resolve(&config, &child("climate/1", thermostat));
+        assert!(supports(&climate, "mode:heat_cool"));
+        assert!(supports(&climate, "mode:off"));
+        assert!(!supports(&climate, "mode:heat"));
+        assert!(supports(&climate, "temperature-up"));
+        assert!(!supports(&climate, "temperature-down"));
+
+        assert!(!supports(
+            &resolve(&config, &child(LAMP, lamp(false))),
+            "dim:30"
+        ));
+        assert!(!supports(
+            &resolve(&config, &child(LAMP, snapshot("light"))),
+            "dim:30"
+        ));
+        // Dimmable, but of a kind that declares no set_light.
+        let plug = ChildSnapshot {
+            kind: "plug".into(),
+            ..lamp(true)
+        };
+        assert!(!supports(&resolve(&config, &child(LAMP, plug)), "dim:30"));
+
+        // And a key is held to it.
+        let bind = |config: &mut Config, command: &str| {
+            config.activities[0].buttons = vec![Binding {
+                button: Button::Red,
+                gesture: Default::default(),
+                action: Some(Action::new("living-lamp", command)),
+            }];
+        };
+        bind(&mut config, "dim:30");
+        assert_eq!(problem(&config), "");
+        config.rooms[0].devices[4].integration = child(LAMP, lamp(false));
+        assert!(problem(&config).contains("activities[0].buttons[0]"));
+        bind(&mut config, "toggle");
+        assert_eq!(problem(&config), "");
+        bind(&mut config, "power-on");
+        assert!(problem(&config).contains("activities[0].buttons[0]"));
+    }
+
+    #[test]
+    fn a_key_toggles_a_light_or_cover_child_whose_kind_declares_toggle() {
+        let mut config = home();
+        config.areas[0].shortcuts = vec![Shortcut {
+            button: Button::Lights,
+            action: ShortcutAction::Toggle {
+                device: Id::new("living-lamp"),
+            },
+        }];
+        assert_eq!(problem(&config), "");
+        assert!(config.can_toggle(&config.rooms[0].devices[4]));
+        let set = |config: &mut Config, kind: DeviceKind, integration: Integration| {
+            config.rooms[0].devices[4].kind = kind;
+            config.rooms[0].devices[4].integration = integration;
+        };
+        set(
+            &mut config,
+            DeviceKind::Blind,
+            child("cover/1", snapshot("blind")),
+        );
+        assert_eq!(problem(&config), "");
+        // `plug` has no toggle; a thermostat is not something a key switches;
+        // the connection as a whole never was.
+        set(
+            &mut config,
+            DeviceKind::Switch,
+            child(LAMP, snapshot("plug")),
+        );
+        assert!(problem(&config).contains("areas[0].shortcuts[0]"));
+        if let Provider::Plugin { children, .. } =
+            &mut config.connections.last_mut().unwrap().provider
+        {
+            children[4].capabilities = named(&["toggle"]);
+        }
+        set(
+            &mut config,
+            DeviceKind::Thermostat,
+            child("climate/1", snapshot("thermostat")),
+        );
+        assert!(problem(&config).contains("areas[0].shortcuts[0]"));
+        set(
+            &mut config,
+            DeviceKind::Light,
+            Integration::Connection {
+                connection_id: Id::new("bridge"),
+                resource_id: "zone1".into(),
+                child: None,
+            },
+        );
+        assert!(problem(&config).contains("areas[0].shortcuts[0]"));
+        // The resolved form saved on the device answers from its own copy.
+        set(
+            &mut config,
+            DeviceKind::Light,
+            Integration::Plugin {
+                id: "echo".into(),
+                connection_id: Id::new("bridge"),
+                resource_id: LAMP.into(),
+                capabilities: named(&["on", "toggle"]),
+                supports_inputs: false,
+                presentation: vec![],
+                actions: vec![],
+                child: Some(lamp(true)),
+            },
+        );
+        assert_eq!(problem(&config), "");
+    }
+
+    #[test]
+    fn a_saved_child_has_to_be_one_its_package_could_have_offered() {
+        let at = "rooms.living-room.devices.living-lamp.child";
+        let cases: Vec<(&str, DeviceKind, Integration, &str)> = vec![
+            (
+                "an undeclared kind",
+                DeviceKind::Light,
+                child(LAMP, snapshot("strip")),
+                "does not offer that kind",
+            ),
+            (
+                "a scene kind as a device",
+                DeviceKind::Other,
+                child("scene/1", snapshot("scene")),
+                "belongs to a room's scenes",
+            ),
+            (
+                "another kind of device than its kind says",
+                DeviceKind::Speaker,
+                child(LAMP, lamp(true)),
+                "has to be the kind of device",
+            ),
+            (
+                "a switch saved as a light",
+                DeviceKind::Light,
+                child(LAMP, snapshot("plug")),
+                "has to be the kind of device",
+            ),
+            (
+                "traits of another component",
+                DeviceKind::Light,
+                child(
+                    LAMP,
+                    ChildSnapshot {
+                        cover: Some(CoverTraits::default()),
+                        ..lamp(true)
+                    },
+                ),
+                "does not fit",
+            ),
+            (
+                "traits outside the global bounds",
+                DeviceKind::Light,
+                child(
+                    LAMP,
+                    ChildSnapshot {
+                        light: Some(LightTraits {
+                            dimmable: true,
+                            mirek: Some((50, 500)),
+                            color: false,
+                        }),
+                        ..snapshot("light")
+                    },
+                ),
+                "does not fit",
+            ),
+        ];
+        for (name, kind, integration, message) in cases {
+            let mut config = home();
+            config.rooms[0].devices[4].kind = kind;
+            config.rooms[0].devices[4].integration = integration;
+            let problem = problem(&config);
+            assert!(
+                problem.contains(at) && problem.contains(message),
+                "{name}: {problem}"
+            );
+        }
+        // A child's id is held to the strict grammar; a connection that is one
+        // device keeps the rule every release has had, so `zone1`, an empty id
+        // and even `a//b` keep loading.
+        for id in ["", "../x", "a/../b", "a//b", "/a", "a/", "room:1", "a b"] {
+            let mut config = home();
+            config.rooms[0].devices[4].integration = child(id, lamp(true));
+            assert!(problem(&config).contains(at), "{id:?}");
+        }
+        for id in ["", "zone1", "a//b", "../x"] {
+            let mut config = home();
+            config.rooms[0].devices[4].integration = Integration::Connection {
+                connection_id: Id::new("bridge"),
+                resource_id: id.into(),
+                child: None,
+            };
+            assert_eq!(problem(&config), "", "{id:?}");
+        }
+
+        // Not a package at all, or one that declares no children (which is
+        // every package a shipped build accepts).
+        let mut config = home();
+        config.connections.push(Connection {
+            id: Id::new("player"),
+            name: "Player".into(),
+            provider: Provider::Kodi {
+                host: "kodi.invalid".into(),
+                port: 9090,
+            },
+        });
+        config.rooms[0].devices[4].integration = Integration::Connection {
+            connection_id: Id::new("player"),
+            resource_id: String::new(),
+            child: Some(lamp(true)),
+        };
+        assert!(problem(&config).contains("Only a connection to an integration package"));
+        let mut config = home();
+        if let Provider::Plugin { children, .. } =
+            &mut config.connections.last_mut().unwrap().provider
+        {
+            children.clear();
+        }
+        assert!(problem(&config).contains("does not offer that kind"));
+        // The resolved form is held to the same rules.
+        let mut config = home();
+        config.rooms[0].devices[4].integration = Integration::Plugin {
+            id: "echo".into(),
+            connection_id: Id::new("bridge"),
+            resource_id: "../x".into(),
+            capabilities: vec![],
+            supports_inputs: false,
+            presentation: vec![],
+            actions: vec![],
+            child: Some(lamp(true)),
+        };
+        assert!(problem(&config).contains(at));
+        if let Integration::Plugin { resource_id, .. } = &mut config.rooms[0].devices[4].integration
+        {
+            *resource_id = LAMP.into();
+        }
+        assert_eq!(problem(&config), "");
+        if let Integration::Plugin {
+            supports_inputs, ..
+        } = &mut config.rooms[0].devices[4].integration
+        {
+            *supports_inputs = true;
+        }
+        assert!(problem(&config).contains("no inputs or screen of its own"));
+        if let Integration::Plugin {
+            connection_id,
+            supports_inputs,
+            ..
+        } = &mut config.rooms[0].devices[4].integration
+        {
+            *supports_inputs = false;
+            *connection_id = Id::new("nowhere");
+        }
+        assert!(problem(&config).contains("missing connection"));
+    }
+
+    #[test]
+    fn a_package_scene_names_a_scene_kind_and_is_nothing_else() {
+        let scene = |resource: SceneResource| Scene {
+            id: Id::new("relax"),
+            name: "Relax".into(),
+            icon: None,
+            steps: vec![],
+            hue: None,
+            resource: Some(resource),
+            rooms: vec![Id::new("living-room")],
+        };
+        let resource = |connection: &str, id: &str, kind: &str| SceneResource {
+            connection_id: Id::new(connection),
+            resource_id: id.into(),
+            kind: kind.into(),
+        };
+        let mut config = home();
+        config
+            .scenes
+            .push(scene(resource("bridge", "scene/1", "scene")));
+        assert_eq!(problem(&config), "");
+        let saved = serde_json::to_value(config.scenes.last().unwrap()).unwrap();
+        assert_eq!(
+            saved["resource"],
+            serde_json::json!({"connection_id": "bridge", "resource_id": "scene/1", "kind": "scene"})
+        );
+        assert!(saved.get("hue").is_none());
+        let at = alloc::format!("scenes[{}].resource", config.scenes.len() - 1);
+        for (name, broken) in [
+            (
+                "a kind that is not a scene",
+                resource("bridge", "scene/1", "light"),
+            ),
+            ("an undeclared kind", resource("bridge", "scene/1", "mood")),
+            (
+                "no such connection",
+                resource("nowhere", "scene/1", "scene"),
+            ),
+            ("an id that climbs", resource("bridge", "../1", "scene")),
+            ("no id", resource("bridge", "", "scene")),
+        ] {
+            *config.scenes.last_mut().unwrap() = scene(broken);
+            assert!(problem(&config).contains(&at), "{name}");
+        }
+        let mut with_steps = scene(resource("bridge", "scene/1", "scene"));
+        with_steps.steps = vec![Action::new("living-lamp", "on")];
+        *config.scenes.last_mut().unwrap() = with_steps;
+        assert!(problem(&config).contains(&at));
+        let mut with_hue = scene(resource("bridge", "scene/1", "scene"));
+        with_hue.hue = Some(crate::HueScene {
+            connection_id: Id::new("bridge"),
+            scene_id: "00000000-0000-0000-0000-000000000001".into(),
+        });
+        *config.scenes.last_mut().unwrap() = with_hue;
+        assert!(problem(&config).contains(&at));
+    }
+
+    #[test]
+    fn a_package_declares_valid_kinds_and_at_most_32_buttons_of_its_own_in_all() {
+        let mut config = home();
+        let provider =
+            |config: &mut Config,
+             edit: &dyn Fn(&mut Vec<PluginCapability>, &mut Vec<PluginChildKind>)| {
+                if let Provider::Plugin {
+                    capabilities,
+                    children,
+                    ..
+                } = &mut config.connections.last_mut().unwrap().provider
+                {
+                    edit(capabilities, children);
+                }
+            };
+        let own = |range: core::ops::Range<usize>| -> Vec<PluginCapability> {
+            range
+                .map(|n| PluginCapability {
+                    id: alloc::format!("x:own-{n}"),
+                    label: "Own".into(),
+                })
+                .collect()
+        };
+        // 16 on the connection, 16 on a kind, and the same 16 again on another
+        // kind: 32 names.
+        provider(&mut config, &|capabilities, children| {
+            capabilities.extend(own(0..16));
+            children[0].capabilities.extend(own(16..32));
+            children[3].capabilities.extend(own(16..32));
+        });
+        assert_eq!(problem(&config), "");
+        provider(&mut config, &|_, children| {
+            children[1].capabilities.extend(own(32..33));
+        });
+        assert!(problem(&config).contains("too many buttons of its own"));
+
+        let mut config = home();
+        provider(&mut config, &|_, children| {
+            let again = children[0].clone();
+            children.push(again);
+        });
+        assert!(problem(&config).contains("provider.children"));
+
+        // A connection that is itself a lamp needs the action its control is
+        // drawn over, as the decibel control always has.
+        for (component, schema) in [
+            (
+                PluginComponent::Light {
+                    label: "Lamp".into(),
+                },
+                PluginActionSchema::SetLight {},
+            ),
+            (
+                PluginComponent::Cover {
+                    label: "Blind".into(),
+                },
+                PluginActionSchema::SetCover {},
+            ),
+            (
+                PluginComponent::Climate {
+                    label: "Heating".into(),
+                },
+                PluginActionSchema::SetClimate {},
+            ),
+        ] {
+            let mut config = home();
+            let set = |config: &mut Config, actions: Vec<PluginActionSchema>| {
+                if let Provider::Plugin {
+                    presentation,
+                    actions: declared,
+                    ..
+                } = &mut config.connections.last_mut().unwrap().provider
+                {
+                    *presentation = vec![component.clone()];
+                    *declared = actions;
+                }
+            };
+            set(&mut config, vec![schema]);
+            assert_eq!(problem(&config), "", "{component:?}");
+            set(&mut config, vec![]);
+            assert!(
+                problem(&config).contains("presentation is invalid"),
+                "{component:?}"
+            );
+            assert_eq!(
+                PluginActionSchema::find(&[schema], schema.kind()).map(|s| s.kind()),
+                Some(schema.kind())
+            );
+        }
+        assert_ne!(ActionKind::SetLight, ActionKind::SetCover);
+    }
+
+    #[test]
+    fn nothing_new_is_written_for_a_configuration_that_has_nothing_new() {
+        let connection = Integration::Connection {
+            connection_id: Id::new("bridge"),
+            resource_id: "zone1".into(),
+            child: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&connection).unwrap(),
+            r#"{"via":"connection","connection_id":"bridge","resource_id":"zone1"}"#
+        );
+        let mut config = home();
+        if let Provider::Plugin {
+            children,
+            capabilities,
+            supports_inputs,
+            ..
+        } = &mut config.connections.last_mut().unwrap().provider
+        {
+            children.clear();
+            capabilities.clear();
+            *supports_inputs = false;
+        }
+        assert_eq!(
+            serde_json::to_string(&config.connections.last().unwrap().provider).unwrap(),
+            r#"{"kind":"plugin","id":"echo","label":"Echo"}"#
+        );
+        let scene = serde_json::to_string(&Config::seed().scenes[0]).unwrap();
+        assert!(!scene.contains("\"resource\"") && !scene.contains("\"hue\""));
+        // And the old shapes read back as "not a child".
+        let old: Integration =
+            serde_json::from_str(r#"{"via":"plugin","id":"echo","connection_id":"bridge"}"#)
+                .unwrap();
+        assert!(matches!(old, Integration::Plugin { child: None, .. }));
+        assert_eq!(
+            serde_json::from_str::<Integration>(
+                r#"{"via":"connection","connection_id":"bridge","resource_id":"zone1"}"#
+            )
+            .unwrap(),
+            connection
+        );
     }
 }

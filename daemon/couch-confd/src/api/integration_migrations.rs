@@ -346,6 +346,7 @@ impl Api {
                         supports_inputs: manifest.supports_inputs,
                         presentation: manifest.presentation.clone(),
                         actions: manifest.actions.clone(),
+                        children: vec![],
                     },
                 )?;
                 store
