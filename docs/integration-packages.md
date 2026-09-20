@@ -103,8 +103,11 @@ packages:
   `/proc/<pid>/environ`, look at its open files or its memory map, or copy
   memory out of it another way.
 - Neither can send the other a signal.
-- Neither can read a file the other owns, nor a file only root can read -
-  which is where Couch keeps connection settings and keys.
+- Neither can read a file only root can read, which is where Couch keeps
+  connection settings and keys, nor anything the other may come to write.
+  (Today neither writes anything: a package has no writable directory, its
+  working directory is `/`, its environment is empty, and its settings arrive
+  down the socket it was started with.)
 - Neither can write a core file. A package that crashes leaves no copy of what
   it held in memory on the disk.
 - Neither can gain privileges by running something else: `no_new_privs` is
