@@ -82,9 +82,7 @@ fn check_settings(
 ) -> Result<(), Failure> {
     let mut host =
         couch_plugin::Host::spawn_with_policy(directory, manifest, Duration::from_secs(3), policy)?;
-    match host.request_detailed(Request::Configure {
-        settings: settings.clone(),
-    })? {
+    match host.request_detailed(Request::configure(settings.clone()))? {
         Response::Ok => Ok(()),
         _ => Err(Error::Protocol.into()),
     }
