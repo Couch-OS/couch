@@ -179,7 +179,11 @@ fn the_panel_socket_carries_the_phase_in_and_the_reason_out() {
     let listener = UnixListener::bind(&socket).unwrap();
     let daemon = std::thread::spawn(move || {
         // Answered streams stay open to the end: macOS will not set a deadline
-        // on a socket whose peer has gone, which the asking side does.
+        // on a socket whose peer has gone, which the asking side does. Dropping
+        // one here, on this thread, as soon as the loop finishes could still
+        // race the main thread's read of that very reply, so the vector is
+        // handed back through the join instead of being dropped on this stack;
+        // it is only closed once the caller has read every answer.
         let mut answered = Vec::new();
         for _ in 0..4 {
             let (mut stream, _) = listener.accept().unwrap();
@@ -193,6 +197,7 @@ fn the_panel_socket_carries_the_phase_in_and_the_reason_out() {
                 .unwrap();
             answered.push(stream);
         }
+        answered
     });
     let ask = |request| {
         couch_plugin::local_request_detailed(&socket, "bedroom-tv", request, Duration::from_secs(5))
@@ -213,7 +218,9 @@ fn the_panel_socket_carries_the_phase_in_and_the_reason_out() {
         ask(Request::key("power-on", KeyPhase::LongPress)),
         Err(because(Error::Unpaired, "Pair this TV again"))
     );
-    daemon.join().unwrap();
+    // Every read above is done; only now may the streams the daemon answered
+    // on be closed.
+    let answered = daemon.join().unwrap();
     assert_eq!(
         device.requests(),
         [
@@ -223,5 +230,6 @@ fn the_panel_socket_carries_the_phase_in_and_the_reason_out() {
             "CMD power-on long_press"
         ]
     );
+    drop(answered);
     let _ = std::fs::remove_dir_all(directory);
 }
