@@ -209,8 +209,54 @@ gate in `couch-plugin` and `couch-sdk`, described under
   receives today.
 - **More than one typed action.** A saved package snapshot may hold up to eight
   action schemas of distinct kinds, and a request finds its schema by kind
-  (`PluginActionSchema::find`). `set_volume_db` is still the only kind, so
-  nothing can declare a second one yet.
+  (`PluginActionSchema::find`).
+- **Children of a connection.** One connection (a bridge) may offer many
+  devices. The saved package snapshot lists the *kinds* of child it declares
+  (`Provider::Plugin.children`, at most 8): a kind has a name, a label, the
+  kind of room device it becomes, one built-in control (`light`, `cover`,
+  `climate` or `scene`), the commands it takes (at most 32) and the one typed
+  action that goes with its control. A light may be saved as a light or a
+  switch, a cover as a blind, a thermostat as a thermostat; a scene kind takes
+  exactly `on` and is never a device. A package's `x:` buttons count towards
+  its 32 whichever kind names them.
+- **A child is an ordinary room device with a snapshot.** It is saved as
+  `{"via":"connection","connection_id":…,"resource_id":…,"child":{"kind":"light","light":{"dimmable":true,"mirek":[153,500]}}}`:
+  the kind, and what this particular lamp, blind or thermostat can do. With it
+  a binding validates and a row can be drawn while the package is not running.
+  The device resolves to what its *kind* can do, never to what the connection
+  can; a kind the package no longer declares resolves to nothing it can be
+  told. A child's `resource_id` is 1 to 128 bytes of `[A-Za-z0-9._/+-]` read as
+  segments between `/`, none empty, `.` or `..` (`couch_model::valid_resource`);
+  a connection that is one device keeps the looser rule it always had. The
+  daemon, never the browser, will fill the snapshot in from the package's own
+  listing; until that step exists the device routes refuse a snapshot that
+  arrives in a request.
+- **Light, cover and climate.** `couch_model::domain` holds the traits
+  (`LightTraits`, `CoverTraits`, `ClimateTraits`) and the state a status read
+  will carry (`LightState`, `CoverState`, `ClimateState`; an absent value is
+  "unknown", never an inferred "off"). Everything is an integer: brightness and
+  position 0 to 100, colour temperature in mirek (100 to 1000), colour as CIE xy
+  in ten-thousandths, temperatures in tenths of a degree (-500 to 1500). Three
+  typed actions join `set_volume_db`: `set_light` (`on`, `brightness`, `mirek`,
+  `xy`; brightness 0 is off), `set_cover` (`position`) and `set_climate`
+  (`target_tenths`, or `low_tenths` below `high_tenths`, and `mode`). Every
+  field but `position` is optional, an absent one is left alone and is not
+  written, and at least one has to be there. Their schemas carry no numbers
+  (`{"action":"set_light"}`): what one lamp accepts is a trait of that child
+  (`ChildSnapshot::accepts`). `dim:N`, `position:N` and `mode:<m>` are
+  supported on a child when its kind declares the action and the child's traits
+  allow it, and a quick-access key can toggle a light or cover child whose kind
+  declares `toggle`. A connection that is itself one lamp, blind or thermostat
+  may compose a `light`, `cover` or `climate` component over the matching
+  action.
+- **Package scenes.** `Scene.resource` (`connection_id`, `resource_id`, and the
+  scene kind) is a scene that belongs to a package. It has no steps and is not
+  a Hue scene; `Scene.hue` is unchanged.
+
+  None of this can be declared yet: `couch-plugin` refuses the three components
+  in every manifest and the three actions in a protocol 1 or 2 manifest, and the
+  gate names protocol 3 for them. Listing children, addressing one on the wire
+  and the manifest's `children` are the next step.
 - **`integration_config_v3`.** The saved configuration gains a third layer for
   whatever a protocol 2 core cannot read; see
   [Compatibility and independent source](https://github.com/Couch-OS/couch/blob/main/docs/integration-architecture.md#protocol-3-layer-unreleased).
