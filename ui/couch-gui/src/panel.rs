@@ -1049,7 +1049,10 @@ impl Panel {
         if self.dirty.len() != height {
             self.dirty = vec![true; height];
         }
-        changed_rows(&plan, height, t, self.last_t, &mut self.dirty);
+        // At the point the frame is really drawn at, not at the clock: a
+        // close is the same plan run backwards.
+        let p = through(shown, t);
+        changed_rows(&plan, height, p, self.last_t, &mut self.dirty);
         {
             let (arriving, leaving) = (pixels(&self.ram), pixels(&self.spare));
             lift_frame(
@@ -1070,7 +1073,7 @@ impl Panel {
                 },
             );
         }
-        self.last_t = Some(t);
+        self.last_t = Some(p);
         // Whole frames only: the panel never holds a half-composed one. Only
         // the rows this frame wrote are sent; the rest are on the glass
         // already, and untouched in the buffer they were composed in.
@@ -1863,11 +1866,28 @@ impl Frame<'_> {
 /// well as where it is. Being wrong the other way would leave a stale band on
 /// the glass, so the test that composes a whole run and compares every frame
 /// against one drawn from nothing is the one that holds this honest.
+/// How far through the plan a frame is, which is not the clock: a close runs
+/// the same plan backwards, so `t` of 0.2 into a close is the plan at 0.8.
+/// Everything that asks the plan a question has to ask it here.
+pub(crate) fn through(shown: Shown, t: f32) -> f32 {
+    match shown {
+        Shown::Arriving => t,
+        Shown::Leaving => 1.0 - t,
+    }
+}
+
 fn changed_rows(plan: &LiftPlan, h: usize, p: f32, previous: Option<f32>, into: &mut [bool]) {
     let Some(was) = previous else {
         into.fill(true);
         return;
     };
+    // The end of the run is the page itself, copied whole; a frame either
+    // side of that is not a step in the plan and has nothing in common with
+    // it. A close starts there, so this is its second frame.
+    if p >= 1.0 || was >= 1.0 {
+        into.fill(true);
+        return;
+    }
     into.fill(false);
     let mark = |from: i32, rows: i32, into: &mut [bool]| {
         for y in from.max(0)..(from + rows).max(0) {
@@ -1954,9 +1974,10 @@ pub(crate) fn lift_frame(
     let t = frame.t;
     let (arriving, leaving) = pages;
     let (content, screen_content) = content;
-    let (room, screen, p) = match shown {
-        Shown::Arriving => (leaving, arriving, t),
-        Shown::Leaving => (arriving, leaving, 1.0 - t),
+    let p = through(shown, t);
+    let (room, screen) = match shown {
+        Shown::Arriving => (leaving, arriving),
+        Shown::Leaving => (arriving, leaving),
     };
     let (w, h, stride) = (dst.width, dst.height, dst.stride);
     // The end is the page itself, whole: every piece has arrived and nothing
@@ -3324,6 +3345,15 @@ mod tests {
     /// what each frame marked, and the map has to be the page.
     #[test]
     fn what_reaches_the_panel_over_a_whole_lift_is_the_page() {
+        // Both ways round. A close runs the same plan backwards, so the
+        // question "can this row differ from the one on the glass" has to be
+        // asked at the point the frame is actually drawn at, not at the clock.
+        for shown in [Shown::Arriving, Shown::Leaving] {
+            whole_lift(shown);
+        }
+    }
+
+    fn whole_lift(shown: Shown) {
         const STRIDE: usize = W + 3;
         let room: Vec<u32> = (0..W * H).map(|i| 0xff00_0000 | i as u32).collect();
         let screen: Vec<u32> = (0..W * H).map(|i| 0xff10_0000 | i as u32).collect();
@@ -3342,6 +3372,15 @@ mod tests {
             )
             .header(W as i32, 5, 7)
             .footer(W as i32, H as i32, 14);
+        let pages = match shown {
+            Shown::Arriving => (&screen[..], &room[..]),
+            Shown::Leaving => (&room[..], &screen[..]),
+        };
+        // Whichever way it is going, the page it ends on is the one arriving.
+        let ends_on = match shown {
+            Shown::Arriving => &screen,
+            Shown::Leaving => &room,
+        };
         let mut art = crate::lift_art(&room, &screen, W, H, plan);
         let content = lift_content(&room, W, H);
         let screen_content = lift_content(&screen, W, H);
@@ -3352,7 +3391,8 @@ mod tests {
         let mut sent = 0;
         for step in 0..=checks::FRAMES {
             let t = step as f32 / checks::FRAMES as f32;
-            changed_rows(&plan, H, t, previous, &mut dirty);
+            let p = through(shown, t);
+            changed_rows(&plan, H, p, previous, &mut dirty);
             lift_frame(
                 Surface {
                     pixels: &mut back,
@@ -3360,17 +3400,17 @@ mod tests {
                     width: W,
                     height: H,
                 },
-                (&screen, &room),
+                pages,
                 plan,
                 &mut art,
                 (&content, &screen_content),
-                Shown::Arriving,
+                shown,
                 Frame {
                     t,
                     dirty: &mut dirty,
                 },
             );
-            previous = Some(t);
+            previous = Some(p);
             sent += present(&mut map, STRIDE, W, H, &back, Some(&dirty));
             // The same frame composed from nothing, which is what skipping
             // work has to be indistinguishable from. Not only at the end:
@@ -3384,27 +3424,27 @@ mod tests {
                     width: W,
                     height: H,
                 },
-                (&screen, &room),
+                pages,
                 plan,
                 &mut crate::lift_art(&room, &screen, W, H, plan),
                 (&content, &screen_content),
-                Shown::Arriving,
+                shown,
                 Frame::at(t),
             );
             for y in 0..H {
                 assert_eq!(
                     &map[y * STRIDE..y * STRIDE + W],
                     &fresh[y * W..(y + 1) * W],
-                    "at {t:.2} row {y} on the panel is not what a frame drawn from nothing \
-                     would have put there"
+                    "{shown:?} at {t:.2} row {y} on the panel is not what a frame drawn from \
+                     nothing would have put there"
                 );
             }
         }
         for y in 0..H {
             assert_eq!(
                 &map[y * STRIDE..y * STRIDE + W],
-                &screen[y * W..(y + 1) * W],
-                "row {y} of the panel is not the page the lift ended on"
+                &ends_on[y * W..(y + 1) * W],
+                "row {y} of the panel is not the page the lift ended on ({shown:?})"
             );
         }
         // And it did skip rows: a run that sends every row every frame has
