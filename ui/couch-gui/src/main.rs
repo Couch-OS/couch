@@ -646,6 +646,69 @@ fn camera_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option
     })
 }
 
+/// A packaged device's own pages of buttons, as one plan: a header, the rows
+/// of buttons one after another, and the line about what it is doing with the
+/// pager under it.
+fn pages_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<panel::LiftPlan> {
+    if !app.invoke_aps_lift_ready() {
+        return None;
+    }
+    let disc = app.invoke_aps_disc_size();
+    let mut plan = headed(
+        app,
+        "pages",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_aps_title_x(),
+                app.invoke_aps_title_y(),
+                app.invoke_aps_title_w(),
+                app.invoke_aps_title_h(),
+            ),
+            disc: at(app.invoke_aps_disc_x(), app.invoke_aps_disc_y(), disc, disc),
+            depth: app.invoke_aps_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_aps_plate_r().round() as i32,
+                ..at(
+                    app.invoke_aps_plate_x(),
+                    app.invoke_aps_plate_y(),
+                    app.invoke_aps_plate_w(),
+                    app.invoke_aps_plate_h(),
+                )
+            },
+        },
+    );
+    let rows = app.invoke_aps_rows().min(4);
+    for which in 0..rows {
+        let f = if rows <= 1 {
+            1.0
+        } else {
+            which as f32 / (rows - 1) as f32
+        };
+        plan = plan.piece(panel::Piece {
+            rect: at(
+                0.0,
+                app.invoke_aps_row_y(which),
+                width as f32,
+                app.invoke_aps_row_h(which),
+            ),
+            window: (
+                panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
+                panel::LIFT_CARDS_IN.1 + (panel::LIFT_FOOTER_IN.1 - panel::LIFT_CARDS_IN.1) * f,
+            ),
+            fade: panel::LIFT_CARDS_FADE,
+            kind: panel::Arriving::Rise(panel::LIFT_BARS_DROP),
+        });
+    }
+    plan = plan.footer(width, height, app.invoke_aps_footer_y().round() as i32);
+    Some(if app.invoke_aps_sparse() {
+        plan.sooner(panel::LIFT_HASTE)
+    } else {
+        plan
+    })
+}
+
 /// The focused row's band with the name and the icon painted out of it: what
 /// the row fades away as, once the two of them are flying out of it.
 ///
@@ -749,7 +812,9 @@ fn device_screen(app: &App) -> Option<Overlay> {
         Some(Overlay::Camera)
     } else if app.get_thermostat_shown() {
         Some(Overlay::Thermostat)
-    } else if app.get_player_shown() && !app.get_custom_activity_shown() {
+    } else if app.get_player_shown() && app.get_custom_activity_shown() {
+        Some(Overlay::Activity)
+    } else if app.get_player_shown() {
         Some(Overlay::Player)
     } else {
         None
@@ -845,6 +910,7 @@ fn screen_name(which: Option<Overlay>) -> &'static str {
         Some(Overlay::Player) => "player",
         Some(Overlay::Thermostat) => "thermostat",
         Some(Overlay::Camera) => "camera",
+        Some(Overlay::Activity) => "pages",
         Some(Overlay::Light) => "light",
         _ => "screen",
     }
@@ -865,6 +931,7 @@ fn screen_plan(
         Overlay::Player => player_plan(app, row, w, h),
         Overlay::Thermostat => thermostat_plan(app, row, w, h),
         Overlay::Camera => camera_plan(app, row, w, h),
+        Overlay::Activity => pages_plan(app, row, w, h),
         _ => None,
     }
 }

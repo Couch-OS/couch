@@ -1,10 +1,17 @@
 import { Theme } from "../theme.slint";
-import { MediaBack } from "../widgets/media-back.slint";
+import { ScreenHeader } from "../components/screen_header.slint";
 export struct ActivityTile { label: string, detail: string, icon: image, enabled: bool }
 export component ActivityPages inherits Rectangle {
     in property <bool> shown;
     in property <string> title;
+    /// The device or activity these pages belong to. It used to sit on its
+    /// own below the header band - the one screen whose second line was
+    /// orphaned there - and it is the header's second line now.
     in property <string> activity;
+    /// The row's own icon and reading: the disc the lift flies here.
+    in property <image> icon;
+    in property <bool> active;
+    in property <bool> known;
     in property <[ActivityTile]> tiles;
     in property <int> page;
     in property <int> page-count;
@@ -16,11 +23,21 @@ export component ActivityPages inherits Rectangle {
     changed page => { root.selected = 0; }
     public function take-focus() { keys.focus(); }
     background: Theme.bg;
-    MediaBack { x:24px; y:22px; activate => {root.action("back",0);} }
-    Text { x:88px; y:24px; width:270px; height:28px; text:root.title; color:Theme.text; font-size:26px; font-weight:600; overflow:elide; }
-    Text { x:24px; y:86px; width:parent.width - 48px; height:28px; text:root.activity; color:Theme.text-secondary; font-size:18px; overflow:elide; }
+    // The device's name is the title, as it is on every other screen a row
+    // opens - the lift flies the row's own name onto it, so it has to be the
+    // same words - and the page's name is the line under it, where the pager
+    // says which page of how many.
+    head := ScreenHeader {
+        x:0px; y:0px; width:parent.width;
+        title:root.activity != "" ? root.activity : root.title;
+        subtitle:root.activity != "" ? root.title : "";
+        icon:root.icon; active:root.active; known:root.known;
+        back => { root.action("back",0); }
+    }
+    // The tiles start below the band rather than under the title, and their
+    // rows are eight pixels closer together to pay for the disc.
     for tile[i] in root.tiles: Rectangle {
-        x:24px + mod(i,2)*222px; y:142px + floor(i/2)*166px;
+        x:24px + mod(i,2)*222px; y:root.tiles-y() + floor(i/2)*root.tile-pitch();
         width:210px; height:150px; border-radius:16px;
         background:root.selected==i ? Theme.surface-raised : Theme.surface;
         border-width:root.selected==i ? 3px : 1px;
@@ -31,8 +48,8 @@ export component ActivityPages inherits Rectangle {
         Text { x:18px; y:116px; width:parent.width - 36px; height:22px; text:tile.detail; color:Theme.text-secondary; font-size:15px; overflow:elide; }
         TouchArea { enabled:!root.busy && tile.enabled; clicked=>{root.selected=i;root.action("command",i);} }
     }
-    if root.tiles.length==0: Text { x:32px; y:260px; width:parent.width - 64px; height:120px; text:"Add command buttons to this page in the web UI."; color:Theme.text-secondary; font-size:24px; wrap:word-wrap; horizontal-alignment:center; }
-    Text { x:24px; y:654px; width:parent.width - 48px; height:48px; text:root.status; color:Theme.text-secondary; font-size:18px; wrap:word-wrap; overflow:elide; }
+    if root.tiles.length==0: Text { x:32px; y:294px; width:parent.width - 64px; height:120px; text:"Add command buttons to this page in the web UI."; color:Theme.text-secondary; font-size:24px; wrap:word-wrap; horizontal-alignment:center; }
+    Text { x:24px; y:660px; width:parent.width - 48px; height:48px; text:root.status; color:Theme.text-secondary; font-size:18px; wrap:word-wrap; overflow:elide; }
     // The pager shares its row with the Media button when the activity has a
     // source. Without one - a packaged device's own controls - it is the only
     // thing on the row, and sits in the middle of it.
@@ -50,6 +67,35 @@ export component ActivityPages inherits Rectangle {
         Text { text:"Media"; color:Theme.text; font-size:20px; horizontal-alignment:center; vertical-alignment:center; }
         TouchArea { clicked=>{root.action("source",0);} }
     }
+    // --- what the lift needs to know about this page ------------------------
+    public pure function tiles-y() -> length { return 176px; }
+    public pure function tile-pitch() -> length { return 160px; }
+    public pure function title-box-x() -> length { return head.title-box-x(); }
+    public pure function title-box-y() -> length { return head.title-box-y(); }
+    public pure function title-box-w() -> length { return head.title-box-w(); }
+    public pure function title-box-h() -> length { return head.title-box-h(); }
+    public pure function disc-box-x() -> length { return head.disc-box-x(); }
+    public pure function disc-box-y() -> length { return head.disc-box-y(); }
+    public pure function disc-box-size() -> length { return head.disc-box-size(); }
+    public pure function header-h() -> length { return head.header-h(); }
+    public pure function plate-x() -> length { return head.plate-x(); }
+    public pure function plate-y() -> length { return head.plate-y(); }
+    public pure function plate-w() -> length { return head.plate-w(); }
+    public pure function plate-h() -> length { return head.plate-h(); }
+    public pure function plate-r() -> length { return head.plate-r(); }
+    /// The rows of buttons, which arrive one after another.
+    public pure function rows() -> int { return 3; }
+    public pure function row-y(which: int) -> length {
+        return root.tiles-y() - 8px + which * root.tile-pitch();
+    }
+    public pure function row-h(which: int) -> length { return 166px; }
+    /// What it is doing, and the pager under it.
+    public pure function footer-y() -> length { return 650px; }
+    public pure function lift-ready() -> bool { return true; }
+    public pure function banded() -> bool { return false; }
+    /// A page with no buttons on it at all is one sentence in the middle.
+    public pure function sparse() -> bool { return root.tiles.length == 0; }
+
     keys:=FocusScope { enabled:root.shown;
         key-pressed(e)=>{
             if(e.text==Key.UpArrow){root.selected=max(0,root.selected - 2);}

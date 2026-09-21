@@ -467,6 +467,26 @@ export component App inherits Window {
     public function cs-lift-ready() -> bool { return camera-page.lift-ready(); }
     public function cs-banded() -> bool { return camera-page.banded(); }
     public function cs-sparse() -> bool { return camera-page.sparse(); }
+    // The activity pages' own, the same set again.
+    public function aps-title-x() -> length { return custom-pages.title-box-x(); }
+    public function aps-title-y() -> length { return custom-pages.title-box-y(); }
+    public function aps-title-w() -> length { return custom-pages.title-box-w(); }
+    public function aps-title-h() -> length { return custom-pages.title-box-h(); }
+    public function aps-disc-x() -> length { return custom-pages.disc-box-x(); }
+    public function aps-disc-y() -> length { return custom-pages.disc-box-y(); }
+    public function aps-disc-size() -> length { return custom-pages.disc-box-size(); }
+    public function aps-header-h() -> length { return custom-pages.header-h(); }
+    public function aps-plate-x() -> length { return custom-pages.plate-x(); }
+    public function aps-plate-y() -> length { return custom-pages.plate-y(); }
+    public function aps-plate-w() -> length { return custom-pages.plate-w(); }
+    public function aps-plate-h() -> length { return custom-pages.plate-h(); }
+    public function aps-plate-r() -> length { return custom-pages.plate-r(); }
+    public function aps-rows() -> int { return custom-pages.rows(); }
+    public function aps-row-y(which: int) -> length { return custom-pages.row-y(which); }
+    public function aps-row-h(which: int) -> length { return custom-pages.row-h(which); }
+    public function aps-footer-y() -> length { return custom-pages.footer-y(); }
+    public function aps-lift-ready() -> bool { return custom-pages.lift-ready(); }
+    public function aps-sparse() -> bool { return custom-pages.sparse(); }
     public function focus-home() { fs.focus(); }
 
     // --- keyboard -------------------------------------------------------------
@@ -800,6 +820,7 @@ export component App inherits Window {
         shown:root.player-shown && root.custom-activity-shown;
         width:parent.width; height:parent.height;
         title:root.custom-activity-title; activity:root.player-activity;
+        icon:root.player-icon; active:root.player-active; known:root.player-known;
         tiles:root.custom-activity-tiles; page:root.custom-activity-page; page-count:root.custom-activity-count;
         has-source:root.custom-activity-source; busy:root.custom-activity-busy; status:root.custom-activity-status;
         action(name,index)=>{root.custom-activity-action(name,index);}
