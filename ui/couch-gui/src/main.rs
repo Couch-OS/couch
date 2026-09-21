@@ -21,6 +21,8 @@ mod evdev;
 mod home;
 mod input;
 mod keypad;
+#[cfg(test)]
+mod kodi_pictures;
 mod light_screen;
 mod lights;
 mod media_player;
