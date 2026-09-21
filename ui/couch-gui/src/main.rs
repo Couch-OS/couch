@@ -146,15 +146,88 @@ fn room_window(app: &App) -> panel::Window {
 /// The room's half comes from the list and the screen's from `light.slint`,
 /// both as functions rather than properties for the reason the ring's box is
 /// (docs/slint-notes.md). Nothing here is a number of its own.
-fn lift_geometry(app: &App, row: panel::Window) -> panel::Lift {
-    let at = |x: f32, y: f32, w: f32, h: f32| panel::Window {
+/// A rectangle from the layout, rounded to the panel's own pixels.
+fn at(x: f32, y: f32, w: f32, h: f32) -> panel::Window {
+    panel::Window {
         x: x.round() as i32,
         y: y.round() as i32,
         w: w.round() as i32,
         h: h.round() as i32,
         r: 0,
-    };
+    }
+}
+
+/// What every screen that has a `ScreenHeader` hands the lift: the name and
+/// the icon flying out of the row to where the header draws its own, and the
+/// two bands the header arrives in.
+///
+/// Both ends of both travellers come from the layouts themselves - the row's
+/// through `room_devices.slint`, the screen's through its own header - so a
+/// traveller lands on itself rather than on another drawing of the same
+/// thing, which is what makes the hand-over nothing at all.
+struct Band {
+    /// Where the name and the icon are drawn.
+    title: panel::Window,
+    disc: panel::Window,
+    /// How deep the band is, and the rectangle the row's card rises to.
+    depth: i32,
+    plate: panel::Window,
+}
+
+fn headed(
+    app: &App,
+    name: &'static str,
+    row: panel::Window,
+    width: i32,
+    band: Band,
+) -> panel::LiftPlan {
+    let Band {
+        title,
+        disc: screen_disc,
+        depth: header_h,
+        plate,
+    } = band;
     let disc = app.invoke_ls_disc_size();
+    let label = at(
+        row.x as f32 + app.invoke_room_label_x(),
+        row.y as f32 + app.invoke_room_label_y(),
+        app.invoke_room_label_w(),
+        app.invoke_room_label_h(),
+    );
+    // The name lands lined up on the title's box rather than filling it: the
+    // two are the same size and weight (`Theme.device-name`), so this is a
+    // cut, not a fade.
+    let landing = panel::Window {
+        x: title.x,
+        y: title.y + (title.h - label.h) / 2,
+        ..label
+    };
+    panel::LiftPlan::out_of(name, row)
+        .rising_to(plate, plate.r)
+        .carrying(
+            (label, landing),
+            // The row's icon: the layout's own left padding, and where a row
+            // draws it within its card.
+            (
+                at(
+                    row.x as f32 + app.invoke_room_disc_inset(),
+                    row.y as f32 + app.invoke_room_disc_y(),
+                    disc,
+                    disc,
+                ),
+                screen_disc,
+            ),
+        )
+        .header(width, header_h, screen_disc.y + screen_disc.h)
+}
+
+/// The light screen, as one plan: a header, one or two bar cards a little
+/// below their places, and the footer.
+fn light_plan(app: &App, row: panel::Window, width: i32, height: i32) -> panel::LiftPlan {
+    let disc = app.invoke_ls_disc_size();
+    // The second bar is only there on a lamp that reports a colour
+    // temperature; a blind's buttons are not a card that arrives.
+    let two = app.get_light_screen_tunable() && !app.get_light_screen_cover();
     let card = |which: i32| {
         at(
             app.invoke_ls_card_x(which),
@@ -171,42 +244,139 @@ fn lift_geometry(app: &App, row: panel::Window) -> panel::Lift {
             app.invoke_ls_track_h(),
         )
     };
-    // The second bar is only there on a lamp that reports a colour
-    // temperature; a blind's buttons are not a card that arrives.
-    let two = app.get_light_screen_tunable() && !app.get_light_screen_cover();
-    let none = panel::Window::default();
-    panel::Lift {
+    let marker_h = app.invoke_ls_marker_h().round() as i32;
+    // The left one overlaps the last of the room's fade and the right one
+    // does not, on purpose: a whole-panel fade is about ten milliseconds on
+    // this device and a card another two and a half, so one may sit on top of
+    // it and two may not.
+    let bar = |which: i32, fill_h: i32, marker_y: i32| panel::Piece {
+        rect: card(which),
+        window: (
+            panel::LIFT_CARDS_IN.0 + panel::LIFT_BARS_LAG * which as f32,
+            panel::LIFT_CARDS_IN.1 + panel::LIFT_BARS_LAG * which as f32,
+        ),
+        fade: panel::LIFT_CARDS_FADE,
+        kind: panel::Arriving::Card {
+            rise: panel::LIFT_BARS_DROP,
+            track: track(which),
+            fill_h,
+            marker_y,
+            marker_h,
+            grow: panel::LIFT_GROW,
+        },
+    };
+    headed(
+        app,
+        "light",
         row,
-        pitch: app.invoke_room_row_pitch().round() as i32,
-        label: at(
-            row.x as f32 + app.invoke_room_label_x(),
-            row.y as f32 + app.invoke_room_label_y(),
-            app.invoke_room_label_w(),
-            app.invoke_room_label_h(),
-        ),
-        // The row's icon: the layout's own left padding, and centred on the
-        // card, which is where a row draws it.
-        disc: at(
-            row.x as f32 + app.invoke_room_disc_inset(),
-            row.y as f32 + app.invoke_room_disc_y(),
-            disc,
-            disc,
-        ),
-        title: at(
-            app.invoke_ls_title_x(),
-            app.invoke_ls_title_y(),
-            app.invoke_ls_title_w(),
-            app.invoke_ls_title_h(),
-        ),
-        screen_disc: at(app.invoke_ls_disc_x(), app.invoke_ls_disc_y(), disc, disc),
-        header_h: app.invoke_ls_header_h().round() as i32,
-        cards: [card(0), if two { card(1) } else { none }],
-        footer_y: app.invoke_ls_footer_y().round() as i32,
-        track: [track(0), if two { track(1) } else { none }],
-        fill_h: app.invoke_ls_fill_h().round() as i32,
-        marker_y: app.invoke_ls_marker_y().round() as i32,
-        marker_h: app.invoke_ls_marker_h().round() as i32,
+        width,
+        Band {
+            title: at(
+                app.invoke_ls_title_x(),
+                app.invoke_ls_title_y(),
+                app.invoke_ls_title_w(),
+                app.invoke_ls_title_h(),
+            ),
+            disc: at(app.invoke_ls_disc_x(), app.invoke_ls_disc_y(), disc, disc),
+            depth: app.invoke_ls_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_ls_plate_r().round() as i32,
+                ..at(
+                    app.invoke_ls_plate_x(),
+                    app.invoke_ls_plate_y(),
+                    app.invoke_ls_plate_w(),
+                    app.invoke_ls_plate_h(),
+                )
+            },
+        },
+    )
+    // The level fills from the bottom as it settles; the colour marker slides
+    // up to where the lamp has it.
+    .piece(bar(0, app.invoke_ls_fill_h().round() as i32, -1))
+    .maybe(two.then(|| bar(1, 0, app.invoke_ls_marker_y().round() as i32)))
+    .footer(width, height, app.invoke_ls_footer_y().round() as i32)
+}
+
+/// The television controls, as one plan: a header, what is on, and up to
+/// three rows of controls that arrive one after another the way a light
+/// screen's bar cards do.
+///
+/// It has no bar to reveal, so nothing here is a `Card`: its rows simply rise
+/// the last few pixels as they fade, which is the same movement without the
+/// level growing inside it.
+fn tv_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<panel::LiftPlan> {
+    if !app.invoke_tvs_lift_ready() {
+        return None;
     }
+    let disc = app.invoke_tvs_disc_size();
+    let mut plan = headed(
+        app,
+        "tv",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_tvs_title_x(),
+                app.invoke_tvs_title_y(),
+                app.invoke_tvs_title_w(),
+                app.invoke_tvs_title_h(),
+            ),
+            disc: at(app.invoke_tvs_disc_x(), app.invoke_tvs_disc_y(), disc, disc),
+            depth: app.invoke_tvs_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_tvs_plate_r().round() as i32,
+                ..at(
+                    app.invoke_tvs_plate_x(),
+                    app.invoke_tvs_plate_y(),
+                    app.invoke_tvs_plate_w(),
+                    app.invoke_tvs_plate_h(),
+                )
+            },
+        },
+    )
+    // What is on - the kind, the name of the source, the line about the keys
+    // - is text over the background, so it is faded where it belongs rather
+    // than moved: only the part of each row that has anything on it is
+    // touched, which is most of the saving on a screen this empty.
+    .piece(panel::Piece {
+        rect: at(
+            0.0,
+            app.invoke_tvs_body_y(),
+            width as f32,
+            app.invoke_tvs_body_h(),
+        ),
+        window: panel::LIFT_STATE_IN,
+        fade: 1.0,
+        kind: panel::Arriving::Fade,
+    });
+    // The rows of controls, each a little later than the one above it, so the
+    // screen builds downwards rather than arriving all at once. One row at a
+    // time is also what keeps a frame inside its budget: the whole block is
+    // four tenths of the panel, and a frame may not blend that much.
+    // Spread between the two ends the light screen uses - when its first bar
+    // card arrives and when its footer has settled - so the last row of a
+    // television lands at the same moment the last piece of a light screen
+    // does, and neither screen is finished before the transition is.
+    let rows = app.invoke_tvs_rows().min(3);
+    for which in 0..rows {
+        let f = which as f32 / (rows - 1).max(1) as f32;
+        plan = plan.piece(panel::Piece {
+            rect: at(
+                0.0,
+                app.invoke_tvs_row_y(which),
+                width as f32,
+                app.invoke_tvs_row_h(which),
+            ),
+            window: (
+                panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
+                panel::LIFT_CARDS_IN.1 + (panel::LIFT_FOOTER_IN.1 - panel::LIFT_CARDS_IN.1) * f,
+            ),
+            fade: panel::LIFT_CARDS_FADE,
+            kind: panel::Arriving::Rise(panel::LIFT_BARS_DROP),
+        });
+    }
+    let _ = height;
+    Some(plan)
 }
 
 /// The focused row's band with the name and the icon painted out of it: what
@@ -218,7 +388,7 @@ pub(crate) fn handed_band(
     room: &[u32],
     width: usize,
     height: usize,
-    lift: panel::Lift,
+    plan: panel::LiftPlan,
 ) -> panel::Sprite {
     let mut band = panel::Sprite::cut(
         room,
@@ -226,14 +396,15 @@ pub(crate) fn handed_band(
         height,
         panel::Window {
             x: 0,
-            y: lift.row.y,
+            y: plan.row.y,
             w: width as i32,
-            h: lift.row.h,
+            h: plan.row.h,
             r: 0,
         },
     );
-    band.paint(lift.label, panel::LIFT_SURFACE);
-    band.paint(lift.disc, panel::LIFT_SURFACE);
+    for traveller in plan.travellers.iter().flatten() {
+        band.paint(traveller.from, panel::LIFT_SURFACE);
+    }
     band
 }
 
@@ -245,41 +416,87 @@ pub(crate) fn lift_art(
     screen: &[u32],
     width: usize,
     height: usize,
-    lift: panel::Lift,
+    plan: panel::LiftPlan,
 ) -> panel::LiftArt {
     let mut art = panel::LiftArt {
-        handed: handed_band(room, width, height, lift),
+        handed: handed_band(room, width, height, plan),
         ..Default::default()
     };
-    art.label.recut(room, width, height, lift.label);
-    art.disc.recut(room, width, height, lift.disc);
-    // The colour marker, and the gradient just above it, so a card can move it
-    // about inside its own buffer.
-    let strip = panel::Window {
-        x: lift.track[1].x,
-        y: lift.marker_y,
-        w: lift.track[1].w,
-        h: lift.marker_h,
-        r: 0,
-    };
-    // Each bar card, cut whole once: only its track changes from frame to
-    // frame, so only its track is put back before the next one.
-    for which in 0..2 {
-        if lift.cards[which].w > 0 {
-            art.cards[which].recut(screen, width, height, lift.cards[which]);
+    for (i, traveller) in plan.travellers.iter().enumerate() {
+        if let Some(traveller) = traveller {
+            art.travellers[i].recut(room, width, height, traveller.from);
         }
     }
-    art.marker.recut(screen, width, height, strip);
-    art.under_marker.recut(
-        screen,
-        width,
-        height,
-        panel::Window {
-            y: lift.marker_y - lift.marker_h,
-            ..strip
-        },
-    );
+    // Each moving piece, cut whole once: only a card's track changes from
+    // frame to frame, so only its track is put back before the next one.
+    let mut strip = None;
+    for (i, piece) in plan.pieces.iter().enumerate() {
+        let Some(piece) = piece else { continue };
+        match piece.kind {
+            panel::Arriving::Fade => continue,
+            panel::Arriving::Card {
+                track,
+                marker_y,
+                marker_h,
+                ..
+            } => {
+                // The colour marker, and the gradient just above it, so a
+                // card can move it about inside its own buffer.
+                if marker_y >= 0 {
+                    strip = Some(panel::Window {
+                        x: track.x,
+                        y: marker_y,
+                        w: track.w,
+                        h: marker_h,
+                        r: 0,
+                    });
+                }
+            }
+            panel::Arriving::Rise(_) => {}
+        }
+        art.pieces[i].recut(screen, width, height, piece.rect);
+    }
+    if let Some(strip) = strip {
+        art.marker.recut(screen, width, height, strip);
+        art.under_marker.recut(
+            screen,
+            width,
+            height,
+            panel::Window {
+                y: strip.y - strip.h,
+                ..strip
+            },
+        );
+    }
     art
+}
+
+/// Which device screen a room row has opened, if any: what the transition
+/// that opens and closes it has to watch, and which screen's plan it reads.
+fn device_screen(app: &App) -> Option<Overlay> {
+    if app.get_light_screen_shown() {
+        Some(Overlay::Light)
+    } else if app.get_tv_shown() {
+        Some(Overlay::Tv)
+    } else {
+        None
+    }
+}
+
+/// The plan for whichever device screen is opening or closing, or nothing
+/// because that screen has none and keeps the slide it always had.
+fn screen_plan(
+    app: &App,
+    which: Overlay,
+    row: panel::Window,
+    w: i32,
+    h: i32,
+) -> Option<panel::LiftPlan> {
+    match which {
+        Overlay::Light => Some(light_plan(app, row, w, h)),
+        Overlay::Tv => tv_plan(app, row, w, h),
+        _ => None,
+    }
 }
 
 fn overlay(app: &App) -> Option<Overlay> {
@@ -1621,7 +1838,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Capture only navigation, then slide framebuffer snapshots so the
         // room animation does not rasterize the entire Slint scene every frame.
         let was_room = app.get_light_shown();
-        let was_screen = app.get_light_screen_shown();
+        let was_screen = device_screen(&app);
         let room_navigation = !app.get_pair_shown() && light_controls.navigation_pending();
         // A light's or blind's controls do not arrive from the side: they open
         // out of the row that was pressed. The row's box is read here, before
@@ -1672,7 +1889,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             slint::platform::update_timers_and_animations();
         } else if screen_navigation
-            && was_screen != app.get_light_screen_shown()
+            && was_screen != device_screen(&app)
             // Home closes the screen and leaves the room in one go. There is
             // no row left to collapse onto, so that keeps the room's own
             // behaviour rather than growing a window onto the wrong page.
@@ -1683,7 +1900,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frames += 1;
                 render_us += us;
                 frame_max = frame_max.max(us);
-                let opening = app.get_light_screen_shown();
+                let opening = device_screen(&app).is_some();
                 let whole = panel::Window::panel(screen.width, screen.height);
                 let chosen = panel::Transition::chosen();
                 let row = iris_row
@@ -1694,15 +1911,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     (whole, row, panel::Shown::Leaving)
                 };
-                let cost = match chosen.opening {
+                // Whichever screen this is: the one now showing on an open,
+                // the one that was on a close. A screen with no plan of its
+                // own keeps the window it always had.
+                let plan = device_screen(&app)
+                    .or(was_screen)
+                    .and_then(|which| {
+                        screen_plan(&app, which, row, screen.width as i32, screen.height as i32)
+                    })
+                    .filter(|_| chosen.opening == panel::Opening::Lift);
+                let cost = match plan {
                     // The lift is not a window: it crosses the two pages and
                     // carries the row's card up between them.
-                    panel::Opening::Lift => {
-                        screen.lift(lift_geometry(&app, row), shown, chosen.time)
-                    }
-                    panel::Opening::Iris | panel::Opening::Curtain => {
-                        screen.iris(from, to, shown, chosen.time)
-                    }
+                    Some(plan) => screen.lift(plan, shown, chosen.time),
+                    None => screen.iris(from, to, shown, chosen.time),
                 };
                 frames += cost.frames;
                 render_us += cost.work_us;
@@ -1711,7 +1933,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // What it cost, on one line, so a shape can be judged from
                 // the remote's log as well as by looking at it.
                 println!(
-                    "couch-gui: light screen {:?} {} ({} frames, {} ms, {} us/frame mean, {} us max)",
+                    "couch-gui: {} screen {:?} {} ({} frames, {} ms, {} us/frame mean, {} us max)",
+                    match device_screen(&app).or(was_screen) {
+                        Some(Overlay::Tv) => "tv",
+                        _ => "light",
+                    },
                     chosen.opening,
                     if opening { "open" } else { "close" },
                     cost.frames,
@@ -2066,6 +2292,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .page_turn_pending()
             .filter(|_| !activity_navigation && app.get_player_shown())
             .map(|step| (step, app.get_custom_activity_page()));
+        // The television's controls close through their own queue rather than
+        // the room's, so the row they collapse onto and the plan for the page
+        // that is leaving are both read here, before the press is performed:
+        // afterwards the screen has been torn down and has nothing left to
+        // say about itself.
+        let closing =
+            (tv_controls.navigation_pending() && app.get_tv_shown() && app.get_light_shown())
+                .then(|| room_window(&app))
+                .and_then(|row| tv_plan(&app, row, screen.width as i32, screen.height as i32))
+                .filter(|_| panel::Transition::chosen().opening == panel::Opening::Lift);
         if activity_navigation || page_turn.is_some() {
             screen.snapshot();
         }
@@ -2129,21 +2365,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frame_max = frame_max.max(us);
                 let entering =
                     app.get_player_shown() || app.get_tv_shown() || app.get_thermostat_shown();
-                let cost = screen.slide(
-                    if entering {
-                        Arrive::FromRight
-                    } else {
-                        Arrive::FromLeft
-                    },
-                    &[],
-                    SLIDE,
-                );
+                // A television that lifted out of its row collapses back into
+                // it: the close is the open run backwards, over the same two
+                // pages, which is the whole point of holding that invariant.
+                let lifting = closing.filter(|_| !entering && !app.get_tv_shown());
+                let cost = match lifting {
+                    Some(plan) => screen.lift(
+                        plan,
+                        panel::Shown::Leaving,
+                        panel::Transition::chosen().time,
+                    ),
+                    None => screen.slide(
+                        if entering {
+                            Arrive::FromRight
+                        } else {
+                            Arrive::FromLeft
+                        },
+                        &[],
+                        SLIDE,
+                    ),
+                };
                 frames += cost.frames;
                 render_us += cost.work_us;
                 wait_us += cost.wait_us;
                 frame_max = frame_max.max(cost.max_us);
                 println!(
-                    "couch-gui: activity slide {} ({} frames)",
+                    "couch-gui: activity {} {} ({} frames)",
+                    if lifting.is_some() { "lift" } else { "slide" },
                     if entering { "in" } else { "out" },
                     cost.frames
                 );

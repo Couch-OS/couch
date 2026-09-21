@@ -157,13 +157,10 @@ pub(crate) fn lift_background() -> u32 {
 pub(crate) const LIFT_SURFACE: u32 = 0xff17_1c1f;
 /// `Theme.border`, #2C271F, for that card's edge.
 const LIFT_BORDER: u32 = 0xff1f_272c;
-/// The rising card's rectangle at the end of its travel, and its radius:
-/// `Theme.r-card` at the header band, as the preview has it.
-const LIFT_CARD_TO: (i32, i32, i32, i32, i32) = (20, 14, 440, 76, 12);
-/// How far below their places the control screen's bar cards start, and how
-/// much later the right-hand one arrives than the left.
-const LIFT_BARS_DROP: i32 = 14;
-const LIFT_BARS_LAG: f32 = 0.08;
+/// How far below their places a screen's cards start, and how much later the
+/// second of a pair arrives than the first.
+pub(crate) const LIFT_BARS_DROP: i32 = 14;
+pub(crate) const LIFT_BARS_LAG: f32 = 0.08;
 /// How long one band of the room takes to fall away, as a fraction of the
 /// whole. Short on purpose: it is the only blending in the transition, and
 /// only the bands inside their own window are blended, so keeping it near
@@ -177,12 +174,12 @@ const LIFT_BARS_LAG: f32 = 0.08;
 /// is small, because once the fade is much longer than the wave every
 /// scanline is fading at once anyway and a bigger wave only makes the room
 /// take longer to leave without costing less.
-const LIFT_ROWS_FALL: (f32, f32) = (0.02, 0.26);
-const LIFT_ROW_WAVE: f32 = 0.02;
+pub(crate) const LIFT_ROWS_FALL: (f32, f32) = (0.02, 0.26);
+pub(crate) const LIFT_ROW_WAVE: f32 = 0.02;
 /// The focused row's own contents - its second line, its chevron, its ring -
 /// go sooner than the rest: the name and the icon are already on their way
 /// out of it, and what is left should not still be there underneath them.
-const LIFT_FOCUSED_OUT: (f32, f32) = (0.0, 0.34);
+pub(crate) const LIFT_FOCUSED_OUT: (f32, f32) = (0.0, 0.34);
 /// The phases, as fractions of the transition, named the way the preview this
 /// follows names them (scratchpad/transitions, concept "lift").
 /// The card rises from the moment the press lands and is gone by the time it
@@ -190,25 +187,25 @@ const LIFT_FOCUSED_OUT: (f32, f32) = (0.0, 0.34);
 /// out, so the two cross and the row's second line and chevron are never
 /// hidden in one frame; and it fades out across the rise, so page B does not
 /// have to lose a plate it never had.
-const LIFT_CARD_RISE: (f32, f32) = (0.0, 0.44);
+pub(crate) const LIFT_CARD_RISE: (f32, f32) = (0.0, 0.44);
 /// The name and the icon leave with it. They start where they already are,
 /// so the first frame is the room untouched however they are drawn.
-const LIFT_LABEL_FLY: (f32, f32) = (0.0, 0.44);
+pub(crate) const LIFT_LABEL_FLY: (f32, f32) = (0.0, 0.44);
 /// The name and the icon giving way to the screen's own: they fade out as the
 /// header fades in, over the same window, so one becomes the other.
-const LIFT_HAND_OVER: (f32, f32) = (0.44, 0.70);
+pub(crate) const LIFT_HAND_OVER: (f32, f32) = (0.44, 0.70);
 /// The cards arrive while the last of the room is still going. The left one
 /// overlaps that fade and the right one does not, on purpose: a whole-panel
 /// fade is about ten milliseconds on this device and a card another two and a
 /// half, so one may sit on top of it and two may not.
-const LIFT_CARDS_IN: (f32, f32) = (0.20, 0.48);
+pub(crate) const LIFT_CARDS_IN: (f32, f32) = (0.20, 0.48);
 /// How much of a card's arrival is spent fading in rather than settling.
 /// Every fade here is at least a fifth of the transition, which is five
 /// frames at the default time: the floor below which a fade reads as a step.
-const LIFT_CARDS_FADE: f32 = 0.9;
-const LIFT_STATE_IN: (f32, f32) = (0.30, 0.56);
-const LIFT_GROW: (f32, f32) = (0.52, 1.0);
-const LIFT_FOOTER_IN: (f32, f32) = (0.66, 0.94);
+pub(crate) const LIFT_CARDS_FADE: f32 = 0.9;
+pub(crate) const LIFT_STATE_IN: (f32, f32) = (0.30, 0.56);
+pub(crate) const LIFT_GROW: (f32, f32) = (0.52, 1.0);
+pub(crate) const LIFT_FOOTER_IN: (f32, f32) = (0.66, 0.94);
 
 /// Where the development switch for the opening transition is read from.
 /// Under `/tmp`, so it is gone at the next boot and nothing a person set up is
@@ -924,7 +921,7 @@ impl Panel {
     /// and a per-pixel cross-fade. It is the one transition here that blends,
     /// so it is the one whose cost has to be read rather than assumed - the
     /// line the loop prints when it is over says what it was.
-    pub fn lift(&mut self, lift: Lift, shown: Shown, duration: Duration) -> SlideCost {
+    pub fn lift(&mut self, plan: LiftPlan, shown: Shown, duration: Duration) -> SlideCost {
         let (w, h) = (self.width as usize, self.height as usize);
         // The room is where the name and the icon are cut from, whichever way
         // the transition is going; the screen is where the marker is. Cut
@@ -934,7 +931,7 @@ impl Panel {
                 Shown::Arriving => (pixels(&self.spare), pixels(&self.ram)),
                 Shown::Leaving => (pixels(&self.ram), pixels(&self.spare)),
             };
-            self.art = crate::lift_art(room, screen, w, h, lift);
+            self.art = crate::lift_art(room, screen, w, h, plan);
         }
         // Where the room has anything on it, row by row. One pass over the
         // page here saves a blend over the parts of every row that are the
@@ -955,7 +952,7 @@ impl Panel {
         if self.back.len() != w * h {
             self.back = vec![Abgr::default(); w * h];
         }
-        self.transition(Compose::Lift { lift }, shown, duration)
+        self.transition(Compose::Lift { plan }, shown, duration)
     }
 
     /// The frame loop every opening shares: eased time, one composed frame,
@@ -974,7 +971,7 @@ impl Panel {
             let done = t >= 1.0;
             match what {
                 Compose::Iris { from, to } => self.compose_iris(from, to, shown, t),
-                Compose::Lift { lift } => self.compose_lift(lift, shown, t),
+                Compose::Lift { plan } => self.compose_lift(plan, shown, t),
             }
             let work = started.elapsed();
             self.pace(started);
@@ -993,9 +990,9 @@ impl Panel {
                             cost.frames, window.w, window.h, window.x, window.y, window.r
                         );
                     }
-                    Compose::Lift { .. } => println!(
-                        "couch-gui: lift frame {}: t {:.2}, {work_us} us, {wait_us} us paced",
-                        cost.frames, t
+                    Compose::Lift { plan } => println!(
+                        "couch-gui: {} lift frame {}: t {:.2}, {work_us} us, {wait_us} us paced",
+                        plan.name, cost.frames, t
                     ),
                 }
             }
@@ -1006,7 +1003,7 @@ impl Panel {
     }
 
     /// One lift frame into the framebuffer.
-    fn compose_lift(&mut self, lift: Lift, shown: Shown, t: f32) {
+    fn compose_lift(&mut self, plan: LiftPlan, shown: Shown, t: f32) {
         let (width, height, stride) = (
             self.width as usize,
             self.height as usize,
@@ -1022,7 +1019,7 @@ impl Panel {
                     height,
                 },
                 (arriving, leaving),
-                lift,
+                plan,
                 &mut self.art,
                 (&self.content, &self.screen_content),
                 shown,
@@ -1210,35 +1207,181 @@ pub(crate) fn iris_frame(
 #[derive(Copy, Clone)]
 enum Compose {
     Iris { from: Window, to: Window },
-    Lift { lift: Lift },
+    Lift { plan: LiftPlan },
 }
 
-/// Everything the lift needs to know about the two pages, in panel pixels.
+/// A rectangle of the room that flies to a rectangle of the screen.
 ///
-/// All of it is read from the pages themselves - the list for the room's
-/// half, `light.slint` for the screen's - once, before the first frame.
+/// The device's name and its icon: they exist on both pages, so they are not
+/// faded anywhere - they are cut out of the room once and put down at an
+/// interpolated place until they land on the screen's own, which every screen
+/// draws the same way so that the landing is nothing at all.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
-pub struct Lift {
-    /// The row the screen is opening out of, and one row to the next.
+pub struct Traveller {
+    pub from: Window,
+    pub to: Window,
+    /// A colour in `from` that is not carried: the plate it sat on.
+    pub key: u32,
+    pub fly: (f32, f32),
+}
+
+/// How a piece of the arriving screen turns up.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Arriving {
+    /// It fades in where it belongs. The cheapest kind: the fade touches only
+    /// the part of each row that has anything on it.
+    Fade,
+    /// It fades in while rising the last few pixels into place.
+    Rise(i32),
+    /// A card that rises, and whose level fills from the bottom and whose
+    /// marker slides up as it settles. Both are already in the page at their
+    /// values, so neither is drawn: they are revealed out of it.
+    Card {
+        rise: i32,
+        track: Window,
+        fill_h: i32,
+        marker_y: i32,
+        marker_h: i32,
+        grow: (f32, f32),
+    },
+}
+
+/// One piece of the arriving screen, and when it arrives.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Piece {
+    pub rect: Window,
+    /// When it starts and when it has settled, as fractions of the whole.
+    pub window: (f32, f32),
+    /// How much of that is spent fading in rather than settling into place.
+    pub fade: f32,
+    pub kind: Arriving,
+}
+
+/// What a screen tells the lift about itself.
+///
+/// The transition knows nothing about lights or televisions: a screen hands
+/// over the rectangles its own layout gives it - through `App`, never written
+/// down twice - and the times, as fractions of the whole, at which each of its
+/// parts should arrive. Everything else is the same for every screen.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct LiftPlan {
+    /// Which screen this is, for the line the frame loop prints when it is
+    /// over: one transition serves them all, so the numbers have to say which
+    /// one they are for.
+    pub name: &'static str,
+    /// The row it opens out of.
     pub row: Window,
-    pub pitch: i32,
-    /// Where that row's name and icon are drawn inside it.
-    pub label: Window,
-    pub disc: Window,
-    /// Where the two of them land on the screen.
-    pub title: Window,
-    pub screen_disc: Window,
-    /// The bands of the screen that arrive rather than being there: the
-    /// header down to the state line, the bar cards, and the footer.
-    pub header_h: i32,
-    pub cards: [Window; 2],
-    pub footer_y: i32,
-    /// The level bar's track and how full it ends up, and where the colour
-    /// marker ends up, so both can be revealed out of the screen.
-    pub track: [Window; 2],
-    pub fill_h: i32,
-    pub marker_y: i32,
-    pub marker_h: i32,
+    /// When the room falls away, and how much later the furthest scanline
+    /// starts than the row's own does.
+    pub fall: (f32, f32),
+    pub wave: f32,
+    /// When the focused row's own contents go - sooner than the rest, because
+    /// what travels is already leaving it.
+    pub focused_out: (f32, f32),
+    /// The row's card, rising into the header band and fading as it goes.
+    pub plate: Option<(Window, (f32, f32))>,
+    pub travellers: [Option<Traveller>; 2],
+    /// When the travellers give way to the screen's own.
+    pub hand_over: (f32, f32),
+    pub pieces: [Option<Piece>; 6],
+}
+
+impl LiftPlan {
+    /// A plan with the choreography every screen shares: the room falling
+    /// away outwards from the row, and the row's card rising into the header
+    /// band and fading as it goes. A screen fills in what is its own - what
+    /// travels out of the row, and the pieces it arrives in.
+    pub fn out_of(name: &'static str, row: Window) -> Self {
+        Self {
+            name,
+            row,
+            fall: LIFT_ROWS_FALL,
+            wave: LIFT_ROW_WAVE,
+            focused_out: LIFT_FOCUSED_OUT,
+            plate: None,
+            travellers: [None; 2],
+            hand_over: LIFT_HAND_OVER,
+            pieces: [None; 6],
+        }
+    }
+
+    /// Where the row's own card comes to rest as it rises out of the list and
+    /// fades: the screen's own rectangle, read from its header, so that no
+    /// screen's geometry is written down here.
+    pub fn rising_to(mut self, plate: Window, radius: i32) -> Self {
+        self.plate = Some((Window { r: radius, ..plate }, LIFT_CARD_RISE));
+        self
+    }
+
+    /// The name and the icon, flying from where the row draws them to where
+    /// the screen draws its own. Both ends come from the layouts themselves,
+    /// so a traveller lands on itself rather than on another drawing of the
+    /// same thing.
+    pub fn carrying(mut self, name: (Window, Window), icon: (Window, Window)) -> Self {
+        let fly = |(from, to): (Window, Window)| {
+            Some(Traveller {
+                from,
+                to,
+                // The card they sat on is not carried with them.
+                key: LIFT_SURFACE,
+                fly: LIFT_LABEL_FLY,
+            })
+        };
+        self.travellers = [fly(name), fly(icon)];
+        self
+    }
+
+    /// The header: the state line under the disc, which has nothing to wait
+    /// for, and then the band itself, which cannot arrive before the name
+    /// flying towards it has given way.
+    pub fn header(self, width: i32, header_h: i32, under_disc: i32) -> Self {
+        let band = |y: i32, h: i32, window| Piece {
+            rect: Window {
+                x: 0,
+                y,
+                w: width,
+                h,
+                r: 0,
+            },
+            window,
+            fade: 1.0,
+            kind: Arriving::Fade,
+        };
+        self.piece(band(under_disc, header_h - under_disc, LIFT_STATE_IN))
+            .piece(band(0, header_h, LIFT_HAND_OVER))
+    }
+
+    /// The strip along the bottom, last of all.
+    pub fn footer(self, width: i32, height: i32, footer_y: i32) -> Self {
+        self.piece(Piece {
+            rect: Window {
+                x: 0,
+                y: footer_y,
+                w: width,
+                h: height - footer_y,
+                r: 0,
+            },
+            window: LIFT_FOOTER_IN,
+            fade: 1.0,
+            kind: Arriving::Fade,
+        })
+    }
+
+    /// One more piece, drawn after the ones already given.
+    pub fn piece(mut self, piece: Piece) -> Self {
+        if let Some(slot) = self.pieces.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(piece);
+        }
+        self
+    }
+
+    /// The same, for a piece a screen may not have at all.
+    pub fn maybe(self, piece: Option<Piece>) -> Self {
+        match piece {
+            Some(piece) => self.piece(piece),
+            None => self,
+        }
+    }
 }
 
 /// A rectangle cut out of a page, kept for the length of one transition.
@@ -1255,18 +1398,20 @@ pub(crate) struct Sprite {
 
 /// Everything a lift cuts out of the two pages, kept for its length.
 ///
-/// The three that travel, and one scratch a bar card: a card is built up
-/// opaque in its own buffer - the page's own card with the fill un-revealed
-/// and the marker moved - and only then blended over the frame, once, at the
-/// alpha it has reached. Anything painted straight into the frame at its own
-/// strength would show through a card that has barely arrived, which is what
-/// used to erase the room's rows down the width of the level bar.
+/// What travels, the band they were handed over from, and one scratch buffer
+/// per piece that moves: a card is built up opaque in its own buffer - the
+/// page's own card with the fill un-revealed and the marker moved - and only
+/// then blended over the frame, once, at the alpha it has reached. Anything
+/// painted straight into the frame at its own strength would show through a
+/// card that has barely arrived, which is what used to erase the room's rows
+/// down the width of the level bar.
 #[derive(Default)]
 pub(crate) struct LiftArt {
-    pub label: Sprite,
-    pub disc: Sprite,
+    pub travellers: [Sprite; 2],
     pub handed: Sprite,
-    pub cards: [Sprite; 2],
+    /// One per entry in the plan's `pieces`, and empty for the ones that
+    /// fade in place: only a piece that moves is cut.
+    pub pieces: [Sprite; 6],
     /// The colour marker at its place in the page, and the gradient just
     /// above it, so it can be moved within a card's own buffer.
     pub marker: Sprite,
@@ -1578,13 +1723,12 @@ fn fill_window(dst: &mut Surface<'_>, box_: Window, fill: u32, edge: u32, k: u32
 pub(crate) fn lift_frame(
     mut dst: Surface<'_>,
     pages: (&[u32], &[u32]),
-    lift: Lift,
+    // What the screen being opened says about itself: nothing here knows
+    // whether it is a lamp or a television.
+    plan: LiftPlan,
     // Everything cut out of the two pages for this transition, including the
-    // scratch each bar card is built up in.
+    // scratch each moving piece is built up in.
     art: &mut LiftArt,
-    // Where each scanline of the room has anything on it at all, worked out
-    // once before the first frame. Most of a room's height is its background,
-    // and fading background into background is work for nothing.
     // What each page is made of, row by row: the room's, and the arriving
     // screen's, so a fade touches only the part of a row that has anything on
     // it. Worked out once before the first frame.
@@ -1613,16 +1757,16 @@ pub(crate) fn lift_frame(
     // its icon are already leaving it and what is left should not sit under
     // them. Before its window a scanline is a copy of the room, after it a
     // fill - and the fill is what the screen's background is anyway.
-    let centre = lift.row.y + lift.row.h / 2;
+    let centre = plan.row.y + plan.row.h / 2;
     let reach = centre.max(h as i32 - centre).max(1) as f32;
-    let band = lift.row.y..lift.row.y + lift.row.h;
-    let span = LIFT_ROWS_FALL.1 - LIFT_ROWS_FALL.0;
+    let band = plan.row.y..plan.row.y + plan.row.h;
+    let span = plan.fall.1 - plan.fall.0;
     for y in 0..h {
         let window = if band.contains(&(y as i32)) {
-            LIFT_FOCUSED_OUT
+            plan.focused_out
         } else {
             let away = ((y as i32 - centre).abs() as f32 / reach).min(1.0);
-            let began = LIFT_ROWS_FALL.0 + LIFT_ROW_WAVE * away;
+            let began = plan.fall.0 + plan.wave * away;
             (began, began + span)
         };
         let out = &mut dst.pixels[y * stride..y * stride + w];
@@ -1636,7 +1780,7 @@ pub(crate) fn lift_frame(
         // its icon over from, so they are not in two places at once.
         let line = art
             .handed
-            .row(y as i32 - lift.row.y)
+            .row(y as i32 - plan.row.y)
             .unwrap_or(&room[y * w..(y + 1) * w]);
         match fading(p, window) {
             None => {
@@ -1669,137 +1813,96 @@ pub(crate) fn lift_frame(
     // Gone by the time it lands, as the preview has it: page B has no card
     // behind its title, so a plate that was still there at the end would have
     // to vanish in one frame, which is the thing that must not happen.
-    if p >= LIFT_CARD_RISE.0 {
-        let e = smooth(progress(p, LIFT_CARD_RISE));
-        let (x, y, cw, ch, r) = LIFT_CARD_TO;
-        let to = Window {
-            x,
-            y,
-            w: cw,
-            h: ch,
-            r,
+    if let Some((to, rise)) = plan.plate {
+        if p >= rise.0 {
+            let e = smooth(progress(p, rise));
+            let arriving = fading(p, plan.focused_out).unwrap_or(256);
+            let leaving = 256 - (e * 256.0).round() as u32;
+            fill_window(
+                &mut dst,
+                plan.row.lerp(to, e),
+                LIFT_SURFACE,
+                LIFT_BORDER,
+                arriving.min(leaving),
+            );
+        }
+    }
+    // --- the screen arrives, piece by piece, in the order it gave them ----
+    for (i, piece) in plan.pieces.iter().enumerate() {
+        let Some(piece) = *piece else { continue };
+        let Some(e) = phase(p, piece.window) else {
+            continue;
         };
-        let arriving = fading(p, LIFT_FOCUSED_OUT).unwrap_or(256);
-        let leaving = 256 - (smooth(progress(p, LIFT_CARD_RISE)) * 256.0).round() as u32;
-        fill_window(
-            &mut dst,
-            lift.row.lerp(to, e),
-            LIFT_SURFACE,
-            LIFT_BORDER,
-            arriving.min(leaving),
-        );
-    }
-    // --- the state line comes in first, then the rest of the header -------
-    // Two bands rather than one: the name cannot arrive before the label that
-    // is flying to it has given way, but the state line has nothing to wait
-    // for and the top of the panel should not be empty while the room goes.
-    let handing = fading(p, LIFT_HAND_OVER).unwrap_or(0);
-    let under_disc = lift.screen_disc.y + lift.screen_disc.h;
-    if let Some(k) = fading(p, LIFT_STATE_IN).filter(|_| handing < 256) {
-        band_over_content(
-            &mut dst,
-            screen,
-            Window {
-                x: 0,
-                y: under_disc,
-                w: w as i32,
-                h: lift.header_h - under_disc,
-                r: 0,
-            },
-            k,
-            screen_content,
-        );
-    }
-    if let Some(k) = fading(p, LIFT_HAND_OVER) {
-        band_over_content(
-            &mut dst,
-            screen,
-            Window {
-                x: 0,
-                y: 0,
-                w: w as i32,
-                h: lift.header_h,
-                r: 0,
-            },
-            k,
-            screen_content,
-        );
-    }
-    // --- the bar cards arrive, fourteen pixels low, the right one lagging -
-    for which in 0..2 {
-        let card = lift.cards[which];
-        if card.w <= 0 {
+        // Everything travels and fades at once: a piece that arrived whole
+        // would be a fifth of the panel appearing between two frames.
+        let Some(k) = arrival(piece, p) else { continue };
+        if k == 0 || covered(&plan, i, piece.rect, p) {
             continue;
         }
-        let window = (
-            LIFT_CARDS_IN.0 + LIFT_BARS_LAG * which as f32,
-            LIFT_CARDS_IN.1 + LIFT_BARS_LAG * which as f32,
-        );
-        let Some(e) = phase(p, window) else {
-            continue;
-        };
-        // They travel and fade at once: a card that arrived whole would be a
-        // fifth of the panel appearing between two frames.
-        let k = fading(
-            p,
-            (window.0, window.0 + (window.1 - window.0) * LIFT_CARDS_FADE),
-        )
-        .unwrap_or(256);
-        let dy = (LIFT_BARS_DROP as f32 * (1.0 - e)).round() as i32;
-        // The card is built up opaque in its own buffer first - the page's
-        // own card, with the level un-revealed and the marker moved - and
-        // only then blended over the frame, once, at the alpha it has
-        // reached. Nothing of it is ever written into the frame at its own
-        // strength, or a card that has barely arrived would still erase what
-        // is behind it.
-        build_card(art, screen, w, h, lift, which, p);
-        art.cards[which].put(&mut dst, (card.x, card.y + dy), None, k);
-    }
-    // --- the footer, last ---------------------------------------------------
-    if let Some(k) = fading(p, LIFT_FOOTER_IN) {
-        band_over_content(
-            &mut dst,
-            screen,
-            Window {
-                x: 0,
-                y: lift.footer_y,
-                w: w as i32,
-                h: h as i32 - lift.footer_y,
-                r: 0,
-            },
-            k,
-            screen_content,
-        );
+        match piece.kind {
+            // The cheapest kind, and the one most of a screen is: the band is
+            // faded over the frame touching only the part of each row that
+            // has anything on it.
+            Arriving::Fade => band_over_content(&mut dst, screen, piece.rect, k, screen_content),
+            // The piece is built up opaque in its own buffer first and only
+            // then blended over the frame, once, at the alpha it has reached.
+            // Nothing of it is ever written into the frame at its own
+            // strength, or a piece that has barely arrived would still erase
+            // what is behind it.
+            Arriving::Rise(by) | Arriving::Card { rise: by, .. } => {
+                if let Arriving::Card { .. } = piece.kind {
+                    build_card(art, screen, w, piece, i, p);
+                }
+                let dy = (by as f32 * (1.0 - e)).round() as i32;
+                art.pieces[i].put(&mut dst, (piece.rect.x, piece.rect.y + dy), None, k);
+            }
+        }
     }
     // --- its name and its icon fly to the title and the disc --------------
     // Keyed on the card they were cut from, so only the glyphs travel, and
     // they give way to the screen's own over the hand-over rather than
-    // stopping: the two are the same size, so it reads as one thing.
-    if handing < 256 && p >= LIFT_LABEL_FLY.0 {
-        {
-            let e = smooth(progress(p, LIFT_LABEL_FLY));
-            let (label, disc) = (&art.label, &art.disc);
-            let at = |from: Window, to: Window| {
-                (
-                    from.x + (((to.x - from.x) as f32) * e).round() as i32,
-                    from.y + (((to.y - from.y) as f32) * e).round() as i32,
-                )
-            };
-            let alpha = 256 - handing;
-            disc.put(
-                &mut dst,
-                at(lift.disc, lift.screen_disc),
-                Some(LIFT_SURFACE),
-                alpha,
+    // stopping: the two are drawn the same way, so it reads as one thing.
+    // Last, so nothing that arrives behind them is ever drawn over them.
+    let handing = fading(p, plan.hand_over).unwrap_or(0);
+    if handing < 256 {
+        // Back to front: they cross each other on their way out of the row,
+        // and the name is the one that should be whole when they do.
+        for (i, traveller) in plan.travellers.iter().enumerate().rev() {
+            let Some(fly) = *traveller else { continue };
+            if p < fly.fly.0 {
+                continue;
+            }
+            let e = smooth(progress(p, fly.fly));
+            let at = (
+                fly.from.x + (((fly.to.x - fly.from.x) as f32) * e).round() as i32,
+                fly.from.y + (((fly.to.y - fly.from.y) as f32) * e).round() as i32,
             );
-            label.put(
-                &mut dst,
-                at(lift.label, title_landing(lift)),
-                Some(LIFT_SURFACE),
-                alpha,
-            );
+            art.travellers[i].put(&mut dst, at, Some(fly.key), 256 - handing);
         }
     }
+}
+
+/// How much of a piece is on the panel `p` of the way through, in 0..=256, or
+/// nothing because it has not begun. Every piece spends the first part of its
+/// window fading in and the rest settling into place.
+fn arrival(piece: Piece, p: f32) -> Option<u32> {
+    let span = piece.window.1 - piece.window.0;
+    phase(p, piece.window)
+        .map(|_| fading(p, (piece.window.0, piece.window.0 + span * piece.fade)).unwrap_or(256))
+}
+
+/// Whether a later piece has covered this one outright: the state line sits
+/// inside the header band, and once the header is whole it is the header that
+/// is on the panel. Fading one under the other is work for nothing.
+fn covered(plan: &LiftPlan, i: usize, rect: Window, p: f32) -> bool {
+    plan.pieces.iter().skip(i + 1).flatten().any(|later| {
+        matches!(later.kind, Arriving::Fade)
+            && arrival(*later, p) == Some(256)
+            && later.rect.x <= rect.x
+            && later.rect.y <= rect.y
+            && later.rect.x + later.rect.w >= rect.x + rect.w
+            && later.rect.y + later.rect.h >= rect.y + rect.h
+    })
 }
 
 /// How far through a window `p` is, 0 before it and 1 after: the raw fraction,
@@ -1808,22 +1911,18 @@ fn progress(p: f32, window: (f32, f32)) -> f32 {
     ((p - window.0) / (window.1 - window.0).max(f32::EPSILON)).clamp(0.0, 1.0)
 }
 
-/// How much of a bar card has arrived `t` of the way through, in 0..=256, or
-/// nothing because it has not begun. For the test that holds the rule that
-/// nothing inside an arriving card is stronger than the card.
+/// Each card on screen `t` of the way through, with the alpha it has reached.
+/// For the test that holds the rule that nothing inside an arriving card is
+/// stronger than the card.
 #[cfg(test)]
-pub(crate) fn lift_card_alpha(which: usize, t: f32) -> Option<u32> {
-    let window = (
-        LIFT_CARDS_IN.0 + LIFT_BARS_LAG * which as f32,
-        LIFT_CARDS_IN.1 + LIFT_BARS_LAG * which as f32,
-    );
-    phase(t, window).and(Some(
-        fading(
-            t,
-            (window.0, window.0 + (window.1 - window.0) * LIFT_CARDS_FADE),
-        )
-        .unwrap_or(256),
-    ))
+pub(crate) fn lift_cards(plan: LiftPlan, t: f32) -> Vec<(usize, Window, u32)> {
+    plan.pieces
+        .iter()
+        .enumerate()
+        .filter_map(|(i, piece)| Some((i, (*piece)?)))
+        .filter(|(_, piece)| matches!(piece.kind, Arriving::Card { .. }))
+        .filter_map(|(i, piece)| Some((i, piece.rect, arrival(piece, t)?)))
+        .collect()
 }
 
 /// What is travelling in a lift frame, element by element, and `None` for an
@@ -1832,80 +1931,54 @@ pub(crate) fn lift_card_alpha(which: usize, t: f32) -> Option<u32> {
 /// For the test that holds the rule that nothing appears or disappears in one
 /// frame: a rectangle that is in both of two consecutive frames has moved and
 /// may change as much as it likes, and one that is in only one of them is a
-/// thing that popped.
+/// thing that popped. A piece that only fades is not travelling and is not
+/// excused - it is exactly what that rule is for.
 #[cfg(test)]
-pub(crate) fn lift_pieces(lift: Lift, t: f32) -> [Option<Window>; 6] {
-    let mut pieces = [None; 6];
-    if t >= LIFT_CARD_RISE.0 {
-        let e = smooth(progress(t, LIFT_CARD_RISE));
-        let (x, y, cw, ch, r) = LIFT_CARD_TO;
-        pieces[0] = Some(lift.row.lerp(
-            Window {
-                x,
-                y,
-                w: cw,
-                h: ch,
-                r,
-            },
-            e,
-        ));
+pub(crate) fn lift_pieces(plan: LiftPlan, t: f32) -> [Option<Window>; 10] {
+    let mut pieces = [None; 10];
+    if let Some((to, rise)) = plan.plate {
+        if t >= rise.0 {
+            pieces[0] = Some(plan.row.lerp(to, smooth(progress(t, rise))));
+        }
     }
-    if t >= LIFT_LABEL_FLY.0 {
-        let e = smooth(progress(t, LIFT_LABEL_FLY));
-        let at = |from: Window, to: Window| Window {
-            x: from.x + (((to.x - from.x) as f32) * e).round() as i32,
-            y: from.y + (((to.y - from.y) as f32) * e).round() as i32,
-            ..from
-        };
-        pieces[1] = Some(at(lift.label, title_landing(lift)));
-        pieces[2] = Some(at(lift.disc, lift.screen_disc));
-    }
-    for which in 0..2 {
-        if lift.cards[which].w <= 0 {
+    for (i, traveller) in plan.travellers.iter().enumerate() {
+        let Some(fly) = *traveller else { continue };
+        if t < fly.fly.0 {
             continue;
         }
-        let window = (
-            LIFT_CARDS_IN.0 + LIFT_BARS_LAG * which as f32,
-            LIFT_CARDS_IN.1 + LIFT_BARS_LAG * which as f32,
-        );
-        if phase(t, window).is_some() {
-            pieces[3 + which] = Some(lift.cards[which]);
+        let e = smooth(progress(t, fly.fly));
+        pieces[1 + i] = Some(Window {
+            x: fly.from.x + (((fly.to.x - fly.from.x) as f32) * e).round() as i32,
+            y: fly.from.y + (((fly.to.y - fly.from.y) as f32) * e).round() as i32,
+            ..fly.from
+        });
+    }
+    // The level a card shows and the colour it shows grow the whole way, so
+    // the tracks they grow in are always allowed to differ from one frame to
+    // the next.
+    let mut growing: Option<Window> = None;
+    for (i, piece) in plan.pieces.iter().enumerate() {
+        let Some(piece) = *piece else { continue };
+        if let Arriving::Card { track, .. } = piece.kind {
+            if track.w > 0 {
+                growing = Some(match growing {
+                    Some(so_far) => Window {
+                        x: so_far.x.min(track.x),
+                        y: so_far.y.min(track.y),
+                        w: (so_far.x + so_far.w).max(track.x + track.w) - so_far.x.min(track.x),
+                        h: (so_far.y + so_far.h).max(track.y + track.h) - so_far.y.min(track.y),
+                        r: 0,
+                    },
+                    None => track,
+                });
+            }
+        }
+        if !matches!(piece.kind, Arriving::Fade) && phase(t, piece.window).is_some() {
+            pieces[3 + i] = Some(piece.rect);
         }
     }
-    // The level and the colour it shows grow the whole way, so their tracks
-    // are always allowed to differ from one frame to the next.
-    let (first, second) = (lift.track[0], lift.track[1]);
-    let left = if second.w > 0 {
-        first.x.min(second.x)
-    } else {
-        first.x
-    };
-    let right = (first.x + first.w).max(if second.w > 0 { second.x + second.w } else { 0 });
-    pieces[5] = Some(Window {
-        x: left,
-        y: first.y,
-        w: right - left,
-        h: first.h,
-        r: 0,
-    });
+    pieces[9] = growing;
     pieces
-}
-
-/// Where the flying label comes to rest: the title's box, lined up so that
-/// the name lands on the name rather than the box on the box - the two are
-/// the same size and weight (`Theme.device-name`), so this is a cut, not a
-/// fade.
-#[cfg(test)]
-pub(crate) fn lift_title_landing(lift: Lift) -> Window {
-    title_landing(lift)
-}
-
-fn title_landing(lift: Lift) -> Window {
-    Window {
-        x: lift.title.x,
-        y: lift.title.y + (lift.title.h - lift.label.h) / 2,
-        ..lift.label
-    }
 }
 
 /// An alpha ramp with no step at either end: flat where it starts and where
@@ -1945,43 +2018,44 @@ fn phase(p: f32, window: (f32, f32)) -> Option<f32> {
 /// putting the gradient that lives above it over its place and putting the
 /// marker itself where it has got to. All of it inside the buffer, so the one
 /// thing that reaches the frame is the card, at the card's own alpha.
-fn build_card(
-    art: &mut LiftArt,
-    screen: &[u32],
-    width: usize,
-    height: usize,
-    lift: Lift,
-    which: usize,
-    p: f32,
-) {
-    let card = lift.cards[which];
-    let track = lift.track[which];
+fn build_card(art: &mut LiftArt, screen: &[u32], width: usize, piece: Piece, i: usize, p: f32) {
+    let Arriving::Card {
+        track,
+        fill_h,
+        marker_y,
+        marker_h,
+        grow,
+        ..
+    } = piece.kind
+    else {
+        return;
+    };
     if track.w <= 0 {
         return;
     }
+    let card = piece.rect;
     // The card was cut whole before the first frame; only its track changes,
     // so only its track is put back from the page before it is changed again.
-    let _ = height;
-    art.cards[which].refresh(
+    art.pieces[i].refresh(
         screen,
         width,
         Window {
             x: track.x,
-            y: track.y - lift.marker_h,
+            y: track.y - marker_h,
             w: track.w,
-            h: track.h + lift.marker_h,
+            h: track.h + marker_h,
             r: 0,
         },
     );
-    let grown = phase(p, LIFT_GROW).unwrap_or(0.0);
-    if which == 0 && lift.fill_h > 0 {
+    let grown = phase(p, grow).unwrap_or(0.0);
+    if fill_h > 0 {
         // The colour of an empty track, from the page's own top of it.
         let sample = screen
             .get(((track.y + 2).max(0) as usize) * width + (track.x + track.w / 2).max(0) as usize)
             .copied()
             .unwrap_or(LIFT_BG);
-        let risen = (lift.fill_h as f32 * grown).round() as i32;
-        art.cards[which].paint(
+        let risen = (fill_h as f32 * grown).round() as i32;
+        art.pieces[i].paint(
             Window {
                 x: track.x,
                 y: track.y,
@@ -1991,17 +2065,17 @@ fn build_card(
             },
             sample,
         );
-    } else if which == 1 && lift.marker_y >= 0 {
-        let foot = track.y + track.h - lift.marker_h;
-        let at = foot + ((lift.marker_y - foot) as f32 * grown).round() as i32;
-        if at == lift.marker_y {
+    } else if marker_y >= 0 {
+        let foot = track.y + track.h - marker_h;
+        let at = foot + ((marker_y - foot) as f32 * grown).round() as i32;
+        if at == marker_y {
             return;
         }
         // Where the page keeps it, put back as the gradient just above it -
         // which is the same gradient, a few mirek along.
-        let home = (track.x - card.x, lift.marker_y - card.y);
+        let home = (track.x - card.x, marker_y - card.y);
         let (under, marker) = (&art.under_marker, &art.marker);
-        let mut into = art.cards[which].surface();
+        let mut into = art.pieces[i].surface();
         under.put(&mut into, home, None, 256);
         marker.put(&mut into, (home.0, at - card.y), None, 256);
     }
@@ -2292,6 +2366,395 @@ impl Platform for CouchPlatform {
     }
 }
 
+/// The rules a lift has to hold, whatever screen it is opening.
+///
+/// Here rather than beside one screen's test because every screen that adopts
+/// the lift has to pass the same five, and a rule that lives inside one test
+/// only ever guards one screen. Each takes the two pages as the panel really
+/// draws them and the plan the screen really hands over, so what is checked is
+/// the transition the device will run and not a model of it.
+#[cfg(test)]
+pub(crate) mod checks {
+    use super::*;
+
+    /// Where the time goes, frame by frame, in pixels touched. A blend is
+    /// several times a copy and a copy several times a fill, so a budget
+    /// in "panels of blending" is the honest unit: the HA100 measured a
+    /// whole panel of blending at about ten milliseconds and a whole panel
+    /// copied at about 1.3.
+    pub(crate) fn profile(
+        room: &[u32],
+        screen: &[u32],
+        panel_w: usize,
+        panel_h: usize,
+        plan: LiftPlan,
+        what: &str,
+    ) -> (f32, f32) {
+        let mut art = crate::lift_art(room, screen, panel_w, panel_h, plan);
+        let content = lift_content(room, panel_w, panel_h);
+        let screen_content = lift_content(screen, panel_w, panel_h);
+        let (mut worst, mut total) = (0.0f32, 0.0f32);
+        for step in 0..=19 {
+            let t = step as f32 / 19.0;
+            let mut pixels = vec![0u32; panel_w * panel_h];
+            WORK.with(|w| w.set([0; 3]));
+            lift_frame(
+                Surface {
+                    pixels: &mut pixels,
+                    stride: panel_w,
+                    width: panel_w,
+                    height: panel_h,
+                },
+                (screen, room),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                Shown::Arriving,
+                t,
+            );
+            // The present pass the panel does after every composed frame.
+            WORK.with(|w| {
+                let mut c = w.get();
+                c[1] += panel_w * panel_h;
+                w.set(c);
+            });
+            let [blended, copied, filled] = WORK.with(|w| w.get());
+            // A copy is about an eighth of a blend and a fill about a
+            // sixteenth, on the numbers from the device.
+            let cost = (blended as f32 + copied as f32 / 8.0 + filled as f32 / 16.0)
+                / (panel_w * panel_h) as f32;
+            total += cost;
+            worst = worst.max(cost);
+            println!(
+                "PROFILE {what} t={t:.2} blended={blended} copied={copied} \
+                     filled={filled} panels={cost:.2}"
+            );
+        }
+        println!(
+            "PROFILE {what} mean={:.2} worst={worst:.2} panels of blending",
+            total / 20.0
+        );
+        (total / 20.0, worst)
+    }
+
+    /// Nothing appears or disappears in one frame. Over the frames a
+    /// default-length lift actually draws, no patch of the panel may change
+    /// by much from one to the next unless it is a piece that is travelling,
+    /// and a piece counts as travelling only if it is on screen in both
+    /// frames - so a thing that vanished is not excused by having moved.
+    pub(crate) fn pops(
+        room: &[u32],
+        screen: &[u32],
+        panel_w: usize,
+        panel_h: usize,
+        plan: LiftPlan,
+        what: &str,
+    ) {
+        let mut art = crate::lift_art(room, screen, panel_w, panel_h, plan);
+        let content = lift_content(room, panel_w, panel_h);
+        let screen_content = lift_content(screen, panel_w, panel_h);
+        let mut frame = |t: f32| {
+            let mut pixels = vec![0u32; panel_w * panel_h];
+            lift_frame(
+                Surface {
+                    pixels: &mut pixels,
+                    stride: panel_w,
+                    width: panel_w,
+                    height: panel_h,
+                },
+                (screen, room),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                Shown::Arriving,
+                t,
+            );
+            pixels
+        };
+        // The frames a 320 ms plan draws on a 60 Hz panel.
+        const FRAMES: usize = 19;
+        const TILE: (usize, usize) = (32, 16);
+        let tiles = (panel_w.div_ceil(TILE.0), panel_h.div_ceil(TILE.1));
+        // For every patch of the panel: how much it changed in its worst
+        // single frame, and how much it changed over the whole
+        // transition. A thing that fades spreads its change over many
+        // frames and no one of them is most of it; a thing that is cut
+        // puts all of it in one. That ratio is the test, and it does not
+        // care whether the thing is a bright glyph or a card a shade
+        // lighter than the background.
+        let mut worst_step = vec![0u32; tiles.0 * tiles.1];
+        let mut total = vec![0u32; tiles.0 * tiles.1];
+        let mut before = frame(0.0);
+        for step in 1..=FRAMES {
+            let t = step as f32 / FRAMES as f32;
+            let after = frame(t);
+            let travelling: Vec<Window> = lift_pieces(plan, (step - 1) as f32 / FRAMES as f32)
+                .iter()
+                .zip(lift_pieces(plan, t))
+                .filter_map(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => Some(Window {
+                        x: a.x.min(b.x),
+                        y: a.y.min(b.y),
+                        w: (a.x + a.w).max(b.x + b.w) - a.x.min(b.x),
+                        h: (a.y + a.h).max(b.y + b.h) - a.y.min(b.y),
+                        r: 0,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            for ty in 0..tiles.1 {
+                for tx in 0..tiles.0 {
+                    let (x0, y0) = (tx * TILE.0, ty * TILE.1);
+                    // A piece that is on screen in both frames has moved,
+                    // and may change as much as it likes; one that is in
+                    // only one of them is exactly what this looks for, so
+                    // it is not excused.
+                    let moving = travelling.iter().any(|piece| {
+                        x0 as i32 + TILE.0 as i32 > piece.x
+                            && (x0 as i32) < piece.x + piece.w
+                            && y0 as i32 + TILE.1 as i32 > piece.y
+                            && (y0 as i32) < piece.y + piece.h
+                    });
+                    let (mut sum, mut n) = (0u32, 0u32);
+                    for y in y0..(y0 + TILE.1).min(panel_h) {
+                        for x in x0..(x0 + TILE.0).min(panel_w) {
+                            let (a, b) = (before[y * panel_w + x], after[y * panel_w + x]);
+                            for shift in [0, 8, 16] {
+                                sum += ((a >> shift) & 0xff).abs_diff((b >> shift) & 0xff);
+                                n += 1;
+                            }
+                        }
+                    }
+                    let mean = sum / n.max(1);
+                    let tile = ty * tiles.0 + tx;
+                    // Everything a patch ever does counts towards its
+                    // total, including while a sprite is over it; only
+                    // the frames it was left to itself are judged.
+                    total[tile] += mean;
+                    if !moving {
+                        worst_step[tile] = worst_step[tile].max(mean);
+                    }
+                }
+            }
+            before = after;
+        }
+        // A patch that barely moved at all over the whole transition is
+        // not worth judging: rounding alone would trip it.
+        let popped = (0..worst_step.len())
+            .filter(|&tile| total[tile] >= 12)
+            .max_by_key(|&tile| worst_step[tile] * 100 / total[tile].max(1));
+        let (share, tile) = popped
+            .map(|tile| (worst_step[tile] * 100 / total[tile].max(1), tile))
+            .unwrap_or((0, 0));
+        assert!(
+            share <= 40,
+            "{what}: the patch at {},{} did {share}% of everything it ever did in one \
+                 frame -                  something appeared or disappeared in one frame",
+            (tile % tiles.0) * TILE.0,
+            (tile / tiles.0) * TILE.1,
+        );
+    }
+
+    /// A thing that travels leaves its place. The name and the icon are cut
+    /// out of the room and flown to the header, so from the first frame on
+    /// the only ones on the panel are the ones in flight: no ghost of the
+    /// same name may be left fading in the row they came from.
+    pub(crate) fn ghosts(
+        room: &[u32],
+        screen: &[u32],
+        panel_w: usize,
+        panel_h: usize,
+        plan: LiftPlan,
+        what: &str,
+    ) {
+        let mut art = crate::lift_art(room, screen, panel_w, panel_h, plan);
+        let content = lift_content(room, panel_w, panel_h);
+        let screen_content = lift_content(screen, panel_w, panel_h);
+        for step in 1..=19 {
+            let t = step as f32 / 19.0;
+            let mut pixels = vec![0u32; panel_w * panel_h];
+            lift_frame(
+                Surface {
+                    pixels: &mut pixels,
+                    stride: panel_w,
+                    width: panel_w,
+                    height: panel_h,
+                },
+                (screen, room),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                Shown::Arriving,
+                t,
+            );
+            let flying = lift_pieces(plan, t);
+            for (name, traveller) in ["name", "icon"].iter().zip(plan.travellers.iter()) {
+                let Some(was) = traveller.map(|fly| fly.from) else {
+                    continue;
+                };
+                for y in was.y..was.y + was.h {
+                    for x in was.x..was.x + was.w {
+                        // Wherever anything is in flight does not count:
+                        // the name and the icon cross each other's places
+                        // on their way out of the row.
+                        if flying
+                            .iter()
+                            .flatten()
+                            .any(|at| x >= at.x && x < at.x + at.w && y >= at.y && y < at.y + at.h)
+                        {
+                            continue;
+                        }
+                        let p = pixels[y as usize * panel_w + x as usize];
+                        let bright = [0, 8, 16]
+                            .iter()
+                            .map(|s| (p >> s) & 0xff)
+                            .max()
+                            .unwrap_or(0);
+                        assert!(
+                            bright <= 0x50,
+                            "{what}: a ghost of the {name} is still at {x},{y} at {t:.2} \
+                                 while the real one has moved away"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A traveller lands on itself. The name and the icon are cut out of
+    /// the room and flown to the screen's own, so the screen has to draw
+    /// them the same way in the same place: then the hand-over is nothing
+    /// at all rather than two drawings swapping, which is what made the
+    /// icon look like it flipped at the end.
+    pub(crate) fn lands(
+        room: &[u32],
+        screen: &[u32],
+        panel_w: usize,
+        panel_h: usize,
+        plan: LiftPlan,
+        what: &str,
+    ) {
+        for (name, traveller) in ["name", "icon"].iter().zip(plan.travellers.iter()) {
+            let Some(&Traveller { from, to, .. }) = traveller.as_ref() else {
+                continue;
+            };
+            // Within a pixel: text is laid out to sub-pixel positions and
+            // the two boxes are reached by different arithmetic, so the
+            // glyphs can sit a pixel apart. What this is for is a
+            // traveller landing on a *different drawing*, which no
+            // offset puts right.
+            // The mean difference over the rectangle, at the best of the
+            // nine offsets within a pixel. A traveller that lands on a
+            // *different drawing* - another fill, another glyph - differs
+            // everywhere and scores high; one that lands half a pixel out,
+            // which is all a layout's arithmetic can promise, differs only
+            // along its edges and scores low.
+            let miss = |dx: i32, dy: i32| {
+                let (mut sum, mut n) = (0usize, 0usize);
+                for row in 0..from.h.min(to.h) {
+                    for col in 0..from.w.min(to.w) {
+                        let (bx, by) = (to.x + col + dx, to.y + row + dy);
+                        if bx < 0 || by < 0 || bx >= panel_w as i32 || by >= panel_h as i32 {
+                            continue;
+                        }
+                        let a = room[(from.y + row) as usize * panel_w + (from.x + col) as usize];
+                        // The card the sprite was cut against is not put
+                        // down, so it is not part of the landing either.
+                        if a == LIFT_SURFACE {
+                            continue;
+                        }
+                        let b = screen[by as usize * panel_w + bx as usize];
+                        let d = [0, 8, 16]
+                            .iter()
+                            .map(|s| (((a >> s) & 0xff) as i32 - ((b >> s) & 0xff) as i32).abs())
+                            .max()
+                            .unwrap_or(0);
+                        sum += d as usize;
+                        n += 1;
+                    }
+                }
+                sum / n.max(1)
+            };
+            let best = (-1..=1)
+                .flat_map(|dy| (-1..=1).map(move |dx| (dx, dy)))
+                .map(|(dx, dy)| miss(dx, dy))
+                .min()
+                .unwrap_or(usize::MAX);
+            assert!(
+                best <= 15,
+                "{what}: the {name} does not land on itself - {best} a channel out at the \
+                     best offset, so the two ends are not the same drawing"
+            );
+        }
+    }
+
+    /// Nothing inside an arriving card is stronger than the card. A card
+    /// is blended over the frame at the alpha it has reached, so while
+    /// that alpha is low no pixel under it may have moved far from what it
+    /// would have been without the card at all - the level's track and the
+    /// colour marker used to be painted straight into the frame at their
+    /// own strength, and cut holes in the room's rows.
+    pub(crate) fn stronger(
+        room: &[u32],
+        screen: &[u32],
+        panel_w: usize,
+        panel_h: usize,
+        plan: LiftPlan,
+        what: &str,
+    ) {
+        let compose = |plan: LiftPlan, t: f32| {
+            let mut art = crate::lift_art(room, screen, panel_w, panel_h, plan);
+            let content = lift_content(room, panel_w, panel_h);
+            let screen_content = lift_content(screen, panel_w, panel_h);
+            let mut pixels = vec![0u32; panel_w * panel_h];
+            lift_frame(
+                Surface {
+                    pixels: &mut pixels,
+                    stride: panel_w,
+                    width: panel_w,
+                    height: panel_h,
+                },
+                (screen, room),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                Shown::Arriving,
+                t,
+            );
+            pixels
+        };
+        for step in 1..=19 {
+            let t = step as f32 / 19.0;
+            for (which, card, alpha) in lift_cards(plan, t) {
+                if card.w <= 0 || alpha > 128 {
+                    continue;
+                }
+                // The same frame with that card not there at all.
+                let mut missing = plan;
+                missing.pieces[which] = None;
+                let (with, without) = (compose(plan, t), compose(missing, t));
+                let bound = (alpha * 255 / 256) as i32 + 8;
+                for y in card.y..(card.y + card.h + 16).min(panel_h as i32) {
+                    for x in card.x..card.x + card.w {
+                        let i = y as usize * panel_w + x as usize;
+                        let (a, b) = (with[i], without[i]);
+                        for shift in [0, 8, 16] {
+                            let d =
+                                (((a >> shift) & 0xff) as i32 - ((b >> shift) & 0xff) as i32).abs();
+                            assert!(
+                                d <= bound,
+                                "{what}: card {which} is only {alpha}/256 in at {t:.2}, \
+                                     but {x},{y} moved {d} - something inside it was drawn at \
+                                     its own strength"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2389,63 +2852,29 @@ mod tests {
             h: 3,
             r: 0,
         };
-        let lift = Lift {
-            row,
-            pitch: 4,
-            label: Window {
-                x: 4,
-                y: 6,
-                w: 6,
-                h: 3,
-                r: 0,
-            },
-            disc: Window {
-                x: 2,
-                y: 6,
-                w: 2,
-                h: 2,
-                r: 0,
-            },
-            title: Window {
-                x: 1,
-                y: 1,
-                w: 8,
-                h: 3,
-                r: 0,
-            },
-            screen_disc: Window {
-                x: 7,
-                y: 5,
-                w: 2,
-                h: 2,
-                r: 0,
-            },
-            header_h: 5,
-            cards: [
-                Window {
-                    x: 1,
-                    y: 8,
-                    w: 6,
-                    h: 6,
-                    r: 0,
+        let win = |x, y, w, h| Window { x, y, w, h, r: 0 };
+        // The same shape a real screen hands over, in miniature: a header
+        // with a name and an icon flying into it, one bar card, and a footer.
+        let lift = LiftPlan::out_of("test", row)
+            .carrying(
+                (win(4, 6, 6, 3), win(1, 1, 6, 3)),
+                (win(2, 6, 2, 2), win(7, 5, 2, 2)),
+            )
+            .header(W as i32, 5, 7)
+            .piece(Piece {
+                rect: win(1, 8, 6, 6),
+                window: LIFT_CARDS_IN,
+                fade: LIFT_CARDS_FADE,
+                kind: Arriving::Card {
+                    rise: LIFT_BARS_DROP,
+                    track: win(2, 9, 4, 4),
+                    fill_h: 2,
+                    marker_y: -1,
+                    marker_h: 1,
+                    grow: LIFT_GROW,
                 },
-                Window::default(),
-            ],
-            footer_y: 14,
-            track: [
-                Window {
-                    x: 2,
-                    y: 9,
-                    w: 4,
-                    h: 4,
-                    r: 0,
-                },
-                Window::default(),
-            ],
-            fill_h: 2,
-            marker_y: -1,
-            marker_h: 1,
-        };
+            })
+            .footer(W as i32, H as i32, 14);
         let at = |shown, t| {
             let mut pixels = vec![0u32; W * H];
             // The page being arrived at is the screen on the way in and the
