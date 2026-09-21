@@ -408,6 +408,13 @@ grows. Both problems have the same answer - do not touch every pixel.
   pixel of `Theme.border` round it, interpolated from the row's rect to the
   header band's. It is the focus ring's own row-run arithmetic, filled instead
   of stroked, over a rectangle that is never more than a tenth of the panel.
+- **A card reaches the frame once, as one piece.** A bar card is built up
+  opaque in a buffer of its own first - the page's own card, with the level
+  un-revealed and the marker moved - and only then blended over the frame, at
+  the alpha it has reached. Anything painted straight into the frame at its own
+  strength shows through a card that has barely arrived: the level's track used
+  to be, and cut a dark strip through the room's rows down the width of the
+  bar while the card behind it was still nearly transparent.
 - **Reveals, not redraws.** The level bar's fill and the colour marker are
   already in the page at their values, so neither is drawn: the fill is
   un-revealed from the top by painting the empty part of the track in the
@@ -438,6 +445,15 @@ grows. Both problems have the same answer - do not touch every pixel.
   do more than 40% of everything it ever does in one frame, unless it is a
   piece that is on screen in *both* of the two frames and has therefore moved
   rather than appeared.
+- **A thing that travels leaves its place.** The band the focused row fades
+  away as is a copy of itself with the name and the icon painted out in the
+  colour of the card they sat on - the same colour the sprites are keyed
+  against, so the glyph edges land back on exactly it and leave no halo. Two
+  copies of a name, one flying and one fading where it started, is a ghost,
+  and it is what the row used to leave behind. Its second line and its chevron
+  do not travel, so they stay in the band and fade with it. The first frame is
+  still the room exactly: at that point the sprites sit on their own source and
+  put back precisely what was painted out.
 - **Blending only where there is anything to blend.** A room is mostly its
   background, so one pass before the first frame records where each scanline
   has content and the fade touches only that span. On a list that is about

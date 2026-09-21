@@ -3947,16 +3947,10 @@ mod tests {
         // row, its name and icon flying to the title and the disc, and the
         // screen arriving piece by piece.
         let lift = crate::lift_geometry(&app, from);
-        let sprites = |page: &[u32]| {
-            (
-                crate::panel::Sprite::cut(page, W, H, lift.label),
-                crate::panel::Sprite::cut(page, W, H, lift.disc),
-            )
-        };
-        let (label, disc) = sprites(&leaving);
+        let mut art = crate::lift_art(&leaving, &arriving, W, H, lift);
         let content = crate::panel::lift_content(&leaving, W, H);
         // Every ten per cent, and every five around the hand-over.
-        let sweep = [0, 10, 20, 30, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100];
+        let sweep = [0, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100];
         for (step, t) in sweep.iter().map(|n| (*n, *n as f32 / 100.0)) {
             let mut pixels = vec![0u32; W * H];
             crate::panel::lift_frame(
@@ -3968,7 +3962,7 @@ mod tests {
                 },
                 (&arriving, &leaving),
                 lift,
-                (&label, &disc),
+                &mut art,
                 &content,
                 crate::panel::Shown::Arriving,
                 t,
@@ -4022,7 +4016,7 @@ mod tests {
                 },
                 (&leaving, &arriving),
                 lift,
-                (&label, &disc),
+                &mut art,
                 &content,
                 crate::panel::Shown::Leaving,
                 t,
@@ -4037,7 +4031,7 @@ mod tests {
                 },
                 (&arriving, &leaving),
                 lift,
-                (&label, &disc),
+                &mut art,
                 &content,
                 crate::panel::Shown::Arriving,
                 1.0 - t,
@@ -4080,8 +4074,7 @@ mod tests {
         draw(&mut scrolled_screen);
         let lift = crate::lift_geometry(&app, middle);
         let (room, screen) = (word(&scrolled_room), word(&scrolled_screen));
-        let label = crate::panel::Sprite::cut(&room, W, H, lift.label);
-        let disc = crate::panel::Sprite::cut(&room, W, H, lift.disc);
+        let mut art = crate::lift_art(&room, &screen, W, H, lift);
         let content = crate::panel::lift_content(&room, W, H);
         for step in 0..=10 {
             let t = step as f32 / 10.0;
@@ -4095,7 +4088,7 @@ mod tests {
                 },
                 (&screen, &room),
                 lift,
-                (&label, &disc),
+                &mut art,
                 &content,
                 crate::panel::Shown::Arriving,
                 t,
@@ -4120,10 +4113,9 @@ mod tests {
         // - and a piece counts as travelling only if it is on screen in both
         // frames, so a thing that vanished is not excused by having moved.
         let pops = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
-            let label = crate::panel::Sprite::cut(room, W, H, lift.label);
-            let disc = crate::panel::Sprite::cut(room, W, H, lift.disc);
+            let mut art = crate::lift_art(room, screen, W, H, lift);
             let content = crate::panel::lift_content(room, W, H);
-            let frame = |t: f32| {
+            let mut frame = |t: f32| {
                 let mut pixels = vec![0u32; W * H];
                 crate::panel::lift_frame(
                     crate::panel::Surface {
@@ -4134,7 +4126,7 @@ mod tests {
                     },
                     (screen, room),
                     lift,
-                    (&label, &disc),
+                    &mut art,
                     &content,
                     crate::panel::Shown::Arriving,
                     t,
@@ -4225,6 +4217,135 @@ mod tests {
                 (tile / tiles.0) * TILE.1,
             );
         };
+        // A thing that travels leaves its place. The name and the icon are cut
+        // out of the room and flown to the header, so from the first frame on
+        // the only ones on the panel are the ones in flight: no ghost of the
+        // same name may be left fading in the row they came from.
+        let ghosts = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
+            let mut art = crate::lift_art(room, screen, W, H, lift);
+            let content = crate::panel::lift_content(room, W, H);
+            for step in 1..=19 {
+                let t = step as f32 / 19.0;
+                let mut pixels = vec![0u32; W * H];
+                crate::panel::lift_frame(
+                    crate::panel::Surface {
+                        pixels: &mut pixels,
+                        stride: W,
+                        width: W,
+                        height: H,
+                    },
+                    (screen, room),
+                    lift,
+                    &mut art,
+                    &content,
+                    crate::panel::Shown::Arriving,
+                    t,
+                );
+                let flying = crate::panel::lift_pieces(lift, t);
+                for (name, was) in [("name", lift.label), ("icon", lift.disc)] {
+                    for y in was.y..was.y + was.h {
+                        for x in was.x..was.x + was.w {
+                            // Wherever anything is in flight does not count:
+                            // the name and the icon cross each other's places
+                            // on their way out of the row.
+                            if flying.iter().flatten().any(|at| {
+                                x >= at.x && x < at.x + at.w && y >= at.y && y < at.y + at.h
+                            }) {
+                                continue;
+                            }
+                            let p = pixels[y as usize * W + x as usize];
+                            let bright = [0, 8, 16]
+                                .iter()
+                                .map(|s| (p >> s) & 0xff)
+                                .max()
+                                .unwrap_or(0);
+                            assert!(
+                                bright <= 0x50,
+                                "{what}: a ghost of the {name} is still at {x},{y} at {t:.2} \
+                                 while the real one has moved away"
+                            );
+                        }
+                    }
+                }
+            }
+        };
+        // Nothing inside an arriving card is stronger than the card. A card
+        // is blended over the frame at the alpha it has reached, so while
+        // that alpha is low no pixel under it may have moved far from what it
+        // would have been without the card at all - the level's track and the
+        // colour marker used to be painted straight into the frame at their
+        // own strength, and cut holes in the room's rows.
+        let stronger = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
+            let compose = |lift: crate::panel::Lift, t: f32| {
+                let mut art = crate::lift_art(room, screen, W, H, lift);
+                let content = crate::panel::lift_content(room, W, H);
+                let mut pixels = vec![0u32; W * H];
+                crate::panel::lift_frame(
+                    crate::panel::Surface {
+                        pixels: &mut pixels,
+                        stride: W,
+                        width: W,
+                        height: H,
+                    },
+                    (screen, room),
+                    lift,
+                    &mut art,
+                    &content,
+                    crate::panel::Shown::Arriving,
+                    t,
+                );
+                pixels
+            };
+            for step in 1..=19 {
+                let t = step as f32 / 19.0;
+                for which in 0..2 {
+                    let card = lift.cards[which];
+                    let Some(alpha) = crate::panel::lift_card_alpha(which, t) else {
+                        continue;
+                    };
+                    if card.w <= 0 || alpha > 128 {
+                        continue;
+                    }
+                    // The same frame with that card not there at all.
+                    let mut missing = lift;
+                    missing.cards[which] = crate::panel::Window::default();
+                    missing.track[which] = crate::panel::Window::default();
+                    let (with, without) = (compose(lift, t), compose(missing, t));
+                    let bound = (alpha * 255 / 256) as i32 + 8;
+                    for y in card.y..(card.y + card.h + 16).min(H as i32) {
+                        for x in card.x..card.x + card.w {
+                            let i = y as usize * W + x as usize;
+                            let (a, b) = (with[i], without[i]);
+                            for shift in [0, 8, 16] {
+                                let d = (((a >> shift) & 0xff) as i32
+                                    - ((b >> shift) & 0xff) as i32)
+                                    .abs();
+                                assert!(
+                                    d <= bound,
+                                    "{what}: card {which} is only {alpha}/256 in at {t:.2}, \
+                                     but {x},{y} moved {d} - something inside it was drawn at \
+                                     its own strength"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        stronger(
+            &leaving,
+            &arriving,
+            crate::lift_geometry(&app, from),
+            "top row",
+        );
+        stronger(&room, &screen, lift, "scrolled mid-list row");
+        ghosts(
+            &leaving,
+            &arriving,
+            crate::lift_geometry(&app, from),
+            "top row",
+        );
+        ghosts(&room, &screen, lift, "scrolled mid-list row");
         pops(
             &leaving,
             &arriving,

@@ -207,6 +207,72 @@ fn lift_geometry(app: &App, row: panel::Window) -> panel::Lift {
     }
 }
 
+/// The focused row's band with the name and the icon painted out of it: what
+/// the row fades away as, once the two of them are flying out of it.
+///
+/// Here rather than beside the transition so that the tests over the real
+/// pages build it exactly the way the panel does.
+pub(crate) fn handed_band(
+    room: &[u32],
+    width: usize,
+    height: usize,
+    lift: panel::Lift,
+) -> panel::Sprite {
+    let mut band = panel::Sprite::cut(
+        room,
+        width,
+        height,
+        panel::Window {
+            x: 0,
+            y: lift.row.y,
+            w: width as i32,
+            h: lift.row.h,
+            r: 0,
+        },
+    );
+    band.paint(lift.label, panel::LIFT_SURFACE);
+    band.paint(lift.disc, panel::LIFT_SURFACE);
+    band
+}
+
+/// Everything a lift cuts out of the two pages, built once before its first
+/// frame. Here rather than beside the transition so that the tests over the
+/// real pages build it exactly the way the panel does.
+pub(crate) fn lift_art(
+    room: &[u32],
+    screen: &[u32],
+    width: usize,
+    height: usize,
+    lift: panel::Lift,
+) -> panel::LiftArt {
+    let mut art = panel::LiftArt {
+        handed: handed_band(room, width, height, lift),
+        ..Default::default()
+    };
+    art.label.recut(room, width, height, lift.label);
+    art.disc.recut(room, width, height, lift.disc);
+    // The colour marker, and the gradient just above it, so a card can move it
+    // about inside its own buffer.
+    let strip = panel::Window {
+        x: lift.track[1].x,
+        y: lift.marker_y,
+        w: lift.track[1].w,
+        h: lift.marker_h,
+        r: 0,
+    };
+    art.marker.recut(screen, width, height, strip);
+    art.under_marker.recut(
+        screen,
+        width,
+        height,
+        panel::Window {
+            y: lift.marker_y - lift.marker_h,
+            ..strip
+        },
+    );
+    art
+}
+
 fn overlay(app: &App) -> Option<Overlay> {
     Some(if app.get_activity_busy() {
         Overlay::Activity
