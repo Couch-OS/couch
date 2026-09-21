@@ -142,33 +142,38 @@ const IRIS_RING: u32 = 0xffff_ffff;
 /// iris's 300 ms.
 pub const LIFT: Duration = Duration::from_millis(320);
 
-/// Where the focused row's card is lifted to: the band the control screen
-/// keeps its title and its back arrow in.
-const LIFT_HEADER_Y: i32 = 14;
-/// How far into the lift the travelling card has arrived and handed over to
-/// the real header underneath it.
-const LIFT_CARD_UNTIL: f32 = 0.58;
-/// How far below their places the control screen's bar cards start.
-const LIFT_BARS_DROP: i32 = 14;
-/// The band those cards live in, top and height (ui/screens/light.slint).
-const LIFT_BARS: (i32, i32) = (190, 452);
-/// How much later the furthest scanline starts to change than the focused
-/// row does, as a fraction of the whole travel: the stagger that makes the
-/// rest of the room fall away from the row outwards rather than all at once.
-///
-/// It is generous because it is also what stops the panel passing through
-/// bare background all at once: while the rows near the row are already
-/// filling with the screen, the far ones have not begun to leave.
-const LIFT_STAGGER: f32 = 0.35;
-/// How quickly the focused row gives up its own place. At once, near enough:
-/// the row is not there any anymore, the card that is rising is.
-const LIFT_ROW_OUT: f32 = 0.10;
-/// `Theme.bg`, #15130F, packed the way the panel takes it. A scanline goes
-/// out to this and comes back in from it rather than crossing straight from
-/// one page to the other: two pages of text on top of each other for a third
-/// of a second reads as a smear, and the rows are meant to fall away before
-/// the screen arrives.
+/// `Theme.bg`, #15130F, packed the way the panel takes it: what a room row
+/// falls away to, and what the control screen's pieces arrive over.
 const LIFT_BG: u32 = 0xff0f_1315;
+/// `Theme.surface`, #1F1C17: a card's fill, which is both what the rising
+/// card is drawn in and the colour keyed out of the sprites cut from a row.
+const LIFT_SURFACE: u32 = 0xff17_1c1f;
+/// `Theme.border`, #2C271F, for that card's edge.
+const LIFT_BORDER: u32 = 0xff1f_272c;
+/// The rising card's rectangle at the end of its travel, and its radius:
+/// `Theme.r-card` at the header band, as the preview has it.
+const LIFT_CARD_TO: (i32, i32, i32, i32, i32) = (20, 14, 440, 76, 12);
+/// How far below their places the control screen's bar cards start, and how
+/// much later the right-hand one arrives than the left.
+const LIFT_BARS_DROP: i32 = 14;
+const LIFT_BARS_LAG: f32 = 0.06;
+/// How long one band of the room takes to fall away, as a fraction of the
+/// whole. Short on purpose: it is the only blending in the transition, and
+/// only the bands inside their own window are blended, so keeping it near
+/// twice the stagger holds the blended part of the panel to about a quarter
+/// of it however many rows there are.
+const LIFT_BAND_FADE: f32 = 0.09;
+/// How much later each band away from the focused row begins.
+const LIFT_BAND_STEP: f32 = 0.045;
+/// The phases, as fractions of the transition, named the way the preview
+/// this follows names them (scratchpad/transitions, concept "lift").
+const LIFT_ROWS_FALL: (f32, f32) = (0.02, 0.32);
+const LIFT_CARD_RISE: (f32, f32) = (0.04, 0.56);
+const LIFT_LABEL_FLY: (f32, f32) = (0.06, 0.58);
+const LIFT_HEADER_IN: (f32, f32) = (0.50, 0.66);
+const LIFT_CARDS_IN: (f32, f32) = (0.42, 0.82);
+const LIFT_GROW: (f32, f32) = (0.62, 1.0);
+const LIFT_FOOTER_IN: (f32, f32) = (0.80, 1.0);
 
 /// Where the development switch for the opening transition is read from.
 /// Under `/tmp`, so it is gone at the next boot and nothing a person set up is
@@ -865,14 +870,34 @@ impl Panel {
     /// and a per-pixel cross-fade. It is the one transition here that blends,
     /// so it is the one whose cost has to be read rather than assumed - the
     /// line the loop prints when it is over says what it was.
-    pub fn lift(&mut self, row: Window, shown: Shown, duration: Duration) -> SlideCost {
-        self.transition(Compose::Lift { row }, shown, duration)
+    pub fn lift(&mut self, lift: Lift, shown: Shown, duration: Duration) -> SlideCost {
+        let (w, h) = (self.width as usize, self.height as usize);
+        // The room is where the name and the icon are cut from, whichever way
+        // the transition is going. Cut once, here, before a frame is composed.
+        let label;
+        let disc;
+        {
+            let room = match shown {
+                Shown::Arriving => pixels(&self.spare),
+                Shown::Leaving => pixels(&self.ram),
+            };
+            label = Sprite::cut(room, w, h, lift.label);
+            disc = Sprite::cut(room, w, h, lift.disc);
+        }
+        self.transition(
+            Compose::Lift {
+                lift,
+                sprites: (&label, &disc),
+            },
+            shown,
+            duration,
+        )
     }
 
     /// The frame loop every opening shares: eased time, one composed frame,
     /// the same pacing a drawn frame gets, and the same per-frame report, so
     /// two shapes can be compared on one set of numbers.
-    fn transition(&mut self, what: Compose, shown: Shown, duration: Duration) -> SlideCost {
+    fn transition(&mut self, what: Compose<'_>, shown: Shown, duration: Duration) -> SlideCost {
         let report = std::env::var_os("COUCH_REGION").is_some();
         let duration = duration.max(FRAME).as_secs_f32();
         let began = Instant::now();
@@ -885,7 +910,7 @@ impl Panel {
             let done = t >= 1.0;
             match what {
                 Compose::Iris { from, to } => self.compose_iris(from, to, shown, t),
-                Compose::Lift { row } => self.compose_lift(row, shown, t),
+                Compose::Lift { lift, sprites } => self.compose_lift(lift, sprites, shown, t),
             }
             let work = started.elapsed();
             self.pace(started);
@@ -917,7 +942,7 @@ impl Panel {
     }
 
     /// One lift frame into the framebuffer.
-    fn compose_lift(&mut self, row: Window, shown: Shown, t: f32) {
+    fn compose_lift(&mut self, lift: Lift, sprites: (&Sprite, &Sprite), shown: Shown, t: f32) {
         let (width, height, stride) = (
             self.width as usize,
             self.height as usize,
@@ -932,7 +957,8 @@ impl Panel {
                 height,
             },
             (arriving, leaving),
-            row,
+            lift,
+            sprites,
             shown,
             t,
         );
@@ -1094,14 +1120,144 @@ pub(crate) fn iris_frame(
 /// Which shape a transition is composing, so that one frame loop can time,
 /// pace and report for all of them on the same terms.
 #[derive(Copy, Clone)]
-enum Compose {
-    Iris { from: Window, to: Window },
-    Lift { row: Window },
+enum Compose<'a> {
+    Iris {
+        from: Window,
+        to: Window,
+    },
+    Lift {
+        lift: Lift,
+        sprites: (&'a Sprite, &'a Sprite),
+    },
 }
 
-/// One lift frame: the room crossing to the control screen, staggered
-/// outwards from the focused row, with that row's card travelling up into
-/// the header and the screen's bar cards arriving from below.
+/// Everything the lift needs to know about the two pages, in panel pixels.
+///
+/// All of it is read from the pages themselves - the list for the room's
+/// half, `light.slint` for the screen's - once, before the first frame.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct Lift {
+    /// The row the screen is opening out of, and one row to the next.
+    pub row: Window,
+    pub pitch: i32,
+    /// Where that row's name and icon are drawn inside it.
+    pub label: Window,
+    pub disc: Window,
+    /// Where the two of them land on the screen.
+    pub title: Window,
+    pub screen_disc: Window,
+    /// The bands of the screen that arrive rather than being there: the
+    /// header down to the state line, the bar cards, and the footer.
+    pub header_h: i32,
+    pub cards: [Window; 2],
+    pub footer_y: i32,
+    /// The level bar's track and how full it ends up, and where the colour
+    /// marker ends up, so both can be revealed out of the screen.
+    pub track: [Window; 2],
+    pub fill_h: i32,
+    pub marker_y: i32,
+    pub marker_h: i32,
+}
+
+/// A rectangle cut out of a page, kept for the length of one transition.
+///
+/// Small and owned: a row's name and its icon, a few tens of kilobytes
+/// between them, taken once before the first frame and put down at an
+/// interpolated place on each. Nothing here allocates once the transition has
+/// started.
+pub(crate) struct Sprite {
+    pixels: Vec<u32>,
+    box_: Window,
+}
+
+impl Sprite {
+    /// Cut a rectangle out of a page.
+    pub(crate) fn cut(page: &[u32], width: usize, height: usize, box_: Window) -> Sprite {
+        let (x, y) = (box_.x.max(0) as usize, box_.y.max(0) as usize);
+        let w = (box_.w.max(0) as usize).min(width.saturating_sub(x));
+        let h = (box_.h.max(0) as usize).min(height.saturating_sub(y));
+        let mut pixels = Vec::with_capacity(w * h);
+        for row in 0..h {
+            pixels.extend_from_slice(&page[(y + row) * width + x..(y + row) * width + x + w]);
+        }
+        Sprite {
+            pixels,
+            box_: Window {
+                x: x as i32,
+                y: y as i32,
+                w: w as i32,
+                h: h as i32,
+                r: 0,
+            },
+        }
+    }
+    /// Put it down with its top-left corner at `at`, clipped at all four
+    /// edges of the surface. `key` is a colour that is not drawn: the card a
+    /// row's name sits on, so that only the name travels and not the plate
+    /// under it. Written, never read back - a framebuffer is slow to read.
+    pub(crate) fn put(&self, dst: &mut Surface<'_>, at: (i32, i32), key: Option<u32>) {
+        let (w, h, stride) = (dst.width as i32, dst.height as i32, dst.stride);
+        for row in 0..self.box_.h {
+            let y = at.1 + row;
+            if y < 0 || y >= h {
+                continue;
+            }
+            let (from, to) = (row * self.box_.w, at.0);
+            let left = to.max(0);
+            let right = (to + self.box_.w).min(w);
+            if left >= right {
+                continue;
+            }
+            let taken = &self.pixels[(from + left - to) as usize..(from + right - to) as usize];
+            let put = &mut dst.pixels
+                [y as usize * stride + left as usize..y as usize * stride + right as usize];
+            match key {
+                None => put.copy_from_slice(taken),
+                Some(key) => {
+                    for (d, &s) in put.iter_mut().zip(taken) {
+                        if s != key {
+                            *d = s;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A filled rounded rectangle with a one-pixel edge, in the colours a card is
+/// drawn in: the row's card, rising.
+///
+/// The same row-run arithmetic the focus ring's outline uses, filled instead
+/// of stroked, so it costs a run a scanline over a rectangle that is never
+/// more than a tenth of the panel.
+fn fill_window(dst: &mut Surface<'_>, box_: Window, fill: u32, edge: u32) {
+    let (w, h, stride) = (dst.width, dst.height, dst.stride);
+    for y in 0..h {
+        let Some((left, right)) = window_run(box_, y as i32, w) else {
+            continue;
+        };
+        let row = &mut dst.pixels[y * stride + left..y * stride + right];
+        row.fill(fill);
+        // The edge: the first and last row of the box, and a pixel each side
+        // of every row, which follows the corner inset by construction.
+        let ends = y as i32 == box_.y || y as i32 == box_.y + box_.h - 1;
+        if ends {
+            row.fill(edge);
+        } else {
+            if let Some(first) = row.first_mut() {
+                *first = edge;
+            }
+            if let Some(last) = row.last_mut() {
+                *last = edge;
+            }
+        }
+    }
+}
+
+/// One lift frame: the room falling away from the focused row outwards, that
+/// row's card rising into the header band with its name and icon riding on
+/// it, and the control screen arriving piece by piece.
 ///
 /// The close is the open run backwards over the same two pages, so `t` of 0
 /// is always the room and `t` of 1 always the screen whichever way it is
@@ -1109,7 +1265,8 @@ enum Compose {
 pub(crate) fn lift_frame(
     mut dst: Surface<'_>,
     pages: (&[u32], &[u32]),
-    row: Window,
+    lift: Lift,
+    sprites: (&Sprite, &Sprite),
     shown: Shown,
     t: f32,
 ) {
@@ -1119,50 +1276,200 @@ pub(crate) fn lift_frame(
         Shown::Leaving => (arriving, leaving, 1.0 - t),
     };
     let (w, h, stride) = (dst.width, dst.height, dst.stride);
-    // The screen's bar cards start `LIFT_BARS_DROP` low and rise: reading the
-    // screen that many rows earlier is the same picture, moved down. The band
-    // is read that much taller so the bottom of a dropped card is still in it.
-    let drop = (LIFT_BARS_DROP as f32 * (1.0 - ease_out(p))).round() as i32;
-    let bars = LIFT_BARS.0..LIFT_BARS.0 + LIFT_BARS.1 + LIFT_BARS_DROP;
-    // The stagger: how much later a scanline starts than the focused row's
-    // own does, by how far from it it is. One alpha a scanline, so the inner
-    // loop stays a flat run over the row.
-    let centre = row.y + row.h / 2;
-    let reach = centre.max(h as i32 - centre).max(1) as f32;
-    let span = 1.0 - LIFT_STAGGER;
-    let band = row.y..row.y + row.h;
-    for y in 0..h {
-        let away = ((y as i32 - centre).abs() as f32 / reach).min(1.0);
-        // Nought to one is this scanline of the room leaving, one to two is
-        // the screen arriving in its place. The focused row's own scanlines
-        // skip most of the first half: the card is what carries them now.
-        let mut stage = ((p - LIFT_STAGGER * away) / span * 2.0).clamp(0.0, 2.0);
-        if band.contains(&(y as i32)) {
-            stage = stage.max((p / LIFT_ROW_OUT).min(1.0));
+    // The end is the page itself, whole: every piece has arrived and nothing
+    // is left to work out.
+    if p >= 1.0 {
+        for y in 0..h {
+            dst.pixels[y * stride..y * stride + w].copy_from_slice(&screen[y * w..(y + 1) * w]);
         }
+        return;
+    }
+    // --- the room falls away, band by band, outwards from the row ---------
+    // A band is one row's pitch, so a card is never caught half faded. Only
+    // the bands inside their own short window are blended; before it a band
+    // is a copy of the room and after it a fill, which is what the screen's
+    // background is anyway.
+    let (fall_a, fall_b) = LIFT_ROWS_FALL;
+    for y in 0..h {
+        let band = (y as i32 - lift.row.y).div_euclid(lift.pitch.max(1));
+        let began = fall_a + LIFT_BAND_STEP * band.unsigned_abs() as f32;
         let out = &mut dst.pixels[y * stride..y * stride + w];
-        if stage <= 1.0 {
-            let k = 256 - (stage * 256.0).round() as u32;
+        if p < began {
+            out.copy_from_slice(&room[y * w..(y + 1) * w]);
+        } else if p < (began + LIFT_BAND_FADE).min(fall_b) {
+            let k = 256 - (((p - began) / LIFT_BAND_FADE).min(1.0) * 256.0).round() as u32;
             blend_flat(out, &room[y * w..(y + 1) * w], LIFT_BG, k);
         } else {
-            let from = if bars.contains(&(y as i32)) {
-                (y as i32 - drop).clamp(0, h as i32 - 1) as usize
-            } else {
-                y
-            };
-            let k = ((stage - 1.0) * 256.0).round() as u32;
-            blend_flat(out, &screen[from * w..(from + 1) * w], LIFT_BG, k);
+            out.fill(LIFT_BG);
         }
     }
-    // The focused row's card, rising into the header band and handing over to
-    // the real one underneath it. At the very start it is the room's own row
-    // in its own place, so it changes nothing; by `LIFT_CARD_UNTIL` it is
-    // gone and the screen's header has arrived under it.
-    if p < LIFT_CARD_UNTIL {
-        let travel = ease_out(p / LIFT_CARD_UNTIL);
-        let dy = (((LIFT_HEADER_Y - row.y) as f32) * travel).round() as i32;
-        let k = (256.0 * (1.0 - p / LIFT_CARD_UNTIL)).round() as u32;
-        band_over(&mut dst, room, row, dy, k);
+    // --- the focused card rises into the header band ----------------------
+    if let Some(e) = phase(p, LIFT_CARD_RISE) {
+        let (x, y, cw, ch, r) = LIFT_CARD_TO;
+        let to = Window {
+            x,
+            y,
+            w: cw,
+            h: ch,
+            r,
+        };
+        fill_window(&mut dst, lift.row.lerp(to, e), LIFT_SURFACE, LIFT_BORDER);
+    }
+    // --- its name and its icon fly to the title and the disc --------------
+    // Keyed on the card they were cut from, so only the glyphs travel.
+    if let Some(e) = phase(p, LIFT_LABEL_FLY) {
+        let (label, disc) = sprites;
+        let at = |from: Window, to: Window| {
+            (
+                from.x + (((to.x - from.x) as f32) * e).round() as i32,
+                from.y + (((to.y - from.y) as f32) * e).round() as i32,
+            )
+        };
+        disc.put(
+            &mut dst,
+            at(lift.disc, lift.screen_disc),
+            Some(LIFT_SURFACE),
+        );
+        label.put(
+            &mut dst,
+            at(lift.label, title_landing(lift)),
+            Some(LIFT_SURFACE),
+        );
+    }
+    // --- the real header takes over ---------------------------------------
+    if p >= LIFT_HEADER_IN.0 {
+        band_over(
+            &mut dst,
+            screen,
+            Window {
+                x: 0,
+                y: 0,
+                w: w as i32,
+                h: lift.header_h,
+                r: 0,
+            },
+            0,
+            256,
+        );
+    }
+    // --- the bar cards arrive, fourteen pixels low, the right one lagging -
+    for (which, card) in lift.cards.iter().enumerate() {
+        if card.w <= 0 {
+            continue;
+        }
+        let window = (
+            LIFT_CARDS_IN.0 + LIFT_BARS_LAG * which as f32,
+            LIFT_CARDS_IN.1 + LIFT_BARS_LAG * which as f32,
+        );
+        let Some(e) = phase(p, window) else {
+            continue;
+        };
+        let dy = (LIFT_BARS_DROP as f32 * (1.0 - e)).round() as i32;
+        band_over(&mut dst, screen, *card, dy, 256);
+        // The level and the colour it is showing grow into the card rather
+        // than arriving with it: the screen already holds both at their
+        // values, so they are revealed out of it.
+        reveal_track(&mut dst, screen, lift, which, dy, p);
+    }
+    // --- the footer, last ---------------------------------------------------
+    if p >= LIFT_FOOTER_IN.0 {
+        band_over(
+            &mut dst,
+            screen,
+            Window {
+                x: 0,
+                y: lift.footer_y,
+                w: w as i32,
+                h: h as i32 - lift.footer_y,
+                r: 0,
+            },
+            0,
+            256,
+        );
+    }
+}
+
+/// Where the flying label comes to rest: the title's box, lined up so that
+/// the name lands on the name rather than the box on the box - the two are
+/// the same size and weight (`Theme.device-name`), so this is a cut, not a
+/// fade.
+fn title_landing(lift: Lift) -> Window {
+    Window {
+        x: lift.title.x,
+        y: lift.title.y + (lift.title.h - lift.label.h) / 2,
+        ..lift.label
+    }
+}
+
+/// How far through a phase `p` is, or nothing because it has not begun.
+/// Eased the way everything else here is once it has.
+fn phase(p: f32, window: (f32, f32)) -> Option<f32> {
+    (p >= window.0).then(|| {
+        let span = (window.1 - window.0).max(f32::EPSILON);
+        ease_out(((p - window.0) / span).clamp(0.0, 1.0))
+    })
+}
+
+/// The level bar filling and the colour marker sliding to their places.
+///
+/// Neither is drawn: the page already holds both at their values, and the
+/// card's own band copy has just put them down. The fill is un-revealed from
+/// the top by painting the empty part of the track in the colour the page
+/// gives it, and the marker is moved by painting over it with the gradient
+/// from just above and putting it back where it has got to. While the card is
+/// still travelling, both move with it.
+fn reveal_track(dst: &mut Surface<'_>, screen: &[u32], lift: Lift, which: usize, dy: i32, p: f32) {
+    let track = lift.track[which];
+    if track.w <= 0 {
+        return;
+    }
+    let grown = phase(p, LIFT_GROW).unwrap_or(0.0);
+    let width = dst.width;
+    if which == 0 && lift.fill_h > 0 {
+        let risen = (lift.fill_h as f32 * grown).round() as i32;
+        let empty = track.y + track.h - risen;
+        // The colour of an empty track, from the page's own top of it.
+        let sample = screen
+            .get(((track.y + 2).max(0) as usize) * width + (track.x + track.w / 2).max(0) as usize)
+            .copied()
+            .unwrap_or(LIFT_BG);
+        let (left, right) = (
+            track.x.clamp(0, width as i32) as usize,
+            (track.x + track.w).clamp(0, width as i32) as usize,
+        );
+        for y in track.y..empty {
+            let row = y + dy;
+            if row < 0 || row >= dst.height as i32 || left >= right {
+                continue;
+            }
+            dst.pixels[row as usize * dst.stride + left..row as usize * dst.stride + right]
+                .fill(sample);
+        }
+    } else if which == 1 && lift.marker_y >= 0 {
+        let strip = Window {
+            x: track.x,
+            y: lift.marker_y,
+            w: track.w,
+            h: lift.marker_h,
+            r: 0,
+        };
+        let foot = track.y + track.h - lift.marker_h;
+        let at = foot + ((lift.marker_y - foot) as f32 * grown).round() as i32;
+        if at != lift.marker_y {
+            // Where the page keeps it, painted out with the gradient just
+            // above it - which is the same gradient, a few mirek along.
+            band_over(
+                dst,
+                screen,
+                Window {
+                    y: lift.marker_y - lift.marker_h,
+                    ..strip
+                },
+                lift.marker_h + dy,
+                256,
+            );
+        }
+        band_over(dst, screen, strip, at - lift.marker_y + dy, 256);
     }
 }
 
@@ -1197,21 +1504,40 @@ fn band_over(dst: &mut Surface<'_>, src: &[u32], band: Window, dy: i32, k: u32) 
 /// One scanline of `src` crossed to a flat colour: `k` of 256 is how much of
 /// `src`, so 256 is the page untouched and 0 is the colour.
 ///
-/// Two channels to a multiply, packed in the spare halves of a `u32`: red and
-/// blue in one, green and alpha in the other. Each product is at most
-/// `255 * 256`, which is exactly sixteen bits, so neither pair can carry into
-/// the other and no unpacking is needed. Written as a zip over two slices of
-/// the same length so the hot loop has no bounds checks and the compiler is
-/// free to widen it; the flat operand's two halves are worked out once for
-/// the whole run.
+/// Two pixels to an iteration and two channels to a multiply: four channels
+/// packed in the spare halves of a `u64`, red and blue of both pixels in one
+/// pass and green and alpha in the other. Each product is at most `255 * 256`,
+/// which is exactly sixteen bits, so no lane can carry into its neighbour and
+/// nothing has to be unpacked. The flat operand's two halves are worked out
+/// once for the whole run.
+///
+/// The u32-at-a-time version of this measured about 10 ms for a whole panel
+/// on the HA100 against 1.3 ms for a `memcpy` of the same, which is far more
+/// than a dozen integer operations a pixel should cost: it was not being
+/// widened. Halving the iterations is the part of that worth having without
+/// reaching for intrinsics.
 fn blend_flat(dst: &mut [u32], src: &[u32], flat: u32, k: u32) {
     debug_assert!(k <= 256);
-    let (ks, kf) = (k, 256 - k);
-    let (flat_lo, flat_hi) = ((flat & 0x00ff_00ff) * kf, ((flat >> 8) & 0x00ff_00ff) * kf);
-    for (d, &s) in dst.iter_mut().zip(src) {
-        let lo = ((s & 0x00ff_00ff) * ks + flat_lo) >> 8;
-        let hi = (((s >> 8) & 0x00ff_00ff) * ks + flat_hi) & 0xff00_ff00;
-        *d = (lo & 0x00ff_00ff) | hi;
+    const LO: u64 = 0x00ff_00ff_00ff_00ff;
+    const HI: u64 = 0xff00_ff00_ff00_ff00;
+    let (ks, kf) = (u64::from(k), u64::from(256 - k));
+    let both = (u64::from(flat) << 32) | u64::from(flat);
+    let (flat_lo, flat_hi) = ((both & LO) * kf, ((both >> 8) & LO) * kf);
+    let n = dst.len().min(src.len());
+    let (pairs, tail) = dst[..n].as_chunks_mut::<2>();
+    let (src_pairs, src_tail) = src[..n].as_chunks::<2>();
+    for (d, s) in pairs.iter_mut().zip(src_pairs) {
+        let packed = (u64::from(s[1]) << 32) | u64::from(s[0]);
+        let lo = ((packed & LO) * ks + flat_lo) >> 8;
+        let hi = (((packed >> 8) & LO) * ks + flat_hi) & HI;
+        let out = (lo & LO) | hi;
+        d[0] = out as u32;
+        d[1] = (out >> 32) as u32;
+    }
+    for (d, &s) in tail.iter_mut().zip(src_tail) {
+        let lo = ((u64::from(s) & LO) * ks + flat_lo) >> 8;
+        let hi = (((u64::from(s) >> 8) & LO) * ks + flat_hi) & HI;
+        *d = ((lo & LO) | hi) as u32;
     }
 }
 
@@ -1552,6 +1878,63 @@ mod tests {
             h: 3,
             r: 0,
         };
+        let lift = Lift {
+            row,
+            pitch: 4,
+            label: Window {
+                x: 4,
+                y: 6,
+                w: 6,
+                h: 3,
+                r: 0,
+            },
+            disc: Window {
+                x: 2,
+                y: 6,
+                w: 2,
+                h: 2,
+                r: 0,
+            },
+            title: Window {
+                x: 1,
+                y: 1,
+                w: 8,
+                h: 3,
+                r: 0,
+            },
+            screen_disc: Window {
+                x: 7,
+                y: 5,
+                w: 2,
+                h: 2,
+                r: 0,
+            },
+            header_h: 5,
+            cards: [
+                Window {
+                    x: 1,
+                    y: 8,
+                    w: 6,
+                    h: 6,
+                    r: 0,
+                },
+                Window::default(),
+            ],
+            footer_y: 14,
+            track: [
+                Window {
+                    x: 2,
+                    y: 9,
+                    w: 4,
+                    h: 4,
+                    r: 0,
+                },
+                Window::default(),
+            ],
+            fill_h: 2,
+            marker_y: -1,
+            marker_h: 1,
+        };
         let at = |shown, t| {
             let mut pixels = vec![0u32; W * H];
             // The page being arrived at is the screen on the way in and the
@@ -1560,6 +1943,10 @@ mod tests {
                 Shown::Arriving => (&screen[..], &room[..]),
                 Shown::Leaving => (&room[..], &screen[..]),
             };
+            // The name and the icon are always cut from the room, whichever
+            // way the transition is going, which is what `lift` does.
+            let label = Sprite::cut(&room, W, H, lift.label);
+            let disc = Sprite::cut(&room, W, H, lift.disc);
             lift_frame(
                 Surface {
                     pixels: &mut pixels,
@@ -1568,7 +1955,8 @@ mod tests {
                     height: H,
                 },
                 pages,
-                row,
+                lift,
+                (&label, &disc),
                 shown,
                 t,
             );
@@ -1595,6 +1983,118 @@ mod tests {
                 "the close is not the open backwards at {t}"
             );
         }
+    }
+
+    /// A sprite is a rectangle of a page put down somewhere else, clipped at
+    /// every edge, and with the card it was cut from left behind.
+    #[test]
+    fn a_sprite_lands_where_it_is_put_and_leaves_its_backing_behind() {
+        let page: Vec<u32> = (0..W * H).map(|i| 100 + i as u32).collect();
+        let box_ = Window {
+            x: 4,
+            y: 4,
+            w: 3,
+            h: 2,
+            r: 0,
+        };
+        let sprite = Sprite::cut(&page, W, H, box_);
+        fn surface(pixels: &mut [u32]) -> Surface<'_> {
+            Surface {
+                pixels,
+                stride: W,
+                width: W,
+                height: H,
+            }
+        }
+        let mut pixels = vec![0u32; W * H];
+        sprite.put(&mut surface(&mut pixels), (1, 1), None);
+        assert_eq!(&pixels[W + 1..W + 4], &page[4 * W + 4..4 * W + 7]);
+        assert_eq!(&pixels[2 * W + 1..2 * W + 4], &page[5 * W + 4..5 * W + 7]);
+        assert_eq!(pixels[W], 0);
+        assert_eq!(pixels[W + 4], 0);
+        assert!(pixels[3 * W..].iter().all(|p| *p == 0));
+
+        // Off every edge in turn: what fits arrives, the rest is dropped and
+        // nothing wraps round.
+        let mut pixels = vec![0u32; W * H];
+        sprite.put(&mut surface(&mut pixels), (-1, -1), None);
+        assert_eq!(&pixels[0..2], &page[5 * W + 5..5 * W + 7]);
+        assert!(pixels[2..W].iter().all(|p| *p == 0));
+        let mut pixels = vec![0u32; W * H];
+        sprite.put(
+            &mut surface(&mut pixels),
+            (W as i32 - 1, H as i32 - 1),
+            None,
+        );
+        assert_eq!(pixels[H * W - 1], page[4 * W + 4]);
+        assert!(pixels[..H * W - 1].iter().all(|p| *p == 0));
+
+        // Keyed: the colour the sprite was cut against is not put down, so
+        // only the glyphs travel and the card they sat on stays behind.
+        let flat = page[4 * W + 5];
+        let mut pixels = vec![7u32; W * H];
+        sprite.put(&mut surface(&mut pixels), (1, 1), Some(flat));
+        assert_eq!(pixels[W + 1], page[4 * W + 4]);
+        assert_eq!(pixels[W + 2], 7, "the keyed pixel was put down");
+        assert_eq!(pixels[W + 3], page[4 * W + 6]);
+    }
+
+    /// A filled rounded rectangle: the card, rising. The same row runs the
+    /// ring's outline uses, filled, with a pixel of edge all round.
+    #[test]
+    fn a_filled_window_has_an_edge_and_rounded_corners() {
+        let mut pixels = vec![0u32; W * H];
+        let mut dst = Surface {
+            pixels: &mut pixels,
+            stride: W,
+            width: W,
+            height: H,
+        };
+        fill_window(
+            &mut dst,
+            Window {
+                x: 4,
+                y: 5,
+                w: 8,
+                h: 6,
+                r: 2,
+            },
+            1,
+            2,
+        );
+        let picture: Vec<String> = pixels
+            .chunks(W)
+            .map(|row| {
+                row.iter()
+                    .map(|p| match *p {
+                        0 => '.',
+                        1 => '#',
+                        _ => 'o',
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            picture,
+            [
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                ".....oooooo.....",
+                "....o######o....",
+                "....o######o....",
+                "....o######o....",
+                "....o######o....",
+                ".....oooooo.....",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+            ]
+        );
     }
 
     #[test]

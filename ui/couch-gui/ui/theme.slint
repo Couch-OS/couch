@@ -44,6 +44,15 @@ export global Theme {
     out property <length> pad-bottom: 22px;
     out property <length> overlay-inset: 36px;
 
+    // --- type -----------------------------------------------------------------
+    // A device's name, wherever it is shown. A room row's label and the title
+    // of the screen that row opens are the same words about the same thing, so
+    // they are the same size and weight - which is also what lets the lift
+    // transition fly one straight onto the other with nothing to fade
+    // (docs/slint-notes.md).
+    out property <length> device-name: 26px;
+    out property <int> device-name-weight: 600;
+
     // --- focus ----------------------------------------------------------------
     // Slint has no CSS outline, and a border on the element itself would shift
     // its inner layout, so the ring is drawn as a sibling inset by -6px.
