@@ -4558,6 +4558,102 @@ mod tests {
         crate::panel::checks::stronger(&leaving, &arriving, W, H, plan, "receiver row");
         crate::panel::checks::ghosts(&leaving, &arriving, W, H, plan, "receiver row");
         crate::panel::checks::pops(&leaving, &arriving, W, H, plan, "receiver row");
+
+        // And the same television showing what is playing, which is a
+        // photograph behind everything. It crosses band by band instead of
+        // falling to a background it has not got - the same mechanism the
+        // player uses, pinned here too because a mechanism shared in code has
+        // fooled this work twice already.
+        let art = {
+            let mut buffer = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(W as u32, H as u32);
+            for (i, p) in buffer.make_mut_slice().iter_mut().enumerate() {
+                let (x, y) = (i % W, i / W);
+                *p = slint::Rgb8Pixel {
+                    r: 0x30,
+                    g: (x * 255 / W) as u8,
+                    b: (y * 255 / H) as u8,
+                };
+            }
+            slint::Image::from_rgb8(buffer)
+        };
+        app.set_tv_generic(false);
+        app.set_tv_android(true);
+        app.set_tv_media_active(true);
+        app.set_tv_media_art(art);
+        app.set_tv_media_has_art(true);
+        app.set_tv_media_title("Weird Fishes / Arpeggi".into());
+        app.set_tv_media_subtitle("Radiohead · In Rainbows".into());
+        app.set_tv_media_state("Playing".into());
+        app.set_tv_media_app("Music".into());
+        let mut c = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut c);
+        let with_art = word(&c);
+        let plan = crate::tv_plan(&app, from, W as i32, H as i32)
+            .expect("a television showing what is playing still lifts, band by band");
+        assert_eq!(
+            plan.crossing,
+            crate::panel::Crossing::Banded,
+            "a television with a photograph behind it fell to a background it has not got"
+        );
+        let mut art = crate::lift_art(&leaving, &with_art, W, H, plan);
+        let content = crate::panel::lift_content(&leaving, W, H);
+        let screen_content = crate::panel::lift_content(&with_art, W, H);
+        for (step, t) in sweep.iter().map(|n| (*n, *n as f32 / 100.0)) {
+            let mut pixels = vec![0u32; W * H];
+            crate::panel::lift_frame(
+                crate::panel::Surface {
+                    pixels: &mut pixels,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&with_art, &leaving),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                crate::panel::Shown::Arriving,
+                crate::panel::Frame::at(t),
+            );
+            match step {
+                0 => assert_eq!(pixels, leaving, "the first banded frame is not the room"),
+                100 => assert_eq!(pixels, with_art, "the last banded frame is not the screen"),
+                _ => {
+                    assert_ne!(
+                        pixels, with_art,
+                        "banded frame {step} is already the screen"
+                    );
+                    assert_ne!(pixels, leaving, "banded frame {step} never left the room");
+                }
+            }
+            if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels
+                    .iter()
+                    .flat_map(|p| [*p as u8, (*p >> 8) as u8, (*p >> 16) as u8])
+                    .collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir)
+                        .join(format!("tv-banded-{:03}.png", (t * 100.0).round() as u32)),
+                    &bytes,
+                    W as u32,
+                    H as u32,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        let (mean, worst) =
+            crate::panel::checks::profile(&leaving, &with_art, W, H, plan, "tv banded");
+        assert!(
+            mean <= 0.25 && worst <= 0.35,
+            "the television's banded lift costs {mean:.2} panels a frame on average and \
+             {worst:.2} at its worst"
+        );
+        crate::panel::checks::never_bare(&leaving, &with_art, W, H, plan, "tv banded");
+        crate::panel::checks::lands(&leaving, &with_art, W, H, plan, "tv banded");
+        crate::panel::checks::stronger(&leaving, &with_art, W, H, plan, "tv banded");
+        crate::panel::checks::ghosts(&leaving, &with_art, W, H, plan, "tv banded");
+        crate::panel::checks::pops(&leaving, &with_art, W, H, plan, "tv banded");
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }
