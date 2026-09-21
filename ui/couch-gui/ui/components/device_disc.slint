@@ -1,0 +1,30 @@
+import { Theme } from "../theme.slint";
+
+// The disc a device's icon sits in.
+//
+// One drawing, used by a room row and by the screen that row opens, so that
+// the lift can fly the row's own disc onto the screen's and the hand-over is
+// nothing at all - the two ends are the same pixels in the same place. Any
+// screen that adopts the lift uses this too (docs/slint-notes.md).
+export component DeviceDisc inherits Rectangle {
+    in property <image> icon;
+    /// Lit, as against known to be off. A device that has not answered is
+    /// neither: it gets the plain disc and the plain glyph.
+    in property <bool> active;
+    in property <bool> known;
+    width: 52px;
+    height: 52px;
+    border-radius: Theme.r-disc;
+    background: root.known && !root.active ? Theme.surface-icon-idle : Theme.surface-icon;
+    border-width: 1px;
+    border-color: root.known && !root.active ? Theme.border-icon-idle : Theme.border-icon;
+    Image {
+        x: 14px;
+        y: 14px;
+        width: 24px;
+        height: 24px;
+        source: root.icon;
+        colorize: root.active ? Theme.accent : root.known ? Theme.text-quaternary : Theme.text-secondary;
+        animate colorize { duration: 180ms; easing: ease-out; }
+    }
+}

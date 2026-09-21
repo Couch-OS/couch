@@ -454,6 +454,26 @@ grows. Both problems have the same answer - do not touch every pixel.
   do not travel, so they stay in the band and fade with it. The first frame is
   still the room exactly: at that point the sprites sit on their own source and
   put back precisely what was painted out.
+- **What it costs, and where that went.** The rule that nothing pops cost
+  about twice what the lift cost before it: measured on the HA100 at 500 ms,
+  a mean of 8.6-10.1 ms a frame and worst frames of 12-17, against a 16.7 ms
+  budget. A speed pass took that to a **mean of 0.26 and a worst frame of 0.29
+  panels of blending** in the profile the tests print, from 0.70 and 1.22 -
+  about 3.4 ms a frame on the device's own calibration. Four things did it:
+  a run of one colour fades to one colour, so it is **filled and not blended**
+  (most of a card's height); the header, state line and footer fade only over
+  the part of each row that **has anything on it**; a bar card is **cut once
+  and patched**, not rebuilt every frame; and the frame buffer and the card
+  scratches are **allocated before the clock starts**, which is what made an
+  open cost more than a close and once put a single frame at 34 ms.
+- **The travellers are drawn last**, after every fade, so nothing arriving can
+  clip the name or the icon on its way.
+- **A traveller lands on itself.** The row and the screen draw the device's
+  name at one size (`Theme.device-name`) and its icon with one component
+  (`components/device_disc.slint`), so the hand-over is nothing at all rather
+  than two drawings swapping places. A screen that adopts the lift uses the
+  same two. The test asserts it: at the best offset within a pixel, a
+  traveller's source and its landing may differ by no more than a shade.
 - **Blending only where there is anything to blend.** A room is mostly its
   background, so one pass before the first frame records where each scanline
   has content and the fade touches only that span. On a list that is about

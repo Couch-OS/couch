@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
 import { FocusRing } from "focus_ring.slint";
+import { DeviceDisc } from "device_disc.slint";
 import { ChoiceItem } from "chooser.slint";
 
 // One flat list. State updates mutate model rows, preserving focus and scroll.
@@ -113,6 +114,11 @@ export component RoomDevices inherits Rectangle {
     /// holds it. The band is generous on purpose; the pixels that are the
     /// card rather than the name are dropped when it is put down.
     public function disc-inset() -> length { return 18px; }
+    /// Where the disc sits down the row: the layout above pads the card by
+    /// `disc-inset` all round and centres the disc in what is left, so this
+    /// is that arithmetic and not a guess at it - the lift flies this very
+    /// rectangle to the screen's own disc, and a pixel out shows.
+    public function disc-box-y() -> length { return 18px; }
     public function label-box-x() -> length { return 18px + 52px + 16px; }
     public function label-box-w() -> length {
         return root.width - 2 * Theme.pad-side - (18px + 52px + 16px) - 16px - 22px - 18px;
@@ -177,17 +183,7 @@ export component RoomDevices inherits Rectangle {
                 }
                 if !item.activity: HorizontalLayout {
                     padding: 18px; spacing: 16px;
-                    Rectangle {
-                        width: 52px; height: 52px; border-radius: Theme.r-disc;
-                        background: item.power-known && !item.active ? Theme.surface-icon-idle : Theme.surface-icon;
-                        border-width: 1px; border-color: item.power-known && !item.active ? Theme.border-icon-idle : Theme.border-icon;
-                        Image {
-                            x: 14px; y: 14px; width: 24px; height: 24px;
-                            source: item.icon;
-                            colorize: item.active ? Theme.accent : item.power-known ? Theme.text-quaternary : Theme.text-secondary;
-                            animate colorize { duration: 180ms; easing: ease-out; }
-                        }
-                    }
+                    DeviceDisc { icon: item.icon; active: item.active; known: item.power-known; }
                     VerticalLayout {
                         alignment: center; spacing: 2px; horizontal-stretch: 1;
                         Text { text: item.title; color: Theme.text; font-size: Theme.device-name; font-weight: Theme.device-name-weight; overflow: elide; }

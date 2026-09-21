@@ -1,6 +1,7 @@
 import { Theme } from "../theme.slint";
 import { MediaBack } from "../widgets/media-back.slint";
 import { FocusRing } from "../components/focus_ring.slint";
+import { DeviceDisc } from "../components/device_disc.slint";
 
 // One device screen for every light and blind, whatever drives it: built-in
 // Hue, Home Assistant, Matter or a packaged child. The room row behind it
@@ -28,6 +29,10 @@ export component LightScreen inherits Rectangle {
     // "On · 40%", "Off", "Unavailable", "Open · 60% open".
     in property <string> state;
     in property <bool> active;
+    /// The device's own icon, and whether it has said what it is doing: the
+    /// disc is the row's disc, so it is drawn from the row's own facts.
+    in property <image> icon;
+    in property <bool> known;
     // "BRIGHTNESS" or "OPEN POSITION", and the big reading above the bar.
     in property <string> level-label;
     in property <string> level;
@@ -74,18 +79,14 @@ export component LightScreen inherits Rectangle {
     // and cut with nothing changing size. The back button is centred on the
     // pair of lines rather than on the title alone.
     MediaBack { x: 24px; y: 26px; activate => { root.action("close", 0); } }
-    Text { x: 88px; y: 20px; width: parent.width - 112px; height: 34px; text: root.title; font-size: Theme.device-name; font-weight: Theme.device-name-weight; color: Theme.text; overflow: elide; }
+    Text { x: 88px; y: 20px; width: parent.width - 112px; height: 34px; vertical-alignment: top; text: root.title; font-size: Theme.device-name; font-weight: Theme.device-name-weight; color: Theme.text; overflow: elide; }
     Text { x: 88px; y: 56px; width: parent.width - 112px; height: 24px; text: root.room; font-size: 16px; color: Theme.text-secondary; overflow: elide; }
 
-    Rectangle {
-        x: (parent.width - 52px) / 2; y: 94px; width: 52px; height: 52px; border-radius: 26px;
-        background: root.active ? Theme.accent-bg : Theme.surface-icon;
-        border-width: 1px; border-color: root.active ? Theme.border-raised : Theme.border-icon;
-        Image {
-            x: 14px; y: 14px; width: 24px; height: 24px;
-            source: root.cover ? @image-url("../../../../assets/lucide/blinds.svg") : @image-url("../../../../assets/lucide/lightbulb.svg");
-            colorize: root.active ? Theme.accent : Theme.text-secondary;
-        }
+    // The same disc the room row draws, with the same icon: the lift flies
+    // the row's own onto this one, so the two have to be one drawing.
+    DeviceDisc {
+        x: (parent.width - 52px) / 2; y: 94px;
+        icon: root.icon; active: root.active; known: root.known;
     }
     Text { x: 24px; y: 156px; width: parent.width - 48px; height: 28px; text: root.pending ? "Updating…" : root.state; horizontal-alignment: center; font-size: 20px; color: root.active ? Theme.accent : Theme.text-secondary; }
 

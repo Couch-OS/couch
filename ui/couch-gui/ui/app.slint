@@ -289,6 +289,8 @@ export component App inherits Window {
     in-out property <string> light-screen-room;
     in-out property <string> light-screen-state;
     in-out property <bool> light-screen-active;
+    in-out property <image> light-screen-icon;
+    in-out property <bool> light-screen-known;
     in-out property <string> light-screen-level-label: "BRIGHTNESS";
     in-out property <string> light-screen-level;
     in-out property <int> light-screen-level-percent;
@@ -323,6 +325,7 @@ export component App inherits Window {
     public function room-ring-width() -> length { return light-page.ring-box-width(); }
     public function room-row-pitch() -> length { return light-page.row-pitch(); }
     public function room-disc-inset() -> length { return light-page.disc-inset(); }
+    public function room-disc-y() -> length { return light-page.disc-box-y(); }
     public function room-label-x() -> length { return light-page.label-box-x(); }
     public function room-label-y() -> length { return light-page.label-box-y(); }
     public function room-label-w() -> length { return light-page.label-box-w(); }
@@ -635,6 +638,7 @@ export component App inherits Window {
         visible:root.light-screen-shown; shown:root.light-screen-shown;
         title:root.light-screen-title; room:root.light-screen-room; state:root.light-screen-state;
         active:root.light-screen-active;
+        icon:root.light-screen-icon; known:root.light-screen-known;
         level-label:root.light-screen-level-label; level:root.light-screen-level;
         level-percent:root.light-screen-level-percent; level-known:root.light-screen-level-known;
         adjustable:root.light-screen-adjustable;
