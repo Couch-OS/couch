@@ -341,6 +341,42 @@ of the whole panel is ~1.3ms at any clock. It also removed a prep timer (so
 the incoming page was instantiated before the first moving frame), a settle
 timer, `*-next` models and a `sliding` flag, none of which the copy needs.
 
+### The same two buffers, cut to a rounded window: the iris
+
+A light's or a blind's controls do not arrive from the side. They open out of
+the row that was pressed, as a rounded window onto page B that starts on that
+row's card and grows to the whole panel, with the focus ring riding its edge;
+Back collapses the same window back onto the same row. `Panel::iris` is the
+slide's machinery with the run boundaries worked out per row instead of once:
+
+- **Three runs a scanline instead of two** - page A, page B, page A - so a
+  frame costs what a slide frame costs, about 1.3ms of copying, and nothing is
+  blended or re-rasterised at any point in it. The corner radius is an inset
+  on the `2r` rows at each end, one integer square root each over a radius of
+  a dozen pixels; every other row is two comparisons.
+- **Both ends of the travel are parameters** (`panel::Window`, a rect and a
+  radius), so the same compositor would open a device row into its packaged
+  controls if that is ever wanted. The row's box is read from the list itself
+  (`RoomDevices::ring-position` and its neighbours) at the moment of the
+  press, so a scrolled list, a taller row or a different corner all move the
+  window with them.
+- **The last frame is the page that is arriving, whole.** A close stops on the
+  row, which is still a window full of the page that is leaving, so the final
+  frame puts the page behind it up entire. That is a handover at the smallest
+  the window ever gets, and it keeps the slide's invariant: when a transition
+  returns, RAM and the panel agree again.
+- **The ring is not faded.** A fade is a per-pixel blend of two layers, which
+  is the one thing this compositor never does; the ring is filled as a
+  `ring-width` outline on the window's edge and simply stops being drawn
+  partway through (`IRIS_RING_UNTIL`). `IRIS` is the duration and the three
+  `IRIS_RING_*` constants are the rest: they are there to be turned on the
+  device.
+
+A press that only switches a row must not arm it (`screen_pending` in
+`lights.rs` asks the row the same question `poll` does), and Home leaves the
+room altogether, so it keeps the room list's own transition rather than
+growing a window onto a page that is no longer there.
+
 Two things the mechanism depends on:
 
 - **The callbacks only record what they want.** `draw_if_needed` cannot be

@@ -95,6 +95,14 @@ export component RoomDevices inherits Rectangle {
     /// a move would repaint whatever read it (docs/slint-notes.md).
     public function scroll-destination() -> length { return root.scroll-goal; }
     public function ring-position() -> length { return fs.ring-y; }
+    /// The rest of the highlighted row's box, for the iris that opens out of
+    /// it (panel.rs). Read at the press rather than kept anywhere, for the
+    /// same reason as the two above; the x and the width are the arithmetic
+    /// the list above is laid out by, not a reading of it.
+    public function ring-height() -> length { return fs.ring-h; }
+    public function ring-radius() -> length { return fs.ring-r; }
+    public function ring-box-x() -> length { return Theme.pad-side; }
+    public function ring-box-width() -> length { return root.width - 2 * Theme.pad-side; }
     // One ring for the whole page rather than one per section, and its
     // geometry on a zero-size element so that moving it cannot dirty the root
     // that paints the background. Set imperatively, because a bound property

@@ -126,6 +126,19 @@ fn hold_to_end(config: Option<&couch_model::Config>, activity: &str) -> String {
         .unwrap_or("the activity");
     format!("Hold Power to end {name}")
 }
+/// The highlighted room row, in panel pixels: where the iris grows from, and
+/// where it collapses back to. Everything comes from the list itself, so
+/// nothing here has to know the row height, the padding or the scroll.
+fn room_window(app: &App) -> panel::Window {
+    panel::Window {
+        x: app.invoke_room_ring_x().round() as i32,
+        y: app.invoke_room_ring_position().round() as i32,
+        w: app.invoke_room_ring_width().round() as i32,
+        h: app.invoke_room_ring_height().round() as i32,
+        r: app.invoke_room_ring_radius().round() as i32,
+    }
+}
+
 fn overlay(app: &App) -> Option<Overlay> {
     Some(if app.get_activity_busy() {
         Overlay::Activity
@@ -1465,8 +1478,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Capture only navigation, then slide framebuffer snapshots so the
         // room animation does not rasterize the entire Slint scene every frame.
         let was_room = app.get_light_shown();
+        let was_screen = app.get_light_screen_shown();
         let room_navigation = !app.get_pair_shown() && light_controls.navigation_pending();
-        if room_navigation {
+        // A light's or blind's controls do not arrive from the side: they open
+        // out of the row that was pressed. The row's box is read here, before
+        // the press is performed, because that is when the ring is still on it
+        // - and it is read from the list, so a scrolled list, a taller row or
+        // a different corner radius all move the window with them.
+        let screen_navigation = !app.get_pair_shown() && light_controls.screen_pending();
+        let iris_row = screen_navigation.then(|| room_window(&app));
+        if room_navigation || screen_navigation {
             screen.snapshot();
         }
         light_controls.poll(&app);
@@ -1503,6 +1524,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "couch-gui: room slide {} ({} frames)",
                     if app.get_light_shown() { "in" } else { "out" },
+                    cost.frames
+                );
+            }
+            slint::platform::update_timers_and_animations();
+        } else if screen_navigation
+            && was_screen != app.get_light_screen_shown()
+            // Home closes the screen and leaves the room in one go. There is
+            // no row left to collapse onto, so that keeps the room's own
+            // behaviour rather than growing a window onto the wrong page.
+            && was_room == app.get_light_shown()
+        {
+            slint::platform::update_timers_and_animations();
+            if let Some(us) = screen.render_offscreen(&window) {
+                frames += 1;
+                render_us += us;
+                frame_max = frame_max.max(us);
+                let opening = app.get_light_screen_shown();
+                let whole = panel::Window::panel(screen.width, screen.height);
+                let row = iris_row.unwrap_or(whole);
+                let (from, to, shown) = if opening {
+                    (row, whole, panel::Shown::Arriving)
+                } else {
+                    (whole, row, panel::Shown::Leaving)
+                };
+                let cost = screen.iris(from, to, shown, panel::IRIS);
+                frames += cost.frames;
+                render_us += cost.work_us;
+                wait_us += cost.wait_us;
+                frame_max = frame_max.max(cost.max_us);
+                println!(
+                    "couch-gui: light screen iris {} ({} frames)",
+                    if opening { "open" } else { "close" },
                     cost.frames
                 );
             }
@@ -2304,6 +2357,30 @@ mod room_nav_tests {
                 .all(|y| *y >= landed - 0.5 && *y <= scenes_card + 0.5),
             "the ring left the gap between the last row and the scenes card: {trail:?}"
         );
+
+        // The iris opens out of that same outline, so the window it starts
+        // from is the row's own box: the list's inset either side, the row's
+        // height and its corner, at wherever the ring has got to.
+        let window = room_window(&app);
+        assert_eq!((window.x, window.w), (20, 440));
+        assert_eq!(window.y, landed.round() as i32);
+        assert!(
+            (60..160).contains(&window.h),
+            "{} is not a row height",
+            window.h
+        );
+        assert_eq!(window.r, 14);
+        // It travels with the highlight rather than being worked out again:
+        // back at the top row the window is the top row.
+        app.set_light_index(0);
+        // Two ticks: the first runs the change handler, which is where the
+        // move is set, and the second is the one the move is animated from.
+        tick(900);
+        tick(1100);
+        let top = room_window(&app);
+        assert_eq!(top.y, app.invoke_room_ring_position().round() as i32);
+        assert!(top.y < window.y, "the window did not follow the outline");
+        assert_eq!((top.x, top.w, top.h, top.r), (20, 440, window.h, 14));
     }
 }
 

@@ -32,6 +32,11 @@ bridge; refresh to see reported state. This is not proof of physical illuminatio
 
 ## The keys on a light's or blind's controls
 
+The controls **open out of the row you pressed**: the row's card becomes a
+window onto the screen and grows to fill the panel, with its focus ring riding
+the edge, and Back collapses the same window back onto the same row. Nothing
+is redrawn while it travels, so it costs no more than a page slide.
+
 **Neither bar is ever highlighted.** Each has a key of its own, so there is
 nothing to select between and no ring to move. Only a blind's three buttons
 carry a highlight, because OK has to know which one it presses.
