@@ -152,10 +152,31 @@ In **Rooms & devices**, open a Couch room and choose the Hue connection. The
 **Hue controls** selector switches between individual lights and **Hue rooms**.
 Adding a Hue room creates one grouped control; Power and OK switch its
 grouped-light service, and Volume Up/Down adjusts its brightness in 5% steps.
-A whole Hue room has no one colour temperature, so it is not offered one. Brightness support
-and the current level come from the bridge’s grouped-light dimming state, using
-the same push-maintained cache as individual lights. It does not
-create or rename Couch rooms or duplicate all the bridge room's lights.
+Brightness support and the current level come from the bridge’s grouped-light
+dimming state, using the same push-maintained cache as individual lights. It
+does not create or rename Couch rooms or duplicate all the bridge room's lights.
+
+**A Hue room has a colour temperature too**, and the Channel keys set it, the
+same as on a single lamp. The bridge will accept one for a whole room but never
+reports one back, so both the range and the current reading are worked out from
+the room's own lamps:
+
+- The **range** is the part every tunable lamp in the room can reach - the
+  highest of their minimums to the lowest of their maximums. A room with no
+  tunable lamp, or whose lamps share nothing, is offered no colour temperature
+  at all.
+- The **reading** comes only from lamps that are on and showing a white; a lamp
+  showing a colour reports no colour temperature and takes no part. If the
+  coolest and the warmest of them are within 12 mirek they are showing one
+  white, and the room reads their average. Further apart than that, the room
+  shows no reading - the first press of Channel then starts it at a warm white
+  and it steps from there.
+
+Members come from the bridge room's own list of devices, one lamp a device, so
+a multi-head fixture counts once. Hue **zones** are not offered as controls, so
+they have no colour temperature either. The packaged Hue integration derives a
+room's colour temperature by exactly these rules, so a bridge behaves the same
+whichever of the two drives it.
 
 In **Rooms & devices**, open a Couch room, select the Hue connection, and choose
 **Hue scenes** in the same **Hue controls** picker used for lights and Hue rooms.
