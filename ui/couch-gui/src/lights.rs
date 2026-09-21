@@ -86,6 +86,13 @@ const PLUGIN_PREFIX: &str = "plugin:";
 /// A status read is one of many in a round, made one after another on the one
 /// worker, so it waits far less than a command does.
 const STATUS_TIMEOUT: Duration = Duration::from_millis(1500);
+/// How long one write may be out before the control screen says so.
+///
+/// The bar and the read-out move on the press, so a write that is answered in
+/// the usual 100-300 ms needs no label at all; a packaged lamp under a held key
+/// chains writes and would otherwise read "Updating…" for the whole hold. Past
+/// this, something is wrong enough to be worth saying.
+const UPDATING_AFTER: Duration = Duration::from_millis(1500);
 /// A command, and the read that follows a package's bare `Ok`.
 fn write_timeout() -> Duration {
     couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1)
@@ -349,6 +356,11 @@ pub struct Controller {
     cache: StateCache,
     hue: Arc<crate::connections::HueFleet>,
     busy: Option<String>,
+    /// When the operation `busy` names went out. The control screen says
+    /// nothing while a write is answered promptly - the bar and the read-out
+    /// have already moved - and only calls it "Updating…" once one has been
+    /// out for `UPDATING_AFTER`.
+    busy_since: Option<Instant>,
     refreshing: bool,
     last_refresh: Instant,
     brightness_pending: VecDeque<(String, u8)>,
@@ -360,17 +372,17 @@ pub struct Controller {
     /// the latest target per row is ever sent.
     mirek_pending: VecDeque<(String, u16)>,
     mirek_flight: Option<(String, u16)>,
-    /// The row whose control screen is open, which control on it is
-    /// highlighted (0 the level, 1 the colour temperature or a blind's
-    /// buttons) and which of a blind's three buttons is selected.
+    /// The row whose control screen is open, and which of a blind's three
+    /// buttons is highlighted there. Neither bar is ever highlighted: each has
+    /// a key of its own, so there is nothing to select between.
     screen: Option<String>,
-    screen_focus: i32,
     screen_button: i32,
     /// What the screen was last drawn from, so a poll that changed nothing
-    /// does not touch a property (docs/slint-notes.md). The highlight is part
-    /// of it: it is not in the view, and a press that moved only the highlight
-    /// used to compare equal here and never reach the screen.
-    last_screen: Option<(crate::light_screen::View, i32, i32)>,
+    /// does not touch a property (docs/slint-notes.md). The blind's highlight
+    /// and the "Updating…" flag are part of it: neither is in the view, and a
+    /// press that moved only one of them used to compare equal here and never
+    /// reach the panel.
+    last_screen: Option<(crate::light_screen::View, i32, bool)>,
     /// A sentence for the main loop's toast, raised by a row press.
     notice: Option<String>,
 }
@@ -923,6 +935,7 @@ impl Controller {
             cache: StateCache::default(),
             hue,
             busy: None,
+            busy_since: None,
             refreshing: false,
             last_refresh: Instant::now(),
             brightness_pending: VecDeque::new(),
@@ -933,7 +946,6 @@ impl Controller {
             mirek_pending: VecDeque::new(),
             mirek_flight: None,
             screen: None,
-            screen_focus: 0,
             screen_button: 0,
             last_screen: None,
             notice: None,
@@ -1064,7 +1076,7 @@ impl Controller {
         match self.tx.try_send((next, room, operation)) {
             Ok(()) => {
                 self.generation = next;
-                self.busy = Some("ir-command".into());
+                self.claim("ir-command".into());
             }
             Err(error) => {
                 self.active
@@ -1138,6 +1150,17 @@ impl Controller {
             }
         }
     }
+    /// Take the one operation slot, and remember when it went out.
+    fn claim(&mut self, id: String) {
+        self.busy = Some(id);
+        self.busy_since = Some(Instant::now());
+    }
+    /// Give it back: whatever was out has answered, or the room has changed
+    /// under it.
+    fn release(&mut self) {
+        self.busy = None;
+        self.busy_since = None;
+    }
     /// The next queued adjustment: a level first, then a colour temperature.
     /// One goes out at a time, and only the latest target per row is ever in
     /// the queue, so a held key never builds a backlog of commands.
@@ -1167,7 +1190,7 @@ impl Controller {
             self.generation = generation;
             self.active
                 .store(self.generation, std::sync::atomic::Ordering::SeqCst);
-            self.busy = Some(id);
+            self.claim(id);
             if let Some(level) = level {
                 self.brightness_flight = Some(level);
                 self.brightness_pending.pop_front();
@@ -1195,7 +1218,7 @@ impl Controller {
             self.generation = generation;
             self.active
                 .store(self.generation, std::sync::atomic::Ordering::SeqCst);
-            self.busy = Some(id);
+            self.claim(id);
             self.refreshing = false;
             app.set_light_detail("".into());
             self.update_rows(app, false);
@@ -1285,7 +1308,8 @@ impl Controller {
             return;
         };
         self.screen = Some(entry.id.clone());
-        self.screen_focus = 0;
+        // A blind opens with Open highlighted, so OK always has a button to
+        // press; a lamp has no highlight at all and ignores the field.
         self.screen_button = 0;
         self.last_screen = None;
         app.set_light_screen_detail("".into());
@@ -1323,47 +1347,20 @@ impl Controller {
         match name {
             "close" => return self.close_screen(app, false),
             "home" => return self.close_screen(app, true),
-            // Left and right walk the controls now that the bars stand up: on
-            // a lamp the two bars, on a blind the bar and then each of its
-            // three buttons, which is one chain of four places.
-            "focus" => {
-                let Some(entry) = self.entries.get(row) else {
-                    return;
-                };
-                if self.screen_cover(entry) {
-                    let at = if self.screen_focus == 0 {
-                        0
-                    } else {
-                        1 + self.screen_button
-                    };
-                    let at = (at + index).clamp(0, 3);
-                    self.screen_focus = i32::from(at > 0);
-                    self.screen_button = (at - 1).max(0);
-                } else if self.screen_tunable(entry) {
-                    self.screen_focus = (self.screen_focus + index).clamp(0, 1);
-                } else {
-                    self.screen_focus = 0;
-                }
-            }
-            "focus-level" => self.screen_focus = 0,
-            "focus-colour" => self.screen_focus = 1,
-            // Up and down adjust the highlighted bar. A blind has only one, so
-            // they keep moving it even while one of its buttons is highlighted.
-            "step" => {
-                let tunable = self
+            // With no bar to select, left and right have only a blind's three
+            // buttons to walk. A lamp has nothing for them.
+            "button" => {
+                if self
                     .entries
                     .get(row)
-                    .is_some_and(|entry| self.screen_tunable(entry));
-                if self.screen_focus == 1 && tunable {
-                    self.adjust_mirek(app, row, index);
-                } else {
-                    // The step the rows use, so the two agree.
-                    self.adjust_brightness(app, row, index.signum() * 5);
+                    .is_some_and(|entry| self.screen_cover(entry))
+                {
+                    self.screen_button = (self.screen_button + index).clamp(0, 2);
                 }
             }
-            // The volume keys are the brightness bar and the channel keys the
-            // colour temperature, wherever the highlight is. A lamp with no
-            // colour temperature simply has nothing for the channel keys.
+            // The volume keys and up and down are both the level bar, and the
+            // channel keys the colour temperature. A lamp with no colour
+            // temperature simply has nothing for the channel keys.
             "level" => self.adjust_brightness(app, row, index.signum() * 5),
             "warmth" => {
                 if self
@@ -1382,7 +1379,6 @@ impl Controller {
                 }
             }
             "cover" => {
-                self.screen_focus = 1;
                 self.screen_button = index.clamp(0, 2);
                 self.send_cover(app, row, index);
             }
@@ -1428,7 +1424,7 @@ impl Controller {
             self.generation = generation;
             self.active
                 .store(self.generation, std::sync::atomic::Ordering::SeqCst);
-            self.busy = Some(id);
+            self.claim(id);
             self.refreshing = false;
             app.set_light_screen_detail("".into());
         }
@@ -1453,7 +1449,23 @@ impl Controller {
             Err(error) => app.set_light_screen_detail(error.into()),
         }
     }
+    /// Whether this row's screen should own up to a write that is taking its
+    /// time. A press moves the bar and the read-out at once, so while writes
+    /// are answered promptly there is nothing to say; a packaged lamp chaining
+    /// 150 ms writes under a held key would otherwise read "Updating…" for the
+    /// whole hold, which is the one thing the screen must not do.
+    fn screen_updating(&self, id: &str, now: Instant) -> bool {
+        self.busy.as_deref() == Some(id)
+            && self
+                .busy_since
+                .is_some_and(|at| now.saturating_duration_since(at) >= UPDATING_AFTER)
+    }
     fn render_screen(&mut self, app: &App) {
+        self.render_screen_at(app, Instant::now());
+    }
+    /// The clock is a parameter so that the `UPDATING_AFTER` rule can be
+    /// tested without waiting for it.
+    fn render_screen_at(&mut self, app: &App, now: Instant) {
         let Some(id) = self.screen.clone() else {
             return;
         };
@@ -1474,7 +1486,11 @@ impl Controller {
         if !detail.is_empty() {
             view.detail = detail.to_string();
         }
-        let drawn = (view, self.screen_focus, self.screen_button);
+        // Both the blind's highlight and the "Updating…" flag are part of the
+        // key: a press that moved only the highlight, and a write that crossed
+        // `UPDATING_AFTER` while nothing else changed, both have to reach the
+        // panel.
+        let drawn = (view, self.screen_button, self.screen_updating(&id, now));
         if self.last_screen.as_ref() == Some(&drawn) {
             return;
         }
@@ -1496,12 +1512,8 @@ impl Controller {
         app.set_light_screen_mirek_known(view.mirek_known);
         app.set_light_screen_detail(view.detail.as_str().into());
         app.set_light_screen_hint(view.hint.as_str().into());
-        app.set_light_screen_focus(self.screen_focus);
         app.set_light_screen_button(self.screen_button);
-        app.set_light_screen_pending(
-            self.busy.as_deref() == Some(id.as_str())
-                || self.pending_level(&id).is_some() && self.brightness_flight.is_some(),
-        );
+        app.set_light_screen_pending(drawn.2);
         self.last_screen = Some(drawn);
     }
     /// The row on this index the Power key switches. An activity row, a
@@ -1552,7 +1564,7 @@ impl Controller {
         self.active
             .store(self.generation, std::sync::atomic::Ordering::SeqCst);
         self.room = Some(room.clone());
-        self.busy = None;
+        self.release();
         let title = crate::connections::config()
             .and_then(|c| c.room(&room).map(|r| r.name.clone()))
             .unwrap_or_else(|| "Room".into());
@@ -1683,7 +1695,7 @@ impl Controller {
                     self.active
                         .store(self.generation, std::sync::atomic::Ordering::SeqCst);
                     self.room = None;
-                    self.busy = None;
+                    self.release();
                     self.refreshing = false;
                     app.set_light_shown(false);
                     app.invoke_focus_home();
@@ -1778,7 +1790,7 @@ impl Controller {
             }
             self.last_refresh = Instant::now();
             self.refreshing = false;
-            self.busy = None;
+            self.release();
             let brightness = self.brightness_flight.take();
             let colour = self.mirek_flight.take();
             match result {
@@ -3432,7 +3444,8 @@ mod tests {
         config: &couch_model::Config,
         room: &str,
         // The row OK opens, and how many times right is pressed once the
-        // screen is up, so a picture can show the second control highlighted.
+        // screen is up, so a picture can show a blind with a different one of
+        // its three buttons highlighted.
         open: (usize, usize),
         fill: impl Fn(&mut Vec<Entry>),
         name: &str,
@@ -3456,7 +3469,7 @@ mod tests {
         app.set_light_index(open.0 as i32);
         controller.open_screen(app, open.0);
         for _ in 0..open.1 {
-            controller.screen_action(app, "focus", 1);
+            controller.screen_action(app, "button", 1);
         }
         for _ in 0..20 {
             slint::platform::update_timers_and_animations();
@@ -3641,48 +3654,49 @@ mod tests {
                 "Vol: position · Power: open/close · Back: room"
             ]
         );
-        // The same tunable lamp with right pressed once: the highlight is on
-        // the colour temperature, which is what left and right now do.
+        // The same blind with right pressed once: Stop is highlighted, which
+        // is all left and right have left to move now that no bar is selected.
         assert_eq!(
             draw_screen(
                 &window,
                 &app,
                 &config,
                 "living-room",
-                (0, 1),
+                (2, 1),
                 |entries| state(
                     entries,
-                    0,
-                    serde_json::json!({"light":{"on":true,"brightness":40,"mirek":370}})
+                    2,
+                    serde_json::json!({"cover":{"open":true,"position":60}})
                 ),
-                "light-screen-5-colour-highlighted.png",
+                "light-screen-5-blind-stop-highlighted.png",
             ),
             [
-                "Desk lamp",
+                "Blind",
                 "Living room · Hue bridge",
-                "On · 40%",
-                "BRIGHTNESS",
-                "40%",
-                "2700 K",
+                "Open · 60% open",
+                "OPEN POSITION",
+                "60%",
+                "—",
                 "",
-                "Vol: brightness · Ch: warmth · Power: on/off"
+                "Vol: position · Power: open/close · Back: room"
             ]
         );
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The keys on the open screen, now that the bars stand up.
+    /// The keys on the open screen, which no longer has a highlight to move.
     ///
-    /// Volume is the brightness bar and channel the colour temperature,
-    /// whichever bar is highlighted; up and down adjust the highlighted bar
-    /// and left and right move between them. Everything goes through the same
+    /// Volume and up and down are the level bar, channel is the colour
+    /// temperature, and neither bar is ever selected - there is nothing to
+    /// select between, because each has a key of its own. Left and right have
+    /// only a blind's three buttons to walk. Everything goes through the same
     /// optimistic queue the rows use, so a held key leaves one target behind,
     /// not a press-by-press backlog.
     #[test]
-    fn volume_is_brightness_and_channel_is_warmth_wherever_the_highlight_is() {
+    fn volume_is_the_level_channel_is_the_warmth_and_no_bar_is_ever_selected() {
         const NAME: &str =
-            "lights::tests::volume_is_brightness_and_channel_is_warmth_wherever_the_highlight_is";
+            "lights::tests::volume_is_the_level_channel_is_the_warmth_and_no_bar_is_ever_selected";
         if std::env::var_os("COUCH_TEST_SCREEN_KEYS").is_none() {
             let out = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", NAME])
@@ -3736,19 +3750,19 @@ mod tests {
         // The lamp that dims and tunes.
         controller.open_screen(&app, 0);
         let lamp = "plugin:bridge/lamp/1".to_string();
-        assert_eq!(controller.screen_focus, 0);
-        // Volume up, with the brightness bar highlighted: the row's own step.
+        // Volume, and up and down, are the same bar and the same step the rows
+        // use. A held key coalesces: one target, the last.
         controller.screen_action(&app, "level", 1);
         assert_eq!(levels(&controller), [(lamp.clone(), 45)]);
-        // Right moves the highlight to the colour temperature, and volume is
-        // still brightness there. A held key coalesces: one target, the last.
-        controller.screen_action(&app, "focus", 1);
-        assert_eq!(controller.screen_focus, 1);
         controller.screen_action(&app, "level", 1);
         controller.screen_action(&app, "level", 1);
         assert_eq!(levels(&controller), [(lamp.clone(), 55)]);
         controller.screen_action(&app, "level", -1);
         assert_eq!(levels(&controller), [(lamp.clone(), 50)]);
+        // The state line follows the target, so it never contradicts the bar
+        // while the write is out.
+        assert_eq!(app.get_light_screen_state(), "On · 50%");
+        assert_eq!(app.get_light_screen_level(), "50%");
 
         // Channel is the colour temperature, a twentieth of the lamp's
         // 153..500 range a press, and it too keeps only the latest target.
@@ -3767,26 +3781,16 @@ mod tests {
             controller.screen_action(&app, "warmth", -1);
         }
         assert_eq!(mireks(&controller), [(lamp.clone(), 500)]);
-        // And back on the brightness bar the channel keys still reach the
-        // colour temperature: neither key cares where the highlight is.
-        controller.screen_action(&app, "focus", -1);
-        assert_eq!(controller.screen_focus, 0);
-        controller.screen_action(&app, "warmth", 1);
-        assert_eq!(mireks(&controller), [(lamp.clone(), 483)]);
         assert_eq!(app.get_light_screen_detail(), "");
 
-        // The D-pad, turned with the bars: up and down adjust whichever bar is
-        // highlighted, left and right move between them and go no further.
-        controller.screen_action(&app, "step", 1);
-        assert_eq!(levels(&controller), [(lamp.clone(), 55)]);
-        controller.screen_action(&app, "focus", 1);
-        controller.screen_action(&app, "step", -1);
-        assert_eq!(mireks(&controller), [(lamp.clone(), 500)]);
-        controller.screen_action(&app, "focus", 1);
-        assert_eq!(controller.screen_focus, 1);
-        controller.screen_action(&app, "focus", -1);
-        controller.screen_action(&app, "focus", -1);
-        assert_eq!(controller.screen_focus, 0);
+        // Left and right have nothing to move on a lamp: no highlight exists,
+        // and neither key adjusts anything by accident.
+        for index in [1, -1, 1, 1] {
+            controller.screen_action(&app, "button", index);
+        }
+        assert_eq!(controller.screen_button, 0);
+        assert_eq!(levels(&controller), [(lamp.clone(), 50)]);
+        assert_eq!(mireks(&controller), [(lamp, 500)]);
 
         // A lamp that only dims has no colour temperature, so the channel keys
         // do nothing at all - not even a sentence saying so.
@@ -3798,46 +3802,112 @@ mod tests {
         controller.screen_action(&app, "warmth", -1);
         assert!(mireks(&controller).is_empty());
         assert_eq!(app.get_light_screen_detail(), "");
-        // Its highlight stays on the one bar it has, and up and down and the
-        // volume keys both reach it.
-        controller.screen_action(&app, "focus", 1);
-        assert_eq!(controller.screen_focus, 0);
-        controller.screen_action(&app, "step", 1);
-        assert_eq!(levels(&controller), [(plain.clone(), 75)]);
         controller.screen_action(&app, "level", 1);
-        assert_eq!(levels(&controller), [(plain, 80)]);
+        assert_eq!(levels(&controller), [(plain, 75)]);
 
-        // A blind: volume is its open position, and left and right walk the
-        // bar and then its three buttons, which is one chain of four places.
+        // A blind: volume is its open position, and left and right walk its
+        // three buttons and go no further. Open is highlighted to begin with,
+        // so OK always has a button to press.
         controller.brightness_pending.clear();
         controller.mirek_pending.clear();
         controller.open_screen(&app, 2);
         let blind = "plugin:bridge/cover/1".to_string();
+        assert_eq!(controller.screen_button, 0);
         controller.screen_action(&app, "level", 1);
         assert_eq!(levels(&controller), [(blind.clone(), 65)]);
+        assert_eq!(app.get_light_screen_state(), "Open · 65% open");
         controller.screen_action(&app, "warmth", 1);
         assert!(mireks(&controller).is_empty());
-        for (index, focus, button) in [
-            (1, 1, 0),
-            (1, 1, 1),
-            (1, 1, 2),
-            (1, 1, 2),
-            (-1, 1, 1),
-            (-1, 1, 0),
-            (-1, 0, 0),
-            (-1, 0, 0),
-        ] {
-            controller.screen_action(&app, "focus", index);
-            assert_eq!(
-                (controller.screen_focus, controller.screen_button),
-                (focus, button)
-            );
+        for (index, button) in [(1, 1), (1, 2), (1, 2), (-1, 1), (-1, 0), (-1, 0)] {
+            controller.screen_action(&app, "button", index);
+            assert_eq!(controller.screen_button, button);
+            assert_eq!(app.get_light_screen_button(), button);
         }
-        // Up and down keep moving the only bar a blind has, even while one of
-        // its buttons is highlighted.
-        controller.screen_action(&app, "focus", 1);
-        controller.screen_action(&app, "step", 1);
+        // The bar keeps moving whichever button is highlighted.
+        controller.screen_action(&app, "button", 1);
+        controller.screen_action(&app, "level", 1);
         assert_eq!(levels(&controller), [(blind, 70)]);
+        assert_eq!(controller.screen_button, 1);
+    }
+
+    /// "Updating…" is for a write that has stopped answering, not for one in
+    /// the ordinary run of things.
+    ///
+    /// A packaged lamp answers each write in about 150 ms and chains them
+    /// under a held key; the bar and the read-out have already moved, so the
+    /// state line has nothing to add and must keep saying what the lamp is.
+    #[test]
+    fn the_state_line_only_says_updating_once_a_write_has_stopped_answering() {
+        const NAME: &str =
+            "lights::tests::the_state_line_only_says_updating_once_a_write_has_stopped_answering";
+        if std::env::var_os("COUCH_TEST_SCREEN_UPDATING").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_SCREEN_UPDATING", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let config = packaged();
+        let _window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let mut controller = Controller::install(&app);
+        let room = Id::new("living-room");
+        let mut entries = configured_in(&config, &room).unwrap();
+        let row = entries[0].plugin.clone().unwrap();
+        let id = entries[0].id.clone();
+        let name = entries[0].name.clone();
+        let mut state = row
+            .state(
+                &name,
+                &reading(serde_json::json!({"light":{"on":true,"brightness":40,"mirek":370}})),
+            )
+            .unwrap();
+        state.set_id(id.clone());
+        entries[0].state = Some(state);
+        controller.entries = entries;
+        controller.room = Some(room);
+        app.set_light_shown(true);
+        controller.open_screen(&app, 0);
+        assert!(!app.get_light_screen_pending());
+
+        // A press, and the write it sends: the bar and the state line have
+        // both already moved, and neither says "Updating…".
+        controller.screen_action(&app, "level", 1);
+        controller.send_brightness();
+        assert_eq!(controller.busy.as_deref(), Some(id.as_str()));
+        assert_eq!(app.get_light_screen_state(), "On · 45%");
+        assert!(!app.get_light_screen_pending());
+        let sent = controller.busy_since.unwrap();
+
+        // A second and a half later it still has not answered, and the label
+        // arrives with nothing else on screen having changed - which is what
+        // the redraw key had to be widened for.
+        controller.render_screen_at(&app, sent + Duration::from_millis(1499));
+        assert!(!app.get_light_screen_pending());
+        controller.render_screen_at(&app, sent + Duration::from_millis(1500));
+        assert!(app.get_light_screen_pending());
+        // The state line itself is untouched: the screen swaps the text, so
+        // what it swaps back to has to stay right.
+        assert_eq!(app.get_light_screen_state(), "On · 45%");
+
+        // The answer takes the label away again, just as quietly.
+        controller.release();
+        controller.render_screen_at(&app, sent + Duration::from_millis(1600));
+        assert!(!app.get_light_screen_pending());
+
+        // A write out for another row is not this screen's business.
+        controller.claim("plugin:bridge/lamp/2".into());
+        let other = controller.busy_since.unwrap();
+        controller.render_screen_at(&app, other + Duration::from_secs(9));
+        assert!(!app.get_light_screen_pending());
     }
 
     /// The whole way in and out: OK on a row opens its screen, Power still

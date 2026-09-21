@@ -126,11 +126,28 @@ fn hint(cover: bool, tunable: bool) -> String {
     .to_owned()
 }
 
+/// The state line and its colour, told with the level the screen is driving
+/// towards rather than the one the device last reported.
+///
+/// The bar, the big read-out and this line all have to say the same thing
+/// while a write is out, or the screen contradicts itself for as long as the
+/// lamp takes to answer. Writing a brightness to a lamp that is off turns it
+/// on, and writing zero turns it off, so the words follow the target both ways.
+fn light_state(light: &Light, target: Option<u8>) -> (String, bool) {
+    match target.filter(|_| light.dimmable && light.on.is_some()) {
+        Some(0) => ("Off".to_owned(), false),
+        Some(percent) => (format!("On · {percent}%"), true),
+        None => (crate::lights::description(light), light.on == Some(true)),
+    }
+}
+
 /// The screen for one row.
 ///
 /// `level` and `mirek` are the optimistic targets the room list already keeps
 /// for its rows: a press moves the screen at once and the reading that follows
-/// either confirms it or corrects it, exactly as the row's slider behaves.
+/// either confirms it or corrects it, exactly as the row's slider behaves. The
+/// state line follows them too, so nothing on the screen disagrees with the
+/// bar while a write is in flight.
 pub(crate) fn view(
     name: &str,
     room: &str,
@@ -162,9 +179,10 @@ pub(crate) fn view(
             let known = light.on.is_some() && shown.is_some() && light.dimmable;
             let tunable = light.mirek_range.is_some();
             let shown_mirek = mirek.or(light.mirek);
+            let (state, active) = light_state(light, level);
             View {
-                state: crate::lights::description(light),
-                active: light.on == Some(true),
+                state,
+                active,
                 level: if known {
                     format!("{}%", shown.unwrap_or(0))
                 } else {
@@ -199,8 +217,12 @@ pub(crate) fn view(
         Some(DeviceState::Cover(cover)) => {
             let shown = level.or(cover.position_percent);
             let known = cover.state.is_some() && shown.is_some();
+            // The line reads the position the bar reads, which while a blind
+            // travels is the endpoint it was sent to, not where it is now.
+            let mut travelling = cover.clone();
+            travelling.position_percent = shown;
             View {
-                state: crate::lights::cover_description(cover),
+                state: crate::lights::cover_description(&travelling),
                 active: cover.state.as_deref().is_some_and(|s| s != "closed"),
                 level_label: "OPEN POSITION".into(),
                 level: if known {
@@ -343,6 +365,10 @@ mod tests {
         assert_eq!(pressed.level, "45%");
         assert_eq!(pressed.level_percent, 45);
         assert_eq!(pressed.kelvin, "3000 K");
+        // And the state line moves with it, so nothing on the screen
+        // contradicts the bar while the write is out.
+        assert_eq!(pressed.state, "On · 45%");
+        assert!(pressed.active);
 
         // A lamp that only switches says so instead of offering a slider.
         let plain = view(
@@ -407,6 +433,93 @@ mod tests {
             unread.hint,
             "Vol: position · Power: open/close · Back: room"
         );
+    }
+
+    /// The state line is the bar's line: while a press is in flight it says
+    /// where the device is going, not the reading it has already overtaken.
+    #[test]
+    fn the_state_line_follows_the_press_rather_than_the_last_reading() {
+        let lit = DeviceState::Light(lamp(true, Some((153, 500))));
+        let screen = |level| {
+            view(
+                "Desk lamp",
+                "",
+                Declared::default(),
+                Some(&lit),
+                level,
+                None,
+            )
+        };
+        // No press: the reading, exactly as the row shows it.
+        assert_eq!(screen(None).state, "On · 40%");
+        assert_eq!(screen(Some(55)).state, "On · 55%");
+        // Writing zero turns a lamp off, and the line says so before the
+        // reading confirms it - with the accent colour gone too.
+        let dark = screen(Some(0));
+        assert_eq!(dark.state, "Off");
+        assert!(!dark.active);
+
+        // The other way round: a brightness written to a lamp that is off
+        // turns it on, so the line does not keep saying "Off".
+        let mut resting = lamp(true, None);
+        resting.on = Some(false);
+        resting.brightness_percent = Some(0);
+        let woken = view(
+            "Desk lamp",
+            "",
+            Declared::default(),
+            Some(&DeviceState::Light(resting.clone())),
+            Some(5),
+            None,
+        );
+        assert_eq!(woken.state, "On · 5%");
+        assert!(woken.active);
+
+        // A lamp that cannot dim has no target to believe in, and an
+        // unavailable one is still unavailable whatever was pressed.
+        let mut plain = resting;
+        plain.dimmable = false;
+        assert_eq!(
+            view(
+                "Plug",
+                "",
+                Declared::default(),
+                Some(&DeviceState::Light(plain.clone())),
+                Some(5),
+                None
+            )
+            .state,
+            "Off"
+        );
+        plain.on = None;
+        assert_eq!(
+            view(
+                "Plug",
+                "",
+                Declared::default(),
+                Some(&DeviceState::Light(plain)),
+                Some(5),
+                None
+            )
+            .state,
+            "Unavailable"
+        );
+
+        // A blind's line carries the position the bar carries, which while it
+        // travels is the endpoint it was sent to.
+        let travelling = view(
+            "Blind",
+            "",
+            Declared {
+                cover: true,
+                ..Declared::default()
+            },
+            Some(&DeviceState::Cover(blind(true, true))),
+            Some(25),
+            None,
+        );
+        assert_eq!(travelling.state, "Open · 25% open");
+        assert_eq!(travelling.level, "25%");
     }
 
     #[test]
