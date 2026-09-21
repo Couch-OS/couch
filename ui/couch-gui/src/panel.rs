@@ -224,6 +224,18 @@ pub(crate) const LIFT_FOOTER_IN: (f32, f32) = (0.66, 0.94);
 /// which is the panel looking broken for a third of a second. A sparse page
 /// crosses with the room rather than after it.
 pub(crate) const LIFT_HASTE: f32 = 0.22;
+/// How long one scanline takes to cross straight from the room to a page with
+/// a photograph behind it, and how much later the furthest one starts.
+///
+/// The fade is the floor a fade can be and still read as one - five frames at
+/// 400 ms - and the stagger is what holds the cost down: at any moment the
+/// band that is crossing is about `FADE / (FADE + WAVE)` of the panel, and
+/// only that band costs anything. A whole panel of blending is about
+/// twenty-four milliseconds on this device against a 16.7 ms frame, so a
+/// third of a panel is already eight of them; the numbers here are what the
+/// cost assertion measured rather than what the arithmetic suggested.
+const LIFT_BANDED_FADE: (f32, f32) = (0.0, 0.20);
+const LIFT_BANDED_WAVE: f32 = 0.74;
 
 /// Where the development switch for the opening transition is read from.
 /// Under `/tmp`, so it is gone at the next boot and nothing a person set up is
@@ -1049,7 +1061,10 @@ impl Panel {
         if self.dirty.len() != height {
             self.dirty = vec![true; height];
         }
-        changed_rows(&plan, height, t, self.last_t, &mut self.dirty);
+        // At the point the frame is really drawn at, not at the clock: a
+        // close is the same plan run backwards.
+        let p = through(shown, t);
+        changed_rows(&plan, height, p, self.last_t, &mut self.dirty);
         {
             let (arriving, leaving) = (pixels(&self.ram), pixels(&self.spare));
             lift_frame(
@@ -1070,7 +1085,7 @@ impl Panel {
                 },
             );
         }
-        self.last_t = Some(t);
+        self.last_t = Some(p);
         // Whole frames only: the panel never holds a half-composed one. Only
         // the rows this frame wrote are sent; the rest are on the glass
         // already, and untouched in the buffer they were composed in.
@@ -1334,6 +1349,30 @@ pub struct Piece {
     pub kind: Arriving,
 }
 
+/// How the rest of page A becomes page B, once the name, the icon and the
+/// row's card have been taken care of.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub enum Crossing {
+    /// The room falls away to the background and the screen arrives over it,
+    /// piece by piece. What a screen drawn on a flat background wants, and
+    /// cheap: most of a row is the background at both ends, so most of the
+    /// work is a fill.
+    #[default]
+    Falling,
+    /// Every scanline crosses straight from the room to the screen, in its
+    /// own window, staggered so that only a band of the panel is crossing at
+    /// any moment.
+    ///
+    /// For a page with a photograph behind everything - a television showing
+    /// what is playing, a speaker with album art up. There is no flat
+    /// background to fall to, and fading the whole panel at once is about
+    /// twenty-four milliseconds on this device, more than a frame. Staggered,
+    /// only the band that is mid-crossing costs anything: the rows before it
+    /// are still the room they already were, and the rows after it are
+    /// already the screen.
+    Banded,
+}
+
 /// What a screen tells the lift about itself.
 ///
 /// The transition knows nothing about lights or televisions: a screen hands
@@ -1348,6 +1387,8 @@ pub struct LiftPlan {
     pub name: &'static str,
     /// The row it opens out of.
     pub row: Window,
+    /// How the rest of the panel gets from one page to the other.
+    pub crossing: Crossing,
     /// When the room falls away, and how much later the furthest scanline
     /// starts than the row's own does.
     pub fall: (f32, f32),
@@ -1364,6 +1405,20 @@ pub struct LiftPlan {
 }
 
 impl LiftPlan {
+    /// The same plan, with the rest of the panel crossing straight from one
+    /// page to the other instead of falling to the background: what a page
+    /// with a photograph behind everything needs. Its own pieces are dropped
+    /// - the whole page arrives with the bands - and what travels and the
+    /// row's card are untouched.
+    pub fn banded(mut self) -> Self {
+        self.crossing = Crossing::Banded;
+        self.fall = LIFT_BANDED_FADE;
+        self.wave = LIFT_BANDED_WAVE;
+        self.focused_out = LIFT_BANDED_FADE;
+        self.pieces = [None; 6];
+        self
+    }
+
     /// A plan with the choreography every screen shares: the room falling
     /// away outwards from the row, and the row's card rising into the header
     /// band and fading as it goes. A screen fills in what is its own - what
@@ -1372,6 +1427,7 @@ impl LiftPlan {
         Self {
             name,
             row,
+            crossing: Crossing::Falling,
             fall: LIFT_ROWS_FALL,
             wave: LIFT_ROW_WAVE,
             focused_out: LIFT_FOCUSED_OUT,
@@ -1863,11 +1919,28 @@ impl Frame<'_> {
 /// well as where it is. Being wrong the other way would leave a stale band on
 /// the glass, so the test that composes a whole run and compares every frame
 /// against one drawn from nothing is the one that holds this honest.
+/// How far through the plan a frame is, which is not the clock: a close runs
+/// the same plan backwards, so `t` of 0.2 into a close is the plan at 0.8.
+/// Everything that asks the plan a question has to ask it here.
+pub(crate) fn through(shown: Shown, t: f32) -> f32 {
+    match shown {
+        Shown::Arriving => t,
+        Shown::Leaving => 1.0 - t,
+    }
+}
+
 fn changed_rows(plan: &LiftPlan, h: usize, p: f32, previous: Option<f32>, into: &mut [bool]) {
     let Some(was) = previous else {
         into.fill(true);
         return;
     };
+    // The end of the run is the page itself, copied whole; a frame either
+    // side of that is not a step in the plan and has nothing in common with
+    // it. A close starts there, so this is its second frame.
+    if p >= 1.0 || was >= 1.0 {
+        into.fill(true);
+        return;
+    }
     into.fill(false);
     let mark = |from: i32, rows: i32, into: &mut [bool]| {
         for y in from.max(0)..(from + rows).max(0) {
@@ -1889,8 +1962,16 @@ fn changed_rows(plan: &LiftPlan, h: usize, p: f32, previous: Option<f32>, into: 
             let began = plan.fall.0 + plan.wave * away;
             (began, began + span)
         };
-        let settled = |at: f32| fading(at, window).is_some_and(|gone| gone >= 256);
-        if !(settled(p) && settled(was)) {
+        // Before its window a row is still the page it was, after it the page
+        // it is becoming, and either way it is what the panel already shows.
+        // Only a row that is mid-crossing at one of the two moments, or on a
+        // different side of it, can differ.
+        let side = |at: f32| match fading(at, window) {
+            None => 0,
+            Some(gone) if gone >= 256 => 2,
+            Some(_) => 1,
+        };
+        if side(p) != side(was) || side(p) == 1 {
             into[y] = true;
         }
     }
@@ -1954,9 +2035,10 @@ pub(crate) fn lift_frame(
     let t = frame.t;
     let (arriving, leaving) = pages;
     let (content, screen_content) = content;
-    let (room, screen, p) = match shown {
-        Shown::Arriving => (leaving, arriving, t),
-        Shown::Leaving => (arriving, leaving, 1.0 - t),
+    let p = through(shown, t);
+    let (room, screen) = match shown {
+        Shown::Arriving => (leaving, arriving),
+        Shown::Leaving => (arriving, leaving),
     };
     let (w, h, stride) = (dst.width, dst.height, dst.stride);
     // The end is the page itself, whole: every piece has arrived and nothing
@@ -2004,6 +2086,30 @@ pub(crate) fn lift_frame(
             .handed
             .row(y as i32 - plan.row.y)
             .unwrap_or(&room[y * w..(y + 1) * w]);
+        // A page with a photograph behind it has no flat background to fall
+        // to: the row crosses straight to the one it is becoming. Before its
+        // window it is the room, after it the screen, and in between the one
+        // blended over the other - so only the band that is mid-crossing
+        // costs anything at all.
+        if plan.crossing == Crossing::Banded {
+            match fading(p, window) {
+                None => {
+                    charge(1, out.len());
+                    out.copy_from_slice(line);
+                }
+                Some(gone) if gone < 256 => {
+                    charge(1, out.len());
+                    out.copy_from_slice(line);
+                    charge(2, out.len());
+                    blend_over(out, &screen[y * w..(y + 1) * w], gone);
+                }
+                Some(_) => {
+                    charge(1, out.len());
+                    out.copy_from_slice(&screen[y * w..(y + 1) * w]);
+                }
+            }
+            continue;
+        }
         match fading(p, window) {
             None => {
                 charge(1, out.len());
@@ -2928,14 +3034,25 @@ pub(crate) mod checks {
                         {
                             continue;
                         }
-                        let p = pixels[y as usize * panel_w + x as usize];
-                        let bright = [0, 8, 16]
-                            .iter()
-                            .map(|s| (p >> s) & 0xff)
-                            .max()
-                            .unwrap_or(0);
+                        // Brighter than both the card it sat on and the page
+                        // arriving underneath it is ink that belongs to
+                        // neither - which is what a second copy of the name
+                        // would be. Measured against the page rather than
+                        // against a fixed level, because a screen with a
+                        // photograph behind it is bright everywhere and a
+                        // fixed level would call the photograph a ghost.
+                        let at = y as usize * panel_w + x as usize;
+                        let brightest = |p: u32| {
+                            [0, 8, 16]
+                                .iter()
+                                .map(|s| (p >> s) & 0xff)
+                                .max()
+                                .unwrap_or(0)
+                        };
+                        let floor = brightest(LIFT_SURFACE).max(brightest(screen[at]));
+                        let bright = brightest(pixels[at]);
                         assert!(
-                            bright <= 0x50,
+                            bright <= floor.max(0x50),
                             "{what}: a ghost of the {name} is still at {x},{y} at {t:.2} \
                                  while the real one has moved away"
                         );
@@ -3324,6 +3441,15 @@ mod tests {
     /// what each frame marked, and the map has to be the page.
     #[test]
     fn what_reaches_the_panel_over_a_whole_lift_is_the_page() {
+        // Both ways round. A close runs the same plan backwards, so the
+        // question "can this row differ from the one on the glass" has to be
+        // asked at the point the frame is actually drawn at, not at the clock.
+        for shown in [Shown::Arriving, Shown::Leaving] {
+            whole_lift(shown);
+        }
+    }
+
+    fn whole_lift(shown: Shown) {
         const STRIDE: usize = W + 3;
         let room: Vec<u32> = (0..W * H).map(|i| 0xff00_0000 | i as u32).collect();
         let screen: Vec<u32> = (0..W * H).map(|i| 0xff10_0000 | i as u32).collect();
@@ -3342,6 +3468,15 @@ mod tests {
             )
             .header(W as i32, 5, 7)
             .footer(W as i32, H as i32, 14);
+        let pages = match shown {
+            Shown::Arriving => (&screen[..], &room[..]),
+            Shown::Leaving => (&room[..], &screen[..]),
+        };
+        // Whichever way it is going, the page it ends on is the one arriving.
+        let ends_on = match shown {
+            Shown::Arriving => &screen,
+            Shown::Leaving => &room,
+        };
         let mut art = crate::lift_art(&room, &screen, W, H, plan);
         let content = lift_content(&room, W, H);
         let screen_content = lift_content(&screen, W, H);
@@ -3352,7 +3487,8 @@ mod tests {
         let mut sent = 0;
         for step in 0..=checks::FRAMES {
             let t = step as f32 / checks::FRAMES as f32;
-            changed_rows(&plan, H, t, previous, &mut dirty);
+            let p = through(shown, t);
+            changed_rows(&plan, H, p, previous, &mut dirty);
             lift_frame(
                 Surface {
                     pixels: &mut back,
@@ -3360,17 +3496,17 @@ mod tests {
                     width: W,
                     height: H,
                 },
-                (&screen, &room),
+                pages,
                 plan,
                 &mut art,
                 (&content, &screen_content),
-                Shown::Arriving,
+                shown,
                 Frame {
                     t,
                     dirty: &mut dirty,
                 },
             );
-            previous = Some(t);
+            previous = Some(p);
             sent += present(&mut map, STRIDE, W, H, &back, Some(&dirty));
             // The same frame composed from nothing, which is what skipping
             // work has to be indistinguishable from. Not only at the end:
@@ -3384,27 +3520,27 @@ mod tests {
                     width: W,
                     height: H,
                 },
-                (&screen, &room),
+                pages,
                 plan,
                 &mut crate::lift_art(&room, &screen, W, H, plan),
                 (&content, &screen_content),
-                Shown::Arriving,
+                shown,
                 Frame::at(t),
             );
             for y in 0..H {
                 assert_eq!(
                     &map[y * STRIDE..y * STRIDE + W],
                     &fresh[y * W..(y + 1) * W],
-                    "at {t:.2} row {y} on the panel is not what a frame drawn from nothing \
-                     would have put there"
+                    "{shown:?} at {t:.2} row {y} on the panel is not what a frame drawn from \
+                     nothing would have put there"
                 );
             }
         }
         for y in 0..H {
             assert_eq!(
                 &map[y * STRIDE..y * STRIDE + W],
-                &screen[y * W..(y + 1) * W],
-                "row {y} of the panel is not the page the lift ended on"
+                &ends_on[y * W..(y + 1) * W],
+                "row {y} of the panel is not the page the lift ended on ({shown:?})"
             );
         }
         // And it did skip rows: a run that sends every row every frame has
