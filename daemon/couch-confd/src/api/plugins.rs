@@ -278,7 +278,8 @@ impl Api {
 
     /// A Couch without children strips a device's snapshot on its way out and
     /// keeps the connection and the resource, so the next Couch that can read
-    /// a listing knows what the device was. This puts the snapshot back.
+    /// a listing knows what the device was. This puts the snapshot back, and
+    /// brings one that is there up to date with what the package says now.
     ///
     /// Only devices of the connection just listed are looked at, so a
     /// connection that offers no children - which is every connection in a
@@ -307,7 +308,7 @@ impl Api {
                     } => (connection_id, resource_id, child),
                     _ => continue,
                 };
-                if connection_id != &id || child.is_some() || resource_id.is_empty() {
+                if connection_id != &id || resource_id.is_empty() {
                     continue;
                 }
                 let Some(listed) = children.iter().find(|c| &c.id == resource_id) else {
@@ -319,7 +320,19 @@ impl Api {
                 if kind.component == ChildComponent::Scene {
                     continue;
                 }
-                *child = Some(listed.snapshot());
+                // A snapshot that is there is compared, not trusted: what a
+                // child can do is the package's to say, and it changes - a
+                // package update that teaches a room colour temperature, a
+                // lamp swapped for a tunable one behind the same id. A saved
+                // device that kept its first description would never be
+                // offered the new control, and would go on being offered one
+                // the child no longer has. A child that is not listed is left
+                // exactly as it was.
+                let fresh = listed.snapshot();
+                if child.as_ref() == Some(&fresh) {
+                    continue;
+                }
+                *child = Some(fresh);
                 device.kind = kind.device_kind;
             }
         }
@@ -1383,6 +1396,46 @@ mod children_tests {
         assert_eq!(
             entry["assigned"],
             json!({"room": "kitchen", "device": "kitchen-hue"})
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_saved_device_follows_what_the_package_says_its_child_can_do_now() {
+        let (dir, api) = fixture("follows");
+        let before = device(&api, "living-lamp");
+        assert_eq!(
+            before["integration"]["child"],
+            json!({"kind": "light", "light": {"dimmable": true}})
+        );
+        let revision = api.store.lock().unwrap().revision();
+        // The same listing as was saved: nothing is written.
+        let reply = api.plugin_route("POST", "bridge", &["children", "refresh"], b"");
+        assert_eq!(reply.status, 200, "{}", body(&reply));
+        assert_eq!(api.store.lock().unwrap().revision(), revision);
+        // The package now says the lamp can be tuned.
+        api.plugins.list_with(Box::new(|_| {
+            Ok(vec![Child::new("lamp/1", "light", "Desk").with_light(
+                LightTraits {
+                    dimmable: true,
+                    mirek: Some((153, 500)),
+                    ..Default::default()
+                },
+            )])
+        }));
+        let reply = api.plugin_route("POST", "bridge", &["children", "refresh"], b"");
+        assert_eq!(reply.status, 200, "{}", body(&reply));
+        let after = device(&api, "living-lamp");
+        assert_eq!(
+            after["integration"]["child"],
+            json!({"kind": "light", "light": {"dimmable": true, "mirek": [153, 500]}})
+        );
+        // Nothing else about the device moved.
+        assert_eq!(after["name"], before["name"]);
+        assert_eq!(after["kind"], before["kind"]);
+        assert_eq!(
+            after["integration"]["resource_id"],
+            before["integration"]["resource_id"]
         );
         let _ = fs::remove_dir_all(dir);
     }
