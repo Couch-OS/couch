@@ -348,6 +348,32 @@ pub fn function_choices(
         .map(|(id, label)| ((*id).into(), (*label).into()))
         .collect()
 }
+/// The value-carrying commands this integration takes, as a prefix and a name:
+/// `("volume", "Set volume")` means `volume:<0..=100>` can be saved for it.
+///
+/// They cannot be rows of [`function_choices`]: every id there is a complete
+/// command a caller may save as it stands, and a level has no meaning until a
+/// picker has collected the number. So an editor renders one control per entry
+/// here and builds `<prefix>:<n>` from it.
+///
+/// Protocol 3 (unreleased) adds one: a packaged connection that declares
+/// [`crate::ActionKind::SetVolumePercent`] offers "Set volume", which the one
+/// host gate turns into the typed action.
+pub fn levels(integration: &Integration) -> alloc::vec::Vec<(&'static str, &'static str)> {
+    use crate::commands::Function;
+    // The number is irrelevant to whether the level is offered at all: every
+    // integration that takes one takes 0, and the bound a schema sets is
+    // checked when the chosen number is saved.
+    [
+        ("dim", "Brightness", Function::Dim(0)),
+        ("volume", "Volume", Function::Volume(0)),
+        ("position", "Position", Function::Position(0)),
+    ]
+    .into_iter()
+    .filter(|(_, _, function)| function.supports(integration))
+    .map(|(prefix, label, _)| (prefix, label))
+    .collect()
+}
 pub fn repeatable(command: &str) -> bool {
     crate::commands::Function::parse(command).is_some_and(|f| f.repeatable())
 }

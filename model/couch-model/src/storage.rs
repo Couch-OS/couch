@@ -115,6 +115,12 @@ impl StoredConfig {
 /// 6. a light, cover or climate component is removed;
 /// 7. no command grammar is new: `dim:`, `position:` and `mode:` already parse.
 ///
+/// A packaged media player is the third. The player component and the
+/// percentage volume control are removed with everything else that core cannot
+/// parse, and the five media schemas go with `v2_action_schemas`; the one thing
+/// that is genuinely new is that `volume:30` *does* parse there and is refused
+/// by its `supports`, which is the rule below.
+///
 /// As with the v1 projection, a save by a protocol 2 core is authoritative on
 /// re-upgrade: what it never saw must not be resurrected.
 fn v2_projection(config: &Config) -> Config {
@@ -206,6 +212,56 @@ fn v2_projection(config: &Config) -> Config {
     for id in &package_scenes {
         result.remove_scene(id);
     }
+    // The one rule protocol 3 adds that is about what a file *says* rather
+    // than about a word an older reader cannot parse. A percentage aimed at a
+    // packaged connection is the typed action the one host gate makes from it,
+    // and a protocol 2 core has no such action: its `supports` is a literal
+    // capability match, so `volume:30` there makes the whole file invalid and
+    // the daemon does not start.
+    //
+    // It goes from exactly the three sites that core validates with
+    // `supports_device` - a key binding, a setup on/off command and a page
+    // widget. A step and a scene step it only parses, and it can already hold
+    // them, so leaving those alone is what keeps this the identity on anything
+    // that core can write. A `volume:` id a package literally declares as one
+    // of its own buttons is an ordinary command that core accepts, and stays.
+    let packaged: Vec<(crate::DeviceId, Vec<alloc::string::String>)> = config
+        .devices()
+        .filter_map(
+            |(_, device)| match config.resolve_integration(&device.integration) {
+                Some(Integration::Plugin { capabilities, .. }) => Some((
+                    device.id.clone(),
+                    capabilities.into_iter().map(|c| c.id).collect(),
+                )),
+                _ => None,
+            },
+        )
+        .collect();
+    let keeps_percent = |action: &crate::Action| {
+        !action.command.starts_with("volume:")
+            || packaged
+                .iter()
+                .all(|(id, declared)| id != &action.device || declared.contains(&action.command))
+    };
+    for activity in &mut result.activities {
+        for binding in &mut activity.buttons {
+            if binding
+                .action
+                .as_ref()
+                .is_some_and(|action| !keeps_percent(action))
+            {
+                // A disabled binding, as everywhere else here: removing it
+                // would give the key its activity default back.
+                binding.action = None;
+            }
+        }
+        for steps in [&mut activity.setup.on, &mut activity.setup.off] {
+            steps.retain(|step| !matches!(step, crate::SequenceStep::Command { action } if !keeps_percent(action)));
+        }
+        for page in &mut activity.setup.pages {
+            page.widgets.retain(|widget| keeps_percent(&widget.action));
+        }
+    }
     // Every device, not only packaged ones: an old core refuses a command it
     // cannot parse wherever it is aimed.
     let compatible = |action: &crate::Action| v2_command(&action.command);
@@ -260,7 +316,9 @@ fn v2_component(component: &mut crate::PluginComponent) -> bool {
         // they are drawn over go in `v2_action_schemas`.
         crate::PluginComponent::Light { .. }
         | crate::PluginComponent::Cover { .. }
-        | crate::PluginComponent::Climate { .. } => false,
+        | crate::PluginComponent::Climate { .. }
+        | crate::PluginComponent::MediaPlayer { .. }
+        | crate::PluginComponent::VolumePercentControl { .. } => false,
     }
 }
 
@@ -1274,6 +1332,45 @@ mod tests {
                 });
             }
         }
+        // A packaged media player (protocol 3, unreleased). Its row opens the
+        // player screen, and `volume:30` aimed at it is the typed action the
+        // one host gate makes from it, which no protocol 2 core has.
+        if custom && random.below(2) == 0 && actions.len() + 2 <= crate::volume::MAX_ACTIONS {
+            for id in ["play-pause", "next"] {
+                if capabilities.iter().all(|c| c.id != id) {
+                    capabilities.push(crate::PluginCapability {
+                        id: id.into(),
+                        label: "Player".into(),
+                    });
+                }
+            }
+            actions.push(crate::PluginActionSchema::SetVolumePercent { max_percent: 100 });
+            actions.push(crate::PluginActionSchema::StepVolumePercent { max_delta: 5 });
+            // Sources are a sheet of their own, so a modes sheet only fits
+            // while the package has no inputs: three sheets, no more.
+            if !supports_inputs && actions.len() < crate::volume::MAX_ACTIONS {
+                actions.push(crate::PluginActionSchema::SetMode {
+                    modes: crate::PlayModeSet::new()
+                        .with(crate::PlayMode::Shuffle)
+                        .with(crate::PlayMode::Repeat),
+                });
+            }
+            if actions.len() < crate::volume::MAX_ACTIONS && random.below(2) == 0 {
+                actions.push(crate::PluginActionSchema::Seek {});
+            }
+            presentation.push(crate::PluginComponent::MediaPlayer {
+                layout: crate::MediaLayout::Music,
+                artwork: vec![crate::ArtRole::Cover],
+                lists: vec![],
+                up_next: false,
+                navigation: false,
+                refresh_ms: crate::DEFAULT_REFRESH_MS,
+                keys: vec![],
+            });
+            presentation.push(crate::PluginComponent::VolumePercentControl {
+                label: "Volume".into(),
+            });
+        }
         let children = if custom && random.below(4) > 0 {
             child_kinds()
         } else {
@@ -1464,8 +1561,14 @@ mod tests {
             ids.extend(["input:HDMI1".into(), "input:HD RADIO".into()]);
             // Levels are not catalog rows: a picker collects the number.
             ids.extend(
-                ["dim:30", "position:40", "mode:heat", "mode:fan_only"]
-                    .map(alloc::string::String::from),
+                [
+                    "dim:30",
+                    "volume:30",
+                    "position:40",
+                    "mode:heat",
+                    "mode:fan_only",
+                ]
+                .map(alloc::string::String::from),
             );
             for id in ids {
                 if Function::parse(&id).is_some_and(|f| f.supports_device(device, &config)) {
@@ -1572,6 +1675,16 @@ mod tests {
             "set_light",
             "set_cover",
             "set_climate",
+            // Quoted on both sides: `media_player` on its own also matches the
+            // seed's Home Assistant entity `media_player.kitchen`, which every
+            // release has always been able to hold.
+            "\"media_player\"",
+            "\"volume_percent_control\"",
+            "\"set_volume_percent\"",
+            "\"step_volume_percent\"",
+            "\"seek\"",
+            "\"seek_by\"",
+            "\"set_mode\"",
         ]
         .iter()
         .any(|needle| text.contains(needle))
@@ -1622,8 +1735,10 @@ mod tests {
         let mut random = crate::commands::tests::Lcg(3);
         let (mut with_v3, mut without_v2) = (0, 0);
         // [child devices, keys bound to one, a key that toggles one, package
-        // scenes an area lists, a connection that is itself a lamp]
-        let mut reached = [0usize; 5];
+        // scenes an area lists, a connection that is itself a lamp, a
+        // percentage aimed at a packaged player where the projection removes
+        // it, and one where it stays]
+        let mut reached = [0usize; 7];
         for round in 0..300 {
             let config = random_config(&mut random, true);
             let v2 = v2_projection(&config);
@@ -1655,6 +1770,57 @@ mod tests {
                     .unwrap()
                     .contains("\"kind\":\"light\",\"label\":\"Lamp\""),
             );
+            // The one new on-disk rule: a `volume:` command aimed at a
+            // packaged device goes from the three sites `.188` validates, and
+            // stays in the two it only parses.
+            let packaged = |id: &Id| {
+                config.devices().any(|(_, d)| {
+                    &d.id == id
+                        && matches!(
+                            config.resolve_integration(&d.integration),
+                            Some(Integration::Plugin { .. })
+                        )
+                })
+            };
+            let percent = |action: &crate::Action| {
+                action.command.starts_with("volume:") && packaged(&action.device)
+            };
+            let validated = |config: &Config| {
+                config.activities[0]
+                    .buttons
+                    .iter()
+                    .filter_map(|b| b.action.as_ref())
+                    .filter(|a| percent(a))
+                    .count()
+                    + config.activities[0]
+                        .setup
+                        .on
+                        .iter()
+                        .chain(&config.activities[0].setup.off)
+                        .filter(
+                            |step| matches!(step, crate::SequenceStep::Command { action } if percent(action)),
+                        )
+                        .count()
+                    + config.activities[0]
+                        .setup
+                        .pages
+                        .iter()
+                        .flat_map(|page| &page.widgets)
+                        .filter(|w| percent(&w.action))
+                        .count()
+            };
+            let parsed_only = |config: &Config| {
+                config.activities[0]
+                    .steps
+                    .iter()
+                    .chain(config.scenes.iter().flat_map(|scene| &scene.steps))
+                    .filter(|a| percent(a))
+                    .count()
+            };
+            reached[5] += validated(&config);
+            reached[6] += parsed_only(&config);
+            assert_eq!(validated(&v2), 0, "round {round}");
+            assert_eq!(parsed_only(&v2), parsed_only(&config), "round {round}");
             // A child keeps its place and its address, so the next update
             // finds it again; everything else about it is gone.
             for child in &children {
@@ -1750,7 +1916,8 @@ mod tests {
         assert!(
             reached.iter().all(|n| *n > 20),
             "the generator reached children, keys bound to them, keys that toggle them, \
-             listed package scenes and a connection that is a lamp: {reached:?}"
+             listed package scenes, a connection that is a lamp, and a percentage aimed at \
+             a packaged player in both kinds of place: {reached:?}"
         );
         assert!(
             without_v2 > 0,
@@ -1937,6 +2104,171 @@ mod tests {
                 .unwrap(),
             config
         );
+    }
+
+    /// A house with a packaged media player in it, and the same house with an
+    /// ordinary package. The one new on-disk rule is that a percentage aimed
+    /// at the player goes from the three places a protocol 2 core validates
+    /// and stays in the two it only parses, so the two houses save the same
+    /// bytes everywhere that core can see.
+    #[test]
+    fn a_player_and_a_house_without_one_write_the_same_bytes_for_an_older_core() {
+        use crate::buttons::{Binding, Button, Gesture};
+        let house = |player: bool| {
+            let mut config = plugin_config();
+            if let Provider::Plugin {
+                capabilities,
+                presentation,
+                actions,
+                ..
+            } = &mut config.connections.last_mut().unwrap().provider
+            {
+                *capabilities = named(&["play-pause", "next", "volume-up"]);
+                if player {
+                    *presentation = vec![
+                        crate::PluginComponent::MediaPlayer {
+                            layout: crate::MediaLayout::Music,
+                            artwork: vec![crate::ArtRole::Cover],
+                            lists: vec![],
+                            up_next: true,
+                            navigation: false,
+                            refresh_ms: 2_000,
+                            keys: vec![crate::MediaKey {
+                                key: crate::ColourKey::Red,
+                                command: "next".into(),
+                            }],
+                        },
+                        crate::PluginComponent::VolumePercentControl {
+                            label: "Volume".into(),
+                        },
+                    ];
+                    *actions = vec![
+                        crate::PluginActionSchema::SetVolumePercent { max_percent: 100 },
+                        crate::PluginActionSchema::StepVolumePercent { max_delta: 5 },
+                        crate::PluginActionSchema::Seek {},
+                        crate::PluginActionSchema::SeekBy {
+                            max_delta_ms: 30_000,
+                        },
+                        crate::PluginActionSchema::SetMode {
+                            modes: crate::PlayModeSet::new().with(crate::PlayMode::Shuffle),
+                        },
+                    ];
+                }
+            }
+            let device = config.rooms[0].devices[0].id.clone();
+            let percent = crate::Action::new(device.clone(), "volume:30");
+            let known = crate::Action::new(device.clone(), "next");
+            // The three sites that core validates hold the percentage only in
+            // the house that has a player; the two it merely parses hold it in
+            // both, which is what keeps this the identity on its own files.
+            let at_a_validated_site = |action: &crate::Action| player.then(|| action.clone());
+            let activity = &mut config.activities[0];
+            activity.setup.devices = vec![device];
+            activity.setup.custom_screen = true;
+            activity.buttons = vec![
+                Binding {
+                    button: Button::Red,
+                    gesture: Gesture::Short,
+                    action: at_a_validated_site(&percent),
+                },
+                Binding {
+                    button: Button::Green,
+                    gesture: Gesture::Short,
+                    action: Some(known.clone()),
+                },
+            ];
+            activity.setup.on = at_a_validated_site(&percent)
+                .map(|action| crate::SequenceStep::Command { action })
+                .into_iter()
+                .chain([crate::SequenceStep::Command {
+                    action: known.clone(),
+                }])
+                .collect();
+            activity.setup.off = vec![crate::SequenceStep::Command {
+                action: known.clone(),
+            }];
+            activity.setup.pages = vec![crate::ActivityPage {
+                title: "Player".into(),
+                widgets: at_a_validated_site(&percent)
+                    .into_iter()
+                    .map(|action| crate::ActivityWidget {
+                        label: "Volume".into(),
+                        icon: None,
+                        action,
+                    })
+                    .collect(),
+            }];
+            activity.steps = vec![percent.clone(), known];
+            config.scenes[0].steps = vec![percent];
+            config.validate().unwrap();
+            config
+        };
+        let with_player = house(true);
+        let without = house(false);
+        let v2 = v2_projection(&with_player);
+        assert_eq!(v2, without, "the two houses have the same v2 projection");
+        assert_eq!(v2_projection(&v2), v2, "idempotent");
+        v2.validate().unwrap();
+        v1_projection(&v2).validate().unwrap();
+        projection(&v2).validate().unwrap();
+        assert!(!mentions_custom(&v2));
+
+        // The binding stays, disabled: removing it would give the key its
+        // activity default back.
+        assert_eq!(v2.activities[0].buttons.len(), 2);
+        assert_eq!(v2.activities[0].buttons[0].action, None);
+        assert_eq!(v2.activities[0].setup.on.len(), 1);
+        assert!(v2.activities[0].setup.pages[0].widgets.is_empty());
+        // A step and a scene step are only parsed by that core, which can
+        // already hold both.
+        assert_eq!(v2.activities[0].steps[0].command, "volume:30");
+        assert_eq!(v2.scenes[0].steps[0].command, "volume:30");
+
+        // The file: the v3 layer is the only place any of it is written, and
+        // the bytes an older core sees are the other house's, exactly.
+        let stored = StoredConfig::new(&with_player);
+        assert_eq!(stored.integration_config_v3.as_ref(), Some(&with_player));
+        let mut ours = serde_json::to_value(&stored).unwrap();
+        ours.as_object_mut()
+            .unwrap()
+            .remove("integration_config_v3");
+        assert_eq!(
+            ours,
+            serde_json::to_value(StoredConfig::new(&without)).unwrap()
+        );
+        assert!(!mentions_custom(&ours));
+
+        // That core parses the file, holds the projection, and finds nothing
+        // to refuse in it.
+        let bytes = serde_json::to_vec(&stored).unwrap();
+        let old: release_188::Envelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(old.holds().refusal(), None);
+        assert_eq!(old.rollback.refusal(), None);
+        // And it would have refused the file if the percentage had stayed.
+        // The component and the schemas it is drawn over are already gone by
+        // then - that core cannot even parse those tags - so what is left to
+        // prove is the binding itself.
+        let mut leaked = v2.clone();
+        leaked.activities[0].buttons[0].action = Some(crate::Action::new(
+            with_player.rooms[0].devices[0].id.clone(),
+            "volume:30",
+        ));
+        let kept = serde_json::to_vec(&Stored188::new(&leaked)).unwrap();
+        let old: release_188::Envelope = serde_json::from_slice(&kept).unwrap();
+        assert_eq!(
+            old.holds().refusal(),
+            Some("\"volume:30\" is bound to a packaged device that does not list it".into())
+        );
+
+        // A save by that core is the truth: what it never saw is not restored.
+        let after = serde_json::from_slice::<StoredConfig>(
+            &serde_json::to_vec(&Stored188::new(&without)).unwrap(),
+        )
+        .unwrap()
+        .into_config()
+        .unwrap();
+        assert_eq!(after, without);
+        assert!(!mentions_custom(&after));
     }
 
     /// The seven rules, one assertion each, on a bridge that also has controls

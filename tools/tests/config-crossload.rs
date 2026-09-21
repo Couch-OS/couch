@@ -55,6 +55,7 @@ fn state(name: &str) -> Config {
         "E" => (2, true, true),
         "F" => (1, true, false),
         "H" | "I" | "J" | "K" | "L" | "M" => return child_state(name),
+        "N" | "O" | "P" | "Q" => return player_state(name),
         other => fail(format!("unknown state {other}")),
     };
     let mut config = Config::seed();
@@ -476,6 +477,198 @@ fn child_state(name: &str) -> Config {
     built(value)
 }
 
+/// The keys a navigating player takes. Couch owns the map; the manifest only
+/// chooses the mode, so every one of these has to be a declared command.
+const NAVIGATION: [&str; 8] = [
+    "up", "down", "left", "right", "ok", "back", "home", "menu",
+];
+
+/// The player component and the volume control a state declares, and the
+/// typed actions they are drawn over. Everything here is JSON: the released
+/// model has no such component or action to name.
+fn player_parts(video: bool) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    if video {
+        (
+            vec![json!({"kind": "media_player", "layout": "video",
+                "artwork": ["backdrop", "logo"],
+                "lists": [{"id": "chapters", "label": "Chapters", "choose": true},
+                          {"id": "audio", "label": "Audio", "choose": true},
+                          {"id": "subtitles", "label": "Subtitles", "choose": true}],
+                "navigation": true, "refresh_ms": 2000,
+                "keys": [{"key": "red", "command": "x:info"},
+                         {"key": "green", "command": "x:osd"},
+                         {"key": "yellow", "command": "x:subtitle-next"}]})],
+            vec![
+                json!({"action": "seek"}),
+                json!({"action": "seek_by", "max_delta_ms": 30000}),
+            ],
+        )
+    } else {
+        (
+            vec![
+                json!({"kind": "media_player", "layout": "music",
+                    "artwork": ["cover"], "up_next": true}),
+                json!({"kind": "volume_percent_control", "label": "Volume"}),
+            ],
+            vec![
+                json!({"action": "set_volume_percent", "max_percent": 100}),
+                json!({"action": "step_volume_percent", "max_delta": 5}),
+                json!({"action": "seek"}),
+                json!({"action": "set_mode", "modes": ["shuffle", "repeat"]}),
+            ],
+        )
+    }
+}
+
+/// N to Q: a packaged media player, the percentage volume that only its
+/// declared action makes reachable, and an activity that names it as its
+/// source.
+fn player_state(name: &str) -> Config {
+    // (the state it starts from, the connection, a video player that takes
+    // the keys)
+    let (base, connection, video) = match name {
+        "N" | "Q" => ("A", "speaker", false),
+        "O" => ("A", "player", true),
+        "P" => ("Cd", "receiver", false),
+        other => fail(format!("unknown state {other}")),
+    };
+    let mut config = state(base);
+    if base == "A" {
+        config.connections.push(Connection {
+            id: Id::new(connection),
+            name: "Player".into(),
+            provider: built(json!({"kind": "plugin", "id": "player", "label": "Player"})),
+        });
+        config.rooms[0].devices[0].integration = built(json!({
+            "via": "connection", "connection_id": connection, "resource_id": ""}));
+    }
+    let device = config.rooms[0].devices[0].id.clone();
+    // On a converted Denon connection the resolved form is saved on a second
+    // device, so both saved shapes hold the same percentage.
+    let direct = (base == "Cd").then(|| config.rooms[0].devices[1].id.clone());
+
+    // A percentage is what the music player makes reachable; the video one
+    // brings the package's own buttons and a key Couch already knows.
+    let mut bound = Vec::new();
+    if video {
+        bound.push(Action::new(device.clone(), "x:info"));
+        bound.push(Action::new(device.clone(), "menu"));
+    } else {
+        bound.push(Action::new(device.clone(), "volume:30"));
+        if let Some(direct) = &direct {
+            bound.push(Action::new(direct.clone(), "volume:30"));
+        }
+    }
+    let activity = &mut config.activities[0];
+    activity.buttons.extend(
+        bound
+            .iter()
+            .zip([Button::Lights, Button::Activity, Button::Music])
+            .map(|(action, button)| Binding {
+                button,
+                gesture: Gesture::Short,
+                action: Some(action.clone()),
+            }),
+    );
+    // A step and a scene step are only parsed by the released core, so they
+    // are what proves the projection leaves those two places alone.
+    activity.steps.extend(bound.iter().cloned());
+    for id in [Some(device.clone()), direct.clone()].into_iter().flatten() {
+        if !activity.setup.devices.contains(&id) {
+            activity.setup.devices.push(id);
+        }
+    }
+    for steps in [&mut activity.setup.on, &mut activity.setup.off] {
+        steps.extend(bound.iter().map(|action| SequenceStep::Command {
+            action: action.clone(),
+        }));
+    }
+    activity.setup.custom_screen = true;
+    let widgets: Vec<ActivityWidget> = bound
+        .iter()
+        .map(|action| ActivityWidget {
+            label: action.command.clone(),
+            icon: None,
+            action: action.clone(),
+        })
+        .collect();
+    match activity.setup.pages.first_mut() {
+        Some(page) => page.widgets.extend(widgets),
+        None => activity.setup.pages.push(ActivityPage {
+            title: "Player".into(),
+            widgets,
+        }),
+    }
+    if name == "Q" {
+        // The activity's transport keys drive the player. The released core
+        // knows the field and opens its pages screen instead.
+        activity.source = Some(device.clone());
+    }
+    config.scenes[0].steps.extend(bound);
+
+    let (components, schemas) = player_parts(video);
+    let mut value = serde_json::to_value(&config).unwrap();
+    let provider = value["connections"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|c| c["id"] == connection)
+        .unwrap();
+    let extend = |snapshot: &mut serde_json::Value| {
+        let capabilities = snapshot["capabilities"]
+            .as_array_mut()
+            .expect("a package snapshot always writes its capabilities here");
+        let mut named = vec![
+            ("play-pause", "Play / pause"),
+            ("next", "Next"),
+            ("previous", "Previous"),
+        ];
+        if video {
+            named.extend(NAVIGATION.iter().map(|key| (*key, "Key")));
+            named.extend([
+                ("x:info", "Info"),
+                ("x:osd", "On-screen display"),
+                ("x:subtitle-next", "Next subtitle"),
+            ]);
+        }
+        for (id, label) in named {
+            capabilities.push(json!({"id": id, "label": label}));
+        }
+        for component in &components {
+            snapshot["presentation"]
+                .as_array_mut()
+                .unwrap()
+                .push(component.clone());
+        }
+        for schema in &schemas {
+            snapshot["actions"].as_array_mut().unwrap().push(schema.clone());
+        }
+    };
+    // A package with nothing of its own skips the empty fields, so give the
+    // snapshot something to extend first.
+    for key in ["capabilities", "presentation", "actions"] {
+        if provider["provider"][key].is_null() {
+            provider["provider"][key] = json!([]);
+        }
+    }
+    extend(&mut provider["provider"]);
+    if let Some(direct) = &direct {
+        for room in value["rooms"].as_array_mut().unwrap() {
+            for saved in room["devices"].as_array_mut().unwrap() {
+                if saved["id"] == direct.to_string() {
+                    for key in ["capabilities", "presentation", "actions"] {
+                        if saved["integration"][key].is_null() {
+                            saved["integration"][key] = json!([]);
+                        }
+                    }
+                    extend(&mut saved["integration"]);
+                }
+            }
+        }
+    }
+    built(value)
+}
+
 /// G: what no configuration may hold. `x:` means nothing to Couch itself, so a
 /// step may only send it to a device whose package declares that exact id.
 fn refused() -> Vec<(String, Config)> {
@@ -591,6 +784,77 @@ fn refused() -> Vec<(String, Config)> {
             scene["resource"]["kind"] = json!("light");
         }),
     ));
+
+    // Players. Each starts from a state that validates and changes one thing.
+    let from = |name: &'static str, edit: &dyn Fn(&mut serde_json::Value)| -> Config {
+        let mut value = serde_json::to_value(state(name)).unwrap();
+        edit(&mut value);
+        built(value)
+    };
+    // The packaged connection of N, O and Q is the last one; its presentation
+    // and its typed actions are what these cases reach into.
+    fn package(value: &mut serde_json::Value) -> &mut serde_json::Value {
+        value["connections"].as_array_mut().unwrap().last_mut().unwrap()
+    }
+    fn presentation(value: &mut serde_json::Value) -> &mut Vec<serde_json::Value> {
+        package(value)["provider"]["presentation"]
+            .as_array_mut()
+            .unwrap()
+    }
+    fn actions(value: &mut serde_json::Value) -> &mut Vec<serde_json::Value> {
+        package(value)["provider"]["actions"].as_array_mut().unwrap()
+    }
+    cases.push((
+        "player:   two of them on one connection".into(),
+        from("N", &|value| {
+            let player = presentation(value)[0].clone();
+            presentation(value).push(player);
+        }),
+    ));
+    cases.push((
+        "player:   a fourth sheet".into(),
+        from("O", &|value| {
+            presentation(value)[0]["lists"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"id": "extras", "label": "Extras"}));
+            presentation(value)[0]["up_next"] = json!(true);
+        }),
+    ));
+    cases.push((
+        "player:   a percentage control with no action behind it".into(),
+        from("N", &|value| {
+            actions(value).retain(|a| a["action"] != "set_volume_percent");
+        }),
+    ));
+    cases.push((
+        "player:   a scale that stops at nothing".into(),
+        from("N", &|value| {
+            for action in actions(value) {
+                if action["action"] == "set_volume_percent" {
+                    action["max_percent"] = json!(0);
+                }
+            }
+        }),
+    ));
+    cases.push((
+        "player:   navigation without the menu key".into(),
+        from("O", &|value| {
+            package(value)["provider"]["capabilities"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|c| c["id"] != "menu");
+        }),
+    ));
+    cases.push((
+        "key:      volume: bound to a package that does not declare it".into(),
+        from("N", &|value| {
+            presentation(value).retain(|c| c["kind"] != "volume_percent_control");
+            actions(value).retain(|a| {
+                a["action"] != "set_volume_percent" && a["action"] != "step_volume_percent"
+            });
+        }),
+    ));
     cases
 }
 
@@ -680,6 +944,15 @@ fn main() {
                 ("set_light", "the set_light action"),
                 ("set_cover", "the set_cover action"),
                 ("set_climate", "the set_climate action"),
+                // Quoted on both sides: the seed's Home Assistant speaker is
+                // `media_player.kitchen`, which every release can hold.
+                ("\"media_player\"", "a packaged media player"),
+                ("\"volume_percent_control\"", "a percentage volume control"),
+                ("\"set_volume_percent\"", "the set_volume_percent action"),
+                ("\"step_volume_percent\"", "the step_volume_percent action"),
+                ("\"seek\"", "the seek action"),
+                ("\"seek_by\"", "the seek_by action"),
+                ("\"set_mode\"", "the set_mode action"),
             ] {
                 if visible.contains(needle) {
                     fail(format!("{path}: {what} is visible outside integration_config_v3"));

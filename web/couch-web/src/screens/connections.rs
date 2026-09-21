@@ -907,7 +907,8 @@ fn plugin_controls(
                 PluginComponent::InputSelector{label}=>view!{<section class="integration-component"><h3>{label}</h3><div class="actions"><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("inputs",None)>"Refresh inputs"</button><select aria-label="Integration input" disabled=move ||live_busy.get()||inputs.with(Vec::is_empty) on:change=move |event|{let id=event_target_value(&event);if !id.is_empty(){call("action",Some(json!({"command":format!("input:{id}")})));}}><option value="">"Choose an input"</option>{move ||inputs.get().into_iter().map(|(id,name)|view!{<option value=id>{name}</option>}).collect_view()}</select></div></section>}.into_any(),
                 // Protocol 3 (unreleased): no manifest this build accepts can
                 // declare one, and the controls come with the web step.
-                PluginComponent::Light{..}|PluginComponent::Cover{..}|PluginComponent::Climate{..}=>().into_any(),
+                PluginComponent::Light{..}|PluginComponent::Cover{..}|PluginComponent::Climate{..}
+                |PluginComponent::MediaPlayer{..}|PluginComponent::VolumePercentControl{..}=>().into_any(),
             }).collect_view()
         }}
         </section>}.into_any()

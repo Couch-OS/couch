@@ -240,6 +240,25 @@ impl Function {
                     _ => {}
                 }
             }
+            // Protocol 3 (unreleased). A percentage sent to the connection
+            // itself is the typed action the one host gate makes from it, so
+            // what decides is the declared schema and its bound, never a
+            // capability spelt `volume:30`. Additive on purpose: a package
+            // may also declare that literal, which the released core accepts,
+            // and taking it away here would stop the projection being the
+            // identity on a file that core can write.
+            if child.is_none() {
+                if let Self::Volume(percent) = self {
+                    if crate::PluginActionSchema::find(actions, crate::ActionKind::SetVolumePercent)
+                        .is_some_and(|schema| {
+                            schema
+                                .accepts(crate::TypedAction::SetVolumePercent { percent: *percent })
+                        })
+                    {
+                        return true;
+                    }
+                }
+            }
             if matches!(self, Self::Custom(id) if !valid_custom_id(id)) {
                 return false;
             }
@@ -836,5 +855,80 @@ pub(crate) mod tests {
                 integration.via()
             );
         }
+    }
+
+    /// Protocol 3 (unreleased). A percentage sent to a packaged connection is
+    /// the typed action the one host gate makes from it, so the declared
+    /// schema decides, and its bound decides which numbers may be saved.
+    #[test]
+    fn a_percentage_reaches_a_package_only_where_it_declares_the_action() {
+        use alloc::vec;
+        use alloc::vec::Vec;
+        let plugin =
+            |actions: Vec<crate::PluginActionSchema>,
+             capabilities: Vec<crate::PluginCapability>| Integration::Plugin {
+                id: "player".into(),
+                connection_id: "speaker".into(),
+                resource_id: "".into(),
+                capabilities,
+                supports_inputs: false,
+                presentation: vec![],
+                actions,
+                child: None,
+            };
+        let named = |id: &str| crate::PluginCapability {
+            id: id.into(),
+            label: "Named".into(),
+        };
+        let percent = crate::PluginActionSchema::SetVolumePercent { max_percent: 100 };
+        let short = crate::PluginActionSchema::SetVolumePercent { max_percent: 60 };
+        let decibels = crate::PluginActionSchema::SetVolumeDb {
+            min_tenths: -800,
+            max_tenths: 180,
+            step_tenths: 5,
+        };
+        for (actions, capabilities, command, supported) in [
+            (vec![percent], vec![], "volume:30", true),
+            (vec![percent], vec![], "volume:0", true),
+            (vec![percent], vec![], "volume:100", true),
+            // No schema, no percentage: this is what `.188` does everywhere,
+            // and what the v2 projection has to leave behind.
+            (vec![], vec![], "volume:30", false),
+            (vec![decibels], vec![], "volume:30", false),
+            // A speaker whose scale stops short refuses the rest of it.
+            (vec![short], vec![], "volume:60", true),
+            (vec![short], vec![], "volume:61", false),
+            // A package may still name the literal as one of its buttons, and
+            // then it is an ordinary command that every release accepts.
+            (vec![], vec![named("volume:30")], "volume:30", true),
+            (vec![], vec![named("volume:30")], "volume:40", false),
+            // Nothing else changes: a step key is still a declared capability.
+            (vec![percent], vec![], "volume-up", false),
+            (vec![percent], vec![named("volume-up")], "volume-up", true),
+            (vec![percent], vec![], "dim:30", false),
+            (vec![percent], vec![], "position:30", false),
+        ] {
+            let integration = plugin(actions.clone(), capabilities.clone());
+            assert_eq!(
+                Function::parse(command).unwrap().supports(&integration),
+                supported,
+                "{command} with {actions:?} and {capabilities:?}"
+            );
+        }
+        // And the editor offers the level exactly where it can be saved.
+        assert_eq!(
+            crate::buttons::levels(&plugin(vec![percent], vec![])),
+            vec![("volume", "Volume")]
+        );
+        assert!(crate::buttons::levels(&plugin(vec![], vec![])).is_empty());
+        // A level is never a catalog row: the picker has to collect a number
+        // first, so nothing here leaks into the list of complete commands.
+        assert!(crate::buttons::function_choices(&plugin(vec![percent], vec![])).is_empty());
+        assert_eq!(
+            crate::buttons::levels(&Integration::HomeAssistant {
+                entity_id: "light.office".into()
+            }),
+            vec![("dim", "Brightness")]
+        );
     }
 }

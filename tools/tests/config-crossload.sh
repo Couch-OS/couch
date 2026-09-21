@@ -117,6 +117,10 @@ J|v1+v3|v1|children: a blind and a thermostat
 K|v1+v3|v1|a package scene that an area lists
 L|v1+v2+v3|v1+v2|I on a connection the Denon pilot converted
 M|v1+v3|v1|a connection that is itself a lamp
+N|v1+v3|v1|a player: volume:30 in all five places
+O|v1+v3|v1|a video player: navigation, lists, x: ids, seek_by
+P|v1+v2+v3|v1+v2|N on a connection the Denon pilot converted
+Q|v1+v3|v1|an activity whose source is the player
 STATES
 
 echo
