@@ -90,7 +90,8 @@ controls: a tall brightness bar, and beside it a colour temperature bar where
 the entity reports a range (Home Assistant is asked in Kelvin). A blind opens
 the same screen with a position bar on it and Open, Stop and Close under it.
 The volume keys are the brightness bar and the channel keys the colour
-temperature, wherever the highlight is; see
+temperature; neither bar is ever highlighted, and on a blind left and right
+walk its three buttons. See
 [the key table](philips-hue.md#the-keys-on-a-lights-or-blinds-controls).
 Physical Back returns home, with a 180 ms slide in both directions.
 Requests run on a bounded worker queue; unavailable lights show an error in the

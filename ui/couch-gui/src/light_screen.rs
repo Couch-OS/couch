@@ -33,7 +33,17 @@ pub(crate) fn kelvin(mirek: u16) -> u32 {
     ((exact + 25) / 50) * 50
 }
 
+/// The white a lamp is given when it is asked for a colour temperature and
+/// has none to step from: 2700 K, an ordinary warm bulb.
+const WARM_WHITE_MIREK: u16 = 370;
+
 /// One step of colour temperature, in mirek.
+///
+/// A lamp that is showing a colour, or a scene made of colours, has a range
+/// and no colour temperature at all - Hue says so with `mirek_valid: false` -
+/// and it stays that way until somebody gives it one. So the first press on
+/// such a lamp does not step: it turns it to warm white, inside the lamp's
+/// own limits, and the presses after that step from there.
 ///
 /// The step is a twentieth of this light's own range, so the whole range is
 /// about twenty presses whatever the lamp's limits are, and never finer than
@@ -51,9 +61,9 @@ pub(crate) fn mirek_step(
     let Some((cool, warm)) = light.mirek_range else {
         return Err("This light does not support colour temperature.");
     };
-    let current = target
-        .or(light.mirek)
-        .ok_or("Checking colour temperature. Try again in a moment.")?;
+    let Some(current) = target.or(light.mirek) else {
+        return Ok(WARM_WHITE_MIREK.clamp(cool, warm));
+    };
     let step = i32::from((warm - cool) / 20).max(5);
     Ok((i32::from(current) - delta.signum() * step).clamp(i32::from(cool), i32::from(warm)) as u16)
 }
@@ -126,11 +136,28 @@ fn hint(cover: bool, tunable: bool) -> String {
     .to_owned()
 }
 
+/// The state line and its colour, told with the level the screen is driving
+/// towards rather than the one the device last reported.
+///
+/// The bar, the big read-out and this line all have to say the same thing
+/// while a write is out, or the screen contradicts itself for as long as the
+/// lamp takes to answer. Writing a brightness to a lamp that is off turns it
+/// on, and writing zero turns it off, so the words follow the target both ways.
+fn light_state(light: &Light, target: Option<u8>) -> (String, bool) {
+    match target.filter(|_| light.dimmable && light.on.is_some()) {
+        Some(0) => ("Off".to_owned(), false),
+        Some(percent) => (format!("On · {percent}%"), true),
+        None => (crate::lights::description(light), light.on == Some(true)),
+    }
+}
+
 /// The screen for one row.
 ///
 /// `level` and `mirek` are the optimistic targets the room list already keeps
 /// for its rows: a press moves the screen at once and the reading that follows
-/// either confirms it or corrects it, exactly as the row's slider behaves.
+/// either confirms it or corrects it, exactly as the row's slider behaves. The
+/// state line follows them too, so nothing on the screen disagrees with the
+/// bar while a write is in flight.
 pub(crate) fn view(
     name: &str,
     room: &str,
@@ -162,9 +189,10 @@ pub(crate) fn view(
             let known = light.on.is_some() && shown.is_some() && light.dimmable;
             let tunable = light.mirek_range.is_some();
             let shown_mirek = mirek.or(light.mirek);
+            let (state, active) = light_state(light, level);
             View {
-                state: crate::lights::description(light),
-                active: light.on == Some(true),
+                state,
+                active,
                 level: if known {
                     format!("{}%", shown.unwrap_or(0))
                 } else {
@@ -199,8 +227,12 @@ pub(crate) fn view(
         Some(DeviceState::Cover(cover)) => {
             let shown = level.or(cover.position_percent);
             let known = cover.state.is_some() && shown.is_some();
+            // The line reads the position the bar reads, which while a blind
+            // travels is the endpoint it was sent to, not where it is now.
+            let mut travelling = cover.clone();
+            travelling.position_percent = shown;
             View {
-                state: crate::lights::cover_description(cover),
+                state: crate::lights::cover_description(&travelling),
                 active: cover.state.as_deref().is_some_and(|s| s != "closed"),
                 level_label: "OPEN POSITION".into(),
                 level: if known {
@@ -297,12 +329,21 @@ mod tests {
         // A narrow range still moves five mirek at a time rather than nothing.
         let narrow = lamp(true, Some((200, 260)));
         assert_eq!(mirek_step(&narrow, Some(230), 1), Ok(225));
-        // And a light with no range, or no reading, refuses instead of
-        // inventing a colour temperature.
+        // A light with no range refuses instead of inventing one.
         assert!(mirek_step(&lamp(true, None), None, 1).is_err());
+        // A lamp showing a colour has a range and no colour temperature, for
+        // as long as it shows that colour. Either key turns it to warm white,
+        // and the next press steps from there.
         let mut unread = lamp(true, Some((153, 500)));
         unread.mirek = None;
-        assert!(mirek_step(&unread, None, 1).is_err());
+        assert_eq!(mirek_step(&unread, None, 1), Ok(370));
+        assert_eq!(mirek_step(&unread, None, -1), Ok(370));
+        assert_eq!(mirek_step(&unread, Some(370), 1), Ok(353));
+        // Warm white is still inside the lamp's own limits.
+        let mut cool_only = lamp(true, Some((153, 300)));
+        cool_only.mirek = None;
+        assert_eq!(mirek_step(&cool_only, None, 1), Ok(300));
+        // A lamp that cannot be reached is still refused.
         unread.on = None;
         assert!(mirek_step(&unread, Some(300), 1).is_err());
     }
@@ -343,6 +384,10 @@ mod tests {
         assert_eq!(pressed.level, "45%");
         assert_eq!(pressed.level_percent, 45);
         assert_eq!(pressed.kelvin, "3000 K");
+        // And the state line moves with it, so nothing on the screen
+        // contradicts the bar while the write is out.
+        assert_eq!(pressed.state, "On · 45%");
+        assert!(pressed.active);
 
         // A lamp that only switches says so instead of offering a slider.
         let plain = view(
@@ -407,6 +452,93 @@ mod tests {
             unread.hint,
             "Vol: position · Power: open/close · Back: room"
         );
+    }
+
+    /// The state line is the bar's line: while a press is in flight it says
+    /// where the device is going, not the reading it has already overtaken.
+    #[test]
+    fn the_state_line_follows_the_press_rather_than_the_last_reading() {
+        let lit = DeviceState::Light(lamp(true, Some((153, 500))));
+        let screen = |level| {
+            view(
+                "Desk lamp",
+                "",
+                Declared::default(),
+                Some(&lit),
+                level,
+                None,
+            )
+        };
+        // No press: the reading, exactly as the row shows it.
+        assert_eq!(screen(None).state, "On · 40%");
+        assert_eq!(screen(Some(55)).state, "On · 55%");
+        // Writing zero turns a lamp off, and the line says so before the
+        // reading confirms it - with the accent colour gone too.
+        let dark = screen(Some(0));
+        assert_eq!(dark.state, "Off");
+        assert!(!dark.active);
+
+        // The other way round: a brightness written to a lamp that is off
+        // turns it on, so the line does not keep saying "Off".
+        let mut resting = lamp(true, None);
+        resting.on = Some(false);
+        resting.brightness_percent = Some(0);
+        let woken = view(
+            "Desk lamp",
+            "",
+            Declared::default(),
+            Some(&DeviceState::Light(resting.clone())),
+            Some(5),
+            None,
+        );
+        assert_eq!(woken.state, "On · 5%");
+        assert!(woken.active);
+
+        // A lamp that cannot dim has no target to believe in, and an
+        // unavailable one is still unavailable whatever was pressed.
+        let mut plain = resting;
+        plain.dimmable = false;
+        assert_eq!(
+            view(
+                "Plug",
+                "",
+                Declared::default(),
+                Some(&DeviceState::Light(plain.clone())),
+                Some(5),
+                None
+            )
+            .state,
+            "Off"
+        );
+        plain.on = None;
+        assert_eq!(
+            view(
+                "Plug",
+                "",
+                Declared::default(),
+                Some(&DeviceState::Light(plain)),
+                Some(5),
+                None
+            )
+            .state,
+            "Unavailable"
+        );
+
+        // A blind's line carries the position the bar carries, which while it
+        // travels is the endpoint it was sent to.
+        let travelling = view(
+            "Blind",
+            "",
+            Declared {
+                cover: true,
+                ..Declared::default()
+            },
+            Some(&DeviceState::Cover(blind(true, true))),
+            Some(25),
+            None,
+        );
+        assert_eq!(travelling.state, "Open · 25% open");
+        assert_eq!(travelling.level, "25%");
     }
 
     #[test]

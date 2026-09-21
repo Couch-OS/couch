@@ -19,8 +19,9 @@ One bridge connection is supported per remote.
    controls: a tall brightness bar, and beside it a colour temperature bar on a
    light whose bridge reports a range for it, shown in Kelvin. Both bars fill
    and read from the bottom, and warm is at the bottom of the colour bar, so up
-   is always the higher number. On the row itself left and right still dim the
-   light in place. A row whose OK opens controls shows a small chevron and keeps
+   is always the higher number; neither bar carries a highlight, because each
+   has its own key. On the row itself left and right still dim the light in
+   place. A row whose OK opens controls shows a small chevron and keeps
    its state text ("On · 40%"). A light that can only be switched keeps OK as
    the switch it was. Tapping selects a row, matching room navigation. Physical
    Back returns to the room with the same row still highlighted.
@@ -31,23 +32,31 @@ bridge; refresh to see reported state. This is not proof of physical illuminatio
 
 ## The keys on a light's or blind's controls
 
+**Neither bar is ever highlighted.** Each has a key of its own, so there is
+nothing to select between and no ring to move. Only a blind's three buttons
+carry a highlight, because OK has to know which one it presses.
+
 | Key | On a lamp | On a blind |
 | --- | --- | --- |
 | Volume up / down | Brighter / dimmer, 5% a press | More / less open, 5% a press |
-| Channel up / down | Cooler / warmer, a twentieth of the lamp's range a press (at least 5 mirek). A lamp with no colour temperature ignores them | Nothing |
-| Up / down | The same, on whichever bar is highlighted | Always the position bar, even while a button is highlighted |
-| Left / right | Move between the two bars | Move along the bar, Open, Stop and Close |
-| OK | On / off | Open / close, or the highlighted button |
+| Up / down | The same as volume | The same as volume |
+| Channel up / down | Cooler / warmer, a twentieth of the lamp's range a press (at least 5 mirek). A lamp with no colour temperature ignores them; a lamp that is showing a colour has none to step from, so the first press turns it to warm white (2700 K) and the next ones step from there | Nothing |
+| Left / right | Nothing | Move along Open, Stop and Close |
+| OK | On / off | Presses the highlighted button - Open to begin with |
 | Power | On / off | Open / close |
 | Back | The room, with the same row highlighted | The same |
 
-The volume and channel keys work wherever the highlight is, and they hold to
-repeat like everywhere else: a held key leaves one target behind rather than a
-queue of commands, so the lamp follows the key instead of trailing it. While
-these controls are open the volume and channel keys are *theirs alone* - a
-receiver in a running activity does not also hear them - and closing the screen
-hands them straight back. The line along the bottom of the screen says the same
-thing in one line.
+The volume and channel keys hold to repeat like everywhere else: a held key
+leaves one target behind rather than a queue of commands, so the lamp follows
+the key instead of trailing it. While these controls are open the volume and
+channel keys are *theirs alone* - a receiver in a running activity does not
+also hear them - and closing the screen hands them straight back. The line
+along the bottom of the screen says the same thing in one line.
+
+The state line at the top keeps saying what the device is - "On · 40%" - and
+moves with the bar as you press, rather than reading "Updating…" for as long
+as the writes take. It says **Updating…** only once one write has been out for
+more than a second and a half, which means something is actually wrong.
 
 ## Connection and credentials
 
