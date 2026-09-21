@@ -814,9 +814,20 @@ underneath it belongs to neither.
 | player with album art | **banded** | a photograph behind everything |
 | camera, waiting for a frame | falling, `sooner` | one line on an empty page |
 | camera with a frame up | **banded** | the picture is a photograph |
+| a packaged device's pages of buttons | falling | flat background, rows of tiles |
 
 A screen answers three questions - `lift-ready()`, `banded()`, `sparse()` -
-and the plan follows from them. The thermostat's and the camera's second lines
+and the plan follows from them. Measured, mean and worst panels a frame:
+light 0.19/0.29, television 0.15/0.28 and 0.14/0.29 with artwork, thermostat
+0.15/0.28, player 0.12/0.26 waiting and 0.14/0.29 with album art, camera
+0.15/0.26 waiting and 0.14/0.29 live, pages 0.17/0.28. Every one is inside
+the caps of 0.25 and 0.35.
+
+**The title is the device's name on every one of them**, because the lift
+flies the row's own name onto it and two different sets of words cannot be
+the same drawing. The pages of buttons put the page's name on the second line
+for that reason: it used to be the title, and the name coming out of the row
+landed on a different word. The thermostat's and the camera's second lines
 name the room and what drives them; both used to be literals (`"Home
 Assistant"`, `"UniFi Protect"`) that were wrong on any other driver and said
 nothing about where the device is.
