@@ -1,7 +1,6 @@
 import { Theme } from "../theme.slint";
-import { MediaBack } from "../widgets/media-back.slint";
+import { ScreenHeader } from "../components/screen_header.slint";
 import { FocusRing } from "../components/focus_ring.slint";
-import { DeviceDisc } from "../components/device_disc.slint";
 
 // One device screen for every light and blind, whatever drives it: built-in
 // Hue, Home Assistant, Matter or a packaged child. The room row behind it
@@ -81,21 +80,16 @@ export component LightScreen inherits Rectangle {
     property <length> track-y: 82px;
     property <length> track-h: root.bars-h - 134px;
 
-    // The title is the size and weight a room row gives the same name
-    // (`Theme.device-name`), so the lift can fly the row's own label onto it
-    // and cut with nothing changing size. The back button is centred on the
-    // pair of lines rather than on the title alone.
-    MediaBack { x: 24px; y: 26px; activate => { root.action("close", 0); } }
-    Text { x: 88px; y: 20px; width: parent.width - 112px; height: 34px; vertical-alignment: top; text: root.title; font-size: Theme.device-name; font-weight: Theme.device-name-weight; color: Theme.text; overflow: elide; }
-    Text { x: 88px; y: 56px; width: parent.width - 112px; height: 24px; text: root.room; font-size: 16px; color: Theme.text-secondary; overflow: elide; }
-
-    // The same disc the room row draws, with the same icon: the lift flies
-    // the row's own onto this one, so the two have to be one drawing.
-    DeviceDisc {
-        x: (parent.width - 52px) / 2; y: 94px;
+    // The back arrow, the name, the room, the disc and the state line: the
+    // same band every screen a row opens draws, and the disc is the row's own
+    // so the lift can fly one onto the other.
+    head := ScreenHeader {
+        x: 0px; y: 0px; width: parent.width;
+        title: root.title; subtitle: root.room;
         icon: root.icon; active: root.active; known: root.known;
+        state: root.pending ? "Updating…" : root.state;
+        back => { root.action("close", 0); }
     }
-    Text { x: 24px; y: 156px; width: parent.width - 48px; height: 28px; text: root.pending ? "Updating…" : root.state; horizontal-alignment: center; font-size: 20px; color: root.active ? Theme.accent : Theme.text-secondary; }
 
     // --- the level, which is brightness on a lamp and position on a blind ---
     Rectangle {
@@ -213,42 +207,45 @@ export component LightScreen inherits Rectangle {
     // (docs/slint-notes.md). The transition flies the row's label onto
     // `title-box`, its icon onto `disc-box`, and brings the header, the cards
     // and the footer in as bands.
-    public function title-box-x() -> length { return 88px; }
-    public function title-box-y() -> length { return 20px; }
-    public function title-box-w() -> length { return root.width - 112px; }
-    public function title-box-h() -> length { return 34px; }
-    public function disc-box-x() -> length { return (root.width - 52px) / 2; }
-    public function disc-box-y() -> length { return 94px; }
-    public function disc-box-size() -> length { return 52px; }
-    /// Down to the foot of the state line: the back arrow, the two lines of
-    /// text, the disc and the state, which arrive together.
-    public function header-h() -> length { return 190px; }
-    public function cards-y() -> length { return root.bars-y; }
-    public function cards-h() -> length { return root.bars-h; }
-    public function card-x(which: int) -> length {
+    public pure function title-box-x() -> length { return head.title-box-x(); }
+    public pure function title-box-y() -> length { return head.title-box-y(); }
+    public pure function title-box-w() -> length { return head.title-box-w(); }
+    public pure function title-box-h() -> length { return head.title-box-h(); }
+    public pure function disc-box-x() -> length { return head.disc-box-x(); }
+    public pure function disc-box-y() -> length { return head.disc-box-y(); }
+    public pure function disc-box-size() -> length { return head.disc-box-size(); }
+    public pure function header-h() -> length { return head.header-h(); }
+    public pure function plate-x() -> length { return head.plate-x(); }
+    public pure function plate-y() -> length { return head.plate-y(); }
+    public pure function plate-w() -> length { return head.plate-w(); }
+    public pure function plate-h() -> length { return head.plate-h(); }
+    public pure function plate-r() -> length { return head.plate-r(); }
+    public pure function cards-y() -> length { return root.bars-y; }
+    public pure function cards-h() -> length { return root.bars-h; }
+    public pure function card-x(which: int) -> length {
         return which == 0 ? root.col-x : root.col-x + root.col-w + 24px;
     }
-    public function card-w() -> length { return root.col-w; }
-    public function track-box-x(which: int) -> length {
+    public pure function card-w() -> length { return root.col-w; }
+    public pure function track-box-x(which: int) -> length {
         return root.card-x(which) + (root.col-w - root.track-w) / 2;
     }
-    public function track-box-y() -> length { return root.bars-y + root.track-y; }
-    public function track-box-w() -> length { return root.track-w; }
-    public function track-box-h() -> length { return root.track-h; }
+    public pure function track-box-y() -> length { return root.bars-y + root.track-y; }
+    public pure function track-box-w() -> length { return root.track-w; }
+    public pure function track-box-h() -> length { return root.track-h; }
     /// How much of the level bar is filled, and where the colour marker sits:
     /// both are what the bar already draws, so the transition can reveal them
     /// out of this page rather than invent them.
-    public function fill-h() -> length {
+    public pure function fill-h() -> length {
         return root.level-known ? root.track-h * root.level-percent / 100 : 0px;
     }
-    public function marker-y() -> length {
+    public pure function marker-y() -> length {
         return root.mirek-known
             ? root.track-box-y() + (root.track-h - 10px) * (100 - root.mirek-percent) / 100
             : -1px;
     }
-    public function marker-h() -> length { return 10px; }
+    public pure function marker-h() -> length { return 10px; }
     /// The detail and hint lines, which come in last.
-    public function footer-y() -> length { return 640px; }
+    public pure function footer-y() -> length { return 640px; }
 
     keys := FocusScope {
         enabled: root.shown;

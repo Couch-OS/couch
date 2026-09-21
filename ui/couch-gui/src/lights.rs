@@ -1305,6 +1305,22 @@ impl Controller {
                 })
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| "Integration".into())
+        } else if let Some(device) = entry.id.strip_prefix("device:") {
+            // A configured device names the connection it is reached over -
+            // "Hue bridge", "Theater AVR" - the same way a packaged child
+            // names its own above.
+            config
+                .as_ref()
+                .and_then(|c| {
+                    let (_, d) = c.devices().find(|(_, d)| d.id.as_str() == device)?;
+                    match &d.integration {
+                        couch_model::Integration::Connection { connection_id, .. } => {
+                            c.connection(connection_id).map(|c| c.name.clone())
+                        }
+                        _ => None,
+                    }
+                })
+                .unwrap_or_else(|| "Integration".into())
         } else {
             "Home Assistant".to_string()
         };
@@ -1668,7 +1684,11 @@ impl Controller {
             // A pick is the press that may open one. It is asked of the row
             // rather than assumed, the same question `poll` asks below.
             Input::PhysicalPick(row, _) | Input::Pick(row) => {
-                self.screen.is_none() && self.entries.get(*row).is_some_and(opens_screen)
+                self.screen.is_none()
+                    && self
+                        .entries
+                        .get(*row)
+                        .is_some_and(|entry| opens_screen(entry) || opens_tv(entry))
             }
             Input::Screen(name, _) => self.screen.is_some() && name == "close",
             _ => false,
@@ -1811,6 +1831,18 @@ impl Controller {
                             .and_then(|c| tv_connection(c, e.id.trim_start_matches("device:")))
                         {
                             app.set_active_activity("".into());
+                            // The header's disc is this row's disc and its
+                            // second line this row's second line: the lift
+                            // flies one onto the other, so they are the row's
+                            // own rather than worked out again on the screen.
+                            app.set_tv_room(self.source_line(e).as_str().into());
+                            app.set_tv_icon(crate::icons::image(e.icon));
+                            app.set_tv_active(
+                                e.state.as_ref().is_some_and(|s| s.active() == Some(true)),
+                            );
+                            app.set_tv_known(
+                                e.state.as_ref().is_some_and(|s| s.active().is_some()),
+                            );
                             app.invoke_open_tv(e.id.as_str().into(), e.name.as_str().into());
                             continue;
                         }
@@ -2027,6 +2059,35 @@ fn row_opens_a_screen(config: Option<&couch_model::Config>, entry: &Entry) -> bo
 /// reading; everything else is decided by the reading it has, and a row that
 /// has not answered keeps the toggle OK has always been - opening a screen on
 /// a guess would be worse than the switch it replaced.
+/// Whether a pick on this row opens the television controls: a packaged or
+/// configured device that is neither a camera nor a player, and that has a
+/// connection behind it.
+///
+/// The same question the pick itself asks below, asked before the press is
+/// performed so that the loop can keep the frame that is on the panel - the
+/// television screen lifts out of its row the way a light's does.
+fn opens_tv(entry: &Entry) -> bool {
+    let Some(device) = entry.id.strip_prefix("device:") else {
+        return false;
+    };
+    let Some(config) = crate::connections::config() else {
+        return false;
+    };
+    let integration = config
+        .devices()
+        .find(|(_, d)| d.id.as_str() == device)
+        .and_then(|(_, d)| config.resolve_integration(&d.integration));
+    if integration
+        .as_ref()
+        .is_some_and(|i| matches!(i, Integration::UnifiProtect { .. }))
+        || integration
+            .as_ref()
+            .is_some_and(crate::shortcuts::opens_player)
+    {
+        return false;
+    }
+    tv_connection(&config, device).is_some()
+}
 fn opens_screen(entry: &Entry) -> bool {
     if let Some(row) = &entry.plugin {
         return if row.cover {
@@ -2972,6 +3033,43 @@ mod tests {
         assert_eq!(ha_domain("cover.office"), "cover");
     }
 
+    /// Keep a rendered page, and hold it against a kept one.
+    ///
+    /// `COUCH_ROOM_SCREENSHOTS=<dir>` writes the pictures; running again with
+    /// `COUCH_ROOM_GOLDENS=<that dir>` fails on any pixel that has moved. A
+    /// refactor that is meant to change nothing can then be *checked* to have
+    /// changed nothing rather than asserted to have, which is what the
+    /// television's header and the shared band under it needed.
+    fn keep(pixels: &[slint::Rgb8Pixel], name: &str) {
+        let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+        if let Some(dir) = std::env::var_os("COUCH_ROOM_SCREENSHOTS") {
+            std::fs::create_dir_all(&dir).unwrap();
+            image::save_buffer(
+                std::path::Path::new(&dir).join(name),
+                &bytes,
+                480,
+                800,
+                image::ColorType::Rgb8,
+            )
+            .unwrap();
+        }
+        if let Some(dir) = std::env::var_os("COUCH_ROOM_GOLDENS") {
+            let golden = image::open(std::path::Path::new(&dir).join(name))
+                .unwrap()
+                .to_rgb8();
+            let wrong = golden
+                .as_raw()
+                .chunks(3)
+                .zip(bytes.chunks(3))
+                .filter(|(a, b)| a != b)
+                .count();
+            assert!(
+                golden.dimensions() == (480, 800) && wrong == 0,
+                "{name}: {wrong} pixels differ from the kept picture"
+            );
+        }
+    }
+
     /// One rendered room, drawn the way the panel draws it: the controller's
     /// own rows, on the 480-pixel screen. `COUCH_ROOM_SCREENSHOTS=<dir>`
     /// keeps the picture.
@@ -3040,17 +3138,7 @@ mod tests {
         window.draw_if_needed(|r| {
             r.render(&mut pixels, 480);
         });
-        if let Some(dir) = std::env::var_os("COUCH_ROOM_SCREENSHOTS") {
-            let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
-            image::save_buffer(
-                std::path::Path::new(&dir).join(name),
-                &bytes,
-                480,
-                800,
-                image::ColorType::Rgb8,
-            )
-            .unwrap();
-        }
+        keep(&pixels, name);
         app.hide().unwrap();
         shown
     }
@@ -3636,17 +3724,7 @@ mod tests {
             pixels.iter().any(|p| *p != pixels[0]),
             "{name}: the screen drew nothing"
         );
-        if let Some(dir) = std::env::var_os("COUCH_ROOM_SCREENSHOTS") {
-            let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
-            image::save_buffer(
-                std::path::Path::new(&dir).join(name),
-                &bytes,
-                480,
-                800,
-                image::ColorType::Rgb8,
-            )
-            .unwrap();
-        }
+        keep(&pixels, name);
         let _ = app.show();
         vec![
             app.get_light_screen_title().to_string(),
@@ -3982,7 +4060,7 @@ mod tests {
         // The lift, over the same two pages: the room falling away from the
         // row, its name and icon flying to the title and the disc, and the
         // screen arriving piece by piece.
-        let lift = crate::lift_geometry(&app, from);
+        let lift = crate::light_plan(&app, from, W as i32, H as i32);
         let mut art = crate::lift_art(&leaving, &arriving, W, H, lift);
         let content = crate::panel::lift_content(&leaving, W, H);
         let screen_content = crate::panel::lift_content(&arriving, W, H);
@@ -4110,7 +4188,7 @@ mod tests {
         let mut scrolled_screen = vec![slint::Rgb8Pixel::default(); W * H];
         settle();
         draw(&mut scrolled_screen);
-        let lift = crate::lift_geometry(&app, middle);
+        let lift = crate::light_plan(&app, middle, W as i32, H as i32);
         let (room, screen) = (word(&scrolled_room), word(&scrolled_screen));
         let mut art = crate::lift_art(&room, &screen, W, H, lift);
         let content = crate::panel::lift_content(&room, W, H);
@@ -4142,241 +4220,17 @@ mod tests {
                 }
             }
         }
-        // Nothing appears or disappears in one frame. Over the frames a
-        // default-length lift actually draws, no patch of the panel may change
-        // by much from one to the next unless it is a piece that is travelling
-        // - and a piece counts as travelling only if it is on screen in both
-        // frames, so a thing that vanished is not excused by having moved.
-        let pops = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
-            let mut art = crate::lift_art(room, screen, W, H, lift);
-            let content = crate::panel::lift_content(room, W, H);
-            let screen_content = crate::panel::lift_content(screen, W, H);
-            let mut frame = |t: f32| {
-                let mut pixels = vec![0u32; W * H];
-                crate::panel::lift_frame(
-                    crate::panel::Surface {
-                        pixels: &mut pixels,
-                        stride: W,
-                        width: W,
-                        height: H,
-                    },
-                    (screen, room),
-                    lift,
-                    &mut art,
-                    (&content, &screen_content),
-                    crate::panel::Shown::Arriving,
-                    t,
-                );
-                pixels
-            };
-            // The frames a 320 ms lift draws on a 60 Hz panel.
-            const FRAMES: usize = 19;
-            const TILE: (usize, usize) = (32, 16);
-            let tiles = (W.div_ceil(TILE.0), H.div_ceil(TILE.1));
-            // For every patch of the panel: how much it changed in its worst
-            // single frame, and how much it changed over the whole
-            // transition. A thing that fades spreads its change over many
-            // frames and no one of them is most of it; a thing that is cut
-            // puts all of it in one. That ratio is the test, and it does not
-            // care whether the thing is a bright glyph or a card a shade
-            // lighter than the background.
-            let mut worst_step = vec![0u32; tiles.0 * tiles.1];
-            let mut total = vec![0u32; tiles.0 * tiles.1];
-            let mut before = frame(0.0);
-            for step in 1..=FRAMES {
-                let t = step as f32 / FRAMES as f32;
-                let after = frame(t);
-                let travelling: Vec<crate::panel::Window> =
-                    crate::panel::lift_pieces(lift, (step - 1) as f32 / FRAMES as f32)
-                        .iter()
-                        .zip(crate::panel::lift_pieces(lift, t))
-                        .filter_map(|(a, b)| match (a, b) {
-                            (Some(a), Some(b)) => Some(crate::panel::Window {
-                                x: a.x.min(b.x),
-                                y: a.y.min(b.y),
-                                w: (a.x + a.w).max(b.x + b.w) - a.x.min(b.x),
-                                h: (a.y + a.h).max(b.y + b.h) - a.y.min(b.y),
-                                r: 0,
-                            }),
-                            _ => None,
-                        })
-                        .collect();
-                for ty in 0..tiles.1 {
-                    for tx in 0..tiles.0 {
-                        let (x0, y0) = (tx * TILE.0, ty * TILE.1);
-                        // A piece that is on screen in both frames has moved,
-                        // and may change as much as it likes; one that is in
-                        // only one of them is exactly what this looks for, so
-                        // it is not excused.
-                        let moving = travelling.iter().any(|piece| {
-                            x0 as i32 + TILE.0 as i32 > piece.x
-                                && (x0 as i32) < piece.x + piece.w
-                                && y0 as i32 + TILE.1 as i32 > piece.y
-                                && (y0 as i32) < piece.y + piece.h
-                        });
-                        let (mut sum, mut n) = (0u32, 0u32);
-                        for y in y0..(y0 + TILE.1).min(H) {
-                            for x in x0..(x0 + TILE.0).min(W) {
-                                let (a, b) = (before[y * W + x], after[y * W + x]);
-                                for shift in [0, 8, 16] {
-                                    sum += ((a >> shift) & 0xff).abs_diff((b >> shift) & 0xff);
-                                    n += 1;
-                                }
-                            }
-                        }
-                        let mean = sum / n.max(1);
-                        let tile = ty * tiles.0 + tx;
-                        // Everything a patch ever does counts towards its
-                        // total, including while a sprite is over it; only
-                        // the frames it was left to itself are judged.
-                        total[tile] += mean;
-                        if !moving {
-                            worst_step[tile] = worst_step[tile].max(mean);
-                        }
-                    }
-                }
-                before = after;
-            }
-            // A patch that barely moved at all over the whole transition is
-            // not worth judging: rounding alone would trip it.
-            let popped = (0..worst_step.len())
-                .filter(|&tile| total[tile] >= 12)
-                .max_by_key(|&tile| worst_step[tile] * 100 / total[tile].max(1));
-            let (share, tile) = popped
-                .map(|tile| (worst_step[tile] * 100 / total[tile].max(1), tile))
-                .unwrap_or((0, 0));
-            assert!(
-                share <= 40,
-                "{what}: the patch at {},{} did {share}% of everything it ever did in one \
-                 frame -                  something appeared or disappeared in one frame",
-                (tile % tiles.0) * TILE.0,
-                (tile / tiles.0) * TILE.1,
-            );
-        };
-        // A traveller lands on itself. The name and the icon are cut out of
-        // the room and flown to the screen's own, so the screen has to draw
-        // them the same way in the same place: then the hand-over is nothing
-        // at all rather than two drawings swapping, which is what made the
-        // icon look like it flipped at the end.
-        let lands = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
-            for (name, from, to) in [
-                ("name", lift.label, crate::panel::lift_title_landing(lift)),
-                ("icon", lift.disc, lift.screen_disc),
-            ] {
-                // Within a pixel: text is laid out to sub-pixel positions and
-                // the two boxes are reached by different arithmetic, so the
-                // glyphs can sit a pixel apart. What this is for is a
-                // traveller landing on a *different drawing*, which no
-                // offset puts right.
-                // The mean difference over the rectangle, at the best of the
-                // nine offsets within a pixel. A traveller that lands on a
-                // *different drawing* - another fill, another glyph - differs
-                // everywhere and scores high; one that lands half a pixel out,
-                // which is all a layout's arithmetic can promise, differs only
-                // along its edges and scores low.
-                let miss = |dx: i32, dy: i32| {
-                    let (mut sum, mut n) = (0usize, 0usize);
-                    for row in 0..from.h.min(to.h) {
-                        for col in 0..from.w.min(to.w) {
-                            let (bx, by) = (to.x + col + dx, to.y + row + dy);
-                            if bx < 0 || by < 0 || bx >= W as i32 || by >= H as i32 {
-                                continue;
-                            }
-                            let a = room[(from.y + row) as usize * W + (from.x + col) as usize];
-                            // The card the sprite was cut against is not put
-                            // down, so it is not part of the landing either.
-                            if a == crate::panel::LIFT_SURFACE {
-                                continue;
-                            }
-                            let b = screen[by as usize * W + bx as usize];
-                            let d = [0, 8, 16]
-                                .iter()
-                                .map(|s| {
-                                    (((a >> s) & 0xff) as i32 - ((b >> s) & 0xff) as i32).abs()
-                                })
-                                .max()
-                                .unwrap_or(0);
-                            sum += d as usize;
-                            n += 1;
-                        }
-                    }
-                    sum / n.max(1)
-                };
-                let best = (-1..=1)
-                    .flat_map(|dy| (-1..=1).map(move |dx| (dx, dy)))
-                    .map(|(dx, dy)| miss(dx, dy))
-                    .min()
-                    .unwrap_or(usize::MAX);
-                assert!(
-                    best <= 15,
-                    "{what}: the {name} does not land on itself - {best} a channel out at the \
-                     best offset, so the two ends are not the same drawing"
-                );
-            }
-        };
         // On the room as it is really drawn. The scrolled fixture's rows are
         // clones of one entry, so the name it compares is not the one the
         // screen was opened on and the comparison says nothing.
-        lands(
+        crate::panel::checks::lands(
             &leaving,
             &arriving,
-            crate::lift_geometry(&app, from),
+            W,
+            H,
+            crate::light_plan(&app, from, W as i32, H as i32),
             "top row",
         );
-
-        // A thing that travels leaves its place. The name and the icon are cut
-        // out of the room and flown to the header, so from the first frame on
-        // the only ones on the panel are the ones in flight: no ghost of the
-        // same name may be left fading in the row they came from.
-        let ghosts = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
-            let mut art = crate::lift_art(room, screen, W, H, lift);
-            let content = crate::panel::lift_content(room, W, H);
-            let screen_content = crate::panel::lift_content(screen, W, H);
-            for step in 1..=19 {
-                let t = step as f32 / 19.0;
-                let mut pixels = vec![0u32; W * H];
-                crate::panel::lift_frame(
-                    crate::panel::Surface {
-                        pixels: &mut pixels,
-                        stride: W,
-                        width: W,
-                        height: H,
-                    },
-                    (screen, room),
-                    lift,
-                    &mut art,
-                    (&content, &screen_content),
-                    crate::panel::Shown::Arriving,
-                    t,
-                );
-                let flying = crate::panel::lift_pieces(lift, t);
-                for (name, was) in [("name", lift.label), ("icon", lift.disc)] {
-                    for y in was.y..was.y + was.h {
-                        for x in was.x..was.x + was.w {
-                            // Wherever anything is in flight does not count:
-                            // the name and the icon cross each other's places
-                            // on their way out of the row.
-                            if flying.iter().flatten().any(|at| {
-                                x >= at.x && x < at.x + at.w && y >= at.y && y < at.y + at.h
-                            }) {
-                                continue;
-                            }
-                            let p = pixels[y as usize * W + x as usize];
-                            let bright = [0, 8, 16]
-                                .iter()
-                                .map(|s| (p >> s) & 0xff)
-                                .max()
-                                .unwrap_or(0);
-                            assert!(
-                                bright <= 0x50,
-                                "{what}: a ghost of the {name} is still at {x},{y} at {t:.2} \
-                                 while the real one has moved away"
-                            );
-                        }
-                    }
-                }
-            }
-        };
         // Exactly the background: the point is to catch a panel with nothing
         // on it, and a pixel a shade off is still something. The threshold
         // has a point of slack in it because a run that is filled and a run
@@ -4384,59 +4238,14 @@ mod tests {
         fn near_background(p: u32) -> bool {
             p == crate::panel::lift_background()
         }
-        // Where the time goes, frame by frame, in pixels touched. A blend is
-        // several times a copy and a copy several times a fill, so a budget
-        // in "panels of blending" is the honest unit: the HA100 measured a
-        // whole panel of blending at about ten milliseconds and a whole panel
-        // copied at about 1.3.
-        let profile = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
-            let mut art = crate::lift_art(room, screen, W, H, lift);
-            let content = crate::panel::lift_content(room, W, H);
-            let screen_content = crate::panel::lift_content(screen, W, H);
-            let (mut worst, mut total) = (0.0f32, 0.0f32);
-            for step in 0..=19 {
-                let t = step as f32 / 19.0;
-                let mut pixels = vec![0u32; W * H];
-                crate::panel::WORK.with(|w| w.set([0; 3]));
-                crate::panel::lift_frame(
-                    crate::panel::Surface {
-                        pixels: &mut pixels,
-                        stride: W,
-                        width: W,
-                        height: H,
-                    },
-                    (screen, room),
-                    lift,
-                    &mut art,
-                    (&content, &screen_content),
-                    crate::panel::Shown::Arriving,
-                    t,
-                );
-                // The present pass the panel does after every composed frame.
-                crate::panel::WORK.with(|w| {
-                    let mut c = w.get();
-                    c[1] += W * H;
-                    w.set(c);
-                });
-                let [blended, copied, filled] = crate::panel::WORK.with(|w| w.get());
-                // A copy is about an eighth of a blend and a fill about a
-                // sixteenth, on the numbers from the device.
-                let cost =
-                    (blended as f32 + copied as f32 / 8.0 + filled as f32 / 16.0) / (W * H) as f32;
-                total += cost;
-                worst = worst.max(cost);
-                println!(
-                    "PROFILE {what} t={t:.2} blended={blended} copied={copied} \
-                     filled={filled} panels={cost:.2}"
-                );
-            }
-            println!(
-                "PROFILE {what} mean={:.2} worst={worst:.2} panels of blending",
-                total / 20.0
-            );
-            (total / 20.0, worst)
-        };
-        let (mean, worst) = profile(&leaving, &arriving, crate::lift_geometry(&app, from), "top");
+        let (mean, worst) = crate::panel::checks::profile(
+            &leaving,
+            &arriving,
+            W,
+            H,
+            crate::light_plan(&app, from, W as i32, H as i32),
+            "top",
+        );
         // A whole panel of blending measured about ten milliseconds on the
         // HA100 against a 16.7 ms frame, so a worst frame has to stay well
         // under one and the mean well under half of it.
@@ -4444,92 +4253,252 @@ mod tests {
             mean <= 0.35 && worst <= 0.50,
             "the lift costs {mean:.2} panels a frame on average and {worst:.2} at its worst"
         );
+        crate::panel::checks::stronger(
+            &leaving,
+            &arriving,
+            W,
+            H,
+            crate::light_plan(&app, from, W as i32, H as i32),
+            "top row",
+        );
+        crate::panel::checks::stronger(&room, &screen, W, H, lift, "scrolled mid-list row");
+        crate::panel::checks::ghosts(
+            &leaving,
+            &arriving,
+            W,
+            H,
+            crate::light_plan(&app, from, W as i32, H as i32),
+            "top row",
+        );
+        crate::panel::checks::ghosts(&room, &screen, W, H, lift, "scrolled mid-list row");
+        crate::panel::checks::pops(
+            &leaving,
+            &arriving,
+            W,
+            H,
+            crate::light_plan(&app, from, W as i32, H as i32),
+            "top row",
+        );
+        crate::panel::checks::pops(&room, &screen, W, H, lift, "scrolled mid-list row");
+        app.hide().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
 
-        // Nothing inside an arriving card is stronger than the card. A card
-        // is blended over the frame at the alpha it has reached, so while
-        // that alpha is low no pixel under it may have moved far from what it
-        // would have been without the card at all - the level's track and the
-        // colour marker used to be painted straight into the frame at their
-        // own strength, and cut holes in the room's rows.
-        let stronger = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
-            let compose = |lift: crate::panel::Lift, t: f32| {
-                let mut art = crate::lift_art(room, screen, W, H, lift);
-                let content = crate::panel::lift_content(room, W, H);
-                let screen_content = crate::panel::lift_content(screen, W, H);
-                let mut pixels = vec![0u32; W * H];
+    /// The packaged device's controls lift out of their row the same way, and
+    /// hold the same five rules.
+    ///
+    /// The point of the plan is that the transition knows nothing about what
+    /// it is opening: this is a different screen, a different header, no bar
+    /// to reveal and three rows of controls instead of two cards, and it is
+    /// checked by exactly the functions that check the light screen.
+    ///
+    /// `COUCH_LIFT_SCREENSHOTS=<dir>` keeps the pictures.
+    #[test]
+    fn the_television_controls_lift_out_of_their_row() {
+        const NAME: &str = "lights::tests::the_television_controls_lift_out_of_their_row";
+        if std::env::var_os("COUCH_TEST_TV_LIFT").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_TV_LIFT", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::ComponentHandle;
+        const W: usize = 480;
+        const H: usize = 800;
+        let config = packaged();
+        let path = std::env::temp_dir().join(format!("couch-tvlift-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        crate::config_snapshot::start(path.clone());
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.show().unwrap();
+        window.dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
+        let controller = Controller::install(&app);
+        let room = Id::new("living-room");
+        let entries = configured_in(&config, &room).unwrap();
+        // The receiver: a configured device with a connection behind it, which
+        // is what opens the television controls rather than a light screen.
+        let which = entries
+            .iter()
+            .position(|e| e.id.as_str() == "device:avr")
+            .expect("the packaged fixture has a receiver");
+        assert!(
+            super::opens_tv(&entries[which]),
+            "the receiver row is not one that opens the television controls"
+        );
+        let mut controller = controller;
+        controller.entries = entries;
+        controller.room = Some(room);
+        app.set_light_title("Living room".into());
+        app.set_light_shown(true);
+        app.set_feedback_enabled(true);
+        controller.update_rows(&app, true);
+        let settle = || {
+            for _ in 0..20 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        };
+        let draw = |into: &mut Vec<slint::Rgb8Pixel>| {
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(into, W);
+            });
+        };
+        // After the list has taken its rows: a new model puts the ring back on
+        // the first of them, and this screen is opened from the fifth.
+        settle();
+        let top = crate::room_window(&app);
+        app.set_light_index(which as i32);
+
+        // Page A: the room with the receiver's row highlighted.
+        let mut a = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut a);
+        let from = crate::room_window(&app);
+        assert!(from.y > 0 && from.h > 0, "{from:?} is not a row");
+        assert_ne!(
+            from.y, top.y,
+            "the ring is still on the first row, so this is not the receiver's"
+        );
+
+        // Page B: the packaged controls, set up the way the row's press sets
+        // them up - the row's own second line, icon and reading.
+        let entry = &controller.entries[which];
+        app.set_tv_room(controller.source_line(entry).as_str().into());
+        app.set_tv_icon(crate::icons::image(entry.icon));
+        app.set_tv_active(false);
+        app.set_tv_known(false);
+        app.set_tv_title(entry.name.as_str().into());
+        app.set_tv_status("Connected".into());
+        app.set_tv_generic(true);
+        app.set_tv_kind_label("DENON AVR".into());
+        app.set_tv_source("Blu-ray".into());
+        app.set_tv_input("HDMI 1".into());
+        app.set_tv_sound("Volume 42".into());
+        app.set_tv_picture("More controls".into());
+        app.set_tv_can_power(true);
+        app.set_tv_can_input(true);
+        app.set_tv_can_command(true);
+        app.set_tv_shown(true);
+        app.invoke_focus_tv();
+        let mut b = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut b);
+        assert!(a != b, "the two pages are the same picture");
+        let word = |page: &[slint::Rgb8Pixel]| -> Vec<u32> {
+            page.iter()
+                .map(|p| 0xff00_0000 | ((p.b as u32) << 16) | ((p.g as u32) << 8) | p.r as u32)
+                .collect()
+        };
+        let (arriving, leaving) = (word(&b), word(&a));
+
+        let plan = crate::tv_plan(&app, from, W as i32, H as i32)
+            .expect("a packaged controls page with no artwork on it has a plan");
+        let mut art = crate::lift_art(&leaving, &arriving, W, H, plan);
+        let content = crate::panel::lift_content(&leaving, W, H);
+        let screen_content = crate::panel::lift_content(&arriving, W, H);
+        let sweep = [0, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100];
+        for (step, t) in sweep.iter().map(|n| (*n, *n as f32 / 100.0)) {
+            let mut pixels = vec![0u32; W * H];
+            crate::panel::lift_frame(
+                crate::panel::Surface {
+                    pixels: &mut pixels,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&arriving, &leaving),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                crate::panel::Shown::Arriving,
+                t,
+            );
+            match step {
+                0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
+                100 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
+                _ => {
+                    assert_ne!(pixels, arriving, "frame {step} is already the screen");
+                    assert_ne!(pixels, leaving, "frame {step} never left the room");
+                    let bg = pixels
+                        .iter()
+                        .filter(|p| **p == crate::panel::lift_background())
+                        .count();
+                    assert!(
+                        bg * 100 / pixels.len() < 92,
+                        "frame {step} is {}% bare",
+                        bg * 100 / pixels.len()
+                    );
+                }
+            }
+            if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels
+                    .iter()
+                    .flat_map(|p| [*p as u8, (*p >> 8) as u8, (*p >> 16) as u8])
+                    .collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir)
+                        .join(format!("tv-lift-{:03}.png", (t * 100.0).round() as u32)),
+                    &bytes,
+                    W as u32,
+                    H as u32,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        // The close is the open backwards, frame for frame.
+        for step in 1..19 {
+            let t = step as f32 / 19.0;
+            let mut one = vec![0u32; W * H];
+            let mut other = vec![0u32; W * H];
+            for (into, shown, at) in [
+                (&mut one, crate::panel::Shown::Leaving, t),
+                (&mut other, crate::panel::Shown::Arriving, 1.0 - t),
+            ] {
+                let pages = match shown {
+                    crate::panel::Shown::Leaving => (&leaving[..], &arriving[..]),
+                    crate::panel::Shown::Arriving => (&arriving[..], &leaving[..]),
+                };
                 crate::panel::lift_frame(
                     crate::panel::Surface {
-                        pixels: &mut pixels,
+                        pixels: into,
                         stride: W,
                         width: W,
                         height: H,
                     },
-                    (screen, room),
-                    lift,
+                    pages,
+                    plan,
                     &mut art,
                     (&content, &screen_content),
-                    crate::panel::Shown::Arriving,
-                    t,
+                    shown,
+                    at,
                 );
-                pixels
-            };
-            for step in 1..=19 {
-                let t = step as f32 / 19.0;
-                for which in 0..2 {
-                    let card = lift.cards[which];
-                    let Some(alpha) = crate::panel::lift_card_alpha(which, t) else {
-                        continue;
-                    };
-                    if card.w <= 0 || alpha > 128 {
-                        continue;
-                    }
-                    // The same frame with that card not there at all.
-                    let mut missing = lift;
-                    missing.cards[which] = crate::panel::Window::default();
-                    missing.track[which] = crate::panel::Window::default();
-                    let (with, without) = (compose(lift, t), compose(missing, t));
-                    let bound = (alpha * 255 / 256) as i32 + 8;
-                    for y in card.y..(card.y + card.h + 16).min(H as i32) {
-                        for x in card.x..card.x + card.w {
-                            let i = y as usize * W + x as usize;
-                            let (a, b) = (with[i], without[i]);
-                            for shift in [0, 8, 16] {
-                                let d = (((a >> shift) & 0xff) as i32
-                                    - ((b >> shift) & 0xff) as i32)
-                                    .abs();
-                                assert!(
-                                    d <= bound,
-                                    "{what}: card {which} is only {alpha}/256 in at {t:.2}, \
-                                     but {x},{y} moved {d} - something inside it was drawn at \
-                                     its own strength"
-                                );
-                            }
-                        }
-                    }
-                }
             }
-        };
-        stronger(
-            &leaving,
-            &arriving,
-            crate::lift_geometry(&app, from),
-            "top row",
+            assert_eq!(one, other, "the close is not the open backwards at {t:.2}");
+        }
+
+        // The same five rules the light screen holds.
+        let (mean, worst) = crate::panel::checks::profile(&leaving, &arriving, W, H, plan, "tv");
+        assert!(
+            mean <= 0.35 && worst <= 0.50,
+            "the television lift costs {mean:.2} panels a frame on average and {worst:.2} at \
+             its worst"
         );
-        stronger(&room, &screen, lift, "scrolled mid-list row");
-        ghosts(
-            &leaving,
-            &arriving,
-            crate::lift_geometry(&app, from),
-            "top row",
-        );
-        ghosts(&room, &screen, lift, "scrolled mid-list row");
-        pops(
-            &leaving,
-            &arriving,
-            crate::lift_geometry(&app, from),
-            "top row",
-        );
-        pops(&room, &screen, lift, "scrolled mid-list row");
+        crate::panel::checks::lands(&leaving, &arriving, W, H, plan, "receiver row");
+        crate::panel::checks::stronger(&leaving, &arriving, W, H, plan, "receiver row");
+        crate::panel::checks::ghosts(&leaving, &arriving, W, H, plan, "receiver row");
+        crate::panel::checks::pops(&leaving, &arriving, W, H, plan, "receiver row");
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }
@@ -4907,8 +4876,19 @@ mod tests {
         controller.render_screen_at(&app, Instant::now());
         assert_eq!(app.get_light_screen_level_percent(), 0);
 
-        // On again: straight to the level it kept.
-        controller.screen_action(&app, "toggle", 0);
+        // On again: straight to the level it kept. The worker takes one
+        // operation at a time and its queue is one deep, so a press sent
+        // before it has taken the last one is dropped where it stands - on a
+        // loaded machine that is not the same instant, and a press that never
+        // left is not what this is about. Press until one lands, which is
+        // what a person does too.
+        for _ in 0..200 {
+            controller.screen_action(&app, "toggle", 0);
+            if controller.pending_level(&id) == Some(40) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(controller.pending_level(&id), Some(40));
         controller.render_screen_at(&app, Instant::now());
         assert_eq!(app.get_light_screen_level_percent(), 40);
@@ -5065,17 +5045,7 @@ mod tests {
         // The bar is up: its band is not the page background all the way across.
         let band = &pixels[720 * 480..760 * 480];
         assert!(band.iter().any(|p| *p != band[0]), "the toast drew nothing");
-        if let Some(dir) = std::env::var_os("COUCH_ROOM_SCREENSHOTS") {
-            let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
-            image::save_buffer(
-                std::path::Path::new(&dir).join("room-hold-power-hint.png"),
-                &bytes,
-                480,
-                800,
-                image::ColorType::Rgb8,
-            )
-            .unwrap();
-        }
+        keep(&pixels, "room-hold-power-hint.png");
         app.hide().unwrap();
     }
 

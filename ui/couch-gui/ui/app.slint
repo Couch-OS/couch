@@ -209,6 +209,12 @@ export component App inherits Window {
     in-out property <bool> tv-media-has-duration: false;
     in-out property <bool> tv-media-live: false;
     in-out property <string> tv-title;
+    /// "Living room · LG webOS", and the room row's own icon: the second line
+    /// and the disc every screen a row opens carries.
+    in-out property <string> tv-room;
+    in-out property <image> tv-icon;
+    in-out property <bool> tv-active;
+    in-out property <bool> tv-known;
     in-out property <string> tv-status;
     in-out property <string> tv-error;
     in-out property <string> tv-source;
@@ -352,6 +358,32 @@ export component App inherits Window {
     public function ls-marker-y() -> length { return light-screen-page.marker-y(); }
     public function ls-marker-h() -> length { return light-screen-page.marker-h(); }
     public function ls-footer-y() -> length { return light-screen-page.footer-y(); }
+    public function ls-plate-x() -> length { return light-screen-page.plate-x(); }
+    public function ls-plate-y() -> length { return light-screen-page.plate-y(); }
+    public function ls-plate-w() -> length { return light-screen-page.plate-w(); }
+    public function ls-plate-h() -> length { return light-screen-page.plate-h(); }
+    public function ls-plate-r() -> length { return light-screen-page.plate-r(); }
+    // The television's own, the same set: the lift reads whichever screen is
+    // opening, and every screen answers the same questions.
+    public function tvs-title-x() -> length { return television.title-box-x(); }
+    public function tvs-title-y() -> length { return television.title-box-y(); }
+    public function tvs-title-w() -> length { return television.title-box-w(); }
+    public function tvs-title-h() -> length { return television.title-box-h(); }
+    public function tvs-disc-x() -> length { return television.disc-box-x(); }
+    public function tvs-disc-y() -> length { return television.disc-box-y(); }
+    public function tvs-disc-size() -> length { return television.disc-box-size(); }
+    public function tvs-header-h() -> length { return television.header-h(); }
+    public function tvs-plate-x() -> length { return television.plate-x(); }
+    public function tvs-plate-y() -> length { return television.plate-y(); }
+    public function tvs-plate-w() -> length { return television.plate-w(); }
+    public function tvs-plate-h() -> length { return television.plate-h(); }
+    public function tvs-plate-r() -> length { return television.plate-r(); }
+    public function tvs-body-y() -> length { return television.body-y(); }
+    public function tvs-body-h() -> length { return television.body-h(); }
+    public function tvs-rows() -> int { return television.rows(); }
+    public function tvs-row-y(which: int) -> length { return television.row-y(which); }
+    public function tvs-row-h(which: int) -> length { return television.row-h(which); }
+    public function tvs-lift-ready() -> bool { return television.lift-ready(); }
     public function focus-home() { fs.focus(); }
 
     // --- keyboard -------------------------------------------------------------
@@ -656,7 +688,7 @@ export component App inherits Window {
     television := Television {
         visible:root.tv-shown;shown:root.tv-shown;android-tv:root.tv-android;apple-tv:root.tv-apple;tizen:root.tv-tizen;infrared:root.tv-ir;sonos:root.tv-sonos;generic:root.tv-generic;kind-label:root.tv-kind-label;can-power:root.tv-can-power;can-input:root.tv-can-input;can-command:root.tv-can-command;tray-selected<=>root.tv-tray-selected;
         width:parent.width;height:parent.height;
-        title:root.tv-title;status:root.tv-status;error:root.tv-error;
+        title:root.tv-title;room:root.tv-room;icon:root.tv-icon;active:root.tv-active;known:root.tv-known;status:root.tv-status;error:root.tv-error;
         source-name:root.tv-source;input-name:root.tv-input;sound:root.tv-sound;picture:root.tv-picture;panel:root.tv-panel;choices:root.tv-choices;
         media-active:root.tv-media-active;media-title:root.tv-media-title;media-subtitle:root.tv-media-subtitle;media-state:root.tv-media-state;media-app:root.tv-media-app;
         media-art:root.tv-media-art;media-has-art:root.tv-media-has-art;

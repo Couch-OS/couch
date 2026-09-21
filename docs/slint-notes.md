@@ -578,6 +578,70 @@ saw 20 distinct states of a card row and 3 of the pager band - the band
 changed only when the pager's state did.
 
 
+### A screen says how it lifts: `LiftPlan` and `ScreenHeader`
+
+The lift used to know one screen. `lift_geometry` read eleven `ls_*`
+functions that exist only in `ui/screens/light.slint`, and the rectangle the
+row's card rises to was `LIFT_CARD_TO`, a constant in `panel.rs` that
+corresponded to no `Rectangle` in any layout. A television, a thermostat and a
+packaged device are opened from exactly the same kind of row and got no lift.
+
+A screen now hands over a `panel::LiftPlan`:
+
+- `row` - the rectangle it opens out of, read from the list before the press;
+- `plate` - where the row's own card comes to rest as it rises and fades;
+- `travellers` - the name and the icon, each with the rectangle it is cut
+  from and the one it lands on, both read from the layouts themselves;
+- `pieces` - up to six bands of the arriving page, each with the window of the
+  transition it arrives in and how it arrives: `Fade` where it belongs,
+  `Rise(px)` from a little below, or `Card { .. }` for a bar whose level is
+  revealed out of the page as it settles.
+
+`lift_frame` walks that and nothing else: there is no `if` in the transition
+about what kind of screen it is opening. The choreography every screen shares
+- the room falling away outwards from the row, the card rising into the header,
+the hand-over - is `LiftPlan::out_of(..).carrying(..).header(..)`, so a screen
+supplies only what is its own.
+
+**Where the numbers live.** Not in Rust. `ui/components/screen_header.slint`
+is the band at the top of every screen a row opens - back arrow, name at
+`Theme.device-name`, where the device is and what drives it, the row's own
+`DeviceDisc`, and one line of state - and it exports `title-box-*`,
+`disc-box-*`, `header-h()` and `plate-*()` as `pure` functions that a screen
+forwards through `App`. Six screens used to draw that band themselves, at four
+title sizes, two back-button positions and six second-line placements, and none
+of the differences meant anything.
+
+Note the `pure`: a `public function` called from a binding (here, the
+component's own `height`) must be `pure`, or the compiler refuses with *"Call
+of impure function"*.
+
+**A traveller needs both ends drawn the same way.** The row's label and the
+screen's title are both `Theme.device-name`; the row's disc and the header's
+disc are both `DeviceDisc`, fed the row's own `icon`, `active` and `known`. If
+a screen works those out for itself they will differ, and the hand-over becomes
+two drawings swapping. `checks::lands` holds it.
+
+**The rules are shared too.** `panel::checks` holds the five a lift has to
+pass, whatever it is opening - `profile` (mean = 0.35 panels of blending a
+frame, worst = 0.50), `pops`, `ghosts`, `lands`, `stronger` - so a screen is
+converted by writing its plan and calling the same five over its real pages.
+
+**When a screen has no plan.** It keeps the horizontal slide it always had.
+The television reports none while it is showing artwork: that background is a
+photograph behind everything, and bringing it in would mean cross-fading the
+whole panel, about thirteen milliseconds a frame on this device, which is the
+entire budget for one piece of one frame.
+
+**A band with nothing in it is worse than no band.** The television's rows of
+controls are staggered between the moment a light screen's first bar card
+arrives and the moment its footer settles, so neither screen is finished before
+the transition is. A packaged device has no transport row, so it hands over two
+rows rather than three - an empty band only makes the panel look barer for
+longer, and the bareness check (no frame more than 92% background) catches
+exactly that.
+
+
 ### Whole-row list windows
 
 Room, device and scene lists size cards to fit a whole number of visible rows.
@@ -654,3 +718,18 @@ change, take an "after" set, and diff the two directories by eye; nothing
 binary is kept in the tree, and CI never sets this variable, so the pixel
 comparison never gates a build - only the non-blank and text assertions in
 the test itself do.
+
+The room list and the screens a row opens have the same pair.
+`COUCH_ROOM_SCREENSHOTS=<dir>` writes the room and light-screen pictures and
+`COUCH_LIFT_SCREENSHOTS=<dir>` the frames of a transition; running again with
+`COUCH_ROOM_GOLDENS=<that dir>` holds every one of them pixel for pixel. That
+is what a refactor claiming to change nothing should be *checked* against
+rather than asserted to be: moving the light screen onto the shared
+`ScreenHeader` was 28 pictures, byte for byte.
+
+```sh
+out=/tmp/couch-before
+COUCH_ROOM_SCREENSHOTS=$out COUCH_LIFT_SCREENSHOTS=$out cargo test --locked -p couch-gui
+# ... change something ...
+COUCH_ROOM_GOLDENS=$out cargo test --locked -p couch-gui
+```
