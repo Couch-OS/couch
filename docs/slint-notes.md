@@ -408,6 +408,13 @@ grows. Both problems have the same answer - do not touch every pixel.
   pixel of `Theme.border` round it, interpolated from the row's rect to the
   header band's. It is the focus ring's own row-run arithmetic, filled instead
   of stroked, over a rectangle that is never more than a tenth of the panel.
+- **A card reaches the frame once, as one piece.** A bar card is built up
+  opaque in a buffer of its own first - the page's own card, with the level
+  un-revealed and the marker moved - and only then blended over the frame, at
+  the alpha it has reached. Anything painted straight into the frame at its own
+  strength shows through a card that has barely arrived: the level's track used
+  to be, and cut a dark strip through the room's rows down the width of the
+  bar while the card behind it was still nearly transparent.
 - **Reveals, not redraws.** The level bar's fill and the colour marker are
   already in the page at their values, so neither is drawn: the fill is
   un-revealed from the top by painting the empty part of the track in the
