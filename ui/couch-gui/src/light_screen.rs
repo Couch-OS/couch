@@ -189,7 +189,15 @@ pub(crate) fn view(
     };
     match state {
         Some(DeviceState::Light(light)) => {
-            let shown = level.or(light.brightness_percent);
+            // A lamp that is off has an empty bar, whatever it says about the
+            // level it kept: Hue through its package reports the level it will
+            // come back to, the built-in one reports nothing, and the screen
+            // is the same screen for both.
+            let resting = match light.on {
+                Some(false) => light.brightness_percent.map(|_| 0),
+                _ => light.brightness_percent,
+            };
+            let shown = level.or(resting);
             let known = light.on.is_some() && shown.is_some() && light.dimmable;
             let tunable = light.mirek_range.is_some();
             let shown_mirek = mirek.or(light.mirek);
@@ -499,6 +507,22 @@ mod tests {
         );
         assert_eq!(woken.state, "On · 5%");
         assert!(woken.active);
+
+        // A lamp that is off has an empty bar whoever it is reached through:
+        // Hue's package goes on reporting the level it will come back to,
+        // built-in Hue reports none, and the screen is one screen.
+        let mut kept = resting.clone();
+        kept.brightness_percent = Some(85);
+        let asleep = view(
+            "Desk lamp",
+            "",
+            Declared::default(),
+            Some(&DeviceState::Light(kept)),
+            None,
+            None,
+        );
+        assert_eq!(asleep.state, "Off");
+        assert_eq!(asleep.level_percent, 0);
 
         // A lamp that cannot dim has no target to believe in, and an
         // unavailable one is still unavailable whatever was pressed.
