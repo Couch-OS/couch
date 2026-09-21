@@ -346,6 +346,10 @@ export component App inherits Window {
     public function room-ring-x() -> length { return light-page.ring-box-x(); }
     public function room-ring-width() -> length { return light-page.ring-box-width(); }
     public function room-row-pitch() -> length { return light-page.row-pitch(); }
+    /// What the focused row is really drawn in, so the lift keys its name and
+    /// its icon on that and raises a card of the same colour.
+    public function room-surface() -> color { return light-page.focused-surface(); }
+    public function room-border() -> color { return light-page.focused-border(); }
     public function room-disc-inset() -> length { return light-page.disc-inset(); }
     public function room-disc-y() -> length { return light-page.disc-box-y(); }
     public function room-label-x() -> length { return light-page.label-box-x(); }

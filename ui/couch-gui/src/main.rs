@@ -148,6 +148,14 @@ fn room_window(app: &App) -> panel::Window {
 /// The room's half comes from the list and the screen's from `light.slint`,
 /// both as functions rather than properties for the reason the ring's box is
 /// (docs/slint-notes.md). Nothing here is a number of its own.
+/// A colour from the layout, in the panel's own packing.
+fn packed(colour: slint::Color) -> u32 {
+    0xff00_0000
+        | ((colour.blue() as u32) << 16)
+        | ((colour.green() as u32) << 8)
+        | colour.red() as u32
+}
+
 /// A rectangle from the layout, rounded to the panel's own pixels.
 fn at(x: f32, y: f32, w: f32, h: f32) -> panel::Window {
     panel::Window {
@@ -205,6 +213,10 @@ fn headed(
         ..label
     };
     panel::LiftPlan::out_of(name, row)
+        .drawn_in(
+            packed(app.invoke_room_surface()),
+            packed(app.invoke_room_border()),
+        )
         .rising_to(plate, plate.r)
         .carrying(
             (label, landing),
@@ -732,8 +744,10 @@ pub(crate) fn handed_band(
             r: 0,
         },
     );
+    // In the colour the row really is, which is not the same for a lamp that
+    // is off as for one that is on.
     for traveller in plan.travellers.iter().flatten() {
-        band.paint(traveller.from, panel::LIFT_SURFACE);
+        band.paint(traveller.from, plan.surface);
     }
     band
 }
