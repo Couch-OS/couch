@@ -31,9 +31,24 @@ export component ScreenHeader inherits Rectangle {
     /// "On · 40%", "NOW ON YOUR TV", "Heating to 21°": one line under the
     /// disc, and nothing at all on a screen with no single thing to say.
     in property <string> state;
+    /// Darken what is behind the band. A screen whose background is artwork
+    /// asks for this: the name and the room are painted straight onto a
+    /// photograph otherwise, and no one tone reads on every frame. With it,
+    /// the second line can be `text-secondary` here as it is everywhere else
+    /// rather than being pushed to full strength to survive the picture.
+    in property <bool> scrim;
     callback back();
     height: root.header-h();
 
+    // First, so everything else is over it. Clipped, because a gradient needs
+    // a clipping parent to be drawn (docs/slint-notes.md).
+    if root.scrim: Rectangle {
+        x: 0; y: 0; width: root.width; height: root.height; clip: true;
+        Rectangle {
+            width: parent.width; height: parent.height;
+            background: @linear-gradient(180deg, Theme.scrim 0%, #00000080 55%, transparent 100%);
+        }
+    }
     MediaBack { x: 24px; y: 26px; activate => { root.back(); } }
     Text {
         x: 88px; y: 20px; width: root.width - 112px; height: 34px;

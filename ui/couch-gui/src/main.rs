@@ -359,13 +359,97 @@ fn tv_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<pan
     // does, and neither screen is finished before the transition is.
     let rows = app.invoke_tvs_rows().min(3);
     for which in 0..rows {
-        let f = which as f32 / (rows - 1).max(1) as f32;
+        // The last row always lands where a light screen's footer does, so
+        // no screen is finished before the transition is - including one with
+        // a single row, which would otherwise arrive first and leave the rest
+        // of the transition with nothing to show.
+        let f = if rows <= 1 {
+            1.0
+        } else {
+            which as f32 / (rows - 1) as f32
+        };
         plan = plan.piece(panel::Piece {
             rect: at(
                 0.0,
                 app.invoke_tvs_row_y(which),
                 width as f32,
                 app.invoke_tvs_row_h(which),
+            ),
+            window: (
+                panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
+                panel::LIFT_CARDS_IN.1 + (panel::LIFT_FOOTER_IN.1 - panel::LIFT_CARDS_IN.1) * f,
+            ),
+            fade: panel::LIFT_CARDS_FADE,
+            kind: panel::Arriving::Rise(panel::LIFT_BARS_DROP),
+        });
+    }
+    let _ = height;
+    Some(plan)
+}
+
+/// The media player, as one plan: a header over its artwork, what is playing,
+/// and three rows - where it is up to, the transport, and the sheets.
+///
+/// The same shape as the television's, which is the point: two screens that
+/// look nothing alike describe themselves to the lift in the same words.
+fn player_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<panel::LiftPlan> {
+    if !app.invoke_ps_lift_ready() {
+        return None;
+    }
+    let disc = app.invoke_ps_disc_size();
+    let mut plan = headed(
+        app,
+        "player",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_ps_title_x(),
+                app.invoke_ps_title_y(),
+                app.invoke_ps_title_w(),
+                app.invoke_ps_title_h(),
+            ),
+            disc: at(app.invoke_ps_disc_x(), app.invoke_ps_disc_y(), disc, disc),
+            depth: app.invoke_ps_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_ps_plate_r().round() as i32,
+                ..at(
+                    app.invoke_ps_plate_x(),
+                    app.invoke_ps_plate_y(),
+                    app.invoke_ps_plate_w(),
+                    app.invoke_ps_plate_h(),
+                )
+            },
+        },
+    )
+    .piece(panel::Piece {
+        rect: at(
+            0.0,
+            app.invoke_ps_body_y(),
+            width as f32,
+            app.invoke_ps_body_h(),
+        ),
+        window: panel::LIFT_STATE_IN,
+        fade: 1.0,
+        kind: panel::Arriving::Fade,
+    });
+    let rows = app.invoke_ps_rows().min(3);
+    for which in 0..rows {
+        // The last row always lands where a light screen's footer does, so
+        // no screen is finished before the transition is - including one with
+        // a single row, which would otherwise arrive first and leave the rest
+        // of the transition with nothing to show.
+        let f = if rows <= 1 {
+            1.0
+        } else {
+            which as f32 / (rows - 1) as f32
+        };
+        plan = plan.piece(panel::Piece {
+            rect: at(
+                0.0,
+                app.invoke_ps_row_y(which),
+                width as f32,
+                app.invoke_ps_row_h(which),
             ),
             window: (
                 panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
@@ -478,6 +562,8 @@ fn device_screen(app: &App) -> Option<Overlay> {
         Some(Overlay::Light)
     } else if app.get_tv_shown() {
         Some(Overlay::Tv)
+    } else if app.get_player_shown() && !app.get_custom_activity_shown() {
+        Some(Overlay::Player)
     } else {
         None
     }
@@ -495,6 +581,7 @@ fn screen_plan(
     match which {
         Overlay::Light => Some(light_plan(app, row, w, h)),
         Overlay::Tv => tv_plan(app, row, w, h),
+        Overlay::Player => player_plan(app, row, w, h),
         _ => None,
     }
 }
@@ -1936,6 +2023,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "couch-gui: {} screen {:?} {} ({} frames, {} ms, {} us/frame mean, {} us max)",
                     match device_screen(&app).or(was_screen) {
                         Some(Overlay::Tv) => "tv",
+                        Some(Overlay::Player) => "player",
                         _ => "light",
                     },
                     chosen.opening,
@@ -2292,16 +2380,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .page_turn_pending()
             .filter(|_| !activity_navigation && app.get_player_shown())
             .map(|step| (step, app.get_custom_activity_page()));
-        // The television's controls close through their own queue rather than
-        // the room's, so the row they collapse onto and the plan for the page
-        // that is leaving are both read here, before the press is performed:
-        // afterwards the screen has been torn down and has nothing left to
-        // say about itself.
-        let closing =
-            (tv_controls.navigation_pending() && app.get_tv_shown() && app.get_light_shown())
-                .then(|| room_window(&app))
-                .and_then(|row| tv_plan(&app, row, screen.width as i32, screen.height as i32))
-                .filter(|_| panel::Transition::chosen().opening == panel::Opening::Lift);
+        // A device screen that is not the light's closes through its own
+        // queue rather than the room's, so the row it collapses onto and the
+        // plan for the page that is leaving are both read here, before the
+        // press is performed: afterwards the screen has been torn down and
+        // has nothing left to say about itself.
+        let closing = (app.get_light_shown()
+            && (tv_controls.navigation_pending() || activity_controls.navigation_pending(&app)))
+        .then(|| room_window(&app))
+        .zip(device_screen(&app))
+        .and_then(|(row, which)| {
+            screen_plan(&app, which, row, screen.width as i32, screen.height as i32)
+        })
+        .filter(|_| panel::Transition::chosen().opening == panel::Opening::Lift);
         if activity_navigation || page_turn.is_some() {
             screen.snapshot();
         }
@@ -2368,7 +2459,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // A television that lifted out of its row collapses back into
                 // it: the close is the open run backwards, over the same two
                 // pages, which is the whole point of holding that invariant.
-                let lifting = closing.filter(|_| !entering && !app.get_tv_shown());
+                let lifting = closing.filter(|_| !entering);
                 let cost = match lifting {
                     Some(plan) => screen.lift(
                         plan,

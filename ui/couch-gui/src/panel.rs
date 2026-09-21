@@ -137,10 +137,13 @@ const IRIS_RING_UNTIL: f32 = 1.0;
 /// #FFFFFF, which is the same word whichever way round the channels go.
 const IRIS_RING: u32 = 0xffff_ffff;
 
-/// The lift's default time. It has more to say than a window opening - rows
-/// falling away, a card travelling, cards arriving - and reads hurried at the
-/// iris's 300 ms.
-pub const LIFT: Duration = Duration::from_millis(320);
+/// How long a screen takes to open, and the one number to change if it reads
+/// hurried or slow on the device. The lift has more to say than a window
+/// opening - rows falling away, a card travelling, a screen arriving piece by
+/// piece - and 400 ms is what the owner settled on after watching it on the
+/// HA100, where 320 read rushed. Twenty-four frames at 60 Hz, and every phase
+/// in the transition is a fraction of it, so this moves them all together.
+pub const LIFT: Duration = Duration::from_millis(400);
 
 /// `Theme.bg`, #15130F, packed the way the panel takes it: what a room row
 /// falls away to, and what the control screen's pieces arrive over.
@@ -228,7 +231,7 @@ pub enum Opening {
 ///
 /// Three shapes are in so they can be compared on the device, the one way to
 /// judge a transition. `echo "curtain 220" > /tmp/couch-transition` on the
-/// remote takes effect on the next press; no file is the iris at [`IRIS`].
+/// remote takes effect on the next press; no file is the lift at [`LIFT`].
 /// The iris and the curtain are the same compositor with a different first
 /// window and cost the same; the lift blends, and says what it cost in the
 /// line it prints when it is over.
@@ -239,10 +242,14 @@ pub struct Transition {
 }
 
 impl Default for Transition {
+    /// The lift, at [`LIFT`]: the shape the owner chose after seeing all
+    /// three on the device. A screen with no plan of its own has no lift to
+    /// run and keeps the slide it always had, so this is the default for the
+    /// screens that can honour it and nothing changes for the rest.
     fn default() -> Self {
         Transition {
-            opening: Opening::Iris,
-            time: IRIS,
+            opening: Opening::Lift,
+            time: LIFT,
         }
     }
 }
@@ -2377,6 +2384,11 @@ impl Platform for CouchPlatform {
 pub(crate) mod checks {
     use super::*;
 
+    /// How many frames a default-length lift actually draws on a 60 Hz panel.
+    /// Derived rather than written down, so changing [`LIFT`] moves every
+    /// check with it.
+    pub(crate) const FRAMES: usize = (LIFT.as_millis() / FRAME.as_millis()) as usize;
+
     /// Where the time goes, frame by frame, in pixels touched. A blend is
     /// several times a copy and a copy several times a fill, so a budget
     /// in "panels of blending" is the honest unit: the HA100 measured a
@@ -2394,8 +2406,8 @@ pub(crate) mod checks {
         let content = lift_content(room, panel_w, panel_h);
         let screen_content = lift_content(screen, panel_w, panel_h);
         let (mut worst, mut total) = (0.0f32, 0.0f32);
-        for step in 0..=19 {
-            let t = step as f32 / 19.0;
+        for step in 0..=FRAMES {
+            let t = step as f32 / FRAMES as f32;
             let mut pixels = vec![0u32; panel_w * panel_h];
             WORK.with(|w| w.set([0; 3]));
             lift_frame(
@@ -2432,9 +2444,9 @@ pub(crate) mod checks {
         }
         println!(
             "PROFILE {what} mean={:.2} worst={worst:.2} panels of blending",
-            total / 20.0
+            total / (FRAMES + 1) as f32
         );
-        (total / 20.0, worst)
+        (total / (FRAMES + 1) as f32, worst)
     }
 
     /// Nothing appears or disappears in one frame. Over the frames a
@@ -2471,8 +2483,6 @@ pub(crate) mod checks {
             );
             pixels
         };
-        // The frames a 320 ms plan draws on a 60 Hz panel.
-        const FRAMES: usize = 19;
         const TILE: (usize, usize) = (32, 16);
         let tiles = (panel_w.div_ceil(TILE.0), panel_h.div_ceil(TILE.1));
         // For every patch of the panel: how much it changed in its worst
@@ -2570,8 +2580,8 @@ pub(crate) mod checks {
         let mut art = crate::lift_art(room, screen, panel_w, panel_h, plan);
         let content = lift_content(room, panel_w, panel_h);
         let screen_content = lift_content(screen, panel_w, panel_h);
-        for step in 1..=19 {
-            let t = step as f32 / 19.0;
+        for step in 1..=FRAMES {
+            let t = step as f32 / FRAMES as f32;
             let mut pixels = vec![0u32; panel_w * panel_h];
             lift_frame(
                 Surface {
@@ -2723,8 +2733,8 @@ pub(crate) mod checks {
             );
             pixels
         };
-        for step in 1..=19 {
-            let t = step as f32 / 19.0;
+        for step in 1..=FRAMES {
+            let t = step as f32 / FRAMES as f32;
             for (which, card, alpha) in lift_cards(plan, t) {
                 if card.w <= 0 || alpha > 128 {
                     continue;
@@ -2760,24 +2770,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_opening_is_the_iris_unless_the_switch_says_otherwise() {
+    fn the_opening_is_the_lift_unless_the_switch_says_otherwise() {
+        // The shape the owner chose: a screen that has a plan lifts out of
+        // its row, and one that has none keeps its slide whatever this says.
         assert_eq!(Transition::parse(""), Transition::default());
-        assert_eq!(Transition::default().opening, Opening::Iris);
-        assert_eq!(Transition::default().time, IRIS);
+        assert_eq!(Transition::default().opening, Opening::Lift);
+        assert_eq!(Transition::default().time, LIFT);
+        assert_eq!(LIFT, Duration::from_millis(400));
         let curtain = Transition::parse("curtain 220\n");
         assert_eq!(curtain.opening, Opening::Curtain);
         assert_eq!(curtain.time, Duration::from_millis(220));
         // Either part alone, in either order, and nonsense changes nothing.
         assert_eq!(Transition::parse("curtain").time, IRIS);
+        assert_eq!(Transition::parse("iris").opening, Opening::Iris);
+        assert_eq!(Transition::parse("iris").time, IRIS);
         assert_eq!(
-            Transition::parse("400 iris").time,
-            Duration::from_millis(400)
+            Transition::parse("300 iris").time,
+            Duration::from_millis(300)
         );
         assert_eq!(Transition::parse("sideways fast"), Transition::default());
         // A time nobody could want is brought back into a range somebody could.
         assert_eq!(Transition::parse("5").time, Duration::from_millis(100));
         assert_eq!(Transition::parse("99999").time, Duration::from_millis(1000));
-        // The lift keeps its own default, and takes a time like the others.
+        // The lift, named or not, and it takes a time like the others.
         let lift = Transition::parse("lift");
         assert_eq!(lift.opening, Opening::Lift);
         assert_eq!(lift.time, LIFT);

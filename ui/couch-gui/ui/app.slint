@@ -237,6 +237,11 @@ export component App inherits Window {
     in-out property <image> player-fanart;
     in-out property <image> player-logo;
     in-out property <string> player-activity;
+    /// The room row's own icon and reading, and whether its bars may travel.
+    in-out property <image> player-icon;
+    in-out property <bool> player-active;
+    in-out property <bool> player-known;
+    in-out property <bool> player-glide;
     in-out property <string> player-room;
     in-out property <string> player-title;
     in-out property <string> player-metadata;
@@ -384,6 +389,26 @@ export component App inherits Window {
     public function tvs-row-y(which: int) -> length { return television.row-y(which); }
     public function tvs-row-h(which: int) -> length { return television.row-h(which); }
     public function tvs-lift-ready() -> bool { return television.lift-ready(); }
+    // The player's own, the same set again.
+    public function ps-title-x() -> length { return cinema.title-box-x(); }
+    public function ps-title-y() -> length { return cinema.title-box-y(); }
+    public function ps-title-w() -> length { return cinema.title-box-w(); }
+    public function ps-title-h() -> length { return cinema.title-box-h(); }
+    public function ps-disc-x() -> length { return cinema.disc-box-x(); }
+    public function ps-disc-y() -> length { return cinema.disc-box-y(); }
+    public function ps-disc-size() -> length { return cinema.disc-box-size(); }
+    public function ps-header-h() -> length { return cinema.header-h(); }
+    public function ps-plate-x() -> length { return cinema.plate-x(); }
+    public function ps-plate-y() -> length { return cinema.plate-y(); }
+    public function ps-plate-w() -> length { return cinema.plate-w(); }
+    public function ps-plate-h() -> length { return cinema.plate-h(); }
+    public function ps-plate-r() -> length { return cinema.plate-r(); }
+    public function ps-body-y() -> length { return cinema.body-y(); }
+    public function ps-body-h() -> length { return cinema.body-h(); }
+    public function ps-rows() -> int { return cinema.rows(); }
+    public function ps-row-y(which: int) -> length { return cinema.row-y(which); }
+    public function ps-row-h(which: int) -> length { return cinema.row-h(which); }
+    public function ps-lift-ready() -> bool { return cinema.lift-ready(); }
     public function focus-home() { fs.focus(); }
 
     // --- keyboard -------------------------------------------------------------
@@ -708,6 +733,7 @@ export component App inherits Window {
         progress:root.player-progress;message:root.player-message;
         panel:root.player-panel;panel-detail:root.player-panel-detail;choices:root.player-choices;
         music:root.player-music;sheets:root.player-sheets;selected <=> root.player-selected;
+        icon:root.player-icon;active:root.player-active;known:root.player-known;glide:root.player-glide;
         action(name,value)=>{root.player-action(name,value);}
     }
 

@@ -1,5 +1,5 @@
 import { BottomTray } from "../components/bottom_tray.slint";
-import { MediaBack } from "../widgets/media-back.slint";
+import { ScreenHeader } from "../components/screen_header.slint";
 import { Theme } from "../theme.slint";
 export struct PlayerChoice { title: string, detail: string }
 component Control inherits Rectangle {
@@ -34,6 +34,15 @@ export component Cinema inherits Rectangle {
     in property <image> logo;
     in property <string> activity;
     in property <string> room;
+    /// The row's own icon and the row's own reading of it: the disc in the
+    /// header is the one the lift flies here from the room list.
+    in property <image> icon;
+    in property <bool> active;
+    in property <bool> known;
+    /// Whether the progress bar may travel to a new position. Off for the
+    /// first picture of an opening, which is what a transition is made from.
+    in property <bool> glide;
+    property <duration> travel: root.glide ? 220ms : 0ms;
     in property <string> title;
     in property <string> metadata;
     in property <string> elapsed;
@@ -62,24 +71,37 @@ export component Cinema inherits Rectangle {
     public function take-focus(){ keys.focus(); }
     background:Theme.bg;
     if root.has-art: Image { source:root.fanart; width:parent.width;height:parent.height;image-fit:cover; }
-    MediaBack {x:24px;y:22px;activate=>{root.action("back",0);}}
-    Text {x:88px;y:24px;width:parent.width - 120px;height:26px;text:root.activity;font-size:19px;font-weight:600;color:Theme.text;overflow:elide;}
-    // Full strength, not the secondary tone: this line is painted straight onto
-    // the artwork in the brightest band of the frame, where a mid grey sinks into
-    // the picture. Its size and weight already separate it from the title.
-    Text {x:88px;y:52px;width:parent.width - 120px;height:22px;text:root.room;font-size:15px;color:Theme.text;overflow:elide;}
+    // The same band every screen a room row opens draws. Over artwork it asks
+    // for the scrim: the second line is the ordinary secondary tone again,
+    // because it is no longer painted straight onto the brightest part of a
+    // photograph.
+    head := ScreenHeader {
+        x:0px;y:0px;width:parent.width;
+        title:root.activity;subtitle:root.room;
+        icon:root.icon;active:root.active;known:root.known;
+        scrim:root.has-art;
+        back=>{root.action("back",0);}
+    }
+    // The track and who it is by. The second line used to start 10px under a
+    // 36px title that is bottom-aligned in its box, so a title with
+    // descenders in it - "Weird Fishes / Arpeggi" - sat on top of the artist.
     if root.ready: Rectangle {
-        background:transparent;x:32px;y:290px;width:parent.width - 64px;height:160px;
+        background:transparent;x:32px;y:284px;width:parent.width - 64px;height:172px;
         if root.has-logo: Image {source:root.logo;width:parent.width;height:125px;image-fit:contain;horizontal-alignment:left;}
         if !root.has-logo: Text {text:root.title;width:parent.width;height:125px;font-size:36px;font-weight:700;color:Theme.text;wrap:word-wrap;overflow:elide;vertical-alignment:bottom;}
-        Text {text:root.metadata;y:135px;width:parent.width;height:25px;font-size:16px;color:Theme.text-secondary;overflow:elide;}
+        Text {text:root.metadata;y:154px;width:parent.width;height:25px;font-size:16px;color:Theme.text-secondary;overflow:elide;}
     }
     if root.ready: Rectangle {
         x:32px;y:parent.height - 330px;width:parent.width - 64px;height:300px;background:transparent;
         Text {x:0px;y:0px;height:27px;text:root.elapsed;font-size:18px;color:Theme.text;}
         Text {x:0px;y:0px;height:27px;text:root.remaining;width:parent.width;horizontal-alignment:right;font-size:18px;color:Theme.text-secondary;}
         Rectangle {y:47px;width:parent.width;height:5px;border-radius:3px;background:Theme.text-quaternary;
-            Rectangle {x:0px;width:parent.width*(seek-touch.pressed || root.selected==1 ? root.seek-preview : root.progress)/100;height:parent.height;background:Theme.accent;border-radius:3px;}
+            Rectangle {x:0px;width:parent.width*(seek-touch.pressed || root.selected==1 ? root.seek-preview : root.progress)/100;height:parent.height;background:Theme.accent;border-radius:3px;
+                // Travels to a new position while the screen is open, and not
+                // at all in the picture an opening is made from. A drag is the
+                // person's own hand, so it is never animated.
+                animate width { duration: seek-touch.pressed ? 0ms : root.travel; easing: ease-out; }
+            }
         }
         Rectangle {visible:root.selected==1;y:30px;width:parent.width;height:38px;border-width:2px;border-color:Theme.accent;border-radius:8px;background:transparent;}
         seek-touch:=TouchArea {y:27px;width:parent.width;height:48px;enabled:root.can-seek;
@@ -124,6 +146,47 @@ export component Cinema inherits Rectangle {
     if root.message!="": Rectangle {x:24px;y:parent.height - 150px;width:parent.width - 48px;height:100px;border-radius:16px;background:Theme.surface-raised;
         Text {x:16px;y:12px;width:parent.width - 32px;height:parent.height - 24px;text:root.message;wrap:word-wrap;font-size:20px;color:Theme.text;}
     }
+    // --- what the lift needs to know about this page ------------------------
+    public pure function title-box-x() -> length { return head.title-box-x(); }
+    public pure function title-box-y() -> length { return head.title-box-y(); }
+    public pure function title-box-w() -> length { return head.title-box-w(); }
+    public pure function title-box-h() -> length { return head.title-box-h(); }
+    public pure function disc-box-x() -> length { return head.disc-box-x(); }
+    public pure function disc-box-y() -> length { return head.disc-box-y(); }
+    public pure function disc-box-size() -> length { return head.disc-box-size(); }
+    public pure function header-h() -> length { return head.header-h(); }
+    public pure function plate-x() -> length { return head.plate-x(); }
+    public pure function plate-y() -> length { return head.plate-y(); }
+    public pure function plate-w() -> length { return head.plate-w(); }
+    public pure function plate-h() -> length { return head.plate-h(); }
+    public pure function plate-r() -> length { return head.plate-r(); }
+    /// What is playing - the track and who it is by - or, on a page that has
+    /// nothing to play yet, the line that says so.
+    public pure function body-y() -> length { return root.ready ? 284px : 214px; }
+    public pure function body-h() -> length { return root.ready ? 172px : 182px; }
+    /// The rows under it, which arrive one after another: where it is up to,
+    /// the transport and the three sheets on a page that is playing, and the
+    /// one button on a page that is not.
+    public pure function rows() -> int { return root.ready ? 3 : 1; }
+    public pure function row-y(which: int) -> length {
+        return !root.ready
+            ? 408px
+            : root.height - 330px + (which == 0 ? -10px : which == 1 ? 76px : 190px);
+    }
+    public pure function row-h(which: int) -> length {
+        return !root.ready ? 92px : which == 0 ? 86px : which == 1 ? 106px : 92px;
+    }
+    /// Whether this page can be built out of bands at all. Artwork cannot:
+    /// it is a photograph behind everything, and bringing it in would mean
+    /// cross-fading the whole panel, about thirteen milliseconds a frame on
+    /// this device - the entire budget for one piece of one frame. Those
+    /// slide in from the side as they always did.
+    ///
+    /// A speaker pressed in the room list is nearly always this side of the
+    /// line: the page it opens on is "Connecting to Sonos…", with no artwork
+    /// yet. The artwork arrives afterwards, on a page that is already up.
+    public pure function lift-ready() -> bool { return !root.has-art; }
+
     keys:=FocusScope {enabled:root.shown;
         key-pressed(e)=>{
             // A music player's sheet is a list on this screen: the D-pad
