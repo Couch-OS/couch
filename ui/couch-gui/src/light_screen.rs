@@ -101,6 +101,10 @@ pub(crate) struct View {
     /// The same sentence the row shows: "On · 40%", "Off", "Unavailable".
     pub state: String,
     pub active: bool,
+    /// Whether the device has said what it is doing. The disc is drawn the
+    /// way a room row draws it, and a row that has not answered gets neither
+    /// the lit look nor the idle one.
+    pub known: bool,
     pub level_label: String,
     pub level: String,
     pub level_percent: i32,
@@ -193,6 +197,7 @@ pub(crate) fn view(
             View {
                 state,
                 active,
+                known: light.on.is_some(),
                 level: if known {
                     format!("{}%", shown.unwrap_or(0))
                 } else {
@@ -233,6 +238,7 @@ pub(crate) fn view(
             travelling.position_percent = shown;
             View {
                 state: crate::lights::cover_description(&travelling),
+                known: cover.state.is_some(),
                 active: cover.state.as_deref().is_some_and(|s| s != "closed"),
                 level_label: "OPEN POSITION".into(),
                 level: if known {

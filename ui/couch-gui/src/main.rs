@@ -186,7 +186,7 @@ fn lift_geometry(app: &App, row: panel::Window) -> panel::Lift {
         // card, which is where a row draws it.
         disc: at(
             row.x as f32 + app.invoke_room_disc_inset(),
-            row.y as f32 + (row.h as f32 - disc) / 2.0,
+            row.y as f32 + app.invoke_room_disc_y(),
             disc,
             disc,
         ),
@@ -260,6 +260,13 @@ pub(crate) fn lift_art(
         h: lift.marker_h,
         r: 0,
     };
+    // Each bar card, cut whole once: only its track changes from frame to
+    // frame, so only its track is put back before the next one.
+    for which in 0..2 {
+        if lift.cards[which].w > 0 {
+            art.cards[which].recut(screen, width, height, lift.cards[which]);
+        }
+    }
     art.marker.recut(screen, width, height, strip);
     art.under_marker.recut(
         screen,
