@@ -569,6 +569,89 @@ fn device_screen(app: &App) -> Option<Overlay> {
     }
 }
 
+/// How long the row a press came out of survives while the screen it opens is
+/// still on its way.
+///
+/// A light's screen is up in the same pass that reads the press. A Sonos or a
+/// Kodi row is not: its intent goes to the activity runtime and the player is
+/// shown a poll or two later, and a television's `open:` goes through the
+/// television's own queue. The row is held until the screen appears - and no
+/// longer, so a press that never opens anything cannot leave an arm behind to
+/// fire on some unrelated navigation later.
+const ARM_FOR: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// The row a press armed, until the screen it opens actually appears.
+#[derive(Default)]
+struct Armed(Option<(panel::Window, std::time::Instant)>);
+
+impl Armed {
+    fn arm(&mut self, row: panel::Window) {
+        self.0 = Some((row, std::time::Instant::now()));
+    }
+    fn clear(&mut self) {
+        self.0 = None;
+    }
+    /// The row, if one is still waiting and has not gone stale. Taking it
+    /// answers the press either way.
+    fn take(&mut self) -> Option<panel::Window> {
+        let (row, at) = self.0.take()?;
+        (at.elapsed() < ARM_FOR).then_some(row)
+    }
+}
+
+/// What the frame loop does about a device screen that has just opened or
+/// closed: lift it out of the row it came from, or slide.
+///
+/// Pulled out of the loop so the decision can be tested without one. The bug
+/// it is here to stop is a screen that opens a poll after its press: the row
+/// is known when the press is read and gone by the time the screen appears,
+/// and the loop then slid in and lifted out.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Move {
+    Lift {
+        screen: Overlay,
+        row: panel::Window,
+        shown: panel::Shown,
+    },
+    Slide {
+        screen: Option<Overlay>,
+        entering: bool,
+    },
+}
+
+fn device_move(before: Option<Overlay>, now: Option<Overlay>, row: Option<panel::Window>) -> Move {
+    match (before, now, row) {
+        (None, Some(screen), Some(row)) => Move::Lift {
+            screen,
+            row,
+            shown: panel::Shown::Arriving,
+        },
+        (Some(screen), None, Some(row)) => Move::Lift {
+            screen,
+            row,
+            shown: panel::Shown::Leaving,
+        },
+        // No row to come out of - a screen reached from an activity or from
+        // Home - or one device screen replacing another, which is not a row
+        // opening at all. Both keep the slide they always had.
+        _ => Move::Slide {
+            screen: now.or(before),
+            entering: now.is_some(),
+        },
+    }
+}
+
+/// What to call a screen in the line the loop prints.
+fn screen_name(which: Option<Overlay>) -> &'static str {
+    match which {
+        Some(Overlay::Tv) => "tv",
+        Some(Overlay::Player) => "player",
+        Some(Overlay::Thermostat) => "thermostat",
+        Some(Overlay::Light) => "light",
+        _ => "screen",
+    }
+}
+
 /// The plan for whichever device screen is opening or closing, or nothing
 /// because that screen has none and keeps the slide it always had.
 fn screen_plan(
@@ -824,6 +907,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rejections = config_snapshot::rejected();
     let mut no_config_at: Option<std::time::Instant> = None;
     let mut light_controls = lights::Controller::install(&app);
+    // The row a press came out of, held until the screen it opens appears.
+    let mut armed = Armed::default();
     let mut room_monitor = home::RoomMonitor::new(light_controls.hue_live());
     let mut shortcut_controls = shortcuts::Controller::new(light_controls.hue_live());
     let open_room_row = light_controls.opener();
@@ -1934,6 +2019,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // a different corner radius all move the window with them.
         let screen_navigation = !app.get_pair_shown() && light_controls.screen_pending();
         let iris_row = screen_navigation.then(|| room_window(&app));
+        // Reading the press is not the same as the screen appearing. A light's
+        // is up in this pass; a Sonos or a Kodi row hands its intent to the
+        // activity runtime and a television's `open:` goes to the television's
+        // own queue, and those screens are shown a poll or two later. The row
+        // is held until then, or the loop slides them in and lifts them out.
+        if let Some(row) = iris_row {
+            armed.arm(row);
+        }
         if room_navigation || screen_navigation {
             screen.snapshot();
         }
@@ -1990,6 +2083,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let opening = device_screen(&app).is_some();
                 let whole = panel::Window::panel(screen.width, screen.height);
                 let chosen = panel::Transition::chosen();
+                // This screen is up already, so the press has been answered.
+                armed.clear();
                 let row = iris_row
                     .map(|row| chosen.from_row(row, screen.width))
                     .unwrap_or(whole);
@@ -2020,12 +2115,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // What it cost, on one line, so a shape can be judged from
                 // the remote's log as well as by looking at it.
                 println!(
-                    "couch-gui: {} screen {:?} {} ({} frames, {} ms, {} us/frame mean, {} us max)",
-                    match device_screen(&app).or(was_screen) {
-                        Some(Overlay::Tv) => "tv",
-                        Some(Overlay::Player) => "player",
-                        _ => "light",
-                    },
+                    "couch-gui: {} {:?} {} ({} frames, {} ms, {} us/frame mean, {} us max)",
+                    screen_name(device_screen(&app).or(was_screen)),
                     chosen.opening,
                     if opening { "open" } else { "close" },
                     cost.frames,
@@ -2385,14 +2476,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // plan for the page that is leaving are both read here, before the
         // press is performed: afterwards the screen has been torn down and
         // has nothing left to say about itself.
+        let was_device = device_screen(&app);
         let closing = (app.get_light_shown()
             && (tv_controls.navigation_pending() || activity_controls.navigation_pending(&app)))
         .then(|| room_window(&app))
-        .zip(device_screen(&app))
+        .zip(was_device)
         .and_then(|(row, which)| {
-            screen_plan(&app, which, row, screen.width as i32, screen.height as i32)
-        })
-        .filter(|_| panel::Transition::chosen().opening == panel::Opening::Lift);
+            Some((
+                row,
+                screen_plan(&app, which, row, screen.width as i32, screen.height as i32)?,
+            ))
+        });
         if activity_navigation || page_turn.is_some() {
             screen.snapshot();
         }
@@ -2456,15 +2550,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frame_max = frame_max.max(us);
                 let entering =
                     app.get_player_shown() || app.get_tv_shown() || app.get_thermostat_shown();
-                // A television that lifted out of its row collapses back into
-                // it: the close is the open run backwards, over the same two
-                // pages, which is the whole point of holding that invariant.
-                let lifting = closing.filter(|_| !entering);
-                let cost = match lifting {
+                let chosen = panel::Transition::chosen();
+                // The same decision either way round. Going in, the row comes
+                // from the press that was read a pass or two ago - this screen
+                // was not up when it happened, which is why it has to be held
+                // - and coming out, from the room still behind it. A screen
+                // reached from an activity or from Home has no row and keeps
+                // the slide it always had.
+                let what = device_move(
+                    if entering { None } else { was_device },
+                    if entering { device_screen(&app) } else { None },
+                    if entering {
+                        armed.take()
+                    } else {
+                        closing.map(|(row, _)| row)
+                    },
+                );
+                let plan = match what {
+                    Move::Lift {
+                        screen: which, row, ..
+                    } if entering => {
+                        screen_plan(&app, which, row, screen.width as i32, screen.height as i32)
+                    }
+                    // Read before the press was performed: afterwards the
+                    // screen has been torn down and has nothing to say about
+                    // itself.
+                    Move::Lift { .. } => closing.map(|(_, plan)| plan),
+                    Move::Slide { .. } => None,
+                }
+                .filter(|_| chosen.opening == panel::Opening::Lift);
+                let cost = match plan {
                     Some(plan) => screen.lift(
                         plan,
-                        panel::Shown::Leaving,
-                        panel::Transition::chosen().time,
+                        if entering {
+                            panel::Shown::Arriving
+                        } else {
+                            panel::Shown::Leaving
+                        },
+                        chosen.time,
                     ),
                     None => screen.slide(
                         if entering {
@@ -2480,12 +2603,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 render_us += cost.work_us;
                 wait_us += cost.wait_us;
                 frame_max = frame_max.max(cost.max_us);
-                println!(
-                    "couch-gui: activity {} {} ({} frames)",
-                    if lifting.is_some() { "lift" } else { "slide" },
-                    if entering { "in" } else { "out" },
-                    cost.frames
-                );
+                let name = screen_name(device_screen(&app).or(was_device));
+                let way = if entering { "open" } else { "close" };
+                match plan {
+                    Some(_) => println!(
+                        "couch-gui: {name} {:?} {way} ({} frames, {} ms, {} us/frame mean, \
+                         {} us max)",
+                        chosen.opening,
+                        cost.frames,
+                        chosen.time.as_millis(),
+                        cost.work_us / cost.frames.max(1),
+                        cost.max_us
+                    ),
+                    // Why it slid, so the log tells a screen that has no plan
+                    // from a press that had no row to come out of.
+                    None => println!(
+                        "couch-gui: {name} slide {way}{} ({} frames)",
+                        match what {
+                            Move::Slide { .. } => " (no row)",
+                            _ => "",
+                        },
+                        cost.frames
+                    ),
+                }
             }
             slint::platform::update_timers_and_animations();
         }
@@ -2589,6 +2729,132 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             in_n = 0;
             in_sum = 0;
             in_max = 0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod opening_tests {
+    use super::*;
+
+    fn row() -> panel::Window {
+        panel::Window {
+            x: 20,
+            y: 199,
+            w: 440,
+            h: 90,
+            r: 14,
+        }
+    }
+
+    /// A press is answered by the screen it opens, whenever that screen turns
+    /// up.
+    ///
+    /// This is the whole of the bug it is here to stop. A light's screen is
+    /// shown in the same pass that reads the press, so the row is still in
+    /// hand. A Sonos or a Kodi row hands its intent to the activity runtime
+    /// and a television's `open:` goes to the television's own queue, and
+    /// those screens appear a poll or two later - by which time the row had
+    /// been dropped, so the loop slid them in and lifted them out.
+    #[test]
+    fn a_row_is_held_until_the_screen_it_opens_turns_up() {
+        let mut armed = Armed::default();
+        armed.arm(row());
+        // Two passes in which nothing appears, as a Kodi row really does.
+        assert_eq!(
+            device_move(None, None, None),
+            Move::Slide {
+                screen: None,
+                entering: false
+            }
+        );
+        // And then it does, and the row is still there for it.
+        assert_eq!(
+            device_move(None, Some(Overlay::Player), armed.take()),
+            Move::Lift {
+                screen: Overlay::Player,
+                row: row(),
+                shown: panel::Shown::Arriving,
+            }
+        );
+        // Taking it answers the press: a second screen appearing later gets
+        // no row and no lift, or one stale press would open everything.
+        assert_eq!(
+            device_move(None, Some(Overlay::Tv), armed.take()),
+            Move::Slide {
+                screen: Some(Overlay::Tv),
+                entering: true
+            }
+        );
+    }
+
+    /// The close is the open backwards, out of the row that is still behind.
+    #[test]
+    fn a_screen_closes_back_into_its_row() {
+        assert_eq!(
+            device_move(Some(Overlay::Player), None, Some(row())),
+            Move::Lift {
+                screen: Overlay::Player,
+                row: row(),
+                shown: panel::Shown::Leaving,
+            }
+        );
+    }
+
+    /// A screen reached from an activity or from Home has no row to come out
+    /// of, and keeps the slide. That is a decision, not an oversight, so the
+    /// line the loop prints says which it was.
+    #[test]
+    fn a_screen_with_no_row_slides() {
+        assert_eq!(
+            device_move(None, Some(Overlay::Player), None),
+            Move::Slide {
+                screen: Some(Overlay::Player),
+                entering: true
+            }
+        );
+        assert_eq!(
+            device_move(Some(Overlay::Tv), None, None),
+            Move::Slide {
+                screen: Some(Overlay::Tv),
+                entering: false
+            }
+        );
+        // One device screen replacing another is not a row opening either.
+        assert_eq!(
+            device_move(Some(Overlay::Tv), Some(Overlay::Player), Some(row())),
+            Move::Slide {
+                screen: Some(Overlay::Player),
+                entering: true
+            }
+        );
+    }
+
+    /// A press that never opens anything cannot leave an arm behind to fire
+    /// on some unrelated navigation later.
+    #[test]
+    fn a_press_that_opens_nothing_goes_stale() {
+        let mut armed = Armed(Some((row(), std::time::Instant::now() - ARM_FOR)));
+        assert_eq!(armed.take(), None);
+        assert_eq!(
+            device_move(None, Some(Overlay::Player), None),
+            Move::Slide {
+                screen: Some(Overlay::Player),
+                entering: true
+            }
+        );
+    }
+
+    /// And what the loop calls each of them in the line it prints.
+    #[test]
+    fn every_device_screen_is_named_in_the_log() {
+        for (which, name) in [
+            (Overlay::Light, "light"),
+            (Overlay::Tv, "tv"),
+            (Overlay::Player, "player"),
+            (Overlay::Thermostat, "thermostat"),
+        ] {
+            assert_eq!(screen_name(Some(which)), name);
         }
     }
 }
