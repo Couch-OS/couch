@@ -840,6 +840,34 @@ the way out. The camera did exactly that; its Back is queued for the poll now,
 which is where every other device screen closes.
 
 
+### A row that is doing nothing sinks back, and the lift follows it
+
+Room rows on the hub have always recessed when a room is idle; device rows
+never did, so "Reading lamp · Unavailable" had the same card as "Desk lamp ·
+On · 40%" - the strongest state inconsistency the audit found. A device row
+recesses now on the same rule: a lamp that is off, or a light or blind that
+has not answered. A device row with controls behind it does not - it has no
+state to be off in.
+
+**The title stays at full strength.** That is not only the hub's rule: the
+lift flies that word onto the screen's own title, and a dimmer copy in the row
+would land on a brighter one. Only the second line dims, and the disc already
+dimmed itself.
+
+**The lift reads the colour rather than assuming it.** `LiftPlan` carries
+`surface` and `border`, which `room_devices.slint` reports for the focused row
+through `App`, and three things use them: the name and the icon are keyed on
+that colour when they are cut out of the row, the band they are painted out of
+is filled with it, and the card that rises out of the row starts in it. Keying
+a sprite on `Theme.surface` when the row is really `Theme.surface-idle` leaves
+a halo of the wrong grey around every glyph, which is exactly the fault the
+whole keying mechanism exists to avoid.
+
+The five checks run on a recessed row as well as a lit one, and the test
+asserts the row's colour really did change - without which the rest proves
+nothing.
+
+
 ### Whole-row list windows
 
 Room, device and scene lists size cards to fit a whole number of visible rows.

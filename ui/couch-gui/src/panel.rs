@@ -159,6 +159,12 @@ const LIFT_BG: u32 = 0xff0f_1315;
 pub(crate) fn lift_background() -> u32 {
     LIFT_BG
 }
+/// What a row that is not sunk back is drawn in, for the test that holds that
+/// one that is sunk back is drawn in something else.
+#[cfg(test)]
+pub(crate) fn lift_surface() -> u32 {
+    LIFT_SURFACE
+}
 
 /// `Theme.surface`, #1F1C17: a card's fill, which is both what the rising
 /// card is drawn in and the colour keyed out of the sprites cut from a row.
@@ -1312,8 +1318,6 @@ enum Compose {
 pub struct Traveller {
     pub from: Window,
     pub to: Window,
-    /// A colour in `from` that is not carried: the plate it sat on.
-    pub key: u32,
     pub fly: (f32, f32),
 }
 
@@ -1389,6 +1393,13 @@ pub struct LiftPlan {
     pub row: Window,
     /// How the rest of the panel gets from one page to the other.
     pub crossing: Crossing,
+    /// What the row is really drawn in: the colour its name and its icon are
+    /// keyed on when they are cut out of it, and the colour the card that
+    /// rises out of it starts in. A lamp that is off sits in a recessed card,
+    /// and keying it on the colour a lit row uses leaves a halo round every
+    /// glyph.
+    pub surface: u32,
+    pub border: u32,
     /// How deep the screen's header band is. What travels lands in it, so in
     /// a banded crossing it is the part of the panel that has to become the
     /// screen first rather than last.
@@ -1432,6 +1443,8 @@ impl LiftPlan {
             name,
             row,
             crossing: Crossing::Falling,
+            surface: LIFT_SURFACE,
+            border: LIFT_BORDER,
             head: 0,
             fall: LIFT_ROWS_FALL,
             wave: LIFT_ROW_WAVE,
@@ -1451,17 +1464,25 @@ impl LiftPlan {
         self
     }
 
+    /// The colours the row is really drawn in, read from the layout rather
+    /// than assumed.
+    pub fn drawn_in(mut self, surface: u32, border: u32) -> Self {
+        self.surface = surface;
+        self.border = border;
+        self
+    }
+
     /// The name and the icon, flying from where the row draws them to where
     /// the screen draws its own. Both ends come from the layouts themselves,
     /// so a traveller lands on itself rather than on another drawing of the
     /// same thing.
     pub fn carrying(mut self, name: (Window, Window), icon: (Window, Window)) -> Self {
+        // The card they sat on is not carried with them: `surface` is what is
+        // keyed out, and it is the row's own colour.
         let fly = |(from, to): (Window, Window)| {
             Some(Traveller {
                 from,
                 to,
-                // The card they sat on is not carried with them.
-                key: LIFT_SURFACE,
                 fly: LIFT_LABEL_FLY,
             })
         };
@@ -2163,8 +2184,8 @@ pub(crate) fn lift_frame(
             fill_window(
                 &mut dst,
                 plate,
-                LIFT_SURFACE,
-                LIFT_BORDER,
+                plan.surface,
+                plan.border,
                 arriving.min(leaving),
             );
         }
@@ -2229,7 +2250,7 @@ pub(crate) fn lift_frame(
                 fly.from.x + (((fly.to.x - fly.from.x) as f32) * e).round() as i32,
                 fly.from.y + (((fly.to.y - fly.from.y) as f32) * e).round() as i32,
             );
-            art.travellers[i].put(&mut dst, at, Some(fly.key), 256 - handing);
+            art.travellers[i].put(&mut dst, at, Some(plan.surface), 256 - handing);
         }
     }
 }
@@ -3062,7 +3083,7 @@ pub(crate) mod checks {
                                 .max()
                                 .unwrap_or(0)
                         };
-                        let floor = brightest(LIFT_SURFACE).max(brightest(screen[at]));
+                        let floor = brightest(plan.surface).max(brightest(screen[at]));
                         let bright = brightest(pixels[at]);
                         assert!(
                             bright <= floor.max(0x50),
@@ -3113,8 +3134,10 @@ pub(crate) mod checks {
                         }
                         let a = room[(from.y + row) as usize * panel_w + (from.x + col) as usize];
                         // The card the sprite was cut against is not put
-                        // down, so it is not part of the landing either.
-                        if a == LIFT_SURFACE {
+                        // down, so it is not part of the landing either - and
+                        // it is the row's own colour, which is not the same
+                        // for a lamp that is off as for one that is on.
+                        if a == plan.surface {
                             continue;
                         }
                         let b = screen[by as usize * panel_w + bx as usize];

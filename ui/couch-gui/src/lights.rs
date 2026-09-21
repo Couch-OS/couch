@@ -4387,6 +4387,46 @@ mod tests {
             "top row",
         );
         crate::panel::checks::pops(&room, &screen, W, H, lift, "scrolled mid-list row");
+
+        // And the same row with the lamp off, which sinks the card back. The
+        // name and the icon are cut out of that card and keyed on it, and the
+        // card that rises starts in its colour - all three have to follow the
+        // row rather than assume the colour a lit row has, or every glyph
+        // carries a halo of the wrong grey.
+        controller.close_screen(&app, false);
+        let off = controller.entries[0]
+            .plugin
+            .clone()
+            .unwrap()
+            .state(
+                &controller.entries[0].name.clone(),
+                &reading(serde_json::json!({"light":{"on":false,"brightness":40,"mirek":370}})),
+            )
+            .unwrap();
+        controller.entries[0].state = Some(off);
+        controller.update_rows(&app, true);
+        app.set_light_index(0);
+        let mut dim = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut dim);
+        let sunk = crate::room_window(&app);
+        let dark = crate::light_plan(&app, sunk, W as i32, H as i32);
+        assert_ne!(
+            dark.surface,
+            crate::panel::lift_surface(),
+            "an off lamp's row is drawn in the same colour as a lit one, so it has not sunk"
+        );
+        controller.open_screen(&app, 0);
+        let mut lit = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut lit);
+        let (dim, lit) = (word(&dim), word(&lit));
+        crate::panel::checks::profile(&dim, &lit, W, H, dark, "recessed row");
+        crate::panel::checks::never_bare(&dim, &lit, W, H, dark, "recessed row");
+        crate::panel::checks::lands(&dim, &lit, W, H, dark, "recessed row");
+        crate::panel::checks::stronger(&dim, &lit, W, H, dark, "recessed row");
+        crate::panel::checks::ghosts(&dim, &lit, W, H, dark, "recessed row");
+        crate::panel::checks::pops(&dim, &lit, W, H, dark, "recessed row");
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }
