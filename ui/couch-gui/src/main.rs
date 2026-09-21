@@ -1551,17 +1551,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     (whole, row, panel::Shown::Leaving)
                 };
-                let cost = screen.iris(from, to, shown, chosen.time);
+                let cost = match chosen.opening {
+                    // The lift is not a window: it crosses the two pages and
+                    // carries the row's card up between them.
+                    panel::Opening::Lift => screen.lift(row, shown, chosen.time),
+                    panel::Opening::Iris | panel::Opening::Curtain => {
+                        screen.iris(from, to, shown, chosen.time)
+                    }
+                };
                 frames += cost.frames;
                 render_us += cost.work_us;
                 wait_us += cost.wait_us;
                 frame_max = frame_max.max(cost.max_us);
+                // What it cost, on one line, so a shape can be judged from
+                // the remote's log as well as by looking at it.
                 println!(
-                    "couch-gui: light screen {:?} {} ({} frames, {} ms)",
+                    "couch-gui: light screen {:?} {} ({} frames, {} ms, {} us/frame mean, {} us max)",
                     chosen.opening,
                     if opening { "open" } else { "close" },
                     cost.frames,
-                    chosen.time.as_millis()
+                    chosen.time.as_millis(),
+                    cost.work_us / cost.frames.max(1),
+                    cost.max_us
                 );
             }
             slint::platform::update_timers_and_animations();

@@ -3942,6 +3942,78 @@ mod tests {
             1.0,
         );
         assert_eq!(pixels, leaving, "the close does not end on the room");
+
+        // The lift, over the same two pages: the room crossing to the screen
+        // with the row's card carried up between them.
+        for (step, t) in [(0, 0.0), (1, 0.25), (2, 0.5), (3, 0.75), (4, 1.0)] {
+            let mut pixels = vec![0u32; W * H];
+            crate::panel::lift_frame(
+                crate::panel::Surface {
+                    pixels: &mut pixels,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&arriving, &leaving),
+                from,
+                crate::panel::Shown::Arriving,
+                t,
+            );
+            match step {
+                0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
+                4 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
+                _ => {
+                    assert_ne!(pixels, arriving, "frame {step} is already the screen");
+                    assert_ne!(pixels, leaving, "frame {step} never left the room");
+                }
+            }
+            if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels
+                    .iter()
+                    .flat_map(|p| [*p as u8, (*p >> 8) as u8, (*p >> 16) as u8])
+                    .collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir)
+                        .join(format!("lift-{step}-{:03}.png", (t * 100.0) as u32)),
+                    &bytes,
+                    W as u32,
+                    H as u32,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        // And its close is the open backwards: the page arriving is the room
+        // now, so the last frame is the room whole.
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let mut closing = vec![0u32; W * H];
+            crate::panel::lift_frame(
+                crate::panel::Surface {
+                    pixels: &mut closing,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&leaving, &arriving),
+                from,
+                crate::panel::Shown::Leaving,
+                t,
+            );
+            let mut opening = vec![0u32; W * H];
+            crate::panel::lift_frame(
+                crate::panel::Surface {
+                    pixels: &mut opening,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&arriving, &leaving),
+                from,
+                crate::panel::Shown::Arriving,
+                1.0 - t,
+            );
+            assert_eq!(closing, opening, "the lift's close is not its open at {t}");
+        }
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }

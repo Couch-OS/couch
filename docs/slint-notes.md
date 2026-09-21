@@ -365,14 +365,15 @@ slide's machinery with the run boundaries worked out per row instead of once:
   frame puts the page behind it up entire. That is a handover at the smallest
   the window ever gets, and it keeps the slide's invariant: when a transition
   returns, RAM and the panel agree again.
-- **Two shapes, one compositor, and a switch for trying them.** The row
-  curtain is the same window with a different first rect: the row's band
-  across the whole panel, opening up and down (`Transition::from_row`). While
-  the shapes are being judged on the device, `/tmp/couch-transition` chooses:
-  `echo "curtain 220" > /tmp/couch-transition` is the curtain at 220 ms from
-  the next press, `iris 300` the iris, and no file is the default. It is read
-  once per opening from a RAM disk and is gone at the next boot. Remove the
-  switch when a shape has been chosen.
+- **Three shapes, and a switch for trying them.** The row curtain is the same
+  window with a different first rect: the row's band across the whole panel,
+  opening up and down (`Transition::from_row`). While the shapes are being
+  judged on the device, `/tmp/couch-transition` chooses: `echo "curtain 220" >
+  /tmp/couch-transition` is the curtain at 220 ms from the next press, `iris
+  300` the iris, `lift` or `lift 400` the lift, and no file is the default.
+  Each shape has its own default time; a number in the file overrides it. It
+  is read once per opening from a RAM disk and is gone at the next boot.
+  Remove the switch when a shape has been chosen.
 - **The ring is not faded.** A fade is a per-pixel blend of two layers, which
   is the one thing this compositor never does; the ring is filled as a
   `ring-width` outline on the window's edge and rides it all the way: it sits
@@ -380,6 +381,46 @@ slide's machinery with the run boundaries worked out per row instead of once:
   the edges (`IRIS_RING_UNTIL` cuts it off earlier if that is ever wanted). `IRIS` is the duration and the three
   `IRIS_RING_*` constants are the rest: they are there to be turned on the
   device.
+
+### The lift, and the two primitives it costs
+
+The lift is the one shape here that is not a window. The room falls away from
+the focused row outwards, that row's card rises into the header band and hands
+over, and the control screen's bar cards arrive from a little below their
+places. It is still composed from the same two buffers, with two things the
+window compositor does not need:
+
+- **A translated band copy** (`band_over`): a band of one page put down `dy`
+  rows from where it sits, clipped at all four edges, one `copy_from_slice` a
+  scanline - or one blended run when it is fading. This is what carries the
+  row's card up. It costs a fraction of a frame: one row band, not a panel.
+- **A per-pixel crossing** (`blend_flat`, `blend_over`): two channels to a
+  multiply, packed in the spare halves of a `u32` - red and blue in one, green
+  and alpha in the other. Each product is at most `255 * 256`, exactly sixteen
+  bits, so neither pair carries into the other and nothing has to be unpacked.
+  About a dozen integer operations a pixel, written as a zip over two slices
+  of the same length so the hot loop has no bounds checks and the compiler is
+  free to widen it. **This is the expensive part**: one blended scanline where
+  the other shapes do one `memcpy`, so a lift frame moves half as much again
+  as a slide frame and does arithmetic on all of it.
+
+A scanline never crosses straight from one page to the other. It goes out to
+`Theme.bg` and comes back in from it, which is why `LIFT_STAGGER` is generous:
+while the scanlines near the row are already filling with the screen, the far
+ones have not begun to leave, so the panel is never bare all at once. Two
+pages of text on top of each other for a third of a second reads as a smear,
+and the rows are meant to fall away before the screen arrives.
+
+What the preview has and this cannot: the bar fills and the colour marker
+growing to their values, and the row label swapping size as it becomes the
+title. Both need a renderer; here they are simply part of the screen arriving.
+The renderer version of the whole thing would be 10-29 ms a frame by the
+measurements above, against a 16.7 ms budget, so it was not written.
+
+Because it is the one shape whose cost has to be read rather than assumed,
+every opening prints what it cost when it is over - frames, the mean work per
+frame and the worst one, in microseconds - and `COUCH_REGION=1` prints each
+frame as it goes, the same as the iris.
 
 A press that only switches a row must not arm it (`screen_pending` in
 `lights.rs` asks the row the same question `poll` does), and Home leaves the
