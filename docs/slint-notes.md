@@ -642,6 +642,45 @@ longer, and the bareness check (no frame more than 92% background) catches
 exactly that.
 
 
+### The default opening is the lift, at 400 ms
+
+`Transition::default()` is `Opening::Lift` at `LIFT`, and `LIFT` is 400 ms -
+one constant, tuned by eye on the HA100, where 320 ms read rushed. Every phase
+in the transition is a fraction of it, so moving it moves them all together,
+and the checks derive their frame count from it
+(`panel::checks::FRAMES = LIFT / FRAME`, 24 frames at 60 Hz).
+
+A screen that hands over no plan has no lift to run and keeps the horizontal
+slide it always had, so this is the default only for the screens that can
+honour it. `/tmp/couch-transition` still picks any of the three shapes and any
+time between 100 and 1000 ms: `echo "iris 300" > /tmp/couch-transition`.
+
+### Artwork is the one page a lift cannot build
+
+Two screens carry a photograph behind everything: the television while it is
+showing what is playing, and the player once the album art has arrived. The
+lift builds a page out of bands over a flat background, and a photograph is
+not one - bringing it in means cross-fading the whole panel, which is about
+thirteen milliseconds a frame on this device against a 16.7 ms budget. Both
+report `lift-ready()` false and slide.
+
+It is worth knowing that this is nearly always the *second* picture, not the
+first: a speaker pressed in the room list opens on "Connecting to Sonos…"
+with no artwork, and the artwork arrives afterwards on a page that is already
+up. So the player does lift out of its row; it is the page it settles into
+that could not have been built that way.
+
+If it ever has to, the cheap shape is a **banded cross-fade**: give each
+horizontal band of the panel its own fade window, staggered, so only a
+fraction of the panel is blending in any one frame - the same trick the room's
+fall already uses per scanline, but with a wave long enough to matter. With a
+fade of 0.20 of the transition (five frames at 400 ms, the floor below which a
+fade reads as a step) and a wave of 0.60, a third of the panel is mid-fade at
+once: about 0.33 panels of blending a frame, plus copies for the rest. That is
+inside the worst-frame budget but not inside today's 0.35 mean, so it would
+need its own number and its own measurement on the device.
+
+
 ### Whole-row list windows
 
 Room, device and scene lists size cards to fit a whole number of visible rows.

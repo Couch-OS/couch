@@ -271,6 +271,11 @@ pub struct Controller {
     message_until: Option<Instant>,
     volume_until: Option<Instant>,
     art_key: String,
+    /// Whether this screen has been drawn once since it opened. Until it has,
+    /// nothing on it travels: the first picture is what an opening is made
+    /// from, and a bar caught mid-travel in it is a bar that jumps when the
+    /// transition ends.
+    drawn: bool,
     sources: Vec<Choice>,
     /// On-screen selection the D-pad moves: 1 seek, 2 previous, 3 play,
     /// 4 next, 5..=7 sheets.
@@ -299,6 +304,7 @@ impl Controller {
             message_until: None,
             volume_until: None,
             art_key: String::new(),
+            drawn: false,
             sources: Vec::new(),
             selected: 3,
             views: std::collections::HashMap::new(),
@@ -337,6 +343,14 @@ impl Controller {
         self.media = None;
         self.busy = false;
         self.art_key.clear();
+        self.drawn = false;
+        app.set_player_glide(false);
+        // A speaker unless a room row said otherwise: the screen can be
+        // reached from an activity as well as from a row, and the disc in the
+        // header is never empty.
+        app.set_player_icon(crate::icons::image(couch_model::Icon::Speaker));
+        app.set_player_known(true);
+        app.set_player_active(true);
         self.sources.clear();
         self.selected = 3;
         self.message_until = None;
@@ -354,7 +368,9 @@ impl Controller {
         app.set_player_logo(slint::Image::default());
         app.set_player_has_logo(false);
         app.set_player_activity(target.name.as_str().into());
-        app.set_player_room(target.room.as_str().into());
+        // Where it is and what drives it, the second line every screen a room
+        // row opens carries - not the room's name on its own.
+        app.set_player_room(Self::where_it_is(&target).into());
         // A screen left within the last half minute comes back as it was,
         // artwork included, while the worker reads the group again behind it.
         let serial = Self::serial();
@@ -708,8 +724,21 @@ impl Controller {
             _ => {}
         }
     }
+    /// Where it is and what drives it: "Living room · Sonos", the second line
+    /// every screen a room row opens carries.
+    fn where_it_is(target: &Target) -> String {
+        if target.label.is_empty() {
+            target.room.clone()
+        } else {
+            format!("{} · {}", target.room, target.label)
+        }
+    }
     /// `age` is how long ago the media's position was true.
     fn present(&mut self, app: &App, media: &Media, age: f64) {
+        // From the second picture on, a new position is travelled to rather
+        // than jumped to; the first one is left still.
+        app.set_player_glide(self.drawn);
+        self.drawn = true;
         let playing = matches!(media.state, PlayState::Playing | PlayState::Buffering);
         app.set_player_connected(true);
         app.set_player_ready(media.title.is_some());
@@ -718,6 +747,11 @@ impl Controller {
             app.set_player_room(
                 match &media.follows {
                     Some(leader) => format!("{} · Playing from {}", t.room, leader),
+                    // Where it is and what drives it, the second line every
+                    // screen a room row opens carries. A speaker following
+                    // another says that instead: it is the more useful fact,
+                    // and the two do not fit on one line.
+                    None if !t.label.is_empty() => format!("{} · {}", t.room, t.label),
                     None => t.room.clone(),
                 }
                 .into(),
@@ -1354,6 +1388,7 @@ mod tests {
             let controller = Controller {
                 tx,
                 rx,
+                drawn: false,
                 active: Arc::new(AtomicU64::new(0)),
                 generation: 0,
                 target: None,
@@ -1647,6 +1682,12 @@ mod tests {
         rig.act(&app, "Input.Select", 0.);
         rig.act(&app, "next", 0.);
         picture(rig, "05-previous-selected");
+        // And the play button itself selected. Its edge is the colour that
+        // reads *on* the accent it is filled with - a dark ring on a light
+        // disc - which no other picture in this set shows.
+        rig.act(&app, "Input.Right", 0.);
+        picture(rig, "05a-play-selected");
+        rig.act(&app, "Input.Left", 0.);
 
         // Sources: asked for once, listed, and one started.
         rig.sources = Ok(vec![

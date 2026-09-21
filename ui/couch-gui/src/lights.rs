@@ -1710,10 +1710,9 @@ impl Controller {
             // rather than assumed, the same question `poll` asks below.
             Input::PhysicalPick(row, _) | Input::Pick(row) => {
                 self.screen.is_none()
-                    && self
-                        .entries
-                        .get(*row)
-                        .is_some_and(|entry| opens_screen(entry) || opens_tv(entry))
+                    && self.entries.get(*row).is_some_and(|entry| {
+                        opens_screen(entry) || opens_tv(entry) || opens_the_player(entry)
+                    })
             }
             Input::Screen(name, _) => self.screen.is_some() && name == "close",
             _ => false,
@@ -1849,6 +1848,19 @@ impl Controller {
                         });
                         if player {
                             app.invoke_open_activity(e.id.as_str().into());
+                            // After it opens, so the row's own disc wins over
+                            // the speaker the screen falls back to: the lift
+                            // flies this one onto that one, and they have to
+                            // be the same drawing. The second line is the
+                            // screen's own - it knows the room and what
+                            // drives it better than the row does.
+                            app.set_player_icon(crate::icons::image(e.icon));
+                            app.set_player_active(
+                                e.state.as_ref().is_some_and(|s| s.active() == Some(true)),
+                            );
+                            app.set_player_known(
+                                e.state.as_ref().is_some_and(|s| s.active().is_some()),
+                            );
                             continue;
                         }
                         if let Some(_connection) = cfg
@@ -2113,6 +2125,21 @@ fn opens_tv(entry: &Entry) -> bool {
         return false;
     }
     tv_connection(&config, device).is_some()
+}
+/// Whether a pick on this row opens the media player: a configured device the
+/// player knows how to drive, which today is Sonos and Kodi.
+fn opens_the_player(entry: &Entry) -> bool {
+    let Some(device) = entry.id.strip_prefix("device:") else {
+        return false;
+    };
+    let Some(config) = crate::connections::config() else {
+        return false;
+    };
+    let integration = config
+        .devices()
+        .find(|(_, d)| d.id.as_str() == device)
+        .and_then(|(_, d)| config.resolve_integration(&d.integration));
+    integration.is_some_and(|i| crate::shortcuts::opens_player(&i))
 }
 fn opens_screen(entry: &Entry) -> bool {
     if let Some(row) = &entry.plugin {
@@ -4485,7 +4512,7 @@ mod tests {
         }
         // The close is the open backwards, frame for frame.
         for step in 1..19 {
-            let t = step as f32 / 19.0;
+            let t = step as f32 / crate::panel::checks::FRAMES as f32;
             let mut one = vec![0u32; W * H];
             let mut other = vec![0u32; W * H];
             for (into, shown, at) in [
@@ -4525,6 +4552,173 @@ mod tests {
         crate::panel::checks::stronger(&leaving, &arriving, W, H, plan, "receiver row");
         crate::panel::checks::ghosts(&leaving, &arriving, W, H, plan, "receiver row");
         crate::panel::checks::pops(&leaving, &arriving, W, H, plan, "receiver row");
+        app.hide().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The media player lifts out of its row too, and holds the same rules.
+    ///
+    /// On the page a room row actually opens: "Connecting to Sonos…", with no
+    /// artwork yet - the artwork arrives afterwards, on a page that is
+    /// already up. A page that has artwork keeps its slide, and that is
+    /// asserted here rather than left to be discovered.
+    ///
+    /// `COUCH_LIFT_SCREENSHOTS=<dir>` keeps the pictures.
+    #[test]
+    fn the_player_lifts_out_of_its_row() {
+        const NAME: &str = "lights::tests::the_player_lifts_out_of_its_row";
+        if std::env::var_os("COUCH_TEST_PLAYER_LIFT").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_PLAYER_LIFT", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::ComponentHandle;
+        const W: usize = 480;
+        const H: usize = 800;
+        let config = packaged();
+        let path = std::env::temp_dir().join(format!("couch-plift-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        crate::config_snapshot::start(path.clone());
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.show().unwrap();
+        window.dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
+        let mut controller = Controller::install(&app);
+        let room = Id::new("living-room");
+        controller.entries = configured_in(&config, &room).unwrap();
+        controller.room = Some(room);
+        // The receiver's row stands in for a speaker's: what matters here is
+        // a device row with a disc and a name to fly, and the page the press
+        // opens.
+        let which = controller
+            .entries
+            .iter()
+            .position(|e| e.id.as_str() == "device:avr")
+            .expect("the packaged fixture has a device row");
+        app.set_light_title("Living room".into());
+        app.set_light_shown(true);
+        app.set_feedback_enabled(true);
+        controller.update_rows(&app, true);
+        let settle = || {
+            for _ in 0..20 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        };
+        let draw = |into: &mut Vec<slint::Rgb8Pixel>| {
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(into, W);
+            });
+        };
+        settle();
+        let top = crate::room_window(&app);
+        app.set_light_index(which as i32);
+        let mut a = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut a);
+        let from = crate::room_window(&app);
+        assert_ne!(from.y, top.y, "the ring never moved off the first row");
+
+        // Page B: the player as a row press leaves it.
+        let entry = &controller.entries[which];
+        app.set_player_activity(entry.name.as_str().into());
+        app.set_player_room("Living room · Sonos".into());
+        app.set_player_icon(crate::icons::image(entry.icon));
+        app.set_player_active(false);
+        app.set_player_known(false);
+        app.set_player_title("Connecting to Sonos…".into());
+        app.set_player_music(true);
+        app.set_player_ready(false);
+        app.set_player_connected(false);
+        app.set_player_has_art(false);
+        app.set_player_shown(true);
+        app.invoke_focus_player();
+        let mut b = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut b);
+        assert!(a != b, "the two pages are the same picture");
+        let word = |page: &[slint::Rgb8Pixel]| -> Vec<u32> {
+            page.iter()
+                .map(|p| 0xff00_0000 | ((p.b as u32) << 16) | ((p.g as u32) << 8) | p.r as u32)
+                .collect()
+        };
+        let (arriving, leaving) = (word(&b), word(&a));
+        let plan = crate::player_plan(&app, from, W as i32, H as i32)
+            .expect("a player page with no artwork on it has a plan");
+        let mut art = crate::lift_art(&leaving, &arriving, W, H, plan);
+        let content = crate::panel::lift_content(&leaving, W, H);
+        let screen_content = crate::panel::lift_content(&arriving, W, H);
+        let sweep = [0, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100];
+        for (step, t) in sweep.iter().map(|n| (*n, *n as f32 / 100.0)) {
+            let mut pixels = vec![0u32; W * H];
+            crate::panel::lift_frame(
+                crate::panel::Surface {
+                    pixels: &mut pixels,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&arriving, &leaving),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                crate::panel::Shown::Arriving,
+                t,
+            );
+            match step {
+                0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
+                100 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
+                _ => {
+                    assert_ne!(pixels, arriving, "frame {step} is already the screen");
+                    assert_ne!(pixels, leaving, "frame {step} never left the room");
+                }
+            }
+            if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels
+                    .iter()
+                    .flat_map(|p| [*p as u8, (*p >> 8) as u8, (*p >> 16) as u8])
+                    .collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir)
+                        .join(format!("player-lift-{:03}.png", (t * 100.0).round() as u32)),
+                    &bytes,
+                    W as u32,
+                    H as u32,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        let (mean, worst) =
+            crate::panel::checks::profile(&leaving, &arriving, W, H, plan, "player");
+        assert!(
+            mean <= 0.35 && worst <= 0.50,
+            "the player lift costs {mean:.2} panels a frame on average and {worst:.2} at its worst"
+        );
+        crate::panel::checks::lands(&leaving, &arriving, W, H, plan, "player row");
+        crate::panel::checks::stronger(&leaving, &arriving, W, H, plan, "player row");
+        crate::panel::checks::ghosts(&leaving, &arriving, W, H, plan, "player row");
+        crate::panel::checks::pops(&leaving, &arriving, W, H, plan, "player row");
+
+        // And artwork keeps the slide: a photograph behind everything is not
+        // a page that can be built out of bands.
+        app.set_player_has_art(true);
+        settle();
+        assert!(
+            crate::player_plan(&app, from, W as i32, H as i32).is_none(),
+            "a player showing artwork offered a lift"
+        );
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }
