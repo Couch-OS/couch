@@ -1542,21 +1542,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frame_max = frame_max.max(us);
                 let opening = app.get_light_screen_shown();
                 let whole = panel::Window::panel(screen.width, screen.height);
-                let row = iris_row.unwrap_or(whole);
+                let chosen = panel::Transition::chosen();
+                let row = iris_row
+                    .map(|row| chosen.from_row(row, screen.width))
+                    .unwrap_or(whole);
                 let (from, to, shown) = if opening {
                     (row, whole, panel::Shown::Arriving)
                 } else {
                     (whole, row, panel::Shown::Leaving)
                 };
-                let cost = screen.iris(from, to, shown, panel::IRIS);
+                let cost = screen.iris(from, to, shown, chosen.time);
                 frames += cost.frames;
                 render_us += cost.work_us;
                 wait_us += cost.wait_us;
                 frame_max = frame_max.max(cost.max_us);
                 println!(
-                    "couch-gui: light screen iris {} ({} frames)",
+                    "couch-gui: light screen {:?} {} ({} frames, {} ms)",
+                    chosen.opening,
                     if opening { "open" } else { "close" },
-                    cost.frames
+                    cost.frames,
+                    chosen.time.as_millis()
                 );
             }
             slint::platform::update_timers_and_animations();

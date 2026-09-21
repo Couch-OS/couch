@@ -365,6 +365,14 @@ slide's machinery with the run boundaries worked out per row instead of once:
   frame puts the page behind it up entire. That is a handover at the smallest
   the window ever gets, and it keeps the slide's invariant: when a transition
   returns, RAM and the panel agree again.
+- **Two shapes, one compositor, and a switch for trying them.** The row
+  curtain is the same window with a different first rect: the row's band
+  across the whole panel, opening up and down (`Transition::from_row`). While
+  the shapes are being judged on the device, `/tmp/couch-transition` chooses:
+  `echo "curtain 220" > /tmp/couch-transition` is the curtain at 220 ms from
+  the next press, `iris 300` the iris, and no file is the default. It is read
+  once per opening from a RAM disk and is gone at the next boot. Remove the
+  switch when a shape has been chosen.
 - **The ring is not faded.** A fade is a per-pixel blend of two layers, which
   is the one thing this compositor never does; the ring is filled as a
   `ring-width` outline on the window's edge and rides it all the way: it sits

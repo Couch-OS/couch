@@ -137,6 +137,81 @@ const IRIS_RING_UNTIL: f32 = 1.0;
 /// #FFFFFF, which is the same word whichever way round the channels go.
 const IRIS_RING: u32 = 0xffff_ffff;
 
+/// Where the development switch for the opening transition is read from.
+/// Under `/tmp`, so it is gone at the next boot and nothing a person set up is
+/// ever changed by it.
+const OPENING_SWITCH: &str = "/tmp/couch-transition";
+
+/// The shape a control screen opens out of its row in.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum Opening {
+    /// The row's card grows to the panel on all four sides.
+    Iris,
+    /// The row's band, the whole width of the panel, opens up and down.
+    Curtain,
+}
+
+/// How a control screen opens: the shape, and how long it takes.
+///
+/// Two shapes are in so they can be compared on the device, the one way to
+/// judge a transition. `echo "curtain 220" > /tmp/couch-transition` on the
+/// remote takes effect on the next press; no file is the iris at [`IRIS`].
+/// Both are the same compositor with a different first window, so neither
+/// costs more than the other.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct Transition {
+    pub opening: Opening,
+    pub time: Duration,
+}
+
+impl Default for Transition {
+    fn default() -> Self {
+        Transition {
+            opening: Opening::Iris,
+            time: IRIS,
+        }
+    }
+}
+
+impl Transition {
+    /// What the switch file says, or the default. Read at each opening: it is
+    /// a few bytes from a RAM disk, once per key press.
+    pub fn chosen() -> Self {
+        std::fs::read_to_string(OPENING_SWITCH)
+            .map(|text| Self::parse(&text))
+            .unwrap_or_default()
+    }
+    /// `iris` or `curtain`, then optionally milliseconds. Anything that is
+    /// not understood is the default for that part, and the time is kept
+    /// between a tenth of a second and a whole one.
+    fn parse(text: &str) -> Self {
+        let mut chosen = Self::default();
+        for word in text.split_whitespace() {
+            match word {
+                "iris" => chosen.opening = Opening::Iris,
+                "curtain" => chosen.opening = Opening::Curtain,
+                other => {
+                    if let Ok(ms) = other.parse::<u64>() {
+                        chosen.time = Duration::from_millis(ms.clamp(100, 1000));
+                    }
+                }
+            }
+        }
+        chosen
+    }
+    /// The window this opening starts from (and closes onto) for a row.
+    pub fn from_row(self, row: Window, width: u32) -> Window {
+        match self.opening {
+            Opening::Iris => row,
+            Opening::Curtain => Window {
+                x: 0,
+                w: width as i32,
+                ..row
+            },
+        }
+    }
+}
+
 /// A rounded-rectangle window onto one page over another, in panel pixels.
 ///
 /// Both ends of the travel are parameters, so the same compositor can open a
@@ -1113,6 +1188,49 @@ impl Platform for CouchPlatform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_opening_is_the_iris_unless_the_switch_says_otherwise() {
+        assert_eq!(Transition::parse(""), Transition::default());
+        assert_eq!(Transition::default().opening, Opening::Iris);
+        assert_eq!(Transition::default().time, IRIS);
+        let curtain = Transition::parse("curtain 220\n");
+        assert_eq!(curtain.opening, Opening::Curtain);
+        assert_eq!(curtain.time, Duration::from_millis(220));
+        // Either part alone, in either order, and nonsense changes nothing.
+        assert_eq!(Transition::parse("curtain").time, IRIS);
+        assert_eq!(
+            Transition::parse("400 iris").time,
+            Duration::from_millis(400)
+        );
+        assert_eq!(Transition::parse("sideways fast"), Transition::default());
+        // A time nobody could want is brought back into a range somebody could.
+        assert_eq!(Transition::parse("5").time, Duration::from_millis(100));
+        assert_eq!(Transition::parse("99999").time, Duration::from_millis(1000));
+    }
+
+    #[test]
+    fn a_curtain_is_the_rows_band_across_the_whole_panel() {
+        let row = Window {
+            x: 20,
+            y: 199,
+            w: 440,
+            h: 103,
+            r: 14,
+        };
+        assert_eq!(Transition::default().from_row(row, 480), row);
+        let curtain = Transition::parse("curtain").from_row(row, 480);
+        assert_eq!(
+            curtain,
+            Window {
+                x: 0,
+                y: 199,
+                w: 480,
+                h: 103,
+                r: 14
+            }
+        );
+    }
 
     const W: usize = 16;
     const H: usize = 16;
