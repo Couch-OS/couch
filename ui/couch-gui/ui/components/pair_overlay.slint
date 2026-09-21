@@ -12,7 +12,7 @@ export component PairOverlay inherits Rectangle {
     in property <int> seconds-left: 0;
 
     visible: root.shown;
-    background: #000000F5;
+    background: Theme.scrim;
     // The PIN covers the controls below; touches must not fall through to them.
     TouchArea { enabled: root.shown; }
 

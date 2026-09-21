@@ -29,6 +29,12 @@ export global Theme {
     out property <color> surface-icon-idle: #221F1A;
     out property <color> border-icon-idle: #302B24;
 
+    // The backdrop behind a takeover pop-up (the mic, pairing and
+    // Bluetooth-pairing overlays) - one alpha where three near-black values
+    // (88%, 94%, 96%) were typed out with nobody having chosen three. Not
+    // the tray's #00000088: that is a sheet over a live page, not a takeover.
+    out property <color> scrim: #000000F0;
+
     // --- radii ----------------------------------------------------------------
     out property <length> r-glyph: 3px;
     out property <length> r-meter: 5px;
