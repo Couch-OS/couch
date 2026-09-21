@@ -12,6 +12,11 @@ import { FocusRing } from "../components/focus_ring.slint";
 // only dims. Both fill and read from the bottom - up is more, and up is the key
 // that raises the number printed above the bar.
 //
+// Neither bar is ever highlighted: each has a key of its own (volume for the
+// level, channel for the colour temperature), so there is nothing to select
+// between and no ring to move. Only a blind's three buttons carry a highlight,
+// because OK has to know which one it presses.
+//
 // The whole screen is driven from properties: nothing here reads a device, and
 // every number arrives already worked out (lights.rs), including the two bar
 // fills, which are percentages so that Slint never has to divide a range.
@@ -39,13 +44,14 @@ export component LightScreen inherits Rectangle {
     // the top of the bar, so a marker at 100 sits at the top.
     in property <int> mirek-percent;
     in property <bool> mirek-known;
-    // 0 the level, 1 the colour temperature or the blind's buttons.
-    in property <int> selected;
-    // Which of Open / Stop / Close is selected while focus is 1.
+    // Which of Open / Stop / Close is highlighted, on a blind. The bars have
+    // no highlight of their own.
     in property <int> button;
     in property <string> detail;
     // The one line at the bottom that teaches the keys.
     in property <string> hint;
+    // "Updating…" in place of the state line, once one operation has been out
+    // long enough to be worth mentioning.
     in property <bool> pending;
     callback action(string, int);
     public function take-focus() { keys.focus(); }
@@ -83,7 +89,7 @@ export component LightScreen inherits Rectangle {
     Rectangle {
         x: root.col-x; y: root.bars-y; width: root.col-w; height: root.bars-h;
         background: Theme.surface; border-width: 1px;
-        border-color: root.selected == 0 ? Theme.accent : Theme.border; border-radius: Theme.r-card;
+        border-color: Theme.border; border-radius: Theme.r-card;
         Text {
             x: 8px; y: 16px; width: parent.width - 16px; height: 52px; text: root.level;
             horizontal-alignment: center; vertical-alignment: center;
@@ -109,15 +115,13 @@ export component LightScreen inherits Rectangle {
             text: root.level-label; horizontal-alignment: center;
             font-size: 12px; letter-spacing: 1.5px; color: Theme.text-secondary;
         }
-        TouchArea { clicked => { root.action("focus-level", 0); } }
-        FocusRing { focused: root.selected == 0; radius-inner: Theme.r-card; box-width: parent.width; box-height: parent.height; }
     }
 
     // --- colour temperature, only where the light reports a range -----------
     if root.tunable && !root.cover: Rectangle {
         x: root.col-x + root.col-w + 24px; y: root.bars-y; width: root.col-w; height: root.bars-h;
         background: Theme.surface; border-width: 1px;
-        border-color: root.selected == 1 ? Theme.accent : Theme.border; border-radius: Theme.r-card;
+        border-color: Theme.border; border-radius: Theme.r-card;
         Text {
             x: 8px; y: 16px; width: parent.width - 16px; height: 52px; text: root.kelvin;
             horizontal-alignment: center; vertical-alignment: center;
@@ -158,8 +162,6 @@ export component LightScreen inherits Rectangle {
             text: "COLOUR TEMP"; horizontal-alignment: center;
             font-size: 12px; letter-spacing: 1.5px; color: Theme.text-secondary;
         }
-        TouchArea { clicked => { root.action("focus-colour", 0); } }
-        FocusRing { focused: root.selected == 1; radius-inner: Theme.r-card; box-width: parent.width; box-height: parent.height; }
     }
 
     // --- a blind's own buttons, under its bar --------------------------------
@@ -168,15 +170,18 @@ export component LightScreen inherits Rectangle {
         width: parent.width - 48px; height: 74px; background: transparent;
         for name[i] in ["Open", "Stop", "Close"]: Rectangle {
             x: i * (parent.width / 3); width: parent.width / 3 - 10px; height: parent.height;
-            background: root.selected == 1 && root.button == i ? Theme.accent-bg : Theme.surface;
+            background: root.button == i ? Theme.accent-bg : Theme.surface;
             border-width: 1px; border-radius: Theme.r-card;
-            border-color: root.selected == 1 && root.button == i ? Theme.accent : Theme.border;
+            border-color: root.button == i ? Theme.accent : Theme.border;
             Text {
                 width: parent.width; height: parent.height; text: name;
                 horizontal-alignment: center; vertical-alignment: center; font-size: 20px;
                 color: i == 1 && !root.can-stop ? Theme.text-disabled : Theme.text;
             }
             TouchArea { clicked => { root.action("cover", i); } }
+            // The only ring left on this screen, and it earns it: it is the
+            // one thing OK presses.
+            FocusRing { focused: root.button == i; radius-inner: Theme.r-card; box-width: parent.width; box-height: parent.height; }
         }
     }
 
@@ -191,21 +196,20 @@ export component LightScreen inherits Rectangle {
         key-pressed(e) => {
             if (e.text == Key.Escape) { root.action("close", 0); return accept; }
             if (e.text == Key.Home) { root.action("home", 0); return accept; }
-            if (e.text == Key.Return) { root.action(root.selected == 1 && root.cover ? "cover" : "toggle", root.button); return accept; }
-            // The bars stand up, so the D-pad turns with them: up and down
-            // adjust the highlighted bar, left and right move between them
-            // (and along a blind's three buttons).
-            if (e.text == Key.UpArrow) { root.action("step", 1); return accept; }
-            if (e.text == Key.DownArrow) { root.action("step", -1); return accept; }
-            if (e.text == Key.RightArrow) { root.action("focus", 1); return accept; }
-            if (e.text == Key.LeftArrow) { root.action("focus", -1); return accept; }
-            // Volume is the brightness bar and channel the colour temperature,
-            // wherever the highlight happens to be. F21-F24 are the internal
-            // tokens keypad.rs gives the channel and volume keys.
-            if (e.text == Key.F23) { root.action("level", 1); return accept; }
-            if (e.text == Key.F24) { root.action("level", -1); return accept; }
+            // OK switches a lamp; on a blind it presses the highlighted one
+            // of Open, Stop and Close.
+            if (e.text == Key.Return) { root.action(root.cover ? "cover" : "toggle", root.button); return accept; }
+            // Volume and up/down are the level; channel is the colour
+            // temperature. F21-F24 are the internal tokens keypad.rs gives the
+            // channel and volume keys.
+            if (e.text == Key.UpArrow || e.text == Key.F23) { root.action("level", 1); return accept; }
+            if (e.text == Key.DownArrow || e.text == Key.F24) { root.action("level", -1); return accept; }
             if (e.text == Key.F21) { root.action("warmth", 1); return accept; }
             if (e.text == Key.F22) { root.action("warmth", -1); return accept; }
+            // With no bar to select, left and right have only a blind's three
+            // buttons to walk; on a lamp they do nothing.
+            if (e.text == Key.RightArrow) { root.action("button", 1); return accept; }
+            if (e.text == Key.LeftArrow) { root.action("button", -1); return accept; }
             return accept;
         }
     }
