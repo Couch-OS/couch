@@ -107,6 +107,11 @@ pub struct SlideCost {
     pub work_us: u64,
     pub wait_us: u64,
     pub max_us: u64,
+    /// How many scanlines reached the glass, in total and in the worst single
+    /// frame. A lift sends only the rows it wrote, so this is the number that
+    /// says on the device whether that is working.
+    pub rows: u64,
+    pub max_rows: u64,
 }
 
 /// How long a page takes to cross.
@@ -199,7 +204,7 @@ pub(crate) const LIFT_LABEL_FLY: (f32, f32) = (0.0, 0.44);
 pub(crate) const LIFT_HAND_OVER: (f32, f32) = (0.44, 0.70);
 /// The cards arrive while the last of the room is still going. The left one
 /// overlaps that fade and the right one does not, on purpose: a whole-panel
-/// fade is about ten milliseconds on this device and a card another two and a
+/// fade is about twenty-four milliseconds on this device and a card another
 /// half, so one may sit on top of it and two may not.
 pub(crate) const LIFT_CARDS_IN: (f32, f32) = (0.20, 0.48);
 /// How much of a card's arrival is spent fading in rather than settling.
@@ -405,6 +410,11 @@ pub struct Panel {
     /// What a lift cut out of the two pages, and the scratch its cards are
     /// built in. Kept between transitions so nothing is allocated per frame.
     art: LiftArt,
+    /// Which scanlines the frame just composed actually wrote, and how far
+    /// through the frame before it was: between them, the rows that need to
+    /// reach the glass at all.
+    dirty: Vec<bool>,
+    last_t: Option<f32>,
     /// The frame the panel showed when a transition began: page A. RAM is
     /// page B by then, so the two pages of a slide are this and `ram`.
     spare: Vec<Abgr>,
@@ -466,6 +476,8 @@ impl Panel {
             content: Vec::new(),
             screen_content: Vec::new(),
             art: LiftArt::default(),
+            dirty: Vec::new(),
+            last_t: None,
             ram: vec![Abgr::default(); (width * height) as usize],
             spare: vec![Abgr::default(); (width * height) as usize],
             // Page 0 is what is displayed; the pan must say so.
@@ -870,6 +882,7 @@ impl Panel {
         let report = std::env::var_os("COUCH_REGION").is_some();
         let duration = duration.max(FRAME).as_secs_f32();
         let began = Instant::now();
+        self.last_t = None;
         let mut cost = SlideCost::default();
         loop {
             let started = Instant::now();
@@ -892,6 +905,8 @@ impl Panel {
             cost.work_us += work_us;
             cost.wait_us += wait_us;
             cost.max_us = cost.max_us.max(work_us);
+            cost.rows += self.height as u64;
+            cost.max_rows = self.height as u64;
             if report {
                 println!(
                     "couch-gui: slide frame {}: dx {dx}, {work_us} us, {wait_us} us paced",
@@ -986,10 +1001,13 @@ impl Panel {
             // next refresh, so it is drawn one period ahead of the clock.
             let t = ((started.duration_since(began) + FRAME).as_secs_f32() / duration).min(1.0);
             let done = t >= 1.0;
-            match what {
-                Compose::Iris { from, to } => self.compose_iris(from, to, shown, t),
+            let rows = match what {
+                Compose::Iris { from, to } => {
+                    self.compose_iris(from, to, shown, t);
+                    self.height as usize
+                }
                 Compose::Lift { plan } => self.compose_lift(plan, shown, t),
-            }
+            } as u64;
             let work = started.elapsed();
             self.pace(started);
             let wait = started.elapsed().saturating_sub(work);
@@ -998,6 +1016,8 @@ impl Panel {
             cost.work_us += work_us;
             cost.wait_us += wait_us;
             cost.max_us = cost.max_us.max(work_us);
+            cost.rows += rows;
+            cost.max_rows = cost.max_rows.max(rows);
             if report {
                 match what {
                     Compose::Iris { from, to } => {
@@ -1019,13 +1039,17 @@ impl Panel {
         }
     }
 
-    /// One lift frame into the framebuffer.
-    fn compose_lift(&mut self, plan: LiftPlan, shown: Shown, t: f32) {
+    /// One lift frame into the framebuffer. Returns the rows it sent.
+    fn compose_lift(&mut self, plan: LiftPlan, shown: Shown, t: f32) -> usize {
         let (width, height, stride) = (
             self.width as usize,
             self.height as usize,
             self.stride_px as usize,
         );
+        if self.dirty.len() != height {
+            self.dirty = vec![true; height];
+        }
+        changed_rows(&plan, height, t, self.last_t, &mut self.dirty);
         {
             let (arriving, leaving) = (pixels(&self.ram), pixels(&self.spare));
             lift_frame(
@@ -1040,11 +1064,24 @@ impl Panel {
                 &mut self.art,
                 (&self.content, &self.screen_content),
                 shown,
-                t,
+                Frame {
+                    t,
+                    dirty: &mut self.dirty,
+                },
             );
         }
-        // Whole frames only: the panel never holds a half-composed one.
-        present(&mut self.map[..], stride, width, height, pixels(&self.back));
+        self.last_t = Some(t);
+        // Whole frames only: the panel never holds a half-composed one. Only
+        // the rows this frame wrote are sent; the rest are on the glass
+        // already, and untouched in the buffer they were composed in.
+        present(
+            &mut self.map[..],
+            stride,
+            width,
+            height,
+            pixels(&self.back),
+            Some(&self.dirty),
+        )
     }
 
     /// One iris frame into the framebuffer.
@@ -1156,17 +1193,40 @@ fn pixels_mut(buf: &mut [Abgr]) -> &mut [u32] {
 }
 
 /// A composed frame onto the panel: one copy a scanline, top to bottom, and
-/// every pixel written exactly once.
+/// every pixel written at most once.
 ///
 /// What makes a multi-pass transition safe to show. The panel is scanned out
 /// continuously and nothing here flips buffers, so whatever is in the map is
 /// what is on the glass; a frame that is painted in several passes has to be
 /// finished somewhere else first, or its intermediate states are seen.
-fn present(map: &mut [u32], stride: usize, width: usize, height: usize, from: &[u32]) {
-    charge(1, width * height);
+///
+/// `rows` says which scanlines the compose actually wrote. The rest are
+/// already on the glass from the frame before - the compositor left them
+/// alone in its own buffer too - so copying them again is a whole panel of
+/// writes to uncached memory for nothing. It was the single largest term in
+/// the cost of a frame: more than the blending the shape is named for.
+/// Passing `None` writes every row, which is what an opening that composes
+/// the whole panel every frame wants.
+///
+/// Returns how many rows reached the glass, for the line the loop prints.
+fn present(
+    map: &mut [u32],
+    stride: usize,
+    width: usize,
+    height: usize,
+    from: &[u32],
+    rows: Option<&[bool]>,
+) -> usize {
+    let mut written = 0;
     for y in 0..height {
+        if rows.is_some_and(|rows| !rows.get(y).copied().unwrap_or(true)) {
+            continue;
+        }
         map[y * stride..y * stride + width].copy_from_slice(&from[y * width..(y + 1) * width]);
+        written += 1;
     }
+    charge(1, written * width);
+    written
 }
 
 /// Somewhere to compose into: the panel's own map, or a plain vector in a
@@ -1768,6 +1828,113 @@ fn fill_window(dst: &mut Surface<'_>, box_: Window, fill: u32, edge: u32, k: u32
 /// The close is the open run backwards over the same two pages, so `t` of 0
 /// is always the room and `t` of 1 always the screen whichever way it is
 /// going - which is what keeps the last frame of either a whole page.
+/// Which frame of a transition this is, and which of its scanlines are not
+/// the ones the panel is already showing.
+///
+/// `previous` is how far through the frame before it was, and nothing at all
+/// on the first. Between the two, everything the plan does is known at both
+/// moments, so whether a row can differ is arithmetic rather than a guess:
+/// the room's fade there, the plate, what is in flight, and every piece over
+/// it. A row that cannot differ is not composed and not sent - and for most
+/// of a transition that is most of the panel, which was the largest single
+/// cost in a frame, larger than the blending the shape is named for.
+///
+/// An empty `dirty` means "assume everything differs", which is what a test
+/// composing one frame into its own buffer wants.
+pub(crate) struct Frame<'a> {
+    pub t: f32,
+    pub dirty: &'a mut [bool],
+}
+
+impl Frame<'_> {
+    /// One frame on its own, with nothing before it and nothing to report.
+    #[cfg(test)]
+    pub(crate) fn at(t: f32) -> Frame<'static> {
+        Frame { t, dirty: &mut [] }
+    }
+}
+
+/// Which rows of the panel a frame can differ from the one before it in.
+///
+/// Everything the lift draws is a function of `p`, so this asks the same
+/// question of both moments and marks a row where any answer differs. It is
+/// deliberately generous: a piece that is mid-arrival marks its rows whether
+/// or not the pixels really moved, and a moving thing marks where it was as
+/// well as where it is. Being wrong the other way would leave a stale band on
+/// the glass, so the test that composes a whole run and compares every frame
+/// against one drawn from nothing is the one that holds this honest.
+fn changed_rows(plan: &LiftPlan, h: usize, p: f32, previous: Option<f32>, into: &mut [bool]) {
+    let Some(was) = previous else {
+        into.fill(true);
+        return;
+    };
+    into.fill(false);
+    let mark = |from: i32, rows: i32, into: &mut [bool]| {
+        for y in from.max(0)..(from + rows).max(0) {
+            if let Some(row) = into.get_mut(y as usize) {
+                *row = true;
+            }
+        }
+    };
+    // The room falling away, scanline by scanline.
+    let centre = plan.row.y + plan.row.h / 2;
+    let reach = centre.max(h as i32 - centre).max(1) as f32;
+    let band = plan.row.y..plan.row.y + plan.row.h;
+    let span = plan.fall.1 - plan.fall.0;
+    for y in 0..h {
+        let window = if band.contains(&(y as i32)) {
+            plan.focused_out
+        } else {
+            let away = ((y as i32 - centre).abs() as f32 / reach).min(1.0);
+            let began = plan.fall.0 + plan.wave * away;
+            (began, began + span)
+        };
+        let settled = |at: f32| fading(at, window).is_some_and(|gone| gone >= 256);
+        if !(settled(p) && settled(was)) {
+            into[y] = true;
+        }
+    }
+    // The plate, where it is and where it was.
+    if let Some((to, rise)) = plan.plate {
+        for at in [p, was] {
+            if at >= rise.0 && at <= rise.1 {
+                let plate = plan.row.lerp(to, smooth(progress(at, rise)));
+                mark(plate.y, plate.h, into);
+            }
+        }
+    }
+    // What is in flight, likewise - a traveller moves, so where it was has to
+    // be laid down again.
+    for at in [p, was] {
+        if fading(at, plan.hand_over).unwrap_or(0) >= 256 {
+            continue;
+        }
+        for traveller in plan.travellers.iter().flatten() {
+            if at < traveller.fly.0 {
+                continue;
+            }
+            let e = smooth(progress(at, traveller.fly));
+            let y = traveller.from.y
+                + (((traveller.to.y - traveller.from.y) as f32) * e).round() as i32;
+            mark(y, traveller.from.h, into);
+        }
+    }
+    // And every piece that is not in the same state at both moments: not
+    // begun at either, or whole at both, is a piece that draws the same
+    // pixels twice.
+    for piece in plan.pieces.iter().flatten() {
+        let (now, then) = (arrival(*piece, p), arrival(*piece, was));
+        let same = matches!((now, then), (None, None) | (Some(256), Some(256)));
+        if !same {
+            mark(
+                piece.rect.y - LIFT_BARS_DROP,
+                piece.rect.h + LIFT_BARS_DROP,
+                into,
+            );
+        }
+    }
+}
+
 pub(crate) fn lift_frame(
     mut dst: Surface<'_>,
     pages: (&[u32], &[u32]),
@@ -1782,8 +1949,9 @@ pub(crate) fn lift_frame(
     // it. Worked out once before the first frame.
     content: (&[Line], &[Line]),
     shown: Shown,
-    t: f32,
+    frame: Frame<'_>,
 ) {
+    let t = frame.t;
     let (arriving, leaving) = pages;
     let (content, screen_content) = content;
     let (room, screen, p) = match shown {
@@ -1797,6 +1965,7 @@ pub(crate) fn lift_frame(
         for y in 0..h {
             dst.pixels[y * stride..y * stride + w].copy_from_slice(&screen[y * w..(y + 1) * w]);
         }
+        frame.dirty.fill(true);
         return;
     }
     // --- the room falls away, outwards from the row -----------------------
@@ -1817,6 +1986,11 @@ pub(crate) fn lift_frame(
             let began = plan.fall.0 + plan.wave * away;
             (began, began + span)
         };
+        // A row that cannot differ from the one on the glass is not composed
+        // at all: the buffer already holds it, and the panel already shows it.
+        if !frame.dirty.get(y).copied().unwrap_or(true) {
+            continue;
+        }
         let out = &mut dst.pixels[y * stride..y * stride + w];
         let line_of = content.get(y).copied().unwrap_or(Line {
             from: 0,
@@ -1862,13 +2036,14 @@ pub(crate) fn lift_frame(
     // behind its title, so a plate that was still there at the end would have
     // to vanish in one frame, which is the thing that must not happen.
     if let Some((to, rise)) = plan.plate {
-        if p >= rise.0 {
+        if p >= rise.0 && p <= rise.1 {
             let e = smooth(progress(p, rise));
             let arriving = fading(p, plan.focused_out).unwrap_or(256);
             let leaving = 256 - (e * 256.0).round() as u32;
+            let plate = plan.row.lerp(to, e);
             fill_window(
                 &mut dst,
-                plan.row.lerp(to, e),
+                plate,
                 LIFT_SURFACE,
                 LIFT_BORDER,
                 arriving.min(leaving),
@@ -1885,6 +2060,16 @@ pub(crate) fn lift_frame(
         // would be a fifth of the panel appearing between two frames.
         let Some(k) = arrival(piece, p) else { continue };
         if k == 0 || covered(&plan, i, piece.rect, p) {
+            continue;
+        }
+        // Every row it covers is one the panel is already showing, so it is
+        // already in the buffer exactly as it would be drawn again. Asked of
+        // the rows rather than of the piece: if anything at all forced one of
+        // them to be laid down again - the room's fade, a traveller passing,
+        // a neighbour arriving - then this has to go back on top of it.
+        let clean = (piece.rect.y - LIFT_BARS_DROP..piece.rect.y + piece.rect.h + LIFT_BARS_DROP)
+            .all(|y| y < 0 || !frame.dirty.get(y as usize).copied().unwrap_or(true));
+        if clean {
             continue;
         }
         match piece.kind {
@@ -2178,7 +2363,7 @@ fn band_over_content(dst: &mut Surface<'_>, src: &[u32], band: Window, k: u32, c
 /// nothing has to be unpacked. The flat operand's two halves are worked out
 /// once for the whole run.
 ///
-/// The u32-at-a-time version of this measured about 10 ms for a whole panel
+/// The u32-at-a-time version of this measured about 20 ms for a whole panel
 /// on the HA100 against 1.3 ms for a `memcpy` of the same, which is far more
 /// than a dozen integer operations a pixel should cost: it was not being
 /// widened. Halving the iterations is the part of that worth having without
@@ -2433,8 +2618,8 @@ pub(crate) mod checks {
     /// Where the time goes, frame by frame, in pixels touched. A blend is
     /// several times a copy and a copy several times a fill, so a budget
     /// in "panels of blending" is the honest unit: the HA100 measured a
-    /// whole panel of blending at about ten milliseconds and a whole panel
-    /// copied at about 1.3.
+    /// whole panel of blending at about twenty-four milliseconds and a whole
+    /// panel copied at about three (docs/slint-notes.md).
     pub(crate) fn profile(
         room: &[u32],
         screen: &[u32],
@@ -2447,9 +2632,15 @@ pub(crate) mod checks {
         let content = lift_content(room, panel_w, panel_h);
         let screen_content = lift_content(screen, panel_w, panel_h);
         let (mut worst, mut total) = (0.0f32, 0.0f32);
+        // As the panel really composes: one buffer across the whole run, each
+        // frame knowing how far through the one before it was, and only the
+        // rows it wrote reaching the glass.
+        let mut pixels = vec![0u32; panel_w * panel_h];
+        let mut dirty = vec![false; panel_h];
+        let mut previous = None;
         for step in 0..=FRAMES {
             let t = step as f32 / FRAMES as f32;
-            let mut pixels = vec![0u32; panel_w * panel_h];
+            changed_rows(&plan, panel_h, t, previous, &mut dirty);
             WORK.with(|w| w.set([0; 3]));
             lift_frame(
                 Surface {
@@ -2463,12 +2654,17 @@ pub(crate) mod checks {
                 &mut art,
                 (&content, &screen_content),
                 Shown::Arriving,
-                t,
+                Frame {
+                    t,
+                    dirty: &mut dirty,
+                },
             );
-            // The present pass the panel does after every composed frame.
+            previous = Some(t);
+            // The present pass the panel does after every composed frame -
+            // only the rows this one wrote.
             WORK.with(|w| {
                 let mut c = w.get();
-                c[1] += panel_w * panel_h;
+                c[1] += dirty.iter().filter(|row| **row).count() * panel_w;
                 w.set(c);
             });
             let [blended, copied, filled] = WORK.with(|w| w.get());
@@ -2531,7 +2727,7 @@ pub(crate) mod checks {
                 &mut art,
                 (&content, &screen_content),
                 Shown::Arriving,
-                t,
+                Frame::at(t),
             );
             let share = ink(&pixels) as f32 / floor;
             if share < worst {
@@ -2597,7 +2793,7 @@ pub(crate) mod checks {
                 &mut art,
                 (&content, &screen_content),
                 Shown::Arriving,
-                t,
+                Frame::at(t),
             );
             pixels
         };
@@ -2713,7 +2909,7 @@ pub(crate) mod checks {
                 &mut art,
                 (&content, &screen_content),
                 Shown::Arriving,
-                t,
+                Frame::at(t),
             );
             let flying = lift_pieces(plan, t);
             for (name, traveller) in ["name", "icon"].iter().zip(plan.travellers.iter()) {
@@ -2847,7 +3043,7 @@ pub(crate) mod checks {
                 &mut art,
                 (&content, &screen_content),
                 Shown::Arriving,
-                t,
+                Frame::at(t),
             );
             pixels
         };
@@ -3008,7 +3204,7 @@ mod tests {
                 },
             })
             .footer(W as i32, H as i32, 14);
-        let at = |shown, t| {
+        let at = |shown, t: f32| {
             let mut pixels = vec![0u32; W * H];
             // The page being arrived at is the screen on the way in and the
             // room on the way out; the panel hands them over the same way.
@@ -3033,7 +3229,7 @@ mod tests {
                 &mut art,
                 (&content, &screen_content),
                 shown,
-                t,
+                Frame::at(t),
             );
             pixels
         };
@@ -3074,7 +3270,7 @@ mod tests {
         const STRIDE: usize = W + 3;
         let composed: Vec<u32> = (0..W * H).map(|i| 1000 + i as u32).collect();
         let mut map = vec![0u32; STRIDE * H];
-        present(&mut map, STRIDE, W, H, &composed);
+        assert_eq!(present(&mut map, STRIDE, W, H, &composed, None), H);
         for y in 0..H {
             assert_eq!(
                 &map[y * STRIDE..y * STRIDE + W],
@@ -3089,10 +3285,133 @@ mod tests {
         // Writing it again over a sentinel leaves none of the sentinel behind:
         // every pixel of the panel is covered by exactly one run.
         let mut map = vec![u32::MAX; STRIDE * H];
-        present(&mut map, STRIDE, W, H, &composed);
+        present(&mut map, STRIDE, W, H, &composed, None);
         assert_eq!(
             map.iter().filter(|p| **p == u32::MAX).count(),
             (STRIDE - W) * H
+        );
+
+        // Only the rows the compose wrote. The rest are on the glass already,
+        // and a row nobody touched is not written at all - which is the whole
+        // saving, and also what the one-pass rule allows: at most one write a
+        // pixel, still top to bottom.
+        let mut map = vec![u32::MAX; STRIDE * H];
+        let mut dirty = vec![false; H];
+        dirty[2] = true;
+        dirty[H - 1] = true;
+        assert_eq!(present(&mut map, STRIDE, W, H, &composed, Some(&dirty)), 2);
+        for y in 0..H {
+            let sent = y == 2 || y == H - 1;
+            assert_eq!(
+                map[y * STRIDE] == composed[y * W],
+                sent,
+                "row {y} was {} sent",
+                if sent { "not" } else { "" }
+            );
+        }
+        // A frame that changed nothing sends nothing at all.
+        let none = vec![false; H];
+        assert_eq!(present(&mut map, STRIDE, W, H, &composed, Some(&none)), 0);
+    }
+
+    /// A lift leaves the panel holding page B exactly, however few rows its
+    /// last frames sent.
+    ///
+    /// The rows that are skipped are skipped because they already hold what
+    /// the frame would have written. If that were ever untrue the panel would
+    /// keep a stale band for the rest of the transition, so the end is the
+    /// place to check it: compose the whole run into one buffer, sending only
+    /// what each frame marked, and the map has to be the page.
+    #[test]
+    fn what_reaches_the_panel_over_a_whole_lift_is_the_page() {
+        const STRIDE: usize = W + 3;
+        let room: Vec<u32> = (0..W * H).map(|i| 0xff00_0000 | i as u32).collect();
+        let screen: Vec<u32> = (0..W * H).map(|i| 0xff10_0000 | i as u32).collect();
+        let row = Window {
+            x: 2,
+            y: 6,
+            w: 12,
+            h: 3,
+            r: 0,
+        };
+        let win = |x, y, w, h| Window { x, y, w, h, r: 0 };
+        let plan = LiftPlan::out_of("test", row)
+            .carrying(
+                (win(4, 6, 6, 3), win(1, 1, 6, 3)),
+                (win(2, 6, 2, 2), win(7, 5, 2, 2)),
+            )
+            .header(W as i32, 5, 7)
+            .footer(W as i32, H as i32, 14);
+        let mut art = crate::lift_art(&room, &screen, W, H, plan);
+        let content = lift_content(&room, W, H);
+        let screen_content = lift_content(&screen, W, H);
+        let mut back = vec![0u32; W * H];
+        let mut map = vec![0u32; STRIDE * H];
+        let mut dirty = vec![false; H];
+        let mut previous = None;
+        let mut sent = 0;
+        for step in 0..=checks::FRAMES {
+            let t = step as f32 / checks::FRAMES as f32;
+            changed_rows(&plan, H, t, previous, &mut dirty);
+            lift_frame(
+                Surface {
+                    pixels: &mut back,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&screen, &room),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                Shown::Arriving,
+                Frame {
+                    t,
+                    dirty: &mut dirty,
+                },
+            );
+            previous = Some(t);
+            sent += present(&mut map, STRIDE, W, H, &back, Some(&dirty));
+            // The same frame composed from nothing, which is what skipping
+            // work has to be indistinguishable from. Not only at the end:
+            // every frame the panel shows has to be the frame it would have
+            // shown if nothing had been left out.
+            let mut fresh = vec![0u32; W * H];
+            lift_frame(
+                Surface {
+                    pixels: &mut fresh,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&screen, &room),
+                plan,
+                &mut crate::lift_art(&room, &screen, W, H, plan),
+                (&content, &screen_content),
+                Shown::Arriving,
+                Frame::at(t),
+            );
+            for y in 0..H {
+                assert_eq!(
+                    &map[y * STRIDE..y * STRIDE + W],
+                    &fresh[y * W..(y + 1) * W],
+                    "at {t:.2} row {y} on the panel is not what a frame drawn from nothing \
+                     would have put there"
+                );
+            }
+        }
+        for y in 0..H {
+            assert_eq!(
+                &map[y * STRIDE..y * STRIDE + W],
+                &screen[y * W..(y + 1) * W],
+                "row {y} of the panel is not the page the lift ended on"
+            );
+        }
+        // And it did skip rows: a run that sends every row every frame has
+        // not saved anything.
+        assert!(
+            sent < H * (checks::FRAMES + 1),
+            "every row was sent in every frame, so nothing was skipped"
         );
     }
 

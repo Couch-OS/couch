@@ -4145,7 +4145,7 @@ mod tests {
                 &mut art,
                 (&content, &screen_content),
                 crate::panel::Shown::Arriving,
-                t,
+                crate::panel::Frame::at(t),
             );
             match step {
                 0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
@@ -4192,7 +4192,7 @@ mod tests {
                 &mut art,
                 (&content, &screen_content),
                 crate::panel::Shown::Leaving,
-                t,
+                crate::panel::Frame::at(t),
             );
             let mut opening = vec![0u32; W * H];
             crate::panel::lift_frame(
@@ -4207,7 +4207,7 @@ mod tests {
                 &mut art,
                 (&content, &screen_content),
                 crate::panel::Shown::Arriving,
-                1.0 - t,
+                crate::panel::Frame::at(1.0 - t),
             );
             assert_eq!(closing, opening, "the lift's close is not its open at {t}");
         }
@@ -4265,7 +4265,7 @@ mod tests {
                 &mut art,
                 (&content, &screen_content),
                 crate::panel::Shown::Arriving,
-                t,
+                crate::panel::Frame::at(t),
             );
             match step {
                 0 => assert_eq!(pixels, room, "the scrolled first frame is not the room"),
@@ -4311,11 +4311,13 @@ mod tests {
             crate::light_plan(&app, from, W as i32, H as i32),
             "top",
         );
-        // A whole panel of blending measured about ten milliseconds on the
-        // HA100 against a 16.7 ms frame, so a worst frame has to stay well
-        // under one and the mean well under half of it.
+        // A whole panel of blending measures about twenty-four milliseconds on
+        // the HA100 against a 16.7 ms frame, so these are tight numbers: the
+        // caps are what the code actually achieves plus a margin, so a
+        // regression is caught in panels before it is felt in milliseconds
+        // (docs/slint-notes.md).
         assert!(
-            mean <= 0.35 && worst <= 0.50,
+            mean <= 0.25 && worst <= 0.35,
             "the lift costs {mean:.2} panels a frame on average and {worst:.2} at its worst"
         );
         crate::panel::checks::stronger(
@@ -4487,7 +4489,7 @@ mod tests {
                 &mut art,
                 (&content, &screen_content),
                 crate::panel::Shown::Arriving,
-                t,
+                crate::panel::Frame::at(t),
             );
             match step {
                 0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
@@ -4538,7 +4540,7 @@ mod tests {
                     &mut art,
                     (&content, &screen_content),
                     shown,
-                    at,
+                    crate::panel::Frame::at(at),
                 );
             }
             assert_eq!(one, other, "the close is not the open backwards at {t:.2}");
@@ -4548,7 +4550,7 @@ mod tests {
         crate::panel::checks::never_bare(&leaving, &arriving, W, H, plan, "receiver row");
         let (mean, worst) = crate::panel::checks::profile(&leaving, &arriving, W, H, plan, "tv");
         assert!(
-            mean <= 0.35 && worst <= 0.50,
+            mean <= 0.25 && worst <= 0.35,
             "the television lift costs {mean:.2} panels a frame on average and {worst:.2} at \
              its worst"
         );
@@ -4678,7 +4680,7 @@ mod tests {
                 &mut art,
                 (&content, &screen_content),
                 crate::panel::Shown::Arriving,
-                t,
+                crate::panel::Frame::at(t),
             );
             match step {
                 0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
@@ -4716,7 +4718,7 @@ mod tests {
         let (mean, worst) =
             crate::panel::checks::profile(&leaving, &arriving, W, H, plan, "player");
         assert!(
-            mean <= 0.35 && worst <= 0.50,
+            mean <= 0.25 && worst <= 0.35,
             "the player lift costs {mean:.2} panels a frame on average and {worst:.2} at its worst"
         );
         crate::panel::checks::lands(&leaving, &arriving, W, H, plan, "player row");
@@ -4943,7 +4945,7 @@ mod tests {
                 &mut art,
                 (&content, &screen_content),
                 crate::panel::Shown::Arriving,
-                t,
+                crate::panel::Frame::at(t),
             );
             match step {
                 0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
@@ -4974,7 +4976,7 @@ mod tests {
         let (mean, worst) =
             crate::panel::checks::profile(&leaving, &arriving, W, H, plan, "thermostat");
         assert!(
-            mean <= 0.35 && worst <= 0.50,
+            mean <= 0.25 && worst <= 0.35,
             "the thermostat lift costs {mean:.2} panels a frame on average and {worst:.2} at \
              its worst"
         );
