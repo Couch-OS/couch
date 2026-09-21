@@ -409,6 +409,7 @@ export component App inherits Window {
     public function ps-row-y(which: int) -> length { return cinema.row-y(which); }
     public function ps-row-h(which: int) -> length { return cinema.row-h(which); }
     public function ps-lift-ready() -> bool { return cinema.lift-ready(); }
+    public function ps-sparse() -> bool { return cinema.sparse(); }
     public function focus-home() { fs.focus(); }
 
     // --- keyboard -------------------------------------------------------------

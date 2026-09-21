@@ -186,6 +186,10 @@ export component Cinema inherits Rectangle {
     /// line: the page it opens on is "Connecting to Sonos…", with no artwork
     /// yet. The artwork arrives afterwards, on a page that is already up.
     public pure function lift-ready() -> bool { return !root.has-art; }
+    /// Whether the page being arrived at has very little on it. "Connecting
+    /// to Sonos…" is a line of text and a button: the room has to cross with
+    /// it rather than leave before it (docs/slint-notes.md).
+    public pure function sparse() -> bool { return !root.ready; }
 
     keys:=FocusScope {enabled:root.shown;
         key-pressed(e)=>{

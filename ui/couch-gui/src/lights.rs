@@ -4141,18 +4141,10 @@ mod tests {
                 _ => {
                     assert_ne!(pixels, arriving, "frame {step} is already the screen");
                     assert_ne!(pixels, leaving, "frame {step} never left the room");
-                    // Nothing is ever nearly bare: the room hands over to the
-                    // screen, it does not empty the panel and refill it.
-                    // Near the background, not exactly it: a pixel that has
-                    // faded all the way lands a shade either side of it
-                    // depending on how the fade was worked out, and that is
-                    // not what this is measuring.
-                    let bg = pixels.iter().filter(|p| near_background(**p)).count();
-                    assert!(
-                        bg * 100 / pixels.len() < 92,
-                        "frame {step} is {}% bare",
-                        bg * 100 / pixels.len()
-                    );
+                    // How bare the panel gets is `never_bare` below, which
+                    // measures it against the pages rather than against a
+                    // flat percentage of a panel that is mostly background
+                    // either way.
                 }
             }
             if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
@@ -4291,6 +4283,14 @@ mod tests {
         fn near_background(p: u32) -> bool {
             p == crate::panel::lift_background()
         }
+        crate::panel::checks::never_bare(
+            &leaving,
+            &arriving,
+            W,
+            H,
+            crate::light_plan(&app, from, W as i32, H as i32),
+            "top row",
+        );
         let (mean, worst) = crate::panel::checks::profile(
             &leaving,
             &arriving,
@@ -4483,15 +4483,6 @@ mod tests {
                 _ => {
                     assert_ne!(pixels, arriving, "frame {step} is already the screen");
                     assert_ne!(pixels, leaving, "frame {step} never left the room");
-                    let bg = pixels
-                        .iter()
-                        .filter(|p| **p == crate::panel::lift_background())
-                        .count();
-                    assert!(
-                        bg * 100 / pixels.len() < 92,
-                        "frame {step} is {}% bare",
-                        bg * 100 / pixels.len()
-                    );
                 }
             }
             if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
@@ -4542,6 +4533,7 @@ mod tests {
         }
 
         // The same five rules the light screen holds.
+        crate::panel::checks::never_bare(&leaving, &arriving, W, H, plan, "receiver row");
         let (mean, worst) = crate::panel::checks::profile(&leaving, &arriving, W, H, plan, "tv");
         assert!(
             mean <= 0.35 && worst <= 0.50,
@@ -4680,8 +4672,16 @@ mod tests {
                 0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
                 100 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
                 _ => {
-                    assert_ne!(pixels, arriving, "frame {step} is already the screen");
                     assert_ne!(pixels, leaving, "frame {step} never left the room");
+                    // A page this empty converges before the clock does: once
+                    // its few glyphs are within a shade of full strength the
+                    // blend rounds to the page itself, and the last frames
+                    // are it. What must not happen - arriving in one frame,
+                    // or leaving the panel bare on the way - is held by the
+                    // pop and bareness checks below.
+                    if step <= 80 {
+                        assert_ne!(pixels, arriving, "frame {step} is already the screen");
+                    }
                 }
             }
             if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
@@ -4700,6 +4700,7 @@ mod tests {
                 .unwrap();
             }
         }
+        crate::panel::checks::never_bare(&leaving, &arriving, W, H, plan, "player row");
         let (mean, worst) =
             crate::panel::checks::profile(&leaving, &arriving, W, H, plan, "player");
         assert!(

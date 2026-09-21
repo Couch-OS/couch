@@ -362,7 +362,8 @@ fn tv_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<pan
         // The last row always lands where a light screen's footer does, so
         // no screen is finished before the transition is - including one with
         // a single row, which would otherwise arrive first and leave the rest
-        // of the transition with nothing to show.
+        // of the transition with nothing happening. A sparse page brings the
+        // rest of itself forward instead, with `sooner`.
         let f = if rows <= 1 {
             1.0
         } else {
@@ -438,7 +439,8 @@ fn player_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option
         // The last row always lands where a light screen's footer does, so
         // no screen is finished before the transition is - including one with
         // a single row, which would otherwise arrive first and leave the rest
-        // of the transition with nothing to show.
+        // of the transition with nothing happening. A sparse page brings the
+        // rest of itself forward instead, with `sooner`.
         let f = if rows <= 1 {
             1.0
         } else {
@@ -460,7 +462,14 @@ fn player_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option
         });
     }
     let _ = height;
-    Some(plan)
+    // A page with almost nothing on it crosses with the room rather than
+    // arriving after it: "Connecting to Sonos…" is a line and a button, and
+    // waiting for the room to go first leaves the panel bare.
+    Some(if app.invoke_ps_sparse() {
+        plan.sooner(panel::LIFT_HASTE)
+    } else {
+        plan
+    })
 }
 
 /// The focused row's band with the name and the icon painted out of it: what
