@@ -421,6 +421,27 @@ grows. Both problems have the same answer - do not touch every pixel.
   a card is never caught half faded, and `LIFT_BAND_FADE` is about twice
   `LIFT_BAND_STEP`, which holds the blended part of the panel to **roughly a
   quarter** at any instant however many rows there are.
+- **Nothing appears or disappears in one frame.** Every element that is not
+  in both pages fades, over at least a fifth of the transition - five frames
+  at the default time - and the alpha ramp is a smoothstep, flat where it
+  starts and where it stops, so there is no step at either end either.
+  `ease_out` is right for a thing that travels and wrong for a thing that
+  appears: it opens at its fastest. The card that rises fades *in* over the
+  same window the row underneath it fades *out*, so the two cross and the
+  row's second line and chevron are never hidden in a frame, and it fades
+  *out* across its rise, so page B never has to lose a plate it never had -
+  that last one is what the owner saw as "the grey background of the room row
+  popping". The name and the icon travel on a smoothstep too, so they do not
+  separate from the row while the row is still there and read as doubled.
+  `the_control_screen_opens_as_a_window_out_of_its_row` holds the rule: over
+  the frames a default-length lift actually draws, no patch of the panel may
+  do more than 40% of everything it ever does in one frame, unless it is a
+  piece that is on screen in *both* of the two frames and has therefore moved
+  rather than appeared.
+- **Blending only where there is anything to blend.** A room is mostly its
+  background, so one pass before the first frame records where each scanline
+  has content and the fade touches only that span. On a list that is about
+  three quarters of the panel rather than all of it.
 - **Nothing hands over to nothing.** A painter puts its pieces down in order,
   so it cannot fade the arriving page in *underneath* the one that is leaving
   the way the preview does. Instead the room is gone by about a quarter of the
