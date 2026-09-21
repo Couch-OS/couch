@@ -627,3 +627,30 @@ the live screen took over. A switch moves the bar at once, as a brightness
 step does (`toggle_target`: nothing for a lamp going off, the level it kept
 for one coming on, when it has said what that is); it is only ever shown,
 never sent.
+
+## Dumping and comparing screen pictures
+
+`src/screen_pictures.rs` renders the screens that otherwise have no test at
+all - the home hub, the settings menu's root page, the camera, first-run
+setup, "nothing configured yet", and the mic/pair/bt-pair overlays, the
+keyboard and the Wi-Fi setup list - in one test, one process, reusing one
+pixel buffer the way `media_player.rs`'s player test does (a fresh buffer per
+screen would leave `CouchPlatform::install`'s `ReusedBuffer` regions however
+they happened to start).
+
+`COUCH_SCREEN_PICTURES=<dir>` writes each as `<dir>/<screen>.png`:
+
+```sh
+COUCH_SCREEN_PICTURES=/tmp/couch-screens cargo test --locked -p couch-gui \
+  screen_pictures::every_screen_the_audit_found_untested_draws_something_real \
+  -- --exact --nocapture
+```
+
+`COUCH_SCREEN_GOLDENS=<dir>` compares each picture against a PNG of the same
+name already in that directory, pixel for pixel, and fails naming the first
+screen that differs and how many pixels differ - copied from
+`media_player.rs`'s `COUCH_PLAYER_GOLDENS`. Take a "before" set, apply a
+change, take an "after" set, and diff the two directories by eye; nothing
+binary is kept in the tree, and CI never sets this variable, so the pixel
+comparison never gates a build - only the non-blank and text assertions in
+the test itself do.
