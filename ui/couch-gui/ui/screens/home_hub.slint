@@ -1,6 +1,7 @@
 import { Theme } from "../theme.slint";
 import { FocusRing } from "../components/focus_ring.slint";
 import { SectionLabel } from "../components/section_label.slint";
+import { DeviceDisc } from "../components/device_disc.slint";
 
 export struct LiveActivity {
     kind: int,          // 0 sonos (bars), 1 kodi (play triangle)
@@ -327,21 +328,17 @@ component AreaPane inherits Rectangle {
                                 padding: 18px;
                                 spacing: 16px;
 
-                                Rectangle {
-                                    width: 52px;
-                                    height: 52px;
-                                    border-radius: Theme.r-disc;
-                                    background: area.power-state == 0 ? Theme.surface-icon-idle : Theme.surface-icon;
-                                    border-width: 1px;
-                                    border-color: area.power-state == 0 ? Theme.border-icon-idle : Theme.border-icon;
-                                    Image {
-                                        source: area.icon;
-                                        width: 24px; height: 24px;
-                                        colorize: area.power-state > 0 ? Theme.accent : area.power-state == 0 ? Theme.text-quaternary : Theme.text-secondary;
-                                        animate colorize { duration: 180ms; easing: ease-out; }
-                                        x: (parent.width - self.width) / 2;
-                                        y: (parent.height - self.height) / 2;
-                                    }
+                                // Same component the device row and the light
+                                // screen use, so the hub's other lift start
+                                // hands over onto it with nothing to fade
+                                // (docs/slint-notes.md). power-state -1 is
+                                // "not answered", 0 is "answered, off", 1 is
+                                // "answered, on" - known is true whenever the
+                                // room has answered at all.
+                                DeviceDisc {
+                                    icon: area.icon;
+                                    active: area.power-state > 0;
+                                    known: area.power-state >= 0;
                                 }
 
                                 VerticalLayout {
