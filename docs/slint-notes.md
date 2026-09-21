@@ -613,3 +613,17 @@ embeds a 1,196,352-byte alpha atlas (2,077 × 24 × 24); icons.rs expands only
 requested icons into cached RGBA images. Selection never downloads images or
 parses SVG on the remote. tools/build-icon-catalog.py regenerates both the
 catalog and atlas from the pinned, licensed SVGs under assets/lucide.
+
+### A bar travels to a new value, except in the picture an opening is made from
+
+The level fill and the colour marker on a light's or blind's screen animate
+(`animate height` / `animate y`, 220 ms) when their value changes while the
+screen is open: a brightness step, a lamp switched off. Both are sized from a
+number inside a fixed track, so no layout depends on them. The travel is
+switched by the screen's `glide` property, which the controller turns on only
+after the screen's first picture: a transition draws the arriving page once
+and must find it finished, and a bar still travelling there would jump when
+the live screen took over. A switch moves the bar at once, as a brightness
+step does (`toggle_target`: nothing for a lamp going off, the level it kept
+for one coming on, when it has said what that is); it is only ever shown,
+never sent.

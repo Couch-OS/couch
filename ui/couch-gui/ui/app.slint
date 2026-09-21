@@ -306,6 +306,7 @@ export component App inherits Window {
     in-out property <string> light-screen-detail;
     in-out property <string> light-screen-hint;
     in-out property <bool> light-screen-pending;
+    in-out property <bool> light-screen-glide;
     callback light-screen-action(string, int);
     public function focus-light-screen() { light-screen-page.take-focus(); }
     changed chooser-shown => { if (root.chooser-shown) { fs.focus(); } else if (root.light-shown) { light-page.take-focus(); } }
@@ -648,6 +649,7 @@ export component App inherits Window {
         button:root.light-screen-button;
         detail:root.light-screen-detail; hint:root.light-screen-hint;
         pending:root.light-screen-pending;
+        glide:root.light-screen-glide;
         action(name,index) => { root.light-screen-action(name,index); }
     }
 

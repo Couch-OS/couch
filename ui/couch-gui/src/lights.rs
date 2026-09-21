@@ -361,6 +361,12 @@ pub struct Controller {
     /// have already moved - and only calls it "Updating…" once one has been
     /// out for `UPDATING_AFTER`.
     busy_since: Option<Instant>,
+    /// Where a switch that is on its way leaves the level bar: nothing for a
+    /// lamp being switched off, and the level it will come back to for one
+    /// being switched on, when it has said what that is. The screen shows it
+    /// at once, as it shows a brightness step at once, and it lasts exactly
+    /// as long as the switch is out. It is never sent: the switch is.
+    toggle_target: Option<(String, u8)>,
     refreshing: bool,
     last_refresh: Instant,
     brightness_pending: VecDeque<(String, u8)>,
@@ -936,6 +942,7 @@ impl Controller {
             hue,
             busy: None,
             busy_since: None,
+            toggle_target: None,
             refreshing: false,
             last_refresh: Instant::now(),
             brightness_pending: VecDeque::new(),
@@ -1160,6 +1167,7 @@ impl Controller {
     fn release(&mut self) {
         self.busy = None;
         self.busy_since = None;
+        self.toggle_target = None;
     }
     /// The next queued adjustment: a level first, then a colour temperature.
     /// One goes out at a time, and only the latest target per row is ever in
@@ -1218,12 +1226,32 @@ impl Controller {
             self.generation = generation;
             self.active
                 .store(self.generation, std::sync::atomic::Ordering::SeqCst);
+            self.toggle_target = self.switched(&id);
             self.claim(id);
             self.refreshing = false;
             app.set_light_detail("".into());
             self.update_rows(app, false);
         } else {
             app.set_light_detail("Connection busy. Press OK again in a moment.".into());
+        }
+    }
+    /// Where the level bar of a dimmable lamp goes when it is switched: to
+    /// nothing when it is on, and back to the level it kept when it is off and
+    /// has said what that was. A lamp that has not said waits for the answer.
+    fn switched(&self, id: &str) -> Option<(String, u8)> {
+        let entry = self.entries.iter().find(|entry| entry.id == id)?;
+        let Some(DeviceState::Light(light)) = entry.state.as_ref() else {
+            return None;
+        };
+        if !light.dimmable {
+            return None;
+        }
+        match light.on? {
+            true => Some((id.to_owned(), 0)),
+            false => light
+                .brightness_percent
+                .filter(|level| *level > 0)
+                .map(|level| (id.to_owned(), level)),
         }
     }
     /// The level a row is being driven towards, or its last endpoint while a
@@ -1234,6 +1262,7 @@ impl Controller {
             .iter()
             .find(|(pending, _)| pending == id)
             .or_else(|| self.brightness_flight.as_ref().filter(|(p, _)| p == id))
+            .or_else(|| self.toggle_target.as_ref().filter(|(p, _)| p == id))
             .map(|(_, percent)| *percent)
             .or_else(|| {
                 // Cover reports describe physical motion, not the requested
@@ -1323,6 +1352,7 @@ impl Controller {
     fn close_screen(&mut self, app: &App, home: bool) {
         self.screen = None;
         self.last_screen = None;
+        app.set_light_screen_glide(false);
         app.set_light_screen_shown(false);
         app.set_light_screen_detail("".into());
         if home {
@@ -1494,6 +1524,10 @@ impl Controller {
         if self.last_screen.as_ref() == Some(&drawn) {
             return;
         }
+        // The first picture of a screen is the one its opening is made from,
+        // and has to be finished when it is drawn. After that a bar travels
+        // to whatever changes it.
+        app.set_light_screen_glide(self.last_screen.is_some());
         let view = &drawn.0;
         app.set_light_screen_title(view.title.as_str().into());
         app.set_light_screen_room(view.room.as_str().into());
@@ -4522,6 +4556,7 @@ mod tests {
             hue: Arc::new(crate::connections::HueFleet::default()),
             busy: None,
             busy_since: None,
+            toggle_target: None,
             refreshing: false,
             last_refresh: Instant::now(),
             brightness_pending: VecDeque::new(),
@@ -4803,6 +4838,95 @@ mod tests {
         let other = controller.busy_since.unwrap();
         controller.render_screen_at(&app, other + Duration::from_secs(9));
         assert!(!app.get_light_screen_pending());
+    }
+
+    /// Switching a lamp moves its bar the way a brightness step does: at
+    /// once, to where the switch will leave it, and the bar travels there
+    /// rather than jumping - but only once the screen has been drawn, because
+    /// the picture its opening is made from has to be finished.
+    #[test]
+    fn a_switch_moves_the_bar_at_once_and_the_bar_travels_only_after_the_first_picture() {
+        const NAME: &str = "lights::tests::a_switch_moves_the_bar_at_once_and_the_bar_travels_only_after_the_first_picture";
+        if std::env::var_os("COUCH_TEST_SCREEN_SWITCH").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_SCREEN_SWITCH", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let config = packaged();
+        let _window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let mut controller = Controller::install(&app);
+        let room = Id::new("living-room");
+        let mut entries = configured_in(&config, &room).unwrap();
+        let row = entries[0].plugin.clone().unwrap();
+        let id = entries[0].id.clone();
+        let name = entries[0].name.clone();
+        let read = |value: serde_json::Value| {
+            let mut state = row.state(&name, &reading(value)).unwrap();
+            state.set_id(id.clone());
+            state
+        };
+        entries[0].state = Some(read(
+            serde_json::json!({"light":{"on":true,"brightness":40,"mirek":370}}),
+        ));
+        controller.entries = entries;
+        controller.room = Some(room);
+        app.set_light_shown(true);
+        controller.open_screen(&app, 0);
+        // The picture the opening is made from: finished, nothing travelling.
+        assert!(!app.get_light_screen_glide());
+        assert_eq!(app.get_light_screen_level_percent(), 40);
+
+        // Off: the bar is on its way to nothing before the bridge has said a
+        // word, and from now on it travels.
+        controller.screen_action(&app, "toggle", 0);
+        assert_eq!(controller.busy.as_deref(), Some(id.as_str()));
+        assert_eq!(controller.pending_level(&id), Some(0));
+        controller.render_screen_at(&app, Instant::now());
+        assert!(app.get_light_screen_glide());
+        assert_eq!(app.get_light_screen_level_percent(), 0);
+        assert_eq!(app.get_light_screen_state(), "Off");
+
+        // The answer: off, and - as Hue's package reports it - still holding
+        // the level it will come back to. The bar stays empty.
+        controller.release();
+        assert_eq!(controller.pending_level(&id), None);
+        controller.entries[0].state = Some(read(
+            serde_json::json!({"light":{"on":false,"brightness":40,"mirek":370}}),
+        ));
+        controller.render_screen_at(&app, Instant::now());
+        assert_eq!(app.get_light_screen_level_percent(), 0);
+
+        // On again: straight to the level it kept.
+        controller.screen_action(&app, "toggle", 0);
+        assert_eq!(controller.pending_level(&id), Some(40));
+        controller.render_screen_at(&app, Instant::now());
+        assert_eq!(app.get_light_screen_level_percent(), 40);
+        assert_eq!(app.get_light_screen_state(), "On · 40%");
+        controller.release();
+
+        // A lamp that says nothing about the level it kept (built-in Hue
+        // reports none while it is off) waits for the answer instead.
+        controller.entries[0].state = Some(read(
+            serde_json::json!({"light":{"on":false,"brightness":0,"mirek":370}}),
+        ));
+        controller.screen_action(&app, "toggle", 0);
+        assert_eq!(controller.pending_level(&id), None);
+        controller.release();
+
+        // Closing takes the travel away again, for the next opening.
+        controller.close_screen(&app, false);
+        assert!(!app.get_light_screen_glide());
     }
 
     /// The whole way in and out: OK on a row opens its screen, Power still
