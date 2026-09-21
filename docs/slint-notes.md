@@ -229,6 +229,80 @@ simpler screen will be optimistic by several times - measure the real thing.
 costs far more than its content suggests is almost always claiming a larger
 region than it needs, and that is invisible without it.
 
+### What a panel of blending really costs, and what the caps mean
+
+The lift's budget is in "panels of blending": a blend counts 1, a copy 1/8, a
+fill 1/16, and the number is what the compositor touched divided by the panel.
+The conversion to milliseconds was taken from the table above and was **wrong
+by about half**. Against the device:
+
+| | |
+|---|---|
+| light screen lift, 400 ms | 24 frames |
+| device, mean frame | 5.8 - 6.8 ms |
+| device, worst frame | 10.3 - 12.4 ms |
+| model, mean frame | 0.26 panels (before the trims below) |
+| model, worst frame | 0.29 panels |
+
+The mean maps to about **22-26 ms for a whole panel of blending**, not the
+eleven in the table - that row was measured on a different kind of work. Take
+24 ms; a panel copied is then about 3 ms and a panel filled about 1.5.
+
+**The worst frame does not fit the same line.** 0.29 panels against 10-12 ms
+would imply 40 ms a panel. The model's frames span 0.20 to 0.29 - a 45 per
+cent spread - while the device's span mean 5.8 to max 12.4, a 114 per cent
+one. So the worst frame on the device is set by jitter and by whatever else
+the loop is doing (a status poll landing mid-transition), not by what the
+compositor drew. Two honest consequences:
+
+- **the 0.50 worst cap was never headroom.** At a measured 0.29 the device was
+  already reaching 12.4 ms of a 16.7 ms frame. A plan that really did reach
+  0.50 would miss frames.
+- **the caps are now what the code achieves plus a margin**, so a regression
+  shows up in panels before it is felt in milliseconds: mean 0.25 against a
+  measured 0.12-0.19, worst 0.35 against a measured 0.26-0.29.
+
+### A frame sends only the rows that can have changed
+
+Everything the lift draws is a function of `p`, so whether a row can differ
+from the one already on the glass is arithmetic, not a guess: `changed_rows`
+asks the room's fade, the plate, what is in flight and every piece the same
+question at this `p` and at the last one. A row no answer changed in is not
+composed and not sent.
+
+It matters more than the blending the shape is named for. `present` was a
+whole-panel copy every frame - 0.125 panels, the single largest term - and the
+fills for scanlines whose fade had finished were another 0.066, written over
+the colour they already held.
+
+| screen | mean before | mean after |
+|---|---|---|
+| light | 0.26 | 0.19 |
+| television | 0.22 | 0.15 |
+| thermostat | 0.22 | 0.15 |
+| player, waiting page | 0.17 | 0.12 |
+
+About a quarter to a third off the mean, and nothing off the worst frame: at
+the peak the room is still fading and the cards are still arriving, so every
+row really is different and there is nothing to skip. The peak is genuine
+work, which is why the trims do not move it.
+
+The rule the panel needs is unchanged: **every framebuffer pixel is written at
+most once a frame, in one top-to-bottom pass.** Sending fewer rows satisfies
+it. What could go wrong is the opposite - a row skipped that should not have
+been, leaving a stale band on the glass for the rest of the transition - so
+the test composes a whole run incrementally and compares the map against a
+frame drawn from nothing *at every frame*, not only at the end. That test
+caught two wrong versions of this before it was right.
+
+The summary line carries `N rows/frame mean, M max` so the trim can be read
+off the remote's log.
+
+**If it still needs to be cheaper**, the next lever is `LIFT_ROW_WAVE`: a
+bigger stagger means fewer scanlines fading at once and a lower peak, at the
+cost of the room taking longer to leave. It is a change to how the transition
+looks, so it is a decision rather than an optimisation.
+
 ## Dirty regions: what costs a frame, measured on the HA100
 
 `COUCH_REGION=1` prints every rectangle the renderer marked dirty, with
@@ -630,8 +704,8 @@ converted by writing its plan and calling the same five over its real pages.
 **When a screen has no plan.** It keeps the horizontal slide it always had.
 The television reports none while it is showing artwork: that background is a
 photograph behind everything, and bringing it in would mean cross-fading the
-whole panel, about thirteen milliseconds a frame on this device, which is the
-entire budget for one piece of one frame.
+whole panel, about twenty-four milliseconds a frame on this device, which is
+more than a whole frame, for one piece of one.
 
 **A band with nothing in it is worse than no band.** The television's rows of
 controls are staggered between the moment a light screen's first bar card
@@ -692,8 +766,9 @@ Two screens carry a photograph behind everything: the television while it is
 showing what is playing, and the player once the album art has arrived. The
 lift builds a page out of bands over a flat background, and a photograph is
 not one - bringing it in means cross-fading the whole panel, which is about
-thirteen milliseconds a frame on this device against a 16.7 ms budget. Both
-report `lift-ready()` false and slide.
+twenty-four milliseconds a frame on this device against a 16.7 ms budget, so
+it cannot be done as one fade at all. Both report `lift-ready()` false and
+slide today.
 
 It is worth knowing that this is nearly always the *second* picture, not the
 first: a speaker pressed in the room list opens on "Connecting to Sonos…"
@@ -707,9 +782,13 @@ fraction of the panel is blending in any one frame - the same trick the room's
 fall already uses per scanline, but with a wave long enough to matter. With a
 fade of 0.20 of the transition (five frames at 400 ms, the floor below which a
 fade reads as a step) and a wave of 0.60, a third of the panel is mid-fade at
-once: about 0.33 panels of blending a frame, plus copies for the rest. That is
-inside the worst-frame budget but not inside today's 0.35 mean, so it would
-need its own number and its own measurement on the device.
+once: about 0.33 panels of blending a frame, plus copies for the rest.
+
+At 24 ms a panel that is about 8 ms of composition in the frames where the
+band is widest, against a 16.7 ms budget that already loses 10-12 ms to jitter
+at its worst. So the stagger has to be longer than the arithmetic alone
+suggests, and it has to be measured on the device rather than argued from the
+model - which is what the caps and the summary line are for.
 
 
 ### Whole-row list windows

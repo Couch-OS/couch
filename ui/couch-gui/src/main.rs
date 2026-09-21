@@ -246,9 +246,9 @@ fn light_plan(app: &App, row: panel::Window, width: i32, height: i32) -> panel::
     };
     let marker_h = app.invoke_ls_marker_h().round() as i32;
     // The left one overlaps the last of the room's fade and the right one
-    // does not, on purpose: a whole-panel fade is about ten milliseconds on
-    // this device and a card another two and a half, so one may sit on top of
-    // it and two may not.
+    // does not, on purpose: a whole-panel fade is about twenty-four
+    // milliseconds on this device and a card another six, so one may sit on
+    // top of it and two may not.
     let bar = |which: i32, fill_h: i32, marker_y: i32| panel::Piece {
         rect: card(which),
         window: (
@@ -2205,14 +2205,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // What it cost, on one line, so a shape can be judged from
                 // the remote's log as well as by looking at it.
                 println!(
-                    "couch-gui: {} {:?} {} ({} frames, {} ms, {} us/frame mean, {} us max)",
+                    "couch-gui: {} {:?} {} ({} frames, {} ms, {} us/frame mean, {} us max, \
+                     {} rows/frame mean, {} max)",
                     screen_name(device_screen(&app).or(was_screen)),
                     chosen.opening,
                     if opening { "open" } else { "close" },
                     cost.frames,
                     chosen.time.as_millis(),
                     cost.work_us / cost.frames.max(1),
-                    cost.max_us
+                    cost.max_us,
+                    cost.rows / cost.frames.max(1),
+                    cost.max_rows
                 );
             }
             slint::platform::update_timers_and_animations();
@@ -2698,12 +2701,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match plan {
                     Some(_) => println!(
                         "couch-gui: {name} {:?} {way} ({} frames, {} ms, {} us/frame mean, \
-                         {} us max)",
+                         {} us max, {} rows/frame mean, {} max)",
                         chosen.opening,
                         cost.frames,
                         chosen.time.as_millis(),
                         cost.work_us / cost.frames.max(1),
-                        cost.max_us
+                        cost.max_us,
+                        cost.rows / cost.frames.max(1),
+                        cost.max_rows
                     ),
                     // Why it slid, so the log tells a screen that has no plan
                     // from a press that had no row to come out of.

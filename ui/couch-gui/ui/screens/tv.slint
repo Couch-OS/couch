@@ -219,8 +219,8 @@ export component Television inherits Rectangle {
     pure function transport() -> bool { return !root.infrared && !root.generic; }
     /// Whether this page can be built out of bands at all. A screen showing
     /// artwork is a photograph behind everything, and a lift would have to
-    /// cross-fade the whole panel to bring it in - about thirteen
-    /// milliseconds a frame on this device, which is the whole budget. Those
+    /// cross-fade the whole panel to bring it in - about twenty-four
+    /// milliseconds a frame on this device, more than a whole frame. Those
     /// slide in from the side, as they always did.
     public pure function lift-ready() -> bool { return !(root.media-view && root.media-has-art); }
 
