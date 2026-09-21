@@ -176,19 +176,14 @@ export component Cinema inherits Rectangle {
     public pure function row-h(which: int) -> length {
         return !root.ready ? 92px : which == 0 ? 86px : which == 1 ? 106px : 92px;
     }
-    /// Whether this page can be built out of bands at all. Artwork cannot:
-    /// it is a photograph behind everything, and bringing it in would mean
-    /// cross-fading the whole panel, about twenty-four milliseconds a frame
-    /// on this device - more than a whole frame, for one piece of one. Those
-    /// slide in from the side as they always did.
-    ///
-    /// A speaker pressed in the room list is nearly always this side of the
-    /// line: the page it opens on is "Connecting to Sonos…", with no artwork
-    /// yet. The artwork arrives afterwards, on a page that is already up.
-    public pure function lift-ready() -> bool { return !root.has-art; }
-    /// Whether the page being arrived at has very little on it. "Connecting
-    /// to Sonos…" is a line of text and a button: the room has to cross with
-    /// it rather than leave before it (docs/slint-notes.md).
+    /// Every player page can be lifted out of its row. One with artwork up
+    /// crosses band by band instead of falling to a background it does not
+    /// have; see `banded()`.
+    public pure function lift-ready() -> bool { return true; }
+    /// Whether the page has a photograph behind everything. Re-opening a
+    /// speaker that is already playing is the ordinary case, not an edge one,
+    /// so this is the path most presses take.
+    public pure function banded() -> bool { return root.has-art; }
     public pure function sparse() -> bool { return !root.ready; }
 
     keys:=FocusScope {enabled:root.shown;

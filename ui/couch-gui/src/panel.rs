@@ -224,6 +224,18 @@ pub(crate) const LIFT_FOOTER_IN: (f32, f32) = (0.66, 0.94);
 /// which is the panel looking broken for a third of a second. A sparse page
 /// crosses with the room rather than after it.
 pub(crate) const LIFT_HASTE: f32 = 0.22;
+/// How long one scanline takes to cross straight from the room to a page with
+/// a photograph behind it, and how much later the furthest one starts.
+///
+/// The fade is the floor a fade can be and still read as one - five frames at
+/// 400 ms - and the stagger is what holds the cost down: at any moment the
+/// band that is crossing is about `FADE / (FADE + WAVE)` of the panel, and
+/// only that band costs anything. A whole panel of blending is about
+/// twenty-four milliseconds on this device against a 16.7 ms frame, so a
+/// third of a panel is already eight of them; the numbers here are what the
+/// cost assertion measured rather than what the arithmetic suggested.
+const LIFT_BANDED_FADE: (f32, f32) = (0.0, 0.20);
+const LIFT_BANDED_WAVE: f32 = 0.74;
 
 /// Where the development switch for the opening transition is read from.
 /// Under `/tmp`, so it is gone at the next boot and nothing a person set up is
@@ -1337,6 +1349,30 @@ pub struct Piece {
     pub kind: Arriving,
 }
 
+/// How the rest of page A becomes page B, once the name, the icon and the
+/// row's card have been taken care of.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub enum Crossing {
+    /// The room falls away to the background and the screen arrives over it,
+    /// piece by piece. What a screen drawn on a flat background wants, and
+    /// cheap: most of a row is the background at both ends, so most of the
+    /// work is a fill.
+    #[default]
+    Falling,
+    /// Every scanline crosses straight from the room to the screen, in its
+    /// own window, staggered so that only a band of the panel is crossing at
+    /// any moment.
+    ///
+    /// For a page with a photograph behind everything - a television showing
+    /// what is playing, a speaker with album art up. There is no flat
+    /// background to fall to, and fading the whole panel at once is about
+    /// twenty-four milliseconds on this device, more than a frame. Staggered,
+    /// only the band that is mid-crossing costs anything: the rows before it
+    /// are still the room they already were, and the rows after it are
+    /// already the screen.
+    Banded,
+}
+
 /// What a screen tells the lift about itself.
 ///
 /// The transition knows nothing about lights or televisions: a screen hands
@@ -1351,6 +1387,8 @@ pub struct LiftPlan {
     pub name: &'static str,
     /// The row it opens out of.
     pub row: Window,
+    /// How the rest of the panel gets from one page to the other.
+    pub crossing: Crossing,
     /// When the room falls away, and how much later the furthest scanline
     /// starts than the row's own does.
     pub fall: (f32, f32),
@@ -1367,6 +1405,20 @@ pub struct LiftPlan {
 }
 
 impl LiftPlan {
+    /// The same plan, with the rest of the panel crossing straight from one
+    /// page to the other instead of falling to the background: what a page
+    /// with a photograph behind everything needs. Its own pieces are dropped
+    /// - the whole page arrives with the bands - and what travels and the
+    /// row's card are untouched.
+    pub fn banded(mut self) -> Self {
+        self.crossing = Crossing::Banded;
+        self.fall = LIFT_BANDED_FADE;
+        self.wave = LIFT_BANDED_WAVE;
+        self.focused_out = LIFT_BANDED_FADE;
+        self.pieces = [None; 6];
+        self
+    }
+
     /// A plan with the choreography every screen shares: the room falling
     /// away outwards from the row, and the row's card rising into the header
     /// band and fading as it goes. A screen fills in what is its own - what
@@ -1375,6 +1427,7 @@ impl LiftPlan {
         Self {
             name,
             row,
+            crossing: Crossing::Falling,
             fall: LIFT_ROWS_FALL,
             wave: LIFT_ROW_WAVE,
             focused_out: LIFT_FOCUSED_OUT,
@@ -1909,8 +1962,16 @@ fn changed_rows(plan: &LiftPlan, h: usize, p: f32, previous: Option<f32>, into: 
             let began = plan.fall.0 + plan.wave * away;
             (began, began + span)
         };
-        let settled = |at: f32| fading(at, window).is_some_and(|gone| gone >= 256);
-        if !(settled(p) && settled(was)) {
+        // Before its window a row is still the page it was, after it the page
+        // it is becoming, and either way it is what the panel already shows.
+        // Only a row that is mid-crossing at one of the two moments, or on a
+        // different side of it, can differ.
+        let side = |at: f32| match fading(at, window) {
+            None => 0,
+            Some(gone) if gone >= 256 => 2,
+            Some(_) => 1,
+        };
+        if side(p) != side(was) || side(p) == 1 {
             into[y] = true;
         }
     }
@@ -2025,6 +2086,30 @@ pub(crate) fn lift_frame(
             .handed
             .row(y as i32 - plan.row.y)
             .unwrap_or(&room[y * w..(y + 1) * w]);
+        // A page with a photograph behind it has no flat background to fall
+        // to: the row crosses straight to the one it is becoming. Before its
+        // window it is the room, after it the screen, and in between the one
+        // blended over the other - so only the band that is mid-crossing
+        // costs anything at all.
+        if plan.crossing == Crossing::Banded {
+            match fading(p, window) {
+                None => {
+                    charge(1, out.len());
+                    out.copy_from_slice(line);
+                }
+                Some(gone) if gone < 256 => {
+                    charge(1, out.len());
+                    out.copy_from_slice(line);
+                    charge(2, out.len());
+                    blend_over(out, &screen[y * w..(y + 1) * w], gone);
+                }
+                Some(_) => {
+                    charge(1, out.len());
+                    out.copy_from_slice(&screen[y * w..(y + 1) * w]);
+                }
+            }
+            continue;
+        }
         match fading(p, window) {
             None => {
                 charge(1, out.len());
@@ -2949,14 +3034,25 @@ pub(crate) mod checks {
                         {
                             continue;
                         }
-                        let p = pixels[y as usize * panel_w + x as usize];
-                        let bright = [0, 8, 16]
-                            .iter()
-                            .map(|s| (p >> s) & 0xff)
-                            .max()
-                            .unwrap_or(0);
+                        // Brighter than both the card it sat on and the page
+                        // arriving underneath it is ink that belongs to
+                        // neither - which is what a second copy of the name
+                        // would be. Measured against the page rather than
+                        // against a fixed level, because a screen with a
+                        // photograph behind it is bright everywhere and a
+                        // fixed level would call the photograph a ghost.
+                        let at = y as usize * panel_w + x as usize;
+                        let brightest = |p: u32| {
+                            [0, 8, 16]
+                                .iter()
+                                .map(|s| (p >> s) & 0xff)
+                                .max()
+                                .unwrap_or(0)
+                        };
+                        let floor = brightest(LIFT_SURFACE).max(brightest(screen[at]));
+                        let bright = brightest(pixels[at]);
                         assert!(
-                            bright <= 0x50,
+                            bright <= floor.max(0x50),
                             "{what}: a ghost of the {name} is still at {x},{y} at {t:.2} \
                                  while the real one has moved away"
                         );
