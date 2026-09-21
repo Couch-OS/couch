@@ -264,6 +264,12 @@ export component App inherits Window {
     in-out property <[PlayerChoice]> player-choices;
     // Music-player presentation of the same screen (Sonos): see cinema.slint.
     in-out property <bool> player-music: false;
+    // What the keys on the player screen do. These default to the built-in
+    // Kodi screen, which sets none of them: its keys go to the player, and an
+    // open sheet keeps sending them there. `media_player::Controller` sets
+    // both from the device's own declaration while it owns the screen.
+    in-out property <bool> player-navigate: true;
+    in-out property <bool> player-sheet-keys: false;
     in-out property <[string]> player-sheets: ["Chapters","Audio","Subtitles"];
     in-out property <int> player-selected: -1;
     public function set-player-choice(i: int){cinema.set-choice(i);}
@@ -790,7 +796,8 @@ export component App inherits Window {
         metadata:root.player-metadata;elapsed:root.player-elapsed;remaining:root.player-remaining;
         progress:root.player-progress;message:root.player-message;
         panel:root.player-panel;panel-detail:root.player-panel-detail;choices:root.player-choices;
-        music:root.player-music;sheets:root.player-sheets;selected <=> root.player-selected;
+        music:root.player-music;navigate:root.player-navigate;sheet-keys:root.player-sheet-keys;
+        sheets:root.player-sheets;selected <=> root.player-selected;
         icon:root.player-icon;active:root.player-active;known:root.player-known;glide:root.player-glide;
         action(name,value)=>{root.player-action(name,value);}
     }

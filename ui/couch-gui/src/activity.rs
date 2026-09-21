@@ -105,6 +105,10 @@ fn sonos_target(
                 name,
                 room,
                 label: "Sonos".into(),
+                player: crate::media_player::Player::music(),
+                // A speaker's screen sends no keys to the speaker, so there is
+                // nothing for a per-key infrared override to sit above.
+                config: None,
             },
             Box::new(crate::sonos_player::BuiltIn::new(host.parse().ok()?)),
         )),

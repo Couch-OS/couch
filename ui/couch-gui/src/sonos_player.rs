@@ -80,6 +80,14 @@ impl Backend for BuiltIn {
             Op::Modes(change) => c
                 .set_play_modes_if_current(play_modes(*change), current)
                 .map(|_| Done::Nothing),
+            // A speaker's screen draws no time skip, no list of its own and
+            // no keys for the speaker: these only ever reach a device that
+            // declared them.
+            Op::SeekBy { .. } | Op::Choose { .. } | Op::Key { .. } => {
+                return Err(Failure::Message(
+                    "That is not something a speaker does.".into(),
+                ))
+            }
         };
         match outcome {
             Err(couch_sonos::Error::Cancelled) => Err(Failure::Expired),

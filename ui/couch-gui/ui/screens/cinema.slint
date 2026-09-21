@@ -53,11 +53,17 @@ export component Cinema inherits Rectangle {
     property <int> displayed-panel: 0;
     in property <string> panel-detail;
     in property <[PlayerChoice]> choices;
-    // A music player (Sonos): track skips instead of time skips, sources,
-    // play modes and up-next instead of chapters, audio and subtitles, and
-    // the D-pad moves an on-screen selection because there is no player UI
-    // on a TV to send it to.
+    // A music player (Sonos): track skips instead of time skips, and sources,
+    // play modes and up-next instead of chapters, audio and subtitles. This is
+    // the layout alone; what the keys do is `navigate` and `sheet-keys`, which
+    // a device declares for itself.
     in property <bool> music;
+    // The device has a menu of its own on a television: the D-pad, OK, Back,
+    // Home and Menu belong to it, and nothing on this screen is selected.
+    in property <bool> navigate;
+    // An open sheet is a list on this screen whatever the layout: the D-pad
+    // walks it, OK picks and Back closes it, instead of going to the device.
+    in property <bool> sheet-keys;
     in property <[string]> sheets: ["Chapters","Audio","Subtitles"];
     callback action(string,float);
     in-out property <int> selected:-1;
@@ -66,7 +72,7 @@ export component Cinema inherits Rectangle {
     property <length> list-scroll:max(0,root.choice-index - 4)*84px;
     animate list-scroll { duration:160ms; easing:ease-out; }
     changed panel=>{if(root.panel>0){root.choice-index=0;root.displayed-panel=root.panel;}}
-    changed shown=>{if(!root.music){root.selected=-1;}}
+    changed shown=>{if(root.navigate){root.selected=-1;}}
     public function set-choice(i: int){ root.choice-index=max(0,min(root.choices.length - 1,i)); }
     public function take-focus(){ keys.focus(); }
     background:Theme.bg;
@@ -194,9 +200,9 @@ export component Cinema inherits Rectangle {
 
     keys:=FocusScope {enabled:root.shown;
         key-pressed(e)=>{
-            // A music player's sheet is a list on this screen: the D-pad
-            // walks it and OK picks, instead of going to a remote player.
-            if(root.music && root.panel>0){
+            // An open sheet is a list on this screen: the D-pad walks it and
+            // OK picks, instead of going to a remote player.
+            if(root.sheet-keys && root.panel>0){
                 if(e.text==Key.UpArrow){root.choice-index=max(0,root.choice-index - 1);}
                 if(e.text==Key.DownArrow){root.choice-index=min(max(0,root.choices.length - 1),root.choice-index+1);}
                 if(e.text==Key.Return){root.action("choose",root.choice-index);}

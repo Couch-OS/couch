@@ -12,6 +12,10 @@
 //! (`docs/plans/media-player-component-design.md`). Because both feed this one
 //! controller, the two are the same screen.
 use crate::{activity_art, App, PlayerChoice};
+use couch_model::{
+    commands::{Function as F, KeyPhase},
+    Config,
+};
 use slint::{ModelRc, VecModel};
 use std::{
     sync::{
@@ -21,13 +25,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How often the worker is asked for a fresh snapshot while the screen is up.
-/// Position is interpolated between reads, so this is about track changes made
-/// elsewhere, not the clock.
+/// How often the worker is asked for a fresh snapshot while the screen is up,
+/// unless the device asks for another cadence. Position is interpolated
+/// between reads, so this is about track changes made elsewhere, not the
+/// clock.
 const REFRESH: Duration = Duration::from_secs(3);
 /// One press of a volume key on this screen.
 const VOLUME_STEP: i8 = 5;
-const SHEETS: [&str; 3] = ["Sources", "Modes", "Up next"];
+/// How many presses the key lane holds. Two may be waiting on the device at
+/// once; a third repeat gives way, because the next one is milliseconds
+/// behind it, and a third tap is held until there is room, so nothing a
+/// person actually did vanishes.
+const KEY_LANE: usize = 2;
 /// How long a closed screen's presentation is kept for an instant reopen.
 /// The worker re-reads the group as soon as the screen is up again, so this
 /// only ever bridges the first few hundred milliseconds.
@@ -42,6 +51,105 @@ struct View {
     room: slint::SharedString,
 }
 
+/// How the screen is laid out. A music player skips tracks and walks its own
+/// controls with the D-pad; a video player skips time, and its keys can go
+/// straight to the device that has a menu of its own on a television.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Layout {
+    #[default]
+    Music,
+    /// Nothing built in is one yet: PR-E builds it from a package that
+    /// declares `layout: video`.
+    #[allow(dead_code)]
+    Video,
+}
+/// A picture a device offers with what is playing. Cover and backdrop are the
+/// same shape on this screen - the whole page, behind everything - and a logo
+/// replaces the title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtRole {
+    Cover,
+    /// The built-in Sonos client offers a cover; a backdrop arrives with the
+    /// first package that declares one.
+    #[allow(dead_code)]
+    Backdrop,
+    Logo,
+}
+/// One of the (at most three) sheets under the transport.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Sheet {
+    /// What the device can play: [`Backend::sources`].
+    Sources,
+    /// Shuffle, repeat and crossfade, from [`Media::modes`].
+    Modes,
+    /// What is queued after this, from [`Media::next`].
+    UpNext,
+    /// A list the device names itself - chapters, audio, subtitles - read
+    /// through [`Backend::list`]. `choose` is false for a list that is only
+    /// ever read. Nothing built in declares one yet; PR-E builds these from a
+    /// package's manifest.
+    #[allow(dead_code)]
+    List {
+        id: String,
+        label: String,
+        choose: bool,
+    },
+}
+impl Sheet {
+    /// What the button under the transport says.
+    fn label(&self) -> &str {
+        match self {
+            Sheet::Sources => "Sources",
+            Sheet::Modes => "Modes",
+            Sheet::UpNext => "Up next",
+            Sheet::List { label, .. } => label,
+        }
+    }
+}
+/// What a device says its player screen is made of. Nothing here is a
+/// judgement the screen makes: a package declares it in its manifest, and the
+/// built-in Sonos client declares [`Player::music`]. Everything the screen
+/// draws or sends follows from it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Player {
+    pub layout: Layout,
+    /// The device has a menu of its own on a television: the D-pad, OK, Back,
+    /// Home and Menu go straight to it instead of moving the selection on this
+    /// screen.
+    pub navigation: bool,
+    /// The device takes the channel keys itself (a chapter step, or a channel
+    /// on live TV). Without it they skip to the next and previous item.
+    pub channel_keys: bool,
+    /// How often the device is read while the screen is up.
+    pub refresh: Duration,
+    pub sheets: Vec<Sheet>,
+    /// Which pictures the device offers. A role it does not name is never
+    /// asked for.
+    pub art_roles: Vec<ArtRole>,
+}
+impl Default for Player {
+    fn default() -> Self {
+        Self {
+            layout: Layout::Music,
+            navigation: false,
+            channel_keys: false,
+            refresh: REFRESH,
+            sheets: Vec::new(),
+            art_roles: Vec::new(),
+        }
+    }
+}
+impl Player {
+    /// A speaker: the three sheets and the cover the built-in Sonos screen has
+    /// always had, and no keys of its own.
+    pub fn music() -> Self {
+        Self {
+            sheets: vec![Sheet::Sources, Sheet::Modes, Sheet::UpNext],
+            art_roles: vec![ArtRole::Cover],
+            ..Self::default()
+        }
+    }
+}
 /// What the screen was opened for.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Target {
@@ -51,6 +159,12 @@ pub(crate) struct Target {
     /// What this kind of device is called in a sentence: "Sonos". For a
     /// package it is the manifest's label.
     pub label: String,
+    /// What the device says its player screen is made of.
+    pub player: Player,
+    /// The house this device is in, for the one thing that sits above it: a
+    /// per-key infrared code the owner gave this device. `None` where there is
+    /// no configuration to consult.
+    pub config: Option<Arc<Config>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -118,9 +232,13 @@ pub(crate) struct Media {
     pub position_ms: Option<u64>,
     /// How fast the position moves: 100 is normal speed, 0 stands still.
     pub rate_percent: i16,
-    /// Opaque handle of the picture that goes with it, for
-    /// [`Backend::artwork`]. It changes when the picture does.
+    /// Opaque handle of the picture that goes behind everything, for
+    /// [`Backend::artwork`]. It changes when the picture does. A cover and a
+    /// backdrop are the same thing here.
     pub art: Option<String>,
+    /// Opaque handle of the logo that stands in for the title, where the
+    /// device offers one.
+    pub logo: Option<String>,
     pub can: Can,
     pub modes: Modes,
     pub next: Option<NextItem>,
@@ -144,6 +262,7 @@ impl Media {
                     && self.artist == other.artist
                     && self.album == other.album
                     && self.art == other.art
+                    && self.logo == other.logo
                     && self.duration_ms == other.duration_ms
                     && self.source == other.source))
             && self.next == other.next
@@ -180,6 +299,11 @@ pub(crate) enum Op {
     Seek {
         position_ms: u64,
     },
+    /// Forwards or back by this much from wherever playback is, never zero:
+    /// the "10s" and "30s" buttons of a video layout.
+    SeekBy {
+        delta_ms: i64,
+    },
     /// Relative percent volume, never zero; the device answers with where it
     /// ended up.
     StepVolume(i8),
@@ -190,6 +314,38 @@ pub(crate) enum Op {
         title: String,
     },
     Modes(ModeChange),
+    /// Pick a row of a declared list: a chapter, an audio or subtitle track.
+    Choose {
+        list: String,
+        id: String,
+    },
+    /// A key the device handles itself, on a screen that navigates. It is
+    /// never read back, and it travels on the key lane.
+    Key {
+        function: F,
+        phase: KeyPhase,
+    },
+}
+impl Op {
+    /// The key this is, when it is one. A per-device infrared code for that
+    /// exact key is consulted before the device hears about it, and only these
+    /// ops travel on the key lane.
+    fn function(&self) -> Option<&F> {
+        match self {
+            Op::Key { function, .. } => Some(function),
+            _ => None,
+        }
+    }
+    /// Whether the press is one the panel repeated while the key was held.
+    fn repeat(&self) -> bool {
+        matches!(
+            self,
+            Op::Key {
+                phase: KeyPhase::Repeat,
+                ..
+            }
+        )
+    }
 }
 /// What a finished [`Op`] has to tell the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -236,28 +392,80 @@ pub(crate) trait Backend: Send {
     fn perform(&mut self, op: &Op, current: &dyn Fn() -> bool) -> Result<Done, Failure>;
     /// The rows of the Sources sheet.
     fn sources(&mut self) -> Result<Vec<Choice>, Failure>;
-    /// The encoded bytes (JPEG, PNG) behind [`Media::art`].
+    /// The rows of a list the device declared ([`Sheet::List`]). A device with
+    /// no lists is never asked.
+    fn list(&mut self, _list: &str) -> Result<Vec<Choice>, Failure> {
+        Ok(Vec::new())
+    }
+    /// The encoded bytes (JPEG, PNG) behind [`Media::art`] or [`Media::logo`].
     fn artwork(&mut self, art: &str) -> Result<Vec<u8>, Failure>;
+    /// A second way to reach the same device, for the key lane. A backend
+    /// whose requests are each their own connection hands one over here, and
+    /// then a read or a picture in flight can never make a key press wait.
+    /// `None` - the default - puts keys behind the reads, which is what a
+    /// device held open over one connection wants.
+    fn key_lane(&mut self) -> Option<Box<dyn Backend>> {
+        None
+    }
 }
 enum Request {
-    /// Take this backend and open it; the string is the artwork the UI
-    /// already shows, so it is not fetched again.
-    Open(Box<dyn Backend>, String),
+    /// Take this backend and open it. `known_art` is the picture the UI
+    /// already shows, so it is not fetched again; `roles` is what this device
+    /// offers, and nothing else is ever asked for.
+    Open {
+        backend: Box<dyn Backend>,
+        known_art: String,
+        roles: Vec<ArtRole>,
+        device: String,
+        config: Option<Arc<Config>>,
+    },
     /// Open the same backend again, after a failure.
     Reopen,
     Refresh,
     Command(Op),
     Sources,
+    List(String),
+    Close,
+}
+/// What the key lane is asked to do. It is a lane of its own so that a read or
+/// an artwork fetch on the state lane cannot make a press wait.
+enum KeyRequest {
+    /// Take this second handle to the device, and the house the per-key
+    /// infrared override is read from.
+    Open {
+        backend: Box<dyn Backend>,
+        device: String,
+        config: Option<Arc<Config>>,
+    },
+    Press(Op),
     Close,
 }
 enum Event {
     State(Box<Result<Watched, Failure>>),
     Done(Result<String, Failure>),
     Sources(Result<Vec<Choice>, Failure>),
+    /// The rows of a declared list, by its id.
+    List(String, Result<Vec<Choice>, Failure>),
+    /// A key the device or the blaster refused. It never clears the state
+    /// lane's `busy`: the two lanes do not know about each other.
+    Key(Failure),
     Art(String, Option<activity_art::Pixels>),
+    /// The logo that stands in for the title.
+    Logo(String, Option<activity_art::Pixels>),
 }
 pub struct Controller {
     tx: mpsc::SyncSender<(u64, Request)>,
+    /// The key lane. Its own thread, its own handle to the device, and a queue
+    /// two deep, so a refresh or a picture already in flight never delays a
+    /// press.
+    keys: mpsc::SyncSender<(u64, KeyRequest)>,
+    /// Whether the key lane has a handle of its own. Without one a key goes
+    /// out on the state lane, as everything else does.
+    key_lane: bool,
+    /// A tap the key lane was too full to take. It is held, not dropped, and
+    /// the latest one wins; a repeat is never held, because the next one is
+    /// milliseconds behind it.
+    held_key: Option<Op>,
     rx: mpsc::Receiver<(u64, Event)>,
     active: Arc<AtomicU64>,
     generation: u64,
@@ -271,12 +479,15 @@ pub struct Controller {
     message_until: Option<Instant>,
     volume_until: Option<Instant>,
     art_key: String,
+    logo_key: String,
     /// Whether this screen has been drawn once since it opened. Until it has,
     /// nothing on it travels: the first picture is what an opening is made
     /// from, and a bar caught mid-travel in it is a bar that jumps when the
     /// transition ends.
     drawn: bool,
     sources: Vec<Choice>,
+    /// The rows of each declared list, once the device has been asked.
+    lists: std::collections::HashMap<String, Vec<Choice>>,
     /// On-screen selection the D-pad moves: 1 seek, 2 previous, 3 play,
     /// 4 next, 5..=7 sheets.
     selected: i32,
@@ -286,12 +497,19 @@ pub struct Controller {
 impl Controller {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::sync_channel(16);
+        let (keys, key_rx) = mpsc::sync_channel(KEY_LANE);
         let (events, receive) = mpsc::sync_channel(8);
         let active = Arc::new(AtomicU64::new(0));
         let worker_active = active.clone();
+        let key_events = events.clone();
+        let key_active = active.clone();
         std::thread::spawn(move || worker(rx, events, worker_active));
+        std::thread::spawn(move || key_worker(key_rx, key_events, key_active));
         Self {
             tx,
+            keys,
+            key_lane: false,
+            held_key: None,
             rx: receive,
             active,
             generation: 0,
@@ -304,8 +522,10 @@ impl Controller {
             message_until: None,
             volume_until: None,
             art_key: String::new(),
+            logo_key: String::new(),
             drawn: false,
             sources: Vec::new(),
+            lists: std::collections::HashMap::new(),
             selected: 3,
             views: std::collections::HashMap::new(),
         }
@@ -337,30 +557,37 @@ impl Controller {
     }
     /// Take the player screen over for the device behind `backend`. The caller
     /// has already released whatever the screen showed before.
-    pub fn open(&mut self, app: &App, target: Target, backend: Box<dyn Backend>) {
+    pub fn open(&mut self, app: &App, target: Target, mut backend: Box<dyn Backend>) {
         self.generation += 1;
         self.active.store(self.generation, Ordering::SeqCst);
         self.media = None;
         self.busy = false;
+        self.held_key = None;
         self.art_key.clear();
+        self.logo_key.clear();
         self.drawn = false;
         app.set_player_glide(false);
-        // A speaker unless a room row said otherwise: the screen can be
-        // reached from an activity as well as from a row, and the disc in the
-        // header is never empty.
-        app.set_player_icon(crate::icons::image(couch_model::Icon::Speaker));
+        // A speaker, or a television for a device that plays pictures, unless
+        // a room row said otherwise: the screen can be reached from an
+        // activity as well as from a row, and the disc in the header is never
+        // empty.
+        app.set_player_icon(crate::icons::image(match target.player.layout {
+            Layout::Music => couch_model::Icon::Speaker,
+            Layout::Video => couch_model::Icon::Tv,
+        }));
         app.set_player_known(true);
         app.set_player_active(true);
         self.sources.clear();
+        self.lists.clear();
         self.selected = 3;
         self.message_until = None;
-        app.set_player_music(true);
-        app.set_player_sheets(ModelRc::new(VecModel::from(
-            SHEETS
-                .iter()
-                .map(|s| (*s).into())
-                .collect::<Vec<slint::SharedString>>(),
-        )));
+        // What the keys do is what the device declared, not the layout: a
+        // video player with a menu of its own takes the D-pad, and a sheet
+        // over either layout takes it back for as long as it is open.
+        app.set_player_music(target.player.layout == Layout::Music);
+        app.set_player_navigate(target.player.navigation);
+        app.set_player_sheet_keys(true);
+        app.set_player_sheets(ModelRc::new(VecModel::from(sheet_labels(&target.player))));
         app.set_player_selected(self.selected);
         app.set_player_shown(true);
         app.set_player_panel(0);
@@ -403,14 +630,44 @@ impl Controller {
             }
         }
         app.invoke_focus_player();
+        // The key lane takes its own handle to the device where the backend
+        // has one to give, and the house the per-key infrared override is read
+        // from travels with it.
+        let key_backend = backend.key_lane();
+        self.key_lane = match key_backend {
+            Some(backend) => self
+                .keys
+                .try_send((
+                    self.generation,
+                    KeyRequest::Open {
+                        backend,
+                        device: target.device.clone(),
+                        config: target.config.clone(),
+                    },
+                ))
+                .is_ok(),
+            None => {
+                let _ = self.keys.try_send((self.generation, KeyRequest::Close));
+                false
+            }
+        };
         if self
             .tx
-            .try_send((self.generation, Request::Open(backend, known_art)))
+            .try_send((
+                self.generation,
+                Request::Open {
+                    backend,
+                    known_art,
+                    roles: target.player.art_roles.clone(),
+                    device: target.device.clone(),
+                    config: target.config.clone(),
+                },
+            ))
             .is_err()
         {
             self.notice(app, "Connection busy. Reopen the speaker.");
         }
-        self.refresh_at = Instant::now() + REFRESH;
+        self.refresh_at = Instant::now() + target.player.refresh;
         self.target = Some(target);
     }
     /// Leave the screen. The caller decides where focus goes next.
@@ -419,11 +676,20 @@ impl Controller {
         self.generation += 1;
         self.active.store(self.generation, Ordering::SeqCst);
         let _ = self.tx.try_send((self.generation, Request::Close));
+        let _ = self.keys.try_send((self.generation, KeyRequest::Close));
         self.target = None;
         self.media = None;
         self.busy = false;
+        self.key_lane = false;
+        self.held_key = None;
         self.art_key.clear();
+        self.logo_key.clear();
+        self.lists.clear();
+        // Back to what the built-in Kodi screen is: a video layout whose keys
+        // go to the player, with its own three sheets.
         app.set_player_music(false);
+        app.set_player_navigate(true);
+        app.set_player_sheet_keys(false);
         app.set_player_sheets(ModelRc::new(VecModel::from(
             ["Chapters", "Audio", "Subtitles"]
                 .iter()
@@ -442,6 +708,50 @@ impl Controller {
     }
     fn send(&mut self, app: &App, op: Op) {
         self.request(app, Request::Command(op));
+    }
+    /// A key on the lane that carries nothing but keys. It never waits behind
+    /// a read and it is never dropped without a reason: when the lane is full
+    /// a repeat gives way, and a tap is held until there is room, latest
+    /// first.
+    fn key(&mut self, app: &App, function: F, phase: KeyPhase) {
+        let op = Op::Key { function, phase };
+        if !self.key_lane {
+            // One connection to the device: the key queues with everything
+            // else, as it always has.
+            self.send(app, op);
+            return;
+        }
+        let repeat = op.repeat();
+        if self
+            .keys
+            .try_send((self.generation, KeyRequest::Press(op.clone())))
+            .is_err()
+            && !repeat
+        {
+            self.held_key = Some(op);
+        }
+    }
+    /// The held tap, once the lane has room for it.
+    fn flush_key(&mut self) {
+        let Some(op) = self.held_key.take() else {
+            return;
+        };
+        if self
+            .keys
+            .try_send((self.generation, KeyRequest::Press(op.clone())))
+            .is_err()
+        {
+            self.held_key = Some(op);
+        }
+    }
+    /// Whether the device takes the D-pad, OK, Back, Home and Menu itself.
+    fn navigating(&self) -> bool {
+        self.target.as_ref().is_some_and(|t| t.player.navigation)
+    }
+    /// The sheet a button under the transport opens, 1 to 3.
+    fn sheet(&self, panel: i32) -> Option<&Sheet> {
+        let index = usize::try_from(panel - 1).ok()?;
+        self.target.as_ref()?.player.sheets.get(index)
     }
     fn request(&mut self, app: &App, request: Request) {
         if self.busy {
@@ -528,6 +838,11 @@ impl Controller {
     /// Returns false for "back" at the top level, which the owner handles by
     /// closing the screen.
     pub fn action(&mut self, app: &App, action: &str, value: f64, repeat: bool) -> bool {
+        let phase = if repeat {
+            KeyPhase::Repeat
+        } else {
+            KeyPhase::Tap
+        };
         match action {
             "back" | "Input.Back" => {
                 if app.get_player_panel() != 0 {
@@ -535,9 +850,21 @@ impl Controller {
                     app.invoke_focus_player();
                     return true;
                 }
+                // A device with a menu of its own gets the Back key; only a
+                // held Back, which arrives as "back", leaves the screen.
+                if action == "Input.Back" && self.navigating() {
+                    self.key(app, F::Back, KeyPhase::Tap);
+                    return true;
+                }
                 return false;
             }
-            "Input.Home" => return false,
+            "Input.Home" => {
+                if self.navigating() {
+                    self.key(app, F::Home, KeyPhase::Tap);
+                    return true;
+                }
+                return false;
+            }
             "retry" => {
                 if self.target.is_some() {
                     self.media = None;
@@ -555,6 +882,20 @@ impl Controller {
                     return true;
                 }
                 let forward = action == "next" || (action == "chapter-step" && value > 0.);
+                // The channel keys are the device's own chapter or channel
+                // step where it takes them, and the next and previous item
+                // where it does not.
+                if action == "chapter-step"
+                    && self.target.as_ref().is_some_and(|t| t.player.channel_keys)
+                {
+                    let function = if forward {
+                        F::ChannelUp
+                    } else {
+                        F::ChannelDown
+                    };
+                    self.key(app, function, KeyPhase::Tap);
+                    return true;
+                }
                 if self.transport_allowed(app) {
                     self.send(app, if forward { Op::Next } else { Op::Previous });
                 }
@@ -568,7 +909,16 @@ impl Controller {
                     }
                 }
             }
-            "skip" => {}
+            // The "10s" and "30s" buttons of a video layout: from wherever
+            // playback is, not to a place on the line.
+            "skip" => {
+                if self.media.as_ref().is_some_and(|m| m.can.seek) && self.transport_allowed(app) {
+                    let delta_ms = (value.clamp(-3600., 3600.) * 1000.) as i64;
+                    if delta_ms != 0 {
+                        self.send(app, Op::SeekBy { delta_ms });
+                    }
+                }
+            }
             "volume" => {
                 let delta = (value as i32).clamp(-20, 20) as i8;
                 let delta = if delta == 0 { VOLUME_STEP } else { delta };
@@ -583,24 +933,60 @@ impl Controller {
             "audio" => self.panel(app, 2),
             "subtitles" => self.panel(app, 3),
             "choose" => self.choose(app, value as usize),
-            "Input.Up" => self.step(app, 0, -1),
-            "Input.Down" => self.step(app, 0, 1),
-            "Input.Left" => self.step(app, -1, 0),
-            "Input.Right" => self.step(app, 1, 0),
-            "Input.Select" => self.activate(app),
-            "Input.ContextMenu" => self.panel(app, 1),
+            "Input.Up" => self.arrow(app, F::Up, phase, 0, -1),
+            "Input.Down" => self.arrow(app, F::Down, phase, 0, 1),
+            "Input.Left" => self.arrow(app, F::Left, phase, -1, 0),
+            "Input.Right" => self.arrow(app, F::Right, phase, 1, 0),
+            "Input.Select" => {
+                // OK is a tap wherever it lands: a held OK on a device screen
+                // would delay every press of it.
+                if self.navigating() {
+                    self.key(app, F::Ok, KeyPhase::Tap);
+                } else {
+                    self.activate(app);
+                }
+            }
+            "Input.ContextMenu" => {
+                if self.navigating() {
+                    self.key(app, F::Menu, KeyPhase::Tap);
+                } else {
+                    // Menu opens what the device can play.
+                    let sources = self
+                        .target
+                        .as_ref()
+                        .and_then(|t| t.player.sheets.iter().position(|s| *s == Sheet::Sources));
+                    if let Some(index) = sources {
+                        self.panel(app, index as i32 + 1);
+                    }
+                }
+            }
             _ => {}
         }
         true
     }
+    /// An arrow: to the device on a screen that navigates, and to the
+    /// on-screen selection on one that does not.
+    fn arrow(&mut self, app: &App, function: F, phase: KeyPhase, dx: i32, dy: i32) {
+        if self.navigating() {
+            self.key(app, function, phase);
+        } else {
+            self.step(app, dx, dy);
+        }
+    }
     fn panel(&mut self, app: &App, panel: i32) {
+        let Some(sheet) = self.sheet(panel).cloned() else {
+            return;
+        };
         let mut rows = Vec::new();
         let mut detail = String::new();
-        match panel {
-            1 => {
+        // A list that marks the row playing now opens on it.
+        let mut current = 0;
+        let mut ask = None;
+        match &sheet {
+            Sheet::Sources => {
                 if self.sources.is_empty() {
                     detail = "Finding sources…".into();
-                    self.request(app, Request::Sources);
+                    ask = Some(Request::Sources);
                 } else {
                     rows = self
                         .sources
@@ -610,9 +996,10 @@ impl Controller {
                             detail: s.detail.as_str().into(),
                         })
                         .collect();
+                    current = self.sources.iter().position(|s| s.current).unwrap_or(0);
                 }
             }
-            2 => {
+            Sheet::Modes => {
                 let modes = self.media.as_ref().map(|m| m.modes).unwrap_or_default();
                 let on = |b: bool| if b { "On" } else { "Off" };
                 rows = vec![
@@ -640,30 +1027,50 @@ impl Controller {
                     detail = "Play modes belong to the group's coordinator.".into();
                 }
             }
-            3 => match self.media.as_ref().and_then(|m| m.next.as_ref()) {
+            Sheet::UpNext => match self.media.as_ref().and_then(|m| m.next.as_ref()) {
                 Some(next) => rows.push(PlayerChoice {
                     title: next.title.as_str().into(),
                     detail: format!("{} · Press to skip to it", next.detail).into(),
                 }),
                 None => detail = "Nothing is queued after this.".into(),
             },
-            _ => {}
+            // A list the device names itself, read once and kept until the
+            // item changes under it.
+            Sheet::List { id, label, .. } => match self.lists.get(id) {
+                None => {
+                    detail = format!("Reading {}…", label.to_lowercase());
+                    ask = Some(Request::List(id.clone()));
+                }
+                Some(list) if list.is_empty() => {
+                    detail = format!("No {} for this.", label.to_lowercase());
+                }
+                Some(list) => {
+                    rows = list
+                        .iter()
+                        .map(|row| PlayerChoice {
+                            title: row.title.as_str().into(),
+                            detail: row.detail.as_str().into(),
+                        })
+                        .collect();
+                    current = list.iter().position(|row| row.current).unwrap_or(0);
+                }
+            },
+        }
+        if let Some(request) = ask {
+            self.request(app, request);
         }
         app.set_player_choices(ModelRc::new(VecModel::from(rows)));
         app.set_player_panel_detail(detail.into());
         app.set_player_panel(panel);
-        // A list that marks the row playing now opens on it.
-        let current = if panel == 1 {
-            self.sources.iter().position(|s| s.current).unwrap_or(0)
-        } else {
-            0
-        };
         app.invoke_set_player_choice(current as i32);
         app.invoke_focus_player();
     }
     fn choose(&mut self, app: &App, index: usize) {
-        match app.get_player_panel() {
-            1 => {
+        let Some(sheet) = self.sheet(app.get_player_panel()).cloned() else {
+            return;
+        };
+        match sheet {
+            Sheet::Sources => {
                 if let Some(source) = self.sources.get(index).cloned() {
                     if self.transport_allowed(app) {
                         self.notice(app, &format!("Starting {}…", source.title));
@@ -679,7 +1086,7 @@ impl Controller {
                     }
                 }
             }
-            2 => {
+            Sheet::Modes => {
                 let modes = self.media.as_ref().map(|m| m.modes).unwrap_or_default();
                 let change = match index {
                     0 => ModeChange {
@@ -716,12 +1123,36 @@ impl Controller {
                     self.send(app, Op::Modes(change));
                 }
             }
-            3 if self.transport_allowed(app) => {
-                self.send(app, Op::Next);
-                app.set_player_panel(0);
-                app.invoke_focus_player();
+            Sheet::UpNext => {
+                if self.transport_allowed(app) {
+                    self.send(app, Op::Next);
+                    app.set_player_panel(0);
+                    app.invoke_focus_player();
+                }
             }
-            _ => {}
+            Sheet::List { id, choose, .. } => {
+                if !choose {
+                    return;
+                }
+                let row = self
+                    .lists
+                    .get(&id)
+                    .and_then(|list| list.get(index))
+                    .map(|row| row.id.clone());
+                if let Some(chosen) = row {
+                    if self.transport_allowed(app) {
+                        self.send(
+                            app,
+                            Op::Choose {
+                                list: id,
+                                id: chosen,
+                            },
+                        );
+                        app.set_player_panel(0);
+                        app.invoke_focus_player();
+                    }
+                }
+            }
         }
     }
     /// Where it is and what drives it: "Living room · Sonos", the second line
@@ -771,14 +1202,7 @@ impl Controller {
                 app.set_player_can_seek(media.can.seek);
             }
             None => {
-                let name = match (&media.device_name, &self.target) {
-                    (Some(name), _) => name.as_str(),
-                    (None, Some(t)) => t.name.as_str(),
-                    (None, None) => "",
-                };
-                app.set_player_title(
-                    format!("{name} is idle.\nPress Sources to play something.").into(),
-                );
+                app.set_player_title(self.idle_sentence(media).into());
                 app.set_player_metadata("".into());
                 app.set_player_can_seek(false);
                 app.set_player_elapsed("".into());
@@ -792,7 +1216,35 @@ impl Controller {
             app.set_player_has_art(false);
             app.set_player_fanart(slint::Image::default());
         }
+        let logo = media.logo.as_deref().unwrap_or("");
+        if logo != self.logo_key {
+            self.logo_key = logo.to_owned();
+            app.set_player_has_logo(false);
+            app.set_player_logo(slint::Image::default());
+        }
         self.clock(app, media, age);
+    }
+    /// What the screen says when the device has nothing loaded. A device with
+    /// a menu of its own is where the choosing happens, so the screen says so
+    /// and stays out of the way; a speaker is asked for something to play.
+    fn idle_sentence(&self, media: &Media) -> String {
+        let player = self.target.as_ref().map(|t| &t.player);
+        if player.is_some_and(|p| p.navigation) {
+            let label = self.target.as_ref().map_or("", |t| t.label.as_str());
+            return format!(
+                "Connected to {label}.\nUse the remote to choose something on your TV."
+            );
+        }
+        let name = match (&media.device_name, &self.target) {
+            (Some(name), _) => name.as_str(),
+            (None, Some(t)) => t.name.as_str(),
+            (None, None) => "",
+        };
+        if player.is_some_and(|p| p.sheets.contains(&Sheet::Sources)) {
+            format!("{name} is idle.\nPress Sources to play something.")
+        } else {
+            format!("{name} is idle.")
+        }
     }
     /// The progress line, from the last read position plus the time since.
     fn clock(&self, app: &App, media: &Media, elapsed_since: f64) {
@@ -902,6 +1354,31 @@ impl Controller {
                         app.set_player_panel_detail(self.describe(error).into());
                     }
                 }
+                Event::List(id, result) => {
+                    self.busy = false;
+                    let open = self
+                        .sheet(app.get_player_panel())
+                        .is_some_and(|s| matches!(s, Sheet::List { id: open, .. } if *open == id));
+                    match result {
+                        Ok(rows) => {
+                            self.lists.insert(id, rows);
+                            if open {
+                                self.panel(app, app.get_player_panel());
+                            }
+                        }
+                        Err(error) => {
+                            if open {
+                                app.set_player_panel_detail(self.describe(error).into());
+                            }
+                        }
+                    }
+                }
+                Event::Key(error) => {
+                    let error = self.describe(error);
+                    if !error.is_empty() {
+                        self.notice(app, &error);
+                    }
+                }
                 Event::Art(key, pixels) => {
                     if key == self.art_key {
                         if let Some(pixels) = pixels {
@@ -910,8 +1387,18 @@ impl Controller {
                         }
                     }
                 }
+                Event::Logo(key, pixels) => {
+                    if key == self.logo_key {
+                        if let Some(pixels) = pixels {
+                            app.set_player_logo(activity_art::slint_image(pixels));
+                            app.set_player_has_logo(true);
+                        }
+                    }
+                }
             }
         }
+        // A press the key lane had no room for goes out as soon as it has.
+        self.flush_key();
         if self.tick.elapsed() >= Duration::from_secs(1) {
             self.tick = Instant::now();
             if let Some(media) = &self.media {
@@ -919,7 +1406,8 @@ impl Controller {
             }
         }
         if Instant::now() >= self.refresh_at {
-            self.refresh_at = Instant::now() + REFRESH;
+            let every = self.target.as_ref().map_or(REFRESH, |t| t.player.refresh);
+            self.refresh_at = Instant::now() + every;
             if !self.busy {
                 let _ = self.tx.try_send((self.generation, Request::Refresh));
             }
@@ -933,6 +1421,10 @@ impl Controller {
             self.volume_until = None;
         }
     }
+}
+/// What the buttons under the transport say.
+fn sheet_labels(player: &Player) -> Vec<slint::SharedString> {
+    player.sheets.iter().map(|s| s.label().into()).collect()
 }
 /// "Artist · Album", or whichever of the two the player gave.
 pub(crate) fn line(artist: &str, album: &str) -> String {
@@ -980,6 +1472,101 @@ fn worker(
         }
     }
 }
+/// The one thing that sits above the device: a per-key infrared code the owner
+/// gave this exact device. `true` means the blaster did it and the device is
+/// never told. Anything without a key of its own passes straight through.
+fn ir_override(
+    config: &Option<Arc<Config>>,
+    device: &str,
+    op: &Op,
+    current: &dyn Fn() -> bool,
+) -> Result<bool, Failure> {
+    let (Some(config), Some(function)) = (config, op.function()) else {
+        return Ok(false);
+    };
+    crate::activity_buttons::try_device_ir(config, device, function, op.repeat(), current)
+        .map_err(Failure::Message)
+}
+/// The key lane. It carries keys and nothing else, over a handle of its own,
+/// so a read or an artwork fetch already in flight on the state lane can never
+/// make a press wait or vanish.
+fn key_worker(
+    rx: mpsc::Receiver<(u64, KeyRequest)>,
+    events: mpsc::SyncSender<(u64, Event)>,
+    active: Arc<AtomicU64>,
+) {
+    let mut lane = KeyLane::default();
+    while let Ok((generation, request)) = rx.recv() {
+        if active.load(Ordering::SeqCst) != generation {
+            continue;
+        }
+        if !lane.handle(generation, request, &events, &active) {
+            return;
+        }
+    }
+}
+/// What the key lane keeps between presses.
+#[derive(Default)]
+struct KeyLane {
+    backend: Option<Box<dyn Backend>>,
+    device: String,
+    config: Option<Arc<Config>>,
+}
+impl KeyLane {
+    /// One press. Returns false when the UI has gone away.
+    fn handle(
+        &mut self,
+        generation: u64,
+        request: KeyRequest,
+        events: &mpsc::SyncSender<(u64, Event)>,
+        active: &AtomicU64,
+    ) -> bool {
+        let current = || active.load(Ordering::SeqCst) == generation;
+        let send = |event: Event| events.send((generation, event)).is_ok();
+        match request {
+            KeyRequest::Close => {
+                if let Some(mut backend) = self.backend.take() {
+                    backend.close();
+                }
+                self.device.clear();
+                self.config = None;
+            }
+            KeyRequest::Open {
+                backend,
+                device,
+                config,
+            } => {
+                if let Some(mut old) = self.backend.replace(backend) {
+                    old.close();
+                }
+                self.device = device;
+                self.config = config;
+                // A lane that cannot be opened says nothing: the state lane is
+                // reaching the same device and words the failure once.
+                if let Some(backend) = self.backend.as_mut() {
+                    if backend.open().is_err() {
+                        self.backend = None;
+                    }
+                }
+            }
+            KeyRequest::Press(op) => {
+                match ir_override(&self.config, &self.device, &op, &current) {
+                    Ok(true) => return true,
+                    Ok(false) => {}
+                    Err(failure) => return send(Event::Key(failure)),
+                }
+                let Some(backend) = self.backend.as_mut() else {
+                    return send(Event::Key(Failure::NotConnected));
+                };
+                match backend.perform(&op, &current) {
+                    Ok(_) | Err(Failure::Expired) => {}
+                    Err(failure) => return send(Event::Key(failure)),
+                }
+            }
+        }
+        true
+    }
+}
 /// What the worker thread keeps between requests.
 #[derive(Default)]
 struct Worker {
@@ -989,6 +1576,12 @@ struct Worker {
     connected: bool,
     revision: u64,
     art_sent: String,
+    logo_sent: String,
+    /// Which pictures this device offers; a role it did not name is never
+    /// asked for.
+    roles: Vec<ArtRole>,
+    device: String,
+    config: Option<Arc<Config>>,
 }
 impl Worker {
     /// One request. Returns false when the UI has gone away.
@@ -1009,18 +1602,36 @@ impl Worker {
                 self.connected = false;
                 self.art_sent.clear();
             }
-            Request::Open(backend, known_art) => {
+            Request::Open {
+                backend,
+                known_art,
+                roles,
+                device,
+                config,
+            } => {
                 if let Some(mut old) = self.backend.replace(backend) {
                     old.close();
                 }
                 self.art_sent = known_art;
+                self.logo_sent.clear();
+                self.roles = roles;
+                self.device = device;
+                self.config = config;
                 return self.open(&send, &current);
             }
             Request::Reopen => {
                 self.art_sent.clear();
+                self.logo_sent.clear();
                 return self.open(&send, &current);
             }
             Request::Refresh => return self.refresh(&send, &current),
+            Request::List(id) => {
+                let result = match self.backend.as_mut().filter(|_| self.connected) {
+                    Some(backend) => backend.list(&id),
+                    None => Err(Failure::NotConnected),
+                };
+                return send(Event::List(id, result));
+            }
             Request::Sources => {
                 let result = match self.backend.as_mut().filter(|_| self.connected) {
                     Some(backend) => backend.sources(),
@@ -1029,6 +1640,13 @@ impl Worker {
                 return send(Event::Sources(result));
             }
             Request::Command(op) => {
+                // A key the owner gave this device an infrared code for never
+                // reaches the device itself.
+                match ir_override(&self.config, &self.device, &op, &current) {
+                    Ok(true) => return send(Event::Done(Ok(String::new()))),
+                    Ok(false) => {}
+                    Err(failure) => return send(Event::Done(Err(failure))),
+                }
                 let Some(backend) = self.backend.as_mut().filter(|_| self.connected) else {
                     return send(Event::Done(Err(Failure::NotConnected)));
                 };
@@ -1089,19 +1707,42 @@ impl Worker {
         };
         self.revision = watched.revision;
         let art = watched.media.art.clone().unwrap_or_default();
+        let logo = watched.media.logo.clone().unwrap_or_default();
         if !send(Event::State(Box::new(Ok(watched)))) {
             return false;
         }
-        if !art.is_empty() && art != self.art_sent && current() {
-            let pixels = backend
-                .artwork(&art)
-                .ok()
-                .and_then(|bytes| activity_art::decode(&bytes, activity_art::Shape::Backdrop));
-            self.art_sent = art.clone();
-            return send(Event::Art(art, pixels));
+        // The picture behind everything first: it is what the page is made of.
+        // A cover and a backdrop are the same shape here.
+        let backdrop = self
+            .roles
+            .iter()
+            .any(|role| matches!(role, ArtRole::Cover | ArtRole::Backdrop));
+        if backdrop {
+            if !art.is_empty() && art != self.art_sent && current() {
+                let pixels = backend
+                    .artwork(&art)
+                    .ok()
+                    .and_then(|bytes| activity_art::decode(&bytes, activity_art::Shape::Backdrop));
+                self.art_sent = art.clone();
+                if !send(Event::Art(art, pixels)) {
+                    return false;
+                }
+            } else if art.is_empty() {
+                self.art_sent.clear();
+            }
         }
-        if art.is_empty() {
-            self.art_sent.clear();
+        if self.roles.contains(&ArtRole::Logo) {
+            if !logo.is_empty() && logo != self.logo_sent && current() {
+                let pixels = backend
+                    .artwork(&logo)
+                    .ok()
+                    .and_then(|bytes| activity_art::decode(&bytes, activity_art::Shape::Logo));
+                self.logo_sent = logo.clone();
+                return send(Event::Logo(logo, pixels));
+            }
+            if logo.is_empty() {
+                self.logo_sent.clear();
+            }
         }
         true
     }
@@ -1127,6 +1768,7 @@ pub(crate) mod fixtures {
             position_ms: Some(74_210),
             rate_percent: 100,
             art: Some("http://192.0.2.9:1400/getaa?s=1&u=weird-fishes".into()),
+            logo: None,
             can: Can {
                 next: true,
                 previous: true,
@@ -1236,12 +1878,8 @@ mod tests {
         });
         app.set_player_shown(true);
         app.set_player_music(true);
-        app.set_player_sheets(ModelRc::new(VecModel::from(
-            SHEETS
-                .iter()
-                .map(|s| (*s).into())
-                .collect::<Vec<slint::SharedString>>(),
-        )));
+        app.set_player_sheet_keys(true);
+        app.set_player_sheets(ModelRc::new(VecModel::from(sheet_labels(&Player::music()))));
         app.set_player_connected(true);
         app.set_player_ready(true);
         app.set_player_paused(false);
@@ -1322,6 +1960,13 @@ mod tests {
         /// What the next command comes back with.
         answer: Result<Done, Failure>,
         sources: Result<Vec<Choice>, Failure>,
+        /// The rows of each declared list.
+        lists: std::collections::HashMap<String, Vec<Choice>>,
+        /// Whether this device can be reached twice at once, which is what
+        /// puts keys on a lane of their own.
+        key_lane: bool,
+        /// What the artwork handle decodes to.
+        picture: Vec<u8>,
         /// Whether the speaker answers when the screen connects to it.
         connect: Result<(), Failure>,
         /// What reached the speaker, in order, in plain words.
@@ -1356,6 +2001,11 @@ mod tests {
                     "modes shuffle {:?} repeat {:?} repeat-one {:?} crossfade {:?}",
                     change.shuffle, change.repeat, change.repeat_one, change.crossfade
                 ),
+                Op::SeekBy { delta_ms } => format!("seek by {delta_ms:+} ms"),
+                Op::Choose { list, id } => format!("choose {id} from {list}"),
+                Op::Key { function, phase } => {
+                    format!("key {} {phase:?}", function.id()).to_lowercase()
+                }
             });
             std::mem::replace(&mut speaker.answer, Ok(Done::Nothing))
         }
@@ -1364,29 +2014,52 @@ mod tests {
             speaker.sent.push("sources".into());
             speaker.sources.clone()
         }
+        fn list(&mut self, list: &str) -> Result<Vec<Choice>, Failure> {
+            let mut speaker = self.0.lock().unwrap();
+            speaker.sent.push(format!("list {list}"));
+            Ok(speaker.lists.get(list).cloned().unwrap_or_default())
+        }
         fn artwork(&mut self, art: &str) -> Result<Vec<u8>, Failure> {
-            self.0.lock().unwrap().sent.push(format!("artwork {art}"));
-            Ok(cover())
+            let mut speaker = self.0.lock().unwrap();
+            speaker.sent.push(format!("artwork {art}"));
+            Ok(speaker.picture.clone())
+        }
+        fn key_lane(&mut self) -> Option<Box<dyn Backend>> {
+            self.0
+                .lock()
+                .unwrap()
+                .key_lane
+                .then(|| Box::new(Fake(self.0.clone())) as Box<dyn Backend>)
         }
     }
     struct Rig {
         controller: Controller,
         worker: Worker,
+        lane: KeyLane,
         requests: mpsc::Receiver<(u64, Request)>,
+        presses: mpsc::Receiver<(u64, KeyRequest)>,
         events: mpsc::SyncSender<(u64, Event)>,
         speaker: Arc<std::sync::Mutex<Speaker>>,
+        /// Whether the device hands the key lane a second way to reach it.
+        key_lane: bool,
+        picture: Vec<u8>,
         now: Result<Media, Failure>,
         answer: Result<Done, Failure>,
         sources: Result<Vec<Choice>, Failure>,
+        lists: std::collections::HashMap<String, Vec<Choice>>,
         connect: Result<(), Failure>,
         sent: Vec<String>,
     }
     impl Rig {
         fn new() -> Self {
             let (tx, requests) = mpsc::sync_channel(16);
+            let (keys, presses) = mpsc::sync_channel(KEY_LANE);
             let (events, rx) = mpsc::sync_channel(8);
             let controller = Controller {
                 tx,
+                keys,
+                key_lane: false,
+                held_key: None,
                 rx,
                 drawn: false,
                 active: Arc::new(AtomicU64::new(0)),
@@ -1400,7 +2073,9 @@ mod tests {
                 message_until: None,
                 volume_until: None,
                 art_key: String::new(),
+                logo_key: String::new(),
                 sources: Vec::new(),
+                lists: std::collections::HashMap::new(),
                 selected: 3,
                 views: std::collections::HashMap::new(),
             };
@@ -1408,23 +2083,36 @@ mod tests {
                 now: Err(Failure::Unreachable),
                 answer: Ok(Done::Nothing),
                 sources: Ok(Vec::new()),
+                lists: std::collections::HashMap::new(),
+                key_lane: false,
+                picture: cover(),
                 connect: Ok(()),
                 sent: Vec::new(),
             };
             Self {
                 controller,
                 worker: Worker::default(),
+                lane: KeyLane::default(),
                 requests,
+                presses,
                 events,
+                key_lane: speaker.key_lane,
+                picture: speaker.picture.clone(),
                 now: speaker.now.clone(),
                 answer: speaker.answer.clone(),
                 sources: speaker.sources.clone(),
+                lists: std::collections::HashMap::new(),
                 connect: speaker.connect.clone(),
                 sent: Vec::new(),
                 speaker: Arc::new(std::sync::Mutex::new(speaker)),
             }
         }
         fn backend(&self) -> Box<dyn Backend> {
+            {
+                let mut speaker = self.speaker.lock().unwrap();
+                speaker.key_lane = self.key_lane;
+                speaker.picture = self.picture.clone();
+            }
             Box::new(Fake(self.speaker.clone()))
         }
         /// Hold the one-second clock and the three-second re-read still, so a
@@ -1445,7 +2133,7 @@ mod tests {
                     continue;
                 }
                 match &request {
-                    Request::Open(_, known_art) => {
+                    Request::Open { known_art, .. } => {
                         self.sent.push(format!("open, showing art {known_art:?}"))
                     }
                     Request::Reopen => self.sent.push("open, showing art \"\"".into()),
@@ -1459,6 +2147,7 @@ mod tests {
                         speaker.answer = std::mem::replace(&mut self.answer, Ok(Done::Nothing));
                     }
                     speaker.sources = self.sources.clone();
+                    speaker.lists = self.lists.clone();
                     speaker.connect = self.connect.clone();
                 }
                 assert!(self.worker.handle(
@@ -1470,7 +2159,30 @@ mod tests {
                 self.sent.append(&mut self.speaker.lock().unwrap().sent);
                 self.controller.poll(app);
             }
+            self.keys(app);
             self.hold();
+            self.controller.poll(app);
+        }
+        /// Everything waiting on the key lane, through the real [`KeyLane`] on
+        /// this thread.
+        fn keys(&mut self, app: &App) {
+            while let Ok((generation, request)) = self.presses.try_recv() {
+                if generation != self.controller.generation {
+                    continue;
+                }
+                {
+                    let mut speaker = self.speaker.lock().unwrap();
+                    speaker.connect = self.connect.clone();
+                    speaker.answer = Ok(Done::Nothing);
+                }
+                assert!(self.lane.handle(
+                    generation,
+                    request,
+                    &self.events,
+                    &self.controller.active
+                ));
+                self.sent.append(&mut self.speaker.lock().unwrap().sent);
+            }
             self.controller.poll(app);
         }
         fn act(&mut self, app: &App, action: &str, value: f64) {
@@ -1656,6 +2368,8 @@ mod tests {
             name: "Lounge Sonos".into(),
             room: "Living room".into(),
             label: "Sonos".into(),
+            player: Player::music(),
+            config: None,
         };
         let mut rig = Rig::new();
         let rig = &mut rig;
