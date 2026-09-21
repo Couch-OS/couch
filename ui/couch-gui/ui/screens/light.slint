@@ -58,6 +58,13 @@ export component LightScreen inherits Rectangle {
     // "Updating…" in place of the state line, once one operation has been out
     // long enough to be worth mentioning.
     in property <bool> pending;
+    // Whether a bar travels to a new value or is simply at it. It travels
+    // while somebody is looking at the screen and changes something - a
+    // brightness step, the lamp switched off - and it is simply there while
+    // the screen is being opened or closed, because the opening draws this
+    // page once and must find it finished.
+    in property <bool> glide;
+    property <duration> travel: root.glide ? 220ms : 0ms;
     callback action(string, int);
     public function take-focus() { keys.focus(); }
     background: Theme.bg;
@@ -113,6 +120,9 @@ export component LightScreen inherits Rectangle {
                 height: root.level-known ? parent.height * root.level-percent / 100 : 0px;
                 y: parent.height - self.height;
                 background: Theme.accent;
+                // Inside a fixed track and sized from a number, so no layout
+                // depends on it: the one kind of geometry that may move.
+                animate height { duration: root.travel; easing: ease-out; }
             }
         }
         Text {
@@ -151,6 +161,7 @@ export component LightScreen inherits Rectangle {
                 y: root.mirek-known ? (parent.height - 10px) * (100 - root.mirek-percent) / 100 : 0px;
                 background: root.mirek-known ? Theme.text : transparent;
                 border-width: 2px; border-color: root.mirek-known ? Theme.bg : transparent;
+                animate y { duration: root.travel; easing: ease-out; }
             }
         }
         Text {
