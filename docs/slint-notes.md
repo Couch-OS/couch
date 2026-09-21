@@ -421,10 +421,29 @@ grows. Both problems have the same answer - do not touch every pixel.
   a card is never caught half faded, and `LIFT_BAND_FADE` is about twice
   `LIFT_BAND_STEP`, which holds the blended part of the panel to **roughly a
   quarter** at any instant however many rows there are.
+- **Nothing hands over to nothing.** A painter puts its pieces down in order,
+  so it cannot fade the arriving page in *underneath* the one that is leaving
+  the way the preview does. Instead the room is gone by about a quarter of the
+  way through and the screen's cards come in just before the last of it, the
+  state line shortly after, and the name and the disc at the hand-over. The
+  cards deliberately overlap the tail of the fall by a few frames: a card
+  arrives over a band that is most of the way faded already, which is cheaper
+  to look at than a panel with nothing on it.
 - **Nothing reads the framebuffer back.** Every blend writes; the sprites and
   bands copy. A framebuffer is mapped for writing, and reading it back is far
   slower than reading RAM - which the first version did, for its travelling
   card, on every frame.
+- **A whole frame at a time.** The window shapes write every scanline exactly
+  once - three runs of A, B, A - so they can paint straight into the map. The
+  lift cannot: it flattens a band and puts its pieces back in later passes, so
+  a pixel is written up to five times and the *first* of those writes is the
+  flat background. The panel is scanned out continuously and nothing here
+  flips buffers, so painting that in place is seen half done. On the device it
+  showed as a dark bar walking up the screen, several times over a slow lift,
+  and not at all on the iris or the curtain. So a lift composes into a RAM
+  buffer - one, kept, never per frame - and `present` copies it to the map in
+  one pass, top to bottom, one write a pixel. It costs a panel copy, about a
+  millisecond, and it is the price of painting in passes at all.
 - The crossing itself now does **two pixels an iteration**, four channels
   packed in the halves of a `u64`. Ten milliseconds for a panel where a
   `memcpy` of the same is 1.3 is far more than a dozen integer operations a

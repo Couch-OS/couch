@@ -145,6 +145,13 @@ pub const LIFT: Duration = Duration::from_millis(320);
 /// `Theme.bg`, #15130F, packed the way the panel takes it: what a room row
 /// falls away to, and what the control screen's pieces arrive over.
 const LIFT_BG: u32 = 0xff0f_1315;
+/// What a room band falls away to, for the tests that check the panel is
+/// never left bare.
+#[cfg(test)]
+pub(crate) fn lift_background() -> u32 {
+    LIFT_BG
+}
+
 /// `Theme.surface`, #1F1C17: a card's fill, which is both what the rising
 /// card is drawn in and the colour keyed out of the sprites cut from a row.
 const LIFT_SURFACE: u32 = 0xff17_1c1f;
@@ -162,18 +169,34 @@ const LIFT_BARS_LAG: f32 = 0.06;
 /// only the bands inside their own window are blended, so keeping it near
 /// twice the stagger holds the blended part of the panel to about a quarter
 /// of it however many rows there are.
-const LIFT_BAND_FADE: f32 = 0.09;
-/// How much later each band away from the focused row begins.
-const LIFT_BAND_STEP: f32 = 0.045;
-/// The phases, as fractions of the transition, named the way the preview
-/// this follows names them (scratchpad/transitions, concept "lift").
-const LIFT_ROWS_FALL: (f32, f32) = (0.02, 0.32);
-const LIFT_CARD_RISE: (f32, f32) = (0.04, 0.56);
-const LIFT_LABEL_FLY: (f32, f32) = (0.06, 0.58);
-const LIFT_HEADER_IN: (f32, f32) = (0.50, 0.66);
-const LIFT_CARDS_IN: (f32, f32) = (0.42, 0.82);
-const LIFT_GROW: (f32, f32) = (0.62, 1.0);
-const LIFT_FOOTER_IN: (f32, f32) = (0.80, 1.0);
+const LIFT_BAND_FADE: f32 = 0.056;
+/// How much later each band away from the focused row begins. Half the fade,
+/// so about two bands are ever in flight however many rows a room has.
+const LIFT_BAND_STEP: f32 = 0.028;
+/// The phases, as fractions of the transition, named the way the preview this
+/// follows names them (scratchpad/transitions, concept "lift").
+///
+/// They are tighter at the front than the preview's: the room is gone by a
+/// quarter of the way through and the screen's cards are in straight after,
+/// so the panel is never left with nothing but the card that is rising. The
+/// preview can overlap them because it fades page B in underneath; a painter
+/// that puts pieces down in order cannot, so it hands over instead.
+const LIFT_ROWS_FALL: (f32, f32) = (0.02, 0.26);
+const LIFT_CARD_RISE: (f32, f32) = (0.04, 0.50);
+const LIFT_LABEL_FLY: (f32, f32) = (0.06, 0.50);
+/// The cards start while the last of the room is still going, and overlap it
+/// deliberately: a painter puts them over the tail of a band that is most of
+/// the way faded already, which costs a few frames of a card arriving over a
+/// ghost and buys a panel that is never empty.
+const LIFT_CARDS_IN: (f32, f32) = (0.20, 0.60);
+/// The state line, on its own and early: a thin band under the disc, so the
+/// top of the panel says something while the name is still on its way.
+const LIFT_STATE_IN: f32 = 0.26;
+/// The rest of the header - the back arrow, the name and the disc - at the
+/// moment the flying label lands on it, which is a cut with nothing to fade.
+const LIFT_HEADER_IN: f32 = 0.50;
+const LIFT_GROW: (f32, f32) = (0.46, 1.0);
+const LIFT_FOOTER_IN: f32 = 0.70;
 
 /// Where the development switch for the opening transition is read from.
 /// Under `/tmp`, so it is gone at the next boot and nothing a person set up is
@@ -341,6 +364,13 @@ pub struct Panel {
     pub height: u32,
     stride_px: u32,
     ram: Vec<Abgr>,
+    /// Where a lift composes, before any of it reaches the panel. The window
+    /// shapes write every scanline once and can go straight to the map; a
+    /// lift paints a band flat and puts its pieces back in later passes, and
+    /// the panel scans out continuously, so painting that in place shows the
+    /// half-painted state as a dark bar walking up the screen. Allocated the
+    /// first time a lift runs and kept, never per frame.
+    back: Vec<Abgr>,
     /// The frame the panel showed when a transition began: page A. RAM is
     /// page B by then, so the two pages of a slide are this and `ram`.
     spare: Vec<Abgr>,
@@ -398,6 +428,7 @@ impl Panel {
             width,
             height,
             stride_px: stride / 4,
+            back: Vec::new(),
             ram: vec![Abgr::default(); (width * height) as usize],
             spare: vec![Abgr::default(); (width * height) as usize],
             // Page 0 is what is displayed; the pan must say so.
@@ -948,20 +979,27 @@ impl Panel {
             self.height as usize,
             self.stride_px as usize,
         );
-        let (arriving, leaving) = (pixels(&self.ram), pixels(&self.spare));
-        lift_frame(
-            Surface {
-                pixels: &mut self.map[..],
-                stride,
-                width,
-                height,
-            },
-            (arriving, leaving),
-            lift,
-            sprites,
-            shown,
-            t,
-        );
+        if self.back.len() != width * height {
+            self.back = vec![Abgr::default(); width * height];
+        }
+        {
+            let (arriving, leaving) = (pixels(&self.ram), pixels(&self.spare));
+            lift_frame(
+                Surface {
+                    pixels: pixels_mut(&mut self.back),
+                    stride: width,
+                    width,
+                    height,
+                },
+                (arriving, leaving),
+                lift,
+                sprites,
+                shown,
+                t,
+            );
+        }
+        // Whole frames only: the panel never holds a half-composed one.
+        present(&mut self.map[..], stride, width, height, pixels(&self.back));
     }
 
     /// One iris frame into the framebuffer.
@@ -1065,6 +1103,24 @@ impl Panel {
 /// the u32 the panel takes, so this is a view, not a conversion.
 fn pixels(buf: &[Abgr]) -> &[u32] {
     unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u32, buf.len()) }
+}
+
+/// The same view, to write into.
+fn pixels_mut(buf: &mut [Abgr]) -> &mut [u32] {
+    unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u32, buf.len()) }
+}
+
+/// A composed frame onto the panel: one copy a scanline, top to bottom, and
+/// every pixel written exactly once.
+///
+/// What makes a multi-pass transition safe to show. The panel is scanned out
+/// continuously and nothing here flips buffers, so whatever is in the map is
+/// what is on the glass; a frame that is painted in several passes has to be
+/// finished somewhere else first, or its intermediate states are seen.
+fn present(map: &mut [u32], stride: usize, width: usize, height: usize, from: &[u32]) {
+    for y in 0..height {
+        map[y * stride..y * stride + width].copy_from_slice(&from[y * width..(y + 1) * width]);
+    }
 }
 
 /// Somewhere to compose into: the panel's own map, or a plain vector in a
@@ -1336,8 +1392,27 @@ pub(crate) fn lift_frame(
             Some(LIFT_SURFACE),
         );
     }
-    // --- the real header takes over ---------------------------------------
-    if p >= LIFT_HEADER_IN.0 {
+    // --- the state line comes in early, then the rest of the header -------
+    // Two bands rather than one: the name cannot arrive before the label that
+    // is flying to it has landed, but the state line has nothing to wait for
+    // and the top of the panel should not be empty while the room is going.
+    let under_disc = lift.screen_disc.y + lift.screen_disc.h;
+    if (LIFT_STATE_IN..LIFT_HEADER_IN).contains(&p) {
+        band_over(
+            &mut dst,
+            screen,
+            Window {
+                x: 0,
+                y: under_disc,
+                w: w as i32,
+                h: lift.header_h - under_disc,
+                r: 0,
+            },
+            0,
+            256,
+        );
+    }
+    if p >= LIFT_HEADER_IN {
         band_over(
             &mut dst,
             screen,
@@ -1361,6 +1436,9 @@ pub(crate) fn lift_frame(
             LIFT_CARDS_IN.0 + LIFT_BARS_LAG * which as f32,
             LIFT_CARDS_IN.1 + LIFT_BARS_LAG * which as f32,
         );
+        // The card is put down whole as soon as its phase begins, fourteen
+        // pixels low, so the panel gains its content at once and only the
+        // last of the travel is the rise.
         let Some(e) = phase(p, window) else {
             continue;
         };
@@ -1372,7 +1450,7 @@ pub(crate) fn lift_frame(
         reveal_track(&mut dst, screen, lift, which, dy, p);
     }
     // --- the footer, last ---------------------------------------------------
-    if p >= LIFT_FOOTER_IN.0 {
+    if p >= LIFT_FOOTER_IN {
         band_over(
             &mut dst,
             screen,
@@ -1983,6 +2061,42 @@ mod tests {
                 "the close is not the open backwards at {t}"
             );
         }
+    }
+
+    /// A composed frame reaches the panel in one pass, every pixel written
+    /// exactly once and the framebuffer's own stride respected.
+    ///
+    /// This is what makes a transition that paints in several passes safe to
+    /// show: the lift flattens a band and puts its pieces back afterwards, and
+    /// the panel is scanned out continuously with nothing flipping buffers, so
+    /// painting that in place is seen half done - a dark bar walking up the
+    /// screen, which is what the owner saw.
+    #[test]
+    fn a_frame_reaches_the_panel_in_one_pass() {
+        // A map wider than the panel, as this device's framebuffer is.
+        const STRIDE: usize = W + 3;
+        let composed: Vec<u32> = (0..W * H).map(|i| 1000 + i as u32).collect();
+        let mut map = vec![0u32; STRIDE * H];
+        present(&mut map, STRIDE, W, H, &composed);
+        for y in 0..H {
+            assert_eq!(
+                &map[y * STRIDE..y * STRIDE + W],
+                &composed[y * W..(y + 1) * W],
+                "row {y} did not arrive"
+            );
+            // The stride's own padding is not the panel and is left alone.
+            assert!(map[y * STRIDE + W..(y + 1) * STRIDE]
+                .iter()
+                .all(|p| *p == 0));
+        }
+        // Writing it again over a sentinel leaves none of the sentinel behind:
+        // every pixel of the panel is covered by exactly one run.
+        let mut map = vec![u32::MAX; STRIDE * H];
+        present(&mut map, STRIDE, W, H, &composed);
+        assert_eq!(
+            map.iter().filter(|p| **p == u32::MAX).count(),
+            (STRIDE - W) * H
+        );
     }
 
     /// A sprite is a rectangle of a page put down somewhere else, clipped at
