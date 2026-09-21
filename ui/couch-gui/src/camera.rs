@@ -8,6 +8,9 @@ use slint::ComponentHandle;
 use std::{cell::RefCell, rc::Rc};
 pub struct Cameras {
     pending: Rc<RefCell<Option<String>>>,
+    /// A Back that has been pressed and not yet performed, so the frame loop
+    /// sees the screen close where it can do something about it.
+    closing: Rc<std::cell::Cell<bool>>,
     player: Option<Player>,
     serial: Option<u64>,
 }
@@ -26,20 +29,34 @@ impl Cameras {
                 *queue.borrow_mut() = Some(resource.to_string());
             }
         });
-        let weak = app.as_weak();
+        let closing = Rc::new(std::cell::Cell::new(false));
+        let asked = closing.clone();
         app.on_close_camera(move || {
-            if let Some(app) = weak.upgrade() {
-                app.set_camera_shown(false);
-                app.invoke_focus_light();
-            }
+            // Not closed here. The loop reads which screen is up before it
+            // reads the keys, so a screen that takes itself down inside a key
+            // callback is gone before anything notices, and it gets no
+            // transition at all - it would lift out of its row on the way in
+            // and vanish on the way out. Queued for the poll below instead,
+            // which is where every other device screen closes.
+            asked.set(true);
         });
         Self {
             pending,
+            closing,
             player: None,
             serial: None,
         }
     }
+    /// Whether a Back is waiting to close the feed, so the frame loop can
+    /// keep the picture that is on the panel before it happens.
+    pub fn navigation_pending(&self) -> bool {
+        self.closing.get()
+    }
     pub fn poll(&mut self, app: &App, awake: bool) {
+        if self.closing.replace(false) {
+            app.set_camera_shown(false);
+            app.invoke_focus_light();
+        }
         if self.player.is_some()
             && self.serial != crate::config_snapshot::current().map(|s| s.serial)
         {

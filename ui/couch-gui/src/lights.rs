@@ -1711,7 +1711,11 @@ impl Controller {
             Input::PhysicalPick(row, _) | Input::Pick(row) => {
                 self.screen.is_none()
                     && self.entries.get(*row).is_some_and(|entry| {
-                        opens_screen(entry) || opens_tv(entry) || opens_the_player(entry)
+                        opens_screen(entry)
+                            || opens_tv(entry)
+                            || opens_the_player(entry)
+                            || opens_camera(entry)
+                            || ha_domain(&entry.id) == "climate"
                     })
             }
             Input::Screen(name, _) => self.screen.is_some() && name == "close",
@@ -1849,6 +1853,17 @@ impl Controller {
                         });
                         if camera {
                             app.invoke_open_camera(e.id.as_str().into(), e.name.as_str().into());
+                            // Where it is and what drives it, and this row's
+                            // own disc: it used to say the literal "UniFi
+                            // Protect" with no mention of the room.
+                            app.set_camera_room(self.source_line(e).as_str().into());
+                            app.set_camera_icon(crate::icons::image(e.icon));
+                            app.set_camera_active(
+                                e.state.as_ref().is_some_and(|s| s.active() == Some(true)),
+                            );
+                            app.set_camera_known(
+                                e.state.as_ref().is_some_and(|s| s.active().is_some()),
+                            );
                             continue;
                         }
                         let player = cfg.as_ref().is_some_and(|c| {
@@ -2137,6 +2152,20 @@ fn opens_tv(entry: &Entry) -> bool {
         return false;
     }
     tv_connection(&config, device).is_some()
+}
+/// Whether a pick on this row opens a camera's feed.
+fn opens_camera(entry: &Entry) -> bool {
+    let Some(device) = entry.id.strip_prefix("device:") else {
+        return false;
+    };
+    let Some(config) = crate::connections::config() else {
+        return false;
+    };
+    let integration = config
+        .devices()
+        .find(|(_, d)| d.id.as_str() == device)
+        .and_then(|(_, d)| config.resolve_integration(&d.integration));
+    integration.is_some_and(|i| matches!(i, Integration::UnifiProtect { .. }))
 }
 /// Whether a pick on this row opens the media player: a configured device the
 /// player knows how to drive, which today is Sonos and Kodi.
@@ -5010,6 +5039,23 @@ mod tests {
                 );
             }
         }
+        // A Home Assistant thermostat is not a `device:` row at all, so it
+        // arms on its own account rather than on a packaged child's. The
+        // fixture has no such row and the packaged one arms for a different
+        // reason, which is how the arming for this kind went missing once
+        // without any test noticing.
+        let mut controller = Controller::install(&app);
+        let mut climate = entries[at("device:heat")].clone();
+        climate.id = "climate.hall".to_string();
+        climate.plugin = None;
+        controller.entries = vec![climate];
+        controller.room = Some(room.clone());
+        controller.input.borrow_mut().clear();
+        controller.input.borrow_mut().push_back(Input::Pick(0));
+        assert!(
+            controller.screen_pending(),
+            "a Home Assistant thermostat does not arm the transition, so it slides in"
+        );
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }
@@ -5171,6 +5217,204 @@ mod tests {
         crate::panel::checks::stronger(&leaving, &arriving, W, H, plan, "thermostat row");
         crate::panel::checks::ghosts(&leaving, &arriving, W, H, plan, "thermostat row");
         crate::panel::checks::pops(&leaving, &arriving, W, H, plan, "thermostat row");
+        app.hide().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The camera lifts out of its row, waiting and once a frame is up.
+    ///
+    /// The row it is opened from is the fixture's receiver: what matters here
+    /// is a device row with a name and a disc to fly, and the two shapes the
+    /// camera's own page takes. `COUCH_LIFT_SCREENSHOTS=<dir>` keeps the
+    /// pictures.
+    #[test]
+    fn the_camera_lifts_out_of_its_row() {
+        const NAME: &str = "lights::tests::the_camera_lifts_out_of_its_row";
+        if std::env::var_os("COUCH_TEST_CAMERA_LIFT").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_CAMERA_LIFT", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::ComponentHandle;
+        const W: usize = 480;
+        const H: usize = 800;
+        let config = packaged();
+        let path = std::env::temp_dir().join(format!("couch-camlift-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        crate::config_snapshot::start(path.clone());
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.show().unwrap();
+        window.dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
+        let mut controller = Controller::install(&app);
+        let room = Id::new("living-room");
+        controller.entries = configured_in(&config, &room).unwrap();
+        controller.room = Some(room);
+        let which = controller
+            .entries
+            .iter()
+            .position(|e| e.id.as_str() == "device:avr")
+            .expect("the packaged fixture has a device row");
+        app.set_light_title("Living room".into());
+        app.set_light_shown(true);
+        app.set_feedback_enabled(true);
+        controller.update_rows(&app, true);
+        let settle = || {
+            for _ in 0..20 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        };
+        let draw = |into: &mut Vec<slint::Rgb8Pixel>| {
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(into, W);
+            });
+        };
+        settle();
+        let top = crate::room_window(&app);
+        app.set_light_index(which as i32);
+        let mut a = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut a);
+        let from = crate::room_window(&app);
+        assert_ne!(from.y, top.y, "the ring never moved off the first row");
+        let word = |page: &[slint::Rgb8Pixel]| -> Vec<u32> {
+            page.iter()
+                .map(|p| 0xff00_0000 | ((p.b as u32) << 16) | ((p.g as u32) << 8) | p.r as u32)
+                .collect()
+        };
+        let leaving = word(&a);
+
+        let entry = &controller.entries[which];
+        app.set_camera_title(entry.name.as_str().into());
+        app.set_camera_room(controller.source_line(entry).as_str().into());
+        app.set_camera_icon(crate::icons::image(entry.icon));
+        app.set_camera_active(true);
+        app.set_camera_known(true);
+        app.set_camera_message("Connecting securely…".into());
+        app.set_camera_shown(true);
+        app.invoke_focus_camera();
+        // The second line names the room and what drives it, where every
+        // camera used to say the literal "UniFi Protect".
+        assert!(
+            app.get_camera_room().contains("Living room"),
+            "the camera's second line does not say where it is: {}",
+            app.get_camera_room()
+        );
+
+        // Waiting for its first frame, and then with one up. Both are real
+        // pages of this screen and they take different shapes.
+        //
+        // One buffer for both: the renderer draws only what has changed since
+        // the last time, so a fresh buffer on the second pass would come back
+        // with everything but the picture still black.
+        let mut b = vec![slint::Rgb8Pixel::default(); W * H];
+        for (name, frame) in [("waiting", false), ("live", true)] {
+            if frame {
+                let mut buffer = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(W as u32, 270);
+                for (i, p) in buffer.make_mut_slice().iter_mut().enumerate() {
+                    let (x, y) = (i % W, i / W);
+                    *p = slint::Rgb8Pixel {
+                        r: (y * 255 / 270) as u8,
+                        g: 0x50,
+                        b: (x * 255 / W) as u8,
+                    };
+                }
+                app.set_camera_image(slint::Image::from_rgb8(buffer));
+                app.set_camera_message("Live".into());
+            }
+            settle();
+            draw(&mut b);
+            let arriving = word(&b);
+            assert!(
+                leaving != arriving,
+                "{name}: the two pages are the same picture"
+            );
+            let plan = crate::camera_plan(&app, from, W as i32, H as i32)
+                .expect("the camera always has a plan");
+            assert_eq!(
+                plan.crossing == crate::panel::Crossing::Banded,
+                frame,
+                "{name}: the wrong shape - a picture crosses band by band and a line of \
+                 text falls"
+            );
+            let mut art = crate::lift_art(&leaving, &arriving, W, H, plan);
+            let content = crate::panel::lift_content(&leaving, W, H);
+            let screen_content = crate::panel::lift_content(&arriving, W, H);
+            let sweep = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+            for (step, t) in sweep.iter().map(|n| (*n, *n as f32 / 100.0)) {
+                let mut pixels = vec![0u32; W * H];
+                crate::panel::lift_frame(
+                    crate::panel::Surface {
+                        pixels: &mut pixels,
+                        stride: W,
+                        width: W,
+                        height: H,
+                    },
+                    (&arriving, &leaving),
+                    plan,
+                    &mut art,
+                    (&content, &screen_content),
+                    crate::panel::Shown::Arriving,
+                    crate::panel::Frame::at(t),
+                );
+                match step {
+                    0 => assert_eq!(pixels, leaving, "{name}: the first frame is not the room"),
+                    100 => {
+                        assert_eq!(pixels, arriving, "{name}: the last frame is not the screen")
+                    }
+                    _ => {
+                        assert_ne!(pixels, leaving, "{name}: frame {step} never left the room");
+                        if step <= 80 {
+                            assert_ne!(
+                                pixels, arriving,
+                                "{name}: frame {step} is already the screen"
+                            );
+                        }
+                    }
+                }
+                if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
+                    let bytes: Vec<u8> = pixels
+                        .iter()
+                        .flat_map(|p| [*p as u8, (*p >> 8) as u8, (*p >> 16) as u8])
+                        .collect();
+                    image::save_buffer(
+                        std::path::Path::new(&dir).join(format!(
+                            "camera-{name}-{:03}.png",
+                            (t * 100.0).round() as u32
+                        )),
+                        &bytes,
+                        W as u32,
+                        H as u32,
+                        image::ColorType::Rgb8,
+                    )
+                    .unwrap();
+                }
+            }
+            let (mean, worst) =
+                crate::panel::checks::profile(&leaving, &arriving, W, H, plan, name);
+            assert!(
+                mean <= 0.25 && worst <= 0.35,
+                "{name}: the camera lift costs {mean:.2} panels a frame on average and \
+                 {worst:.2} at its worst"
+            );
+            crate::panel::checks::never_bare(&leaving, &arriving, W, H, plan, name);
+            crate::panel::checks::lands(&leaving, &arriving, W, H, plan, name);
+            crate::panel::checks::stronger(&leaving, &arriving, W, H, plan, name);
+            crate::panel::checks::ghosts(&leaving, &arriving, W, H, plan, name);
+            crate::panel::checks::pops(&leaving, &arriving, W, H, plan, name);
+        }
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }

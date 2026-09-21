@@ -2079,7 +2079,6 @@ pub(crate) fn lift_frame(
     // its icon are already leaving it and what is left should not sit under
     // them. Before its window a scanline is a copy of the room, after it a
     // fill - and the fill is what the screen's background is anyway.
-    let band = plan.row.y..plan.row.y + plan.row.h;
     for y in 0..h {
         let window = crossing_window(&plan, h, y);
         // A row that cannot differ from the one on the glass is not composed
