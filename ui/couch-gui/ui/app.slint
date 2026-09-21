@@ -160,6 +160,11 @@ export component App inherits Window {
     in-out property <string> thermostat-feedback-value;
     in-out property <bool> camera-shown;
     in-out property <string> camera-title;
+    /// Where it is and what drives it, and the room row's own disc.
+    in-out property <string> camera-room;
+    in-out property <image> camera-icon;
+    in-out property <bool> camera-active;
+    in-out property <bool> camera-known;
     in-out property <string> camera-message;
     in-out property <image> camera-image;
     callback open-camera(string,string);
@@ -439,6 +444,29 @@ export component App inherits Window {
     public function ths-footer-y() -> length { return thermostat-page.footer-y(); }
     public function ths-lift-ready() -> bool { return thermostat-page.lift-ready(); }
     public function ths-sparse() -> bool { return thermostat-page.sparse(); }
+    // The camera's own, the same set again.
+    public function cs-title-x() -> length { return camera-page.title-box-x(); }
+    public function cs-title-y() -> length { return camera-page.title-box-y(); }
+    public function cs-title-w() -> length { return camera-page.title-box-w(); }
+    public function cs-title-h() -> length { return camera-page.title-box-h(); }
+    public function cs-disc-x() -> length { return camera-page.disc-box-x(); }
+    public function cs-disc-y() -> length { return camera-page.disc-box-y(); }
+    public function cs-disc-size() -> length { return camera-page.disc-box-size(); }
+    public function cs-header-h() -> length { return camera-page.header-h(); }
+    public function cs-plate-x() -> length { return camera-page.plate-x(); }
+    public function cs-plate-y() -> length { return camera-page.plate-y(); }
+    public function cs-plate-w() -> length { return camera-page.plate-w(); }
+    public function cs-plate-h() -> length { return camera-page.plate-h(); }
+    public function cs-plate-r() -> length { return camera-page.plate-r(); }
+    public function cs-body-y() -> length { return camera-page.body-y(); }
+    public function cs-body-h() -> length { return camera-page.body-h(); }
+    public function cs-rows() -> int { return camera-page.rows(); }
+    public function cs-row-y(which: int) -> length { return camera-page.row-y(which); }
+    public function cs-row-h(which: int) -> length { return camera-page.row-h(which); }
+    public function cs-footer-y() -> length { return camera-page.footer-y(); }
+    public function cs-lift-ready() -> bool { return camera-page.lift-ready(); }
+    public function cs-banded() -> bool { return camera-page.banded(); }
+    public function cs-sparse() -> bool { return camera-page.sparse(); }
     public function focus-home() { fs.focus(); }
 
     // --- keyboard -------------------------------------------------------------
@@ -787,7 +815,7 @@ export component App inherits Window {
         range:root.thermostat-range; adjustable:root.thermostat-adjustable; pending:root.thermostat-pending;
         action(name,index) => { root.thermostat-action(name,index); }
     }
-    camera-page := Camera { x:0px;y:0px;width:parent.width;height:parent.height;visible:root.camera-shown;shown:root.camera-shown;title:root.camera-title;message:root.camera-message;frame:root.camera-image;close=>{root.close-camera();} }
+    camera-page := Camera { x:0px;y:0px;width:parent.width;height:parent.height;visible:root.camera-shown;shown:root.camera-shown;title:root.camera-title;room:root.camera-room;icon:root.camera-icon;active:root.camera-active;known:root.camera-known;message:root.camera-message;frame:root.camera-image;close=>{root.close-camera();} }
     if root.custom-activity-available && root.active-activity!="" && !root.custom-activity-shown && (root.player-shown || root.tv-shown): Rectangle {
         x:parent.width - 112px; y:80px; width:88px; height:44px; border-radius:22px; background:Theme.surface;
         Text { text:"Pages"; color:Theme.text; font-size:18px; horizontal-alignment:center; vertical-alignment:center; }

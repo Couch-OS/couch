@@ -1389,6 +1389,10 @@ pub struct LiftPlan {
     pub row: Window,
     /// How the rest of the panel gets from one page to the other.
     pub crossing: Crossing,
+    /// How deep the screen's header band is. What travels lands in it, so in
+    /// a banded crossing it is the part of the panel that has to become the
+    /// screen first rather than last.
+    pub head: i32,
     /// When the room falls away, and how much later the furthest scanline
     /// starts than the row's own does.
     pub fall: (f32, f32),
@@ -1428,6 +1432,7 @@ impl LiftPlan {
             name,
             row,
             crossing: Crossing::Falling,
+            head: 0,
             fall: LIFT_ROWS_FALL,
             wave: LIFT_ROW_WAVE,
             focused_out: LIFT_FOCUSED_OUT,
@@ -1467,7 +1472,8 @@ impl LiftPlan {
     /// The header: the state line under the disc, which has nothing to wait
     /// for, and then the band itself, which cannot arrive before the name
     /// flying towards it has given way.
-    pub fn header(self, width: i32, header_h: i32, under_disc: i32) -> Self {
+    pub fn header(mut self, width: i32, header_h: i32, under_disc: i32) -> Self {
+        self.head = header_h;
         let band = |y: i32, h: i32, window| Piece {
             rect: Window {
                 x: 0,
@@ -1919,6 +1925,33 @@ impl Frame<'_> {
 /// well as where it is. Being wrong the other way would leave a stale band on
 /// the glass, so the test that composes a whole run and compares every frame
 /// against one drawn from nothing is the one that holds this honest.
+/// When a scanline crosses, as a fraction of the whole.
+///
+/// Outwards from the row it came out of, so the page appears where the press
+/// was - except for the header band of a banded crossing, which goes first.
+/// What travels lands there, and a name landing on a room's status bar that
+/// has not become the screen yet is two lines of text on top of each other.
+fn crossing_window(plan: &LiftPlan, h: usize, y: usize) -> (f32, f32) {
+    let centre = plan.row.y + plan.row.h / 2;
+    let band = plan.row.y..plan.row.y + plan.row.h;
+    let span = plan.fall.1 - plan.fall.0;
+    if band.contains(&(y as i32)) {
+        return plan.focused_out;
+    }
+    let head = (plan.crossing == Crossing::Banded)
+        .then_some(plan.head)
+        .unwrap_or(0);
+    if (y as i32) < head {
+        return (plan.fall.0, plan.fall.0 + span);
+    }
+    // The stagger is spread over the rows that are left, so the furthest of
+    // them still lands at the end of the transition rather than early.
+    let reach = (centre - head).max(h as i32 - centre).max(1) as f32;
+    let away = ((y as i32 - centre).abs() as f32 / reach).min(1.0);
+    let began = plan.fall.0 + plan.wave * away;
+    (began, began + span)
+}
+
 /// How far through the plan a frame is, which is not the clock: a close runs
 /// the same plan backwards, so `t` of 0.2 into a close is the plan at 0.8.
 /// Everything that asks the plan a question has to ask it here.
@@ -1950,18 +1983,8 @@ fn changed_rows(plan: &LiftPlan, h: usize, p: f32, previous: Option<f32>, into: 
         }
     };
     // The room falling away, scanline by scanline.
-    let centre = plan.row.y + plan.row.h / 2;
-    let reach = centre.max(h as i32 - centre).max(1) as f32;
-    let band = plan.row.y..plan.row.y + plan.row.h;
-    let span = plan.fall.1 - plan.fall.0;
     for y in 0..h {
-        let window = if band.contains(&(y as i32)) {
-            plan.focused_out
-        } else {
-            let away = ((y as i32 - centre).abs() as f32 / reach).min(1.0);
-            let began = plan.fall.0 + plan.wave * away;
-            (began, began + span)
-        };
+        let window = crossing_window(plan, h, y);
         // Before its window a row is still the page it was, after it the page
         // it is becoming, and either way it is what the panel already shows.
         // Only a row that is mid-crossing at one of the two moments, or on a
@@ -2056,18 +2079,8 @@ pub(crate) fn lift_frame(
     // its icon are already leaving it and what is left should not sit under
     // them. Before its window a scanline is a copy of the room, after it a
     // fill - and the fill is what the screen's background is anyway.
-    let centre = plan.row.y + plan.row.h / 2;
-    let reach = centre.max(h as i32 - centre).max(1) as f32;
-    let band = plan.row.y..plan.row.y + plan.row.h;
-    let span = plan.fall.1 - plan.fall.0;
     for y in 0..h {
-        let window = if band.contains(&(y as i32)) {
-            plan.focused_out
-        } else {
-            let away = ((y as i32 - centre).abs() as f32 / reach).min(1.0);
-            let began = plan.fall.0 + plan.wave * away;
-            (began, began + span)
-        };
+        let window = crossing_window(&plan, h, y);
         // A row that cannot differ from the one on the glass is not composed
         // at all: the buffer already holds it, and the panel already shows it.
         if !frame.dirty.get(y).copied().unwrap_or(true) {

@@ -802,6 +802,33 @@ the page arriving is bright everywhere. It is measured against the page now:
 ink brighter than both the card the name sat on and the pixel arriving
 underneath it belongs to neither.
 
+### Which screens lift, and in which shape
+
+| row opens | shape | why |
+|---|---|---|
+| light / blind | falling | flat background, two bar cards |
+| thermostat | falling | flat background, two cards |
+| television controls | falling | flat background, rows of tiles |
+| television showing what is playing | **banded** | a photograph behind everything |
+| player, waiting to connect | falling, `sooner` | one line and one button |
+| player with album art | **banded** | a photograph behind everything |
+| camera, waiting for a frame | falling, `sooner` | one line on an empty page |
+| camera with a frame up | **banded** | the picture is a photograph |
+
+A screen answers three questions - `lift-ready()`, `banded()`, `sparse()` -
+and the plan follows from them. The thermostat's and the camera's second lines
+name the room and what drives them; both used to be literals (`"Home
+Assistant"`, `"UniFi Protect"`) that were wrong on any other driver and said
+nothing about where the device is.
+
+**A screen that closes inside a key callback gets no transition.** The frame
+loop reads which device screen is up *before* it reads the keys, so a screen
+that takes itself down in a Slint callback is already gone by the time
+anything notices - it would lift out of its row on the way in and vanish on
+the way out. The camera did exactly that; its Back is queued for the poll now,
+which is where every other device screen closes.
+
+
 ### Whole-row list windows
 
 Room, device and scene lists size cards to fit a whole number of visible rows.

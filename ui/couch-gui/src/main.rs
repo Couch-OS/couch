@@ -565,6 +565,87 @@ fn thermostat_plan(
     })
 }
 
+/// The camera, as one plan: a header, the picture, the line under it and the
+/// line that says how to leave.
+///
+/// Once a frame is up the picture is a photograph and the panel crosses to it
+/// band by band; before that the page is a line of text on an empty screen
+/// and it falls like any other, arriving early because there is so little of
+/// it.
+fn camera_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<panel::LiftPlan> {
+    if !app.invoke_cs_lift_ready() {
+        return None;
+    }
+    let disc = app.invoke_cs_disc_size();
+    let mut plan = headed(
+        app,
+        "camera",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_cs_title_x(),
+                app.invoke_cs_title_y(),
+                app.invoke_cs_title_w(),
+                app.invoke_cs_title_h(),
+            ),
+            disc: at(app.invoke_cs_disc_x(), app.invoke_cs_disc_y(), disc, disc),
+            depth: app.invoke_cs_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_cs_plate_r().round() as i32,
+                ..at(
+                    app.invoke_cs_plate_x(),
+                    app.invoke_cs_plate_y(),
+                    app.invoke_cs_plate_w(),
+                    app.invoke_cs_plate_h(),
+                )
+            },
+        },
+    )
+    .piece(panel::Piece {
+        rect: at(
+            0.0,
+            app.invoke_cs_body_y(),
+            width as f32,
+            app.invoke_cs_body_h(),
+        ),
+        window: panel::LIFT_STATE_IN,
+        fade: 1.0,
+        kind: panel::Arriving::Fade,
+    });
+    let rows = app.invoke_cs_rows().min(3);
+    for which in 0..rows {
+        let f = if rows <= 1 {
+            1.0
+        } else {
+            which as f32 / (rows - 1) as f32
+        };
+        plan = plan.piece(panel::Piece {
+            rect: at(
+                0.0,
+                app.invoke_cs_row_y(which),
+                width as f32,
+                app.invoke_cs_row_h(which),
+            ),
+            window: (
+                panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
+                panel::LIFT_CARDS_IN.1 + (panel::LIFT_FOOTER_IN.1 - panel::LIFT_CARDS_IN.1) * f,
+            ),
+            fade: panel::LIFT_CARDS_FADE,
+            kind: panel::Arriving::Rise(panel::LIFT_BARS_DROP),
+        });
+    }
+    plan = plan.footer(width, height, app.invoke_cs_footer_y().round() as i32);
+    if app.invoke_cs_banded() {
+        return Some(plan.banded());
+    }
+    Some(if app.invoke_cs_sparse() {
+        plan.sooner(panel::LIFT_HASTE)
+    } else {
+        plan
+    })
+}
+
 /// The focused row's band with the name and the icon painted out of it: what
 /// the row fades away as, once the two of them are flying out of it.
 ///
@@ -664,6 +745,8 @@ fn device_screen(app: &App) -> Option<Overlay> {
         Some(Overlay::Light)
     } else if app.get_tv_shown() {
         Some(Overlay::Tv)
+    } else if app.get_camera_shown() {
+        Some(Overlay::Camera)
     } else if app.get_thermostat_shown() {
         Some(Overlay::Thermostat)
     } else if app.get_player_shown() && !app.get_custom_activity_shown() {
@@ -761,6 +844,7 @@ fn screen_name(which: Option<Overlay>) -> &'static str {
         Some(Overlay::Tv) => "tv",
         Some(Overlay::Player) => "player",
         Some(Overlay::Thermostat) => "thermostat",
+        Some(Overlay::Camera) => "camera",
         Some(Overlay::Light) => "light",
         _ => "screen",
     }
@@ -780,6 +864,7 @@ fn screen_plan(
         Overlay::Tv => tv_plan(app, row, w, h),
         Overlay::Player => player_plan(app, row, w, h),
         Overlay::Thermostat => thermostat_plan(app, row, w, h),
+        Overlay::Camera => camera_plan(app, row, w, h),
         _ => None,
     }
 }
@@ -2580,8 +2665,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.get_player_shown(),
             app.get_tv_shown(),
             app.get_thermostat_shown(),
+            app.get_camera_shown(),
         );
-        let activity_navigation = activity_controls.navigation_pending(&app)
+        let activity_navigation = cameras.navigation_pending()
+            || activity_controls.navigation_pending(&app)
             || tv_controls.navigation_pending()
             || thermostat_controls.navigation_pending();
         // A page turn on the controls screen slides like a navigation, but the
@@ -2659,6 +2746,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.get_player_shown(),
                     app.get_tv_shown(),
                     app.get_thermostat_shown(),
+                    app.get_camera_shown(),
                 )
         {
             dismiss_feedback(&app, &mut scene_controls, &mut light_controls);
@@ -2667,8 +2755,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frames += 1;
                 render_us += us;
                 frame_max = frame_max.max(us);
-                let entering =
-                    app.get_player_shown() || app.get_tv_shown() || app.get_thermostat_shown();
+                let entering = app.get_player_shown()
+                    || app.get_tv_shown()
+                    || app.get_thermostat_shown()
+                    || app.get_camera_shown();
                 let chosen = panel::Transition::chosen();
                 // The same decision either way round. Going in, the row comes
                 // from the press that was read a pass or two ago - this screen
