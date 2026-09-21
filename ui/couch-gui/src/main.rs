@@ -387,7 +387,13 @@ fn tv_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<pan
         });
     }
     let _ = height;
-    Some(plan)
+    // Showing what is playing: a photograph behind everything, which crosses
+    // band by band rather than falling to a background it does not have.
+    Some(if app.invoke_tvs_banded() {
+        plan.banded()
+    } else {
+        plan
+    })
 }
 
 /// The media player, as one plan: a header over its artwork, what is playing,
@@ -464,6 +470,13 @@ fn player_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option
         });
     }
     let _ = height;
+    // A photograph behind everything has no background to fall to: the panel
+    // crosses to it band by band instead, and the pieces go with it - the
+    // whole page arrives with the bands. What travels and the row's card are
+    // untouched either way.
+    if app.invoke_ps_banded() {
+        return Some(plan.banded());
+    }
     // A page with almost nothing on it crosses with the room rather than
     // arriving after it: "Connecting to Sonos…" is a line and a button, and
     // waiting for the room to go first leaves the panel bare.
@@ -729,6 +742,16 @@ fn device_move(before: Option<Overlay>, now: Option<Overlay>, row: Option<panel:
             screen: now.or(before),
             entering: now.is_some(),
         },
+    }
+}
+
+/// What to call the shape in the line the loop prints: a lift that crosses
+/// band by band is a different thing to watch and a different thing to cost,
+/// so it says so.
+fn shape_name(opening: panel::Opening, plan: Option<&panel::LiftPlan>) -> String {
+    match plan.map(|plan| plan.crossing) {
+        Some(panel::Crossing::Banded) => "Lift(banded)".into(),
+        _ => format!("{opening:?}"),
     }
 }
 
@@ -2194,6 +2217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         screen_plan(&app, which, row, screen.width as i32, screen.height as i32)
                     })
                     .filter(|_| chosen.opening == panel::Opening::Lift);
+                let shape = shape_name(chosen.opening, plan.as_ref());
                 let cost = match plan {
                     // The lift is not a window: it crosses the two pages and
                     // carries the row's card up between them.
@@ -2207,10 +2231,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // What it cost, on one line, so a shape can be judged from
                 // the remote's log as well as by looking at it.
                 println!(
-                    "couch-gui: {} {:?} {} ({} frames, {} ms, {} us/frame mean, {} us max, \
+                    "couch-gui: {} {} {} ({} frames, {} ms, {} us/frame mean, {} us max, \
                      {} rows/frame mean, {} max)",
                     screen_name(device_screen(&app).or(was_screen)),
-                    chosen.opening,
+                    shape,
                     if opening { "open" } else { "close" },
                     cost.frames,
                     chosen.time.as_millis(),
@@ -2701,10 +2725,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let name = screen_name(device_screen(&app).or(was_device));
                 let way = if entering { "open" } else { "close" };
                 match plan {
-                    Some(_) => println!(
-                        "couch-gui: {name} {:?} {way} ({} frames, {} ms, {} us/frame mean, \
+                    Some(plan) => println!(
+                        "couch-gui: {name} {} {way} ({} frames, {} ms, {} us/frame mean, \
                          {} us max, {} rows/frame mean, {} max)",
-                        chosen.opening,
+                        shape_name(chosen.opening, Some(&plan)),
                         cost.frames,
                         chosen.time.as_millis(),
                         cost.work_us / cost.frames.max(1),

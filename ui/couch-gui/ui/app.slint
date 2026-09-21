@@ -394,6 +394,7 @@ export component App inherits Window {
     public function tvs-row-y(which: int) -> length { return television.row-y(which); }
     public function tvs-row-h(which: int) -> length { return television.row-h(which); }
     public function tvs-lift-ready() -> bool { return television.lift-ready(); }
+    public function tvs-banded() -> bool { return television.banded(); }
     // The player's own, the same set again.
     public function ps-title-x() -> length { return cinema.title-box-x(); }
     public function ps-title-y() -> length { return cinema.title-box-y(); }
@@ -415,6 +416,7 @@ export component App inherits Window {
     public function ps-row-h(which: int) -> length { return cinema.row-h(which); }
     public function ps-lift-ready() -> bool { return cinema.lift-ready(); }
     public function ps-sparse() -> bool { return cinema.sparse(); }
+    public function ps-banded() -> bool { return cinema.banded(); }
     // The thermostat's own, the same set again.
     public function ths-title-x() -> length { return thermostat-page.title-box-x(); }
     public function ths-title-y() -> length { return thermostat-page.title-box-y(); }

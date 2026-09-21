@@ -760,36 +760,47 @@ on the screens that exist:
 The last row is the frame the owner reported, and the check fails on it.
 
 
-### Artwork is the one page a lift cannot build
+### A page with a photograph behind it crosses band by band
 
 Two screens carry a photograph behind everything: the television while it is
-showing what is playing, and the player once the album art has arrived. The
-lift builds a page out of bands over a flat background, and a photograph is
-not one - bringing it in means cross-fading the whole panel, which is about
-twenty-four milliseconds a frame on this device against a 16.7 ms budget, so
-it cannot be done as one fade at all. Both report `lift-ready()` false and
-slide today.
+showing what is playing, and the player once the album art has arrived. There
+is no flat background for the room to fall to, and fading the whole panel at
+once is about twenty-four milliseconds on this device - more than a frame.
 
-It is worth knowing that this is nearly always the *second* picture, not the
-first: a speaker pressed in the room list opens on "Connecting to Sonos…"
-with no artwork, and the artwork arrives afterwards on a page that is already
-up. So the player does lift out of its row; it is the page it settles into
-that could not have been built that way.
+So those plans say `Crossing::Banded`, and the rest of the panel goes straight
+from one page to the other: every scanline crosses in its own window,
+staggered, so that only the band that is mid-crossing costs anything. The rows
+before it are still the page they were and the rows after it are already the
+page they are becoming, and `changed_rows` sends neither. `LIFT_BANDED_FADE`
+is 0.20 of the transition - five frames at 400 ms, the floor below which a
+fade reads as a step - and `LIFT_BANDED_WAVE` is 0.74, so the last band lands
+where a falling screen's footer would and about a quarter of the panel is
+crossing at any moment.
 
-If it ever has to, the cheap shape is a **banded cross-fade**: give each
-horizontal band of the panel its own fade window, staggered, so only a
-fraction of the panel is blending in any one frame - the same trick the room's
-fall already uses per scanline, but with a wave long enough to matter. With a
-fade of 0.20 of the transition (five frames at 400 ms, the floor below which a
-fade reads as a step) and a wave of 0.60, a third of the panel is mid-fade at
-once: about 0.33 panels of blending a frame, plus copies for the rest.
+Measured, on a speaker with album art up: **mean 0.14 panels a frame, worst
+0.28** - inside the same caps as every other screen, which is the point. The
+arithmetic said a third of the panel would be crossing and about eight
+milliseconds a frame; the measurement is what the constants were set from.
 
-At 24 ms a panel that is about 8 ms of composition in the frames where the
-band is widest, against a 16.7 ms budget that already loses 10-12 ms to jitter
-at its worst. So the stagger has to be longer than the arithmetic alone
-suggests, and it has to be measured on the device rather than argued from the
-model - which is what the caps and the summary line are for.
+**What does not change.** The name, the icon and the row's card behave exactly
+as they do in a falling lift: cut from the room, flown to the header, handed
+over. Only the way the rest of page A becomes page B is different. A banded
+plan has no pieces at all - the whole page arrives with the bands - so a
+screen does not describe itself twice.
 
+**The page it starts on is the page it ends on.** Both pages are snapshots
+taken before the first frame and the plan is built once, so artwork arriving
+while the transition is running cannot swap page B underneath it; it appears
+afterwards, on a page that is already up, the way it does today.
+
+The log says which shape ran: `player Lift(banded) open`.
+
+**What a ghost is, over a photograph.** The rule that no second copy of the
+name is left behind in the row used to be "nothing here is brighter than
+0x50", which works when the room fades to a background and not at all when
+the page arriving is bright everywhere. It is measured against the page now:
+ink brighter than both the card the name sat on and the pixel arriving
+underneath it belongs to neither.
 
 ### Whole-row list windows
 

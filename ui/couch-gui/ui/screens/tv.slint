@@ -217,12 +217,11 @@ export component Television inherits Rectangle {
             : (which == 0 ? 134px : 150px);
     }
     pure function transport() -> bool { return !root.infrared && !root.generic; }
-    /// Whether this page can be built out of bands at all. A screen showing
-    /// artwork is a photograph behind everything, and a lift would have to
-    /// cross-fade the whole panel to bring it in - about twenty-four
-    /// milliseconds a frame on this device, more than a whole frame. Those
-    /// slide in from the side, as they always did.
-    public pure function lift-ready() -> bool { return !(root.media-view && root.media-has-art); }
+    /// Every television page can be lifted out of its row. One showing what
+    /// is playing has a photograph behind everything and crosses band by
+    /// band instead of falling to a background it does not have.
+    public pure function lift-ready() -> bool { return true; }
+    public pure function banded() -> bool { return root.media-view && root.media-has-art; }
 
     keys:=FocusScope {enabled:root.shown;key-pressed(e)=>{
         if(root.generic){
