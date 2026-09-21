@@ -33,7 +33,17 @@ pub(crate) fn kelvin(mirek: u16) -> u32 {
     ((exact + 25) / 50) * 50
 }
 
+/// The white a lamp is given when it is asked for a colour temperature and
+/// has none to step from: 2700 K, an ordinary warm bulb.
+const WARM_WHITE_MIREK: u16 = 370;
+
 /// One step of colour temperature, in mirek.
+///
+/// A lamp that is showing a colour, or a scene made of colours, has a range
+/// and no colour temperature at all - Hue says so with `mirek_valid: false` -
+/// and it stays that way until somebody gives it one. So the first press on
+/// such a lamp does not step: it turns it to warm white, inside the lamp's
+/// own limits, and the presses after that step from there.
 ///
 /// The step is a twentieth of this light's own range, so the whole range is
 /// about twenty presses whatever the lamp's limits are, and never finer than
@@ -51,9 +61,9 @@ pub(crate) fn mirek_step(
     let Some((cool, warm)) = light.mirek_range else {
         return Err("This light does not support colour temperature.");
     };
-    let current = target
-        .or(light.mirek)
-        .ok_or("Checking colour temperature. Try again in a moment.")?;
+    let Some(current) = target.or(light.mirek) else {
+        return Ok(WARM_WHITE_MIREK.clamp(cool, warm));
+    };
     let step = i32::from((warm - cool) / 20).max(5);
     Ok((i32::from(current) - delta.signum() * step).clamp(i32::from(cool), i32::from(warm)) as u16)
 }
@@ -319,12 +329,21 @@ mod tests {
         // A narrow range still moves five mirek at a time rather than nothing.
         let narrow = lamp(true, Some((200, 260)));
         assert_eq!(mirek_step(&narrow, Some(230), 1), Ok(225));
-        // And a light with no range, or no reading, refuses instead of
-        // inventing a colour temperature.
+        // A light with no range refuses instead of inventing one.
         assert!(mirek_step(&lamp(true, None), None, 1).is_err());
+        // A lamp showing a colour has a range and no colour temperature, for
+        // as long as it shows that colour. Either key turns it to warm white,
+        // and the next press steps from there.
         let mut unread = lamp(true, Some((153, 500)));
         unread.mirek = None;
-        assert!(mirek_step(&unread, None, 1).is_err());
+        assert_eq!(mirek_step(&unread, None, 1), Ok(370));
+        assert_eq!(mirek_step(&unread, None, -1), Ok(370));
+        assert_eq!(mirek_step(&unread, Some(370), 1), Ok(353));
+        // Warm white is still inside the lamp's own limits.
+        let mut cool_only = lamp(true, Some((153, 300)));
+        cool_only.mirek = None;
+        assert_eq!(mirek_step(&cool_only, None, 1), Ok(300));
+        // A lamp that cannot be reached is still refused.
         unread.on = None;
         assert!(mirek_step(&unread, Some(300), 1).is_err());
     }
