@@ -3342,6 +3342,102 @@ mod tests {
         assert!(!opens_screen(&hue));
     }
 
+    /// A built-in Hue room is a lamp as far as this screen is concerned.
+    ///
+    /// The bridge never reports a grouped light's colour temperature, so
+    /// `couch_hue` works the range and the value out from the room's lamps;
+    /// from here on nothing is special about a room, which is the point. The
+    /// write goes out through the one queue a level uses, so a held Channel key
+    /// is paced exactly as a held Volume key on the same room.
+    #[test]
+    fn a_built_in_hue_room_gets_the_colour_bar_and_sends_the_room_a_mirek() {
+        const NAME: &str =
+            "lights::tests::a_built_in_hue_room_gets_the_colour_bar_and_sends_the_room_a_mirek";
+        if std::env::var_os("COUCH_TEST_HUE_ROOM_WHITE").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_HUE_ROOM_WHITE", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let _window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let mut controller = Controller::install(&app);
+        let id = "hue:bridge/room:00000000-0000-0000-0000-000000000001".to_string();
+        let room_light = |mirek_range| {
+            Some(DeviceState::Light(Light {
+                entity_id: id.clone(),
+                name: "Living room".into(),
+                on: Some(true),
+                brightness_percent: Some(60),
+                dimmable: true,
+                mirek: Some(370),
+                mirek_range,
+            }))
+        };
+        controller.entries = vec![Entry {
+            icon: couch_model::Icon::Lamp,
+            name: "Living room".into(),
+            id: id.clone(),
+            state: room_light(Some((200, 454))),
+            hue: true,
+            matter: false,
+            plugin: None,
+            media: false,
+            activity: None,
+            unpaired: false,
+        }];
+        controller.room = Some(Id::new("living-room"));
+        app.set_light_shown(true);
+        controller.open_screen(&app, 0);
+        // The room draws the colour bar, in the range its lamps share.
+        assert!(app.get_light_screen_tunable());
+        assert!(app.get_light_screen_mirek_known());
+        assert_eq!(app.get_light_screen_kelvin(), "2700 K");
+
+        // Channel steps it, a twentieth of the room's own 200..454 range.
+        controller.screen_action(&app, "warmth", 1);
+        assert_eq!(
+            controller.mirek_pending.iter().cloned().collect::<Vec<_>>(),
+            [(id.clone(), 358)]
+        );
+        assert_eq!(app.get_light_screen_detail(), "");
+
+        // It leaves through the queue a level uses, addressed to the room.
+        controller.send_brightness();
+        assert_eq!(controller.mirek_flight, Some((id.clone(), 358)));
+        assert_eq!(controller.busy.as_deref(), Some(id.as_str()));
+        assert!(controller.mirek_pending.is_empty());
+        // That queue is the pacing: one write out at a time, and never two
+        // inside 100 ms, whether they are levels or colour temperatures.
+        controller.screen_action(&app, "warmth", 1);
+        controller.send_brightness();
+        assert_eq!(controller.mirek_flight, Some((id.clone(), 358)));
+        controller.release();
+        controller.send_brightness();
+        assert_eq!(controller.mirek_flight, Some((id.clone(), 358)));
+        assert_eq!(controller.mirek_pending.len(), 1);
+
+        // A room whose lamps share no range is offered no colour bar, and the
+        // channel keys do nothing on it.
+        controller.mirek_pending.clear();
+        controller.entries[0].state = room_light(None);
+        controller.last_screen = None;
+        controller.open_screen(&app, 0);
+        assert!(!app.get_light_screen_tunable());
+        controller.screen_action(&app, "warmth", 1);
+        assert!(controller.mirek_pending.is_empty());
+        assert_eq!(app.get_light_screen_detail(), "");
+    }
+
     /// A colour temperature is queued, sent and requeued exactly as a level
     /// is: only the latest target per row is ever in flight, and a package
     /// that is busy for a moment costs the user nothing and says nothing.
