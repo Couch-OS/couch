@@ -1,4 +1,5 @@
 import { Theme } from "../theme.slint";
+import { NoticeCard } from "notice_card.slint";
 
 // Shown while the microphone is open, and for a moment afterwards with what
 // Home Assistant heard and said.
@@ -36,35 +37,7 @@ export component MicOverlay inherits Rectangle {
         padding-left: 34px;
         padding-right: 34px;
 
-        Rectangle {
-            height: 84px;
-            background: Theme.surface-raised;
-            border-radius: Theme.r-card;
-            border-width: 2px;
-            border-color: root.tone;
-            HorizontalLayout {
-                alignment: center;
-                spacing: 14px;
-                VerticalLayout {
-                    alignment: center;
-                    Rectangle {
-                        width: 22px; height: 22px;
-                        border-radius: 11px;
-                        background: root.tone;
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    Text {
-                        text: root.phase-label;
-                        font-size: 26px;
-                        font-weight: 700;
-                        letter-spacing: 2px;
-                        color: Theme.text;
-                    }
-                }
-            }
-        }
+        NoticeCard { tone: root.tone; word: root.phase-label; }
 
         // The meter is the honest part: it moves with what the capsule hears,
         // so a microphone that is open but deaf looks different from one that
