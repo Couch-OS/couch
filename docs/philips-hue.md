@@ -40,7 +40,7 @@ carry a highlight, because OK has to know which one it presses.
 | --- | --- | --- |
 | Volume up / down | Brighter / dimmer, 5% a press | More / less open, 5% a press |
 | Up / down | The same as volume | The same as volume |
-| Channel up / down | Cooler / warmer, a twentieth of the lamp's range a press (at least 5 mirek). A lamp with no colour temperature ignores them | Nothing |
+| Channel up / down | Cooler / warmer, a twentieth of the lamp's range a press (at least 5 mirek). A lamp with no colour temperature ignores them; a lamp that is showing a colour has none to step from, so the first press turns it to warm white (2700 K) and the next ones step from there | Nothing |
 | Left / right | Nothing | Move along Open, Stop and Close |
 | OK | On / off | Presses the highlighted button - Open to begin with |
 | Power | On / off | Open / close |
