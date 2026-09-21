@@ -34,6 +34,8 @@ mod power_ui;
 mod qr;
 mod room_sonos;
 mod scenes;
+#[cfg(test)]
+mod screen_pictures;
 mod shortcuts;
 mod sonos_player;
 mod system;
