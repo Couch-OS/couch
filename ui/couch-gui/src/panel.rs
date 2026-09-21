@@ -112,6 +112,102 @@ pub struct SlideCost {
 /// How long a page takes to cross.
 pub const SLIDE: Duration = Duration::from_millis(180);
 
+/// How long the iris takes to open or close.
+///
+/// One constant on purpose: this is the number to turn on the device. It is
+/// deliberately slower than a page slide - the window travels much further
+/// than a page does, and at the slide's 180 ms it reads as a flash rather
+/// than as the row opening.
+pub const IRIS: Duration = Duration::from_millis(300);
+
+/// Where the focus ring sits relative to the window it rides, which is where
+/// `FocusRing` sits relative to a row: `ring-offset` plus `ring-width`.
+const IRIS_RING_BLEED: i32 = 6;
+/// Its thickness, the same `Theme.ring-width` the row's own ring has.
+const IRIS_RING_WIDTH: i32 = 3;
+/// How much of the transition the ring rides for. It is not faded out - a
+/// fade is a per-pixel blend, and this compositor never blends anything - so
+/// it rides the window all the way: the window ends at the panel's edges and
+/// the ring sits outside the window, so it leaves the panel by itself, edge
+/// by edge, and is never seen to stop. A lower value cuts it off early, which
+/// on a row near the top showed as the bottom of the ring vanishing while it
+/// was still a hundred and fifty pixels from the edge.
+const IRIS_RING_UNTIL: f32 = 1.0;
+/// The ring's colour, packed the way the panel takes it. `Theme.accent` is
+/// #FFFFFF, which is the same word whichever way round the channels go.
+const IRIS_RING: u32 = 0xffff_ffff;
+
+/// A rounded-rectangle window onto one page over another, in panel pixels.
+///
+/// Both ends of the travel are parameters, so the same compositor can open a
+/// window from any rect to any other: a room row into the control screen
+/// today, a device row into its packaged controls if that is wanted later.
+#[derive(Copy, Clone, PartialEq, Debug, Default)]
+pub struct Window {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub r: i32,
+}
+
+impl Window {
+    /// The whole panel, square-cornered: the far end of an opening iris.
+    pub fn panel(width: u32, height: u32) -> Self {
+        Window {
+            x: 0,
+            y: 0,
+            w: width as i32,
+            h: height as i32,
+            r: 0,
+        }
+    }
+    /// This window `t` of the way to `other`, every number an integer so the
+    /// row loop below never touches a float.
+    fn lerp(self, other: Window, t: f32) -> Window {
+        let at = |a: i32, b: i32| a + (((b - a) as f32) * t).round() as i32;
+        Window {
+            x: at(self.x, other.x),
+            y: at(self.y, other.y),
+            w: at(self.w, other.w),
+            h: at(self.h, other.h),
+            r: at(self.r, other.r),
+        }
+    }
+    /// The same window grown by `n` pixels on every side, corners included:
+    /// the rect the ring rides.
+    fn grown(self, n: i32) -> Window {
+        Window {
+            x: self.x - n,
+            y: self.y - n,
+            w: self.w + 2 * n,
+            h: self.h + 2 * n,
+            r: self.r + n,
+        }
+    }
+    /// And shrunk, which is how a stroke is drawn: the outline is the outer
+    /// window minus this one.
+    fn shrunk(self, n: i32) -> Window {
+        Window {
+            x: self.x + n,
+            y: self.y + n,
+            w: self.w - 2 * n,
+            h: self.h - 2 * n,
+            r: (self.r - n).max(0),
+        }
+    }
+}
+
+/// Which page an iris shows inside its window; the other one surrounds it.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum Shown {
+    /// The page being arrived at: a control screen opening out of its row.
+    Arriving,
+    /// The page the panel is already showing: that screen closing back onto
+    /// the row, with the room behind it already rendered.
+    Leaving,
+}
+
 pub struct Panel {
     fb: File,
     map: &'static mut [u32],
@@ -614,6 +710,82 @@ impl Panel {
         }
     }
 
+    /// Open a rounded window from `from` to `to`, on the panel, without
+    /// rendering anything.
+    ///
+    /// Same two buffers as `slide` and the same pacing: `snapshot` with the
+    /// old page showing, change the state, `render_offscreen` the new one.
+    /// Where a slide moves one page off the side, this cuts a growing
+    /// rounded rect out of one page and shows the other through it, which is
+    /// three `copy_from_slice` runs a row instead of two - A, B, A - and one
+    /// square root on each of the `2r` rows at the two ends. Nothing is
+    /// blended and nothing is re-rasterised, so a frame costs what a slide
+    /// frame costs: about a millisecond of copying, whatever the clock.
+    ///
+    /// The last frame is the whole of the page that is arriving, so when this
+    /// returns the panel and RAM agree again - including on a close, where
+    /// the window stops at the row rather than at nothing.
+    pub fn iris(
+        &mut self,
+        from: Window,
+        to: Window,
+        shown: Shown,
+        duration: Duration,
+    ) -> SlideCost {
+        let report = std::env::var_os("COUCH_REGION").is_some();
+        let duration = duration.max(FRAME).as_secs_f32();
+        let began = Instant::now();
+        let mut cost = SlideCost::default();
+        loop {
+            let started = Instant::now();
+            // As in `slide`: a frame composed now reaches the glass at the
+            // next refresh, so it is drawn one period ahead of the clock.
+            let t = ((started.duration_since(began) + FRAME).as_secs_f32() / duration).min(1.0);
+            let done = t >= 1.0;
+            self.compose_iris(from, to, shown, t);
+            let work = started.elapsed();
+            self.pace(started);
+            let wait = started.elapsed().saturating_sub(work);
+            let (work_us, wait_us) = (work.as_micros() as u64, wait.as_micros() as u64);
+            cost.frames += 1;
+            cost.work_us += work_us;
+            cost.wait_us += wait_us;
+            cost.max_us = cost.max_us.max(work_us);
+            if report {
+                let window = from.lerp(to, ease_out(t));
+                println!(
+                    "couch-gui: iris frame {}: {}x{} at {},{} r{}, {work_us} us, {wait_us} us paced",
+                    cost.frames, window.w, window.h, window.x, window.y, window.r
+                );
+            }
+            if done {
+                return cost;
+            }
+        }
+    }
+
+    /// One iris frame into the framebuffer.
+    fn compose_iris(&mut self, from: Window, to: Window, shown: Shown, t: f32) {
+        let (width, height, stride) = (
+            self.width as usize,
+            self.height as usize,
+            self.stride_px as usize,
+        );
+        let (arriving, leaving) = (pixels(&self.ram), pixels(&self.spare));
+        iris_frame(
+            Surface {
+                pixels: &mut self.map[..],
+                stride,
+                width,
+                height,
+            },
+            (arriving, leaving),
+            (from, to),
+            shown,
+            t,
+        );
+    }
+
     /// One transition frame straight into the framebuffer: A shifted `dx`
     /// pixels out of the way and B filling what it uncovered, except the
     /// `keep` bands, which are B as they stand.
@@ -693,6 +865,137 @@ impl Panel {
 /// the u32 the panel takes, so this is a view, not a conversion.
 fn pixels(buf: &[Abgr]) -> &[u32] {
     unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u32, buf.len()) }
+}
+
+/// Somewhere to compose into: the panel's own map, or a plain vector in a
+/// test. The stride is separate from the width because the framebuffer's rows
+/// are wider than the panel on some of these devices.
+pub(crate) struct Surface<'a> {
+    pub pixels: &'a mut [u32],
+    pub stride: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// What an iris puts on the panel `t` of the way through: the window eased to
+/// where it should be, one page seen through it and the other around it, and
+/// the focus ring on its edge while it still has one.
+///
+/// A free function over a `Surface` rather than a method, so the pictures the
+/// tests keep come out of exactly the code the panel runs.
+pub(crate) fn iris_frame(
+    mut dst: Surface<'_>,
+    pages: (&[u32], &[u32]),
+    travel: (Window, Window),
+    shown: Shown,
+    t: f32,
+) {
+    let (arriving, leaving) = pages;
+    let last = t >= 1.0;
+    // Which page is inside the window depends on the direction. On the last
+    // frame neither is: whatever the window was doing, the page that is
+    // arriving is what is left on the panel, so RAM and the panel agree from
+    // here on - including on a close, where the window stops at the row.
+    let (outside, inside) = match (last, shown) {
+        (true, _) => (arriving, arriving),
+        (false, Shown::Arriving) => (leaving, arriving),
+        (false, Shown::Leaving) => (arriving, leaving),
+    };
+    let window = if last {
+        Window::default()
+    } else {
+        travel.0.lerp(travel.1, ease_out(t))
+    };
+    compose_window(&mut dst, outside, inside, window);
+    if !last && t < IRIS_RING_UNTIL {
+        stroke_window(
+            &mut dst,
+            window.grown(IRIS_RING_BLEED),
+            IRIS_RING_WIDTH,
+            IRIS_RING,
+        );
+    }
+}
+
+/// `inside` seen through the window and `outside` around it: three copies a
+/// row and never a blend.
+fn compose_window(dst: &mut Surface<'_>, outside: &[u32], inside: &[u32], window: Window) {
+    let (w, h, stride) = (dst.width, dst.height, dst.stride);
+    for y in 0..h {
+        let row = &mut dst.pixels[y * stride..y * stride + w];
+        let (ro, ri) = (&outside[y * w..(y + 1) * w], &inside[y * w..(y + 1) * w]);
+        match window_run(window, y as i32, w) {
+            Some((l, r)) => {
+                row[..l].copy_from_slice(&ro[..l]);
+                row[l..r].copy_from_slice(&ri[l..r]);
+                row[r..].copy_from_slice(&ro[r..]);
+            }
+            None => row.copy_from_slice(ro),
+        }
+    }
+}
+
+/// The outline of a rounded window, `thickness` pixels thick, filled in one
+/// colour: the outer window minus the same window that much smaller. Filled
+/// rather than blended, like everything else here.
+fn stroke_window(dst: &mut Surface<'_>, outer: Window, thickness: i32, colour: u32) {
+    let (w, h, stride) = (dst.width, dst.height, dst.stride);
+    let inner = outer.shrunk(thickness);
+    for y in 0..h {
+        let Some((lo, ro)) = window_run(outer, y as i32, w) else {
+            continue;
+        };
+        let row = &mut dst.pixels[y * stride..y * stride + w];
+        match window_run(inner, y as i32, w) {
+            Some((li, ri)) => {
+                row[lo..li].fill(colour);
+                row[ri..ro].fill(colour);
+            }
+            None => row[lo..ro].fill(colour),
+        }
+    }
+}
+
+/// The run of the inner page on one row of a rounded window: nothing above or
+/// below it, otherwise `[left, right)` clamped to the panel, inset at the
+/// corners.
+///
+/// Integer throughout and allocation-free, because it runs 800 times a frame.
+/// Only the `2r` rows at the two ends pay for a square root, over a radius of
+/// a dozen-odd pixels; every other row is two comparisons.
+fn window_run(window: Window, y: i32, width: usize) -> Option<(usize, usize)> {
+    if window.w <= 0 || window.h <= 0 || y < window.y || y >= window.y + window.h {
+        return None;
+    }
+    let r = window.r.clamp(0, window.w.min(window.h) / 2);
+    // Doubled coordinates, so the row's centre line stays an integer: how far
+    // this row is past the centre of the corner circles, times two.
+    let above = 2 * (window.y + r) - (2 * y + 1);
+    let below = (2 * y + 1) - 2 * (window.y + window.h - r);
+    let over = above.max(below);
+    // The half-chord of the corner circle at this row, in quarter pixels, so
+    // that flooring the square root costs a quarter of a pixel rather than
+    // most of one; the inset is then rounded to the nearest whole pixel.
+    let inset = if r > 0 && over > 0 {
+        let half = isqrt((16 * r * r - 4 * over * over).max(0) as u32) as i32;
+        (4 * r - half + 2) / 4
+    } else {
+        0
+    };
+    let left = (window.x + inset).clamp(0, width as i32) as usize;
+    let right = (window.x + window.w - inset).clamp(left as i32, width as i32) as usize;
+    (left < right).then_some((left, right))
+}
+
+/// Integer square root for the corner inset. The argument is at most `16r^2`
+/// for a radius of a dozen pixels, so this is a few dozen comparisons on a
+/// couple of dozen rows, and it keeps floating point out of the compositor.
+fn isqrt(n: u32) -> u32 {
+    let mut root = 0;
+    while (root + 1) * (root + 1) <= n {
+        root += 1;
+    }
+    root
 }
 
 /// Slint's `ease-out`, cubic-bezier(0, 0, 0.58, 1), so a copied slide moves
@@ -804,5 +1107,231 @@ impl Platform for CouchPlatform {
     }
     fn duration_since_start(&self) -> Duration {
         self.start.elapsed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const W: usize = 16;
+    const H: usize = 16;
+    const A: u32 = 0xffff_0000;
+    const B: u32 = 0xff00_ff00;
+
+    /// One composed frame as a picture: `.` is page A, `#` is page B and `o`
+    /// is the ring, one character a pixel.
+    fn frame(window: Window, ring: Option<i32>, shown: Shown) -> Vec<String> {
+        let (a, b) = (vec![A; W * H], vec![B; W * H]);
+        let (outside, inside) = match shown {
+            Shown::Arriving => (&a, &b),
+            Shown::Leaving => (&b, &a),
+        };
+        let mut pixels = vec![0u32; W * H];
+        let mut dst = Surface {
+            pixels: &mut pixels,
+            stride: W,
+            width: W,
+            height: H,
+        };
+        compose_window(&mut dst, outside, inside, window);
+        if let Some(bleed) = ring {
+            stroke_window(&mut dst, window.grown(bleed), 1, IRIS_RING);
+        }
+        pixels
+            .chunks(W)
+            .map(|row| {
+                row.iter()
+                    .map(|p| match *p {
+                        A => '.',
+                        B => '#',
+                        IRIS_RING => 'o',
+                        _ => '?',
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The window is exactly the rect it is given, with the corners taken off
+    /// by the radius and nothing anywhere else.
+    #[test]
+    fn the_window_shows_the_arriving_page_through_the_rect_it_is_given() {
+        // The first frame of an open: page A everywhere but the row.
+        let row = Window {
+            x: 4,
+            y: 6,
+            w: 8,
+            h: 4,
+            r: 2,
+        };
+        assert_eq!(
+            frame(row, None, Shown::Arriving),
+            [
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                ".....######.....",
+                "....########....",
+                "....########....",
+                ".....######.....",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+            ]
+        );
+        // The last frame of an open: the arriving page, whole. `iris` reaches
+        // it by composing with an empty window, which is what this is.
+        assert_eq!(
+            frame(Window::default(), None, Shown::Arriving),
+            vec![".".repeat(W); H]
+        );
+        assert_eq!(
+            frame(Window::panel(W as u32, H as u32), None, Shown::Arriving),
+            vec!["#".repeat(W); H]
+        );
+    }
+
+    /// A frame from the middle of the travel: the window is bigger, its
+    /// corners are still cut, and everything outside it is still page A.
+    #[test]
+    fn a_frame_in_the_middle_is_the_new_page_inside_the_old_one_outside() {
+        let row = Window {
+            x: 4,
+            y: 6,
+            w: 8,
+            h: 4,
+            r: 2,
+        };
+        let whole = Window::panel(W as u32, H as u32);
+        // Halfway there, every number is halfway there, radius included.
+        assert_eq!(
+            row.lerp(whole, 0.5),
+            Window {
+                x: 2,
+                y: 3,
+                w: 12,
+                h: 10,
+                r: 1
+            }
+        );
+        // Drawn with a radius worth seeing: page B inside, page A outside,
+        // and the corners cut into it.
+        let half = Window {
+            x: 2,
+            y: 3,
+            w: 12,
+            h: 10,
+            r: 4,
+        };
+        assert_eq!(
+            frame(half, None, Shown::Arriving),
+            [
+                "................",
+                "................",
+                "................",
+                "....########....",
+                "...##########...",
+                "...##########...",
+                "..############..",
+                "..############..",
+                "..############..",
+                "..############..",
+                "...##########...",
+                "...##########...",
+                "....########....",
+                "................",
+                "................",
+                "................",
+            ]
+        );
+        // The reverse is the mirror: the page that is leaving is what shows
+        // through the window, and the page behind it is what surrounds it.
+        assert_eq!(
+            frame(half, None, Shown::Leaving),
+            frame(half, None, Shown::Arriving)
+                .iter()
+                .map(|row| row.replace('#', "@").replace('.', "#").replace('@', "."))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The ring is an outline on the window's edge, one pixel outside it
+    /// here, and it never blends: every pixel it touches is the ring colour.
+    #[test]
+    fn the_ring_is_an_outline_around_the_window_and_nothing_else() {
+        let row = Window {
+            x: 5,
+            y: 6,
+            w: 6,
+            h: 4,
+            r: 1,
+        };
+        assert_eq!(
+            frame(row, Some(1), Shown::Arriving),
+            [
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+                ".....oooooo.....",
+                "....o######o....",
+                "....o######o....",
+                "....o######o....",
+                "....o######o....",
+                ".....oooooo.....",
+                "................",
+                "................",
+                "................",
+                "................",
+                "................",
+            ]
+        );
+    }
+
+    /// The row loop's arithmetic, on its own: no run above or below the
+    /// window, the full width in the middle, an inset at the corners, and
+    /// everything clamped to the panel once the window grows past it.
+    #[test]
+    fn a_rows_run_is_inset_at_the_corners_and_clamped_to_the_panel() {
+        let window = Window {
+            x: 4,
+            y: 4,
+            w: 8,
+            h: 8,
+            r: 3,
+        };
+        assert_eq!(window_run(window, 3, W), None);
+        assert_eq!(window_run(window, 12, W), None);
+        assert_eq!(window_run(window, 7, W), Some((4, 12)));
+        // The first row is the deepest into the corner, and the inset shrinks
+        // to nothing by the time the rows clear it.
+        let insets: Vec<usize> = (4..8)
+            .map(|y| window_run(window, y, W).unwrap().0 - 4)
+            .collect();
+        assert_eq!(insets, [2, 1, 0, 0]);
+        // Symmetric top to bottom.
+        for y in 0..4 {
+            assert_eq!(window_run(window, 4 + y, W), window_run(window, 11 - y, W));
+        }
+        // Past the edges of the panel the run is the panel, not more.
+        let big = Window {
+            x: -20,
+            y: -20,
+            w: 60,
+            h: 60,
+            r: 6,
+        };
+        assert_eq!(window_run(big, 0, W), Some((0, W)));
+        // An empty window has no run at all, which is how the last frame of a
+        // close puts the whole of the page behind it up.
+        assert_eq!(window_run(Window::default(), 0, W), None);
     }
 }

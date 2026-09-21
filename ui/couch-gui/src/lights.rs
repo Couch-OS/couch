@@ -1619,6 +1619,25 @@ impl Controller {
             .iter()
             .any(|input| matches!(input, Input::Open(_) | Input::Back))
     }
+    /// Whether a press already in the queue will open or close the control
+    /// screen, so the loop can keep the frame that is on the panel before it
+    /// happens - page A of the iris (`panel::Panel::iris`).
+    ///
+    /// A row that only switches must not arm it: nothing about the screen
+    /// changes, and a transition with nothing to carry is a third of a second
+    /// of the remote ignoring the keys. Home is not armed either - it leaves
+    /// the room altogether, which is the room list's own business.
+    pub fn screen_pending(&self) -> bool {
+        self.input.borrow().iter().any(|input| match input {
+            // A pick is the press that may open one. It is asked of the row
+            // rather than assumed, the same question `poll` asks below.
+            Input::PhysicalPick(row, _) | Input::Pick(row) => {
+                self.screen.is_none() && self.entries.get(*row).is_some_and(opens_screen)
+            }
+            Input::Screen(name, _) => self.screen.is_some() && name == "close",
+            _ => false,
+        })
+    }
     /// The toast a row press asked for, once.
     pub fn take_notice(&mut self) -> Option<String> {
         self.notice.take()
@@ -3779,6 +3798,232 @@ mod tests {
         );
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The iris itself, on the two real pages, at five points in its travel.
+    /// `COUCH_ROOM_SCREENSHOTS=<dir>` keeps the pictures.
+    #[test]
+    fn the_control_screen_opens_as_a_window_out_of_its_row() {
+        const NAME: &str = "lights::tests::the_control_screen_opens_as_a_window_out_of_its_row";
+        if std::env::var_os("COUCH_TEST_IRIS").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_IRIS", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::ComponentHandle;
+        const W: usize = 480;
+        const H: usize = 800;
+        let config = packaged();
+        let path = std::env::temp_dir().join(format!("couch-iris-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        crate::config_snapshot::start(path.clone());
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.show().unwrap();
+        window.dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
+        let mut controller = Controller::install(&app);
+        let room = Id::new("living-room");
+        let mut entries = configured_in(&config, &room).unwrap();
+        let row = entries[0].plugin.clone().unwrap();
+        let name = entries[0].name.clone();
+        let id = entries[0].id.clone();
+        let mut state = row
+            .state(
+                &name,
+                &reading(serde_json::json!({"light":{"on":true,"brightness":40,"mirek":370}})),
+            )
+            .unwrap();
+        state.set_id(id);
+        entries[0].state = Some(state);
+        controller.entries = entries;
+        controller.room = Some(room);
+        app.set_light_title("Living room".into());
+        app.set_light_shown(true);
+        app.set_feedback_enabled(true);
+        controller.update_rows(&app, true);
+        app.set_light_index(0);
+        let settle = || {
+            for _ in 0..20 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        };
+        let draw = |into: &mut Vec<slint::Rgb8Pixel>| {
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(into, W);
+            });
+        };
+
+        // Page A, the room with the row highlighted, and the box the iris
+        // grows out of - read while that page is still the one showing.
+        let mut a = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut a);
+        let from = crate::room_window(&app);
+        assert_eq!((from.x, from.w, from.r), (20, 440, 14));
+        assert!(from.y > 0 && from.h > 0, "{from:?} is not a row");
+
+        // Page B, the control screen.
+        controller.open_screen(&app, 0);
+        let mut b = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut b);
+        assert!(a != b, "the two pages are the same picture");
+
+        let word = |page: &[slint::Rgb8Pixel]| -> Vec<u32> {
+            page.iter()
+                .map(|p| 0xff00_0000 | ((p.b as u32) << 16) | ((p.g as u32) << 8) | p.r as u32)
+                .collect()
+        };
+        let (arriving, leaving) = (word(&b), word(&a));
+        let to = crate::panel::Window::panel(W as u32, H as u32);
+        for (step, t) in [(0, 0.0), (1, 0.25), (2, 0.5), (3, 0.75), (4, 1.0)] {
+            let mut pixels = vec![0u32; W * H];
+            crate::panel::iris_frame(
+                crate::panel::Surface {
+                    pixels: &mut pixels,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&arriving, &leaving),
+                (from, to),
+                crate::panel::Shown::Arriving,
+                t,
+            );
+            // The ends are the two pages exactly, and nothing in between is
+            // either of them.
+            match step {
+                4 => assert_eq!(pixels, arriving, "the last frame is not page B"),
+                _ => assert_ne!(pixels, arriving, "frame {step} is already page B"),
+            }
+            if step > 0 {
+                assert_ne!(pixels, leaving, "frame {step} never left page A");
+            }
+            if let Some(dir) = std::env::var_os("COUCH_ROOM_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels
+                    .iter()
+                    .flat_map(|p| [*p as u8, (*p >> 8) as u8, (*p >> 16) as u8])
+                    .collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir)
+                        .join(format!("iris-{step}-{:03}.png", (t * 100.0) as u32)),
+                    &bytes,
+                    W as u32,
+                    H as u32,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        // The close is the same travel the other way, onto the same row.
+        let mut pixels = vec![0u32; W * H];
+        crate::panel::iris_frame(
+            crate::panel::Surface {
+                pixels: &mut pixels,
+                stride: W,
+                width: W,
+                height: H,
+            },
+            (&leaving, &arriving),
+            (to, from),
+            crate::panel::Shown::Leaving,
+            1.0,
+        );
+        assert_eq!(pixels, leaving, "the close does not end on the room");
+        app.hide().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Which presses arm the iris that opens the control screen out of its
+    /// row, and which must not: a transition is a third of a second of the
+    /// remote holding the keys, so a row that only switches never starts one.
+    #[test]
+    fn only_a_press_that_opens_or_closes_the_screen_arms_the_transition() {
+        let config = packaged();
+        let (tx, _requests) = mpsc::sync_channel(1);
+        let (_events, rx) = mpsc::channel();
+        let mut controller = Controller {
+            input: Rc::new(RefCell::new(VecDeque::new())),
+            ir_pending: VecDeque::new(),
+            physical_repeat: Rc::new(std::cell::Cell::new(false)),
+            active: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tx,
+            rx,
+            generation: 0,
+            room: Some(Id::new("living-room")),
+            entries: configured_in(&config, &Id::new("living-room")).unwrap(),
+            cache: StateCache::default(),
+            hue: Arc::new(crate::connections::HueFleet::default()),
+            busy: None,
+            busy_since: None,
+            refreshing: false,
+            last_refresh: Instant::now(),
+            brightness_pending: VecDeque::new(),
+            position_targets: HashMap::new(),
+            brightness_flight: None,
+            brightness_until: None,
+            last_brightness_send: Instant::now(),
+            mirek_pending: VecDeque::new(),
+            mirek_flight: None,
+            screen: None,
+            screen_button: 0,
+            last_screen: None,
+            notice: None,
+        };
+        let queue = |controller: &Controller, input: Input| {
+            controller.input.borrow_mut().clear();
+            controller.input.borrow_mut().push_back(input);
+        };
+        // Nothing waiting is nothing to carry.
+        assert!(!controller.screen_pending());
+        // The two lamps and the blind open a screen; the thermostat and the
+        // receiver have screens of their own, which arrive the way they
+        // always have.
+        for (row, arms) in [(0, true), (1, true), (2, true), (3, false), (4, false)] {
+            queue(&controller, Input::Pick(row));
+            assert_eq!(controller.screen_pending(), arms, "pick {row}");
+            queue(&controller, Input::PhysicalPick(row, false));
+            assert_eq!(controller.screen_pending(), arms, "physical pick {row}");
+        }
+        // A lamp with nothing but on and off keeps its toggle, and a toggle
+        // changes nothing a window could open onto.
+        let mut plug = controller.entries[0].clone();
+        plug.plugin.as_mut().unwrap().snapshot.light = Some(LightTraits::default());
+        controller.entries[0] = plug;
+        queue(&controller, Input::Pick(0));
+        assert!(!controller.screen_pending());
+        // A row that is not there at all arms nothing either.
+        queue(&controller, Input::Pick(99));
+        assert!(!controller.screen_pending());
+
+        // With the screen open, Back closes it and arms the reverse; Home
+        // leaves the room altogether, which is the room list's own business
+        // and keeps the transition it has always had.
+        controller.screen = Some(controller.entries[1].id.clone());
+        queue(&controller, Input::Screen("close".into(), 0));
+        assert!(controller.screen_pending());
+        queue(&controller, Input::Screen("home".into(), 0));
+        assert!(!controller.screen_pending());
+        // A press on the bars is not navigation.
+        for name in ["level", "warmth", "toggle", "button", "cover"] {
+            queue(&controller, Input::Screen(name.into(), 1));
+            assert!(!controller.screen_pending(), "{name}");
+        }
+        // And a pick cannot open a screen that is already open.
+        queue(&controller, Input::Pick(1));
+        assert!(!controller.screen_pending());
     }
 
     /// The keys on the open screen, which no longer has a highlight to move.
