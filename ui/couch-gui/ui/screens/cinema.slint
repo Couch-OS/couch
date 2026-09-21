@@ -118,9 +118,15 @@ export component Cinema inherits Rectangle {
                 : (i==0 ? @image-url("../../../../assets/lucide/list-video.svg") : i==1 ? @image-url("../../../../assets/lucide/audio-lines.svg") : @image-url("../../../../assets/lucide/captions.svg"));
             activate=>{root.action(i==0 ? "chapters" : i==1 ? "audio" : "subtitles",0);}}
     }
+    // The message sits in the middle of this box and the button under it. The
+    // message is as tall as the words in it, not a fixed 170px, so a third
+    // line pushes the button down instead of being covered by it - which is
+    // what "Kodi is unavailable. Check the player and its remote-control
+    // settings." did. A one- or two-line message leaves the button where it
+    // has always been.
     if !root.ready: Rectangle {x:36px;y:220px;width:parent.width - 72px;height:310px;background:transparent;
-        Text {text:root.title;width:parent.width;height:170px;wrap:word-wrap;font-size:27px;color:Theme.text;horizontal-alignment:center;vertical-alignment:center;}
-        if !root.connected: Control {x:60px;y:195px;width:parent.width - 120px;height:78px;label:"Reconnect";selected:root.selected==3;icon:@image-url("../../../../assets/lucide/rotate-cw.svg");activate=>{root.action("retry",0);}}
+        sentence := Text {text:root.title;width:parent.width;wrap:word-wrap;font-size:27px;color:Theme.text;horizontal-alignment:center;vertical-alignment:center;}
+        if !root.connected: Control {x:60px;y:max(195px, sentence.y + sentence.height + 24px);width:parent.width - 120px;height:78px;label:"Reconnect";selected:root.selected==3;icon:@image-url("../../../../assets/lucide/rotate-cw.svg");activate=>{root.action("retry",0);}}
     }
     tray := BottomTray {
         width: parent.width; height: parent.height;
