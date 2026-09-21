@@ -1,0 +1,69 @@
+== 01-playing
+  heading: Watch TV / Living room
+  title: "Andrei Rublev"
+  metadata: "1966"
+  clock: "42:17" "−2:42:43" 20.63%
+  flags: shown connected ready can-seek art
+  selected: -1
+  sheets: Chapters, Audio, Subtitles
+== 02-paused
+  heading: Watch TV / Living room
+  title: "Andrei Rublev"
+  metadata: "1966"
+  clock: "42:17" "−2:42:43" 20.63%
+  flags: shown connected ready paused can-seek art
+  selected: -1
+  sheets: Chapters, Audio, Subtitles
+== 03-idle
+  heading: Watch TV / Living room
+  title: "Connected to Kodi.\nUse the remote to choose something on your TV."
+  metadata: ""
+  clock: "" "" 0.00%
+  flags: shown connected paused
+  selected: -1
+  sheets: Chapters, Audio, Subtitles
+== 04-chapters
+  heading: Watch TV / Living room
+  title: "Andrei Rublev"
+  metadata: "1966"
+  clock: "42:17" "−2:42:43" 20.63%
+  flags: shown connected ready can-seek art
+  selected: -1
+  sheets: Chapters, Audio, Subtitles
+  sheet 1: ""
+    "The Jester" / "0:00"
+    "Theophanes the Greek" / "27:00"
+    "The Passion According to Andrei" / "1:08:00"
+    "The Raid" / "1:57:00"
+    "The Bell" / "2:55:00"
+== 05-audio
+  heading: Watch TV / Living room
+  title: "Andrei Rublev"
+  metadata: "1966"
+  clock: "42:17" "−2:42:43" 20.63%
+  flags: shown connected ready can-seek art
+  selected: -1
+  sheets: Chapters, Audio, Subtitles
+  sheet 2: ""
+    "Russian (Original)" / "AC3"
+    "English" / "AAC"
+== 06-subtitles
+  heading: Watch TV / Living room
+  title: "Andrei Rublev"
+  metadata: "1966"
+  clock: "42:17" "−2:42:43" 20.63%
+  flags: shown connected ready can-seek art
+  selected: -1
+  sheets: Chapters, Audio, Subtitles
+  sheet 3: ""
+    "Off" / ""
+    "English" / "subrip"
+    "Russian" / "subrip"
+== 07-error
+  heading: Watch TV / Living room
+  title: "Kodi is unavailable. Check the player and its remote-control settings."
+  metadata: ""
+  clock: "" "" 0.00%
+  flags: shown paused
+  selected: -1
+  sheets: Chapters, Audio, Subtitles
