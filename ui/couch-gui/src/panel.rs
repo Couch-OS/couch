@@ -154,7 +154,7 @@ pub(crate) fn lift_background() -> u32 {
 
 /// `Theme.surface`, #1F1C17: a card's fill, which is both what the rising
 /// card is drawn in and the colour keyed out of the sprites cut from a row.
-const LIFT_SURFACE: u32 = 0xff17_1c1f;
+pub(crate) const LIFT_SURFACE: u32 = 0xff17_1c1f;
 /// `Theme.border`, #2C271F, for that card's edge.
 const LIFT_BORDER: u32 = 0xff1f_272c;
 /// The rising card's rectangle at the end of its travel, and its radius:
@@ -923,6 +923,7 @@ impl Panel {
         // the transition is going. Cut once, here, before a frame is composed.
         let label;
         let disc;
+        let handed;
         {
             let room = match shown {
                 Shown::Arriving => pixels(&self.spare),
@@ -930,6 +931,9 @@ impl Panel {
             };
             label = Sprite::cut(room, w, h, lift.label);
             disc = Sprite::cut(room, w, h, lift.disc);
+            // The row's own band, with the name and the icon taken out of it:
+            // what it fades away as, now that the two of them are in flight.
+            handed = crate::handed_band(room, w, h, lift);
         }
         // Where the room has anything on it, row by row. One pass over the
         // page here saves a blend over the parts of every row that are the
@@ -944,7 +948,7 @@ impl Panel {
         self.transition(
             Compose::Lift {
                 lift,
-                sprites: (&label, &disc),
+                sprites: (&label, &disc, &handed),
             },
             shown,
             duration,
@@ -999,7 +1003,13 @@ impl Panel {
     }
 
     /// One lift frame into the framebuffer.
-    fn compose_lift(&mut self, lift: Lift, sprites: (&Sprite, &Sprite), shown: Shown, t: f32) {
+    fn compose_lift(
+        &mut self,
+        lift: Lift,
+        sprites: (&Sprite, &Sprite, &Sprite),
+        shown: Shown,
+        t: f32,
+    ) {
         let (width, height, stride) = (
             self.width as usize,
             self.height as usize,
@@ -1210,7 +1220,7 @@ enum Compose<'a> {
     },
     Lift {
         lift: Lift,
-        sprites: (&'a Sprite, &'a Sprite),
+        sprites: (&'a Sprite, &'a Sprite, &'a Sprite),
     },
 }
 
@@ -1274,6 +1284,39 @@ impl Sprite {
             },
         }
     }
+    /// One row of it, by its offset from the top of the rectangle that was
+    /// cut, or nothing because that row is not part of it.
+    pub(crate) fn row(&self, n: i32) -> Option<&[u32]> {
+        (n >= 0 && n < self.box_.h).then(|| {
+            let (n, w) = (n as usize, self.box_.w as usize);
+            &self.pixels[n * w..(n + 1) * w]
+        })
+    }
+    /// Paint a rectangle of it out, in page coordinates.
+    ///
+    /// What makes the row let go of the name and the icon that are flying out
+    /// of it: the band it fades away as is a copy of itself with those two
+    /// painted in the colour of the card they sat on, so the only ones on the
+    /// panel from the first frame are the ones in flight. The colour is the
+    /// one the sprites are keyed against, so the glyph edges that were cut
+    /// against it land back on exactly it and leave no halo.
+    pub(crate) fn paint(&mut self, rect: Window, colour: u32) {
+        let w = self.box_.w;
+        let left = (rect.x - self.box_.x).clamp(0, w) as usize;
+        let right = (rect.x + rect.w - self.box_.x).clamp(left as i32, w) as usize;
+        if left >= right {
+            return;
+        }
+        for n in 0..self.box_.h {
+            let y = self.box_.y + n;
+            if y < rect.y || y >= rect.y + rect.h {
+                continue;
+            }
+            let row = n as usize * w as usize;
+            self.pixels[row + left..row + right].fill(colour);
+        }
+    }
+
     /// Put it down with its top-left corner at `at`, clipped at all four
     /// edges of the surface. `key` is a colour that is not drawn: the card a
     /// row's name sits on, so that only the name travels and not the plate
@@ -1426,7 +1469,9 @@ pub(crate) fn lift_frame(
     mut dst: Surface<'_>,
     pages: (&[u32], &[u32]),
     lift: Lift,
-    sprites: (&Sprite, &Sprite),
+    // The name and the icon that fly out of the row, and the row's own band
+    // with the two of them painted out of it.
+    sprites: (&Sprite, &Sprite, &Sprite),
     // Where each scanline of the room has anything on it at all, worked out
     // once before the first frame. Most of a room's height is its background,
     // and fading background into background is work for nothing.
@@ -1440,6 +1485,7 @@ pub(crate) fn lift_frame(
         Shown::Leaving => (arriving, leaving, 1.0 - t),
     };
     let (w, h, stride) = (dst.width, dst.height, dst.stride);
+    let handed = sprites.2;
     // The end is the page itself, whole: every piece has arrived and nothing
     // is left to work out.
     if p >= 1.0 {
@@ -1471,18 +1517,18 @@ pub(crate) fn lift_frame(
             .get(y)
             .map(|&(a, b)| (a as usize, b as usize))
             .unwrap_or((0, w));
+        // Inside the focused row, the room is the band it handed its name and
+        // its icon over from, so they are not in two places at once.
+        let line = handed
+            .row(y as i32 - lift.row.y)
+            .unwrap_or(&room[y * w..(y + 1) * w]);
         match fading(p, window) {
-            None => out.copy_from_slice(&room[y * w..(y + 1) * w]),
+            None => out.copy_from_slice(line),
             Some(gone) if gone < 256 && from < to => {
                 // Only the part of the row that has something on it crosses;
                 // the rest is already the background it is crossing to.
                 out[..from].fill(LIFT_BG);
-                blend_flat(
-                    &mut out[from..to],
-                    &room[y * w + from..y * w + to],
-                    LIFT_BG,
-                    256 - gone,
-                );
+                blend_flat(&mut out[from..to], &line[from..to], LIFT_BG, 256 - gone);
                 out[to..].fill(LIFT_BG);
             }
             Some(_) => out.fill(LIFT_BG),
@@ -1520,7 +1566,7 @@ pub(crate) fn lift_frame(
     if handing < 256 && p >= LIFT_LABEL_FLY.0 {
         {
             let e = smooth(progress(p, LIFT_LABEL_FLY));
-            let (label, disc) = sprites;
+            let (label, disc, _) = sprites;
             let at = |from: Window, to: Window| {
                 (
                     from.x + (((to.x - from.x) as f32) * e).round() as i32,
@@ -2280,6 +2326,7 @@ mod tests {
             // way the transition is going, which is what `lift` does.
             let label = Sprite::cut(&room, W, H, lift.label);
             let disc = Sprite::cut(&room, W, H, lift.disc);
+            let handed = crate::handed_band(&room, W, H, lift);
             let content = lift_content(&room, W, H);
             lift_frame(
                 Surface {
@@ -2290,7 +2337,7 @@ mod tests {
                 },
                 pages,
                 lift,
-                (&label, &disc),
+                (&label, &disc, &handed),
                 &content,
                 shown,
                 t,

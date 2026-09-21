@@ -3954,6 +3954,7 @@ mod tests {
             )
         };
         let (label, disc) = sprites(&leaving);
+        let handed = crate::handed_band(&leaving, W, H, lift);
         let content = crate::panel::lift_content(&leaving, W, H);
         // Every ten per cent, and every five around the hand-over.
         let sweep = [0, 10, 20, 30, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100];
@@ -3968,7 +3969,7 @@ mod tests {
                 },
                 (&arriving, &leaving),
                 lift,
-                (&label, &disc),
+                (&label, &disc, &handed),
                 &content,
                 crate::panel::Shown::Arriving,
                 t,
@@ -4022,7 +4023,7 @@ mod tests {
                 },
                 (&leaving, &arriving),
                 lift,
-                (&label, &disc),
+                (&label, &disc, &handed),
                 &content,
                 crate::panel::Shown::Leaving,
                 t,
@@ -4037,7 +4038,7 @@ mod tests {
                 },
                 (&arriving, &leaving),
                 lift,
-                (&label, &disc),
+                (&label, &disc, &handed),
                 &content,
                 crate::panel::Shown::Arriving,
                 1.0 - t,
@@ -4082,6 +4083,7 @@ mod tests {
         let (room, screen) = (word(&scrolled_room), word(&scrolled_screen));
         let label = crate::panel::Sprite::cut(&room, W, H, lift.label);
         let disc = crate::panel::Sprite::cut(&room, W, H, lift.disc);
+        let handed = crate::handed_band(&room, W, H, lift);
         let content = crate::panel::lift_content(&room, W, H);
         for step in 0..=10 {
             let t = step as f32 / 10.0;
@@ -4095,7 +4097,7 @@ mod tests {
                 },
                 (&screen, &room),
                 lift,
-                (&label, &disc),
+                (&label, &disc, &handed),
                 &content,
                 crate::panel::Shown::Arriving,
                 t,
@@ -4122,6 +4124,7 @@ mod tests {
         let pops = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
             let label = crate::panel::Sprite::cut(room, W, H, lift.label);
             let disc = crate::panel::Sprite::cut(room, W, H, lift.disc);
+            let handed = crate::handed_band(room, W, H, lift);
             let content = crate::panel::lift_content(room, W, H);
             let frame = |t: f32| {
                 let mut pixels = vec![0u32; W * H];
@@ -4134,7 +4137,7 @@ mod tests {
                     },
                     (screen, room),
                     lift,
-                    (&label, &disc),
+                    (&label, &disc, &handed),
                     &content,
                     crate::panel::Shown::Arriving,
                     t,
@@ -4225,6 +4228,67 @@ mod tests {
                 (tile / tiles.0) * TILE.1,
             );
         };
+        // A thing that travels leaves its place. The name and the icon are cut
+        // out of the room and flown to the header, so from the first frame on
+        // the only ones on the panel are the ones in flight: no ghost of the
+        // same name may be left fading in the row they came from.
+        let ghosts = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
+            let label = crate::panel::Sprite::cut(room, W, H, lift.label);
+            let disc = crate::panel::Sprite::cut(room, W, H, lift.disc);
+            let handed = crate::handed_band(room, W, H, lift);
+            let content = crate::panel::lift_content(room, W, H);
+            for step in 1..=19 {
+                let t = step as f32 / 19.0;
+                let mut pixels = vec![0u32; W * H];
+                crate::panel::lift_frame(
+                    crate::panel::Surface {
+                        pixels: &mut pixels,
+                        stride: W,
+                        width: W,
+                        height: H,
+                    },
+                    (screen, room),
+                    lift,
+                    (&label, &disc, &handed),
+                    &content,
+                    crate::panel::Shown::Arriving,
+                    t,
+                );
+                let flying = crate::panel::lift_pieces(lift, t);
+                for (name, was) in [("name", lift.label), ("icon", lift.disc)] {
+                    for y in was.y..was.y + was.h {
+                        for x in was.x..was.x + was.w {
+                            // Wherever anything is in flight does not count:
+                            // the name and the icon cross each other's places
+                            // on their way out of the row.
+                            if flying.iter().flatten().any(|at| {
+                                x >= at.x && x < at.x + at.w && y >= at.y && y < at.y + at.h
+                            }) {
+                                continue;
+                            }
+                            let p = pixels[y as usize * W + x as usize];
+                            let bright = [0, 8, 16]
+                                .iter()
+                                .map(|s| (p >> s) & 0xff)
+                                .max()
+                                .unwrap_or(0);
+                            assert!(
+                                bright <= 0x50,
+                                "{what}: a ghost of the {name} is still at {x},{y} at {t:.2} \
+                                 while the real one has moved away"
+                            );
+                        }
+                    }
+                }
+            }
+        };
+        ghosts(
+            &leaving,
+            &arriving,
+            crate::lift_geometry(&app, from),
+            "top row",
+        );
+        ghosts(&room, &screen, lift, "scrolled mid-list row");
         pops(
             &leaving,
             &arriving,

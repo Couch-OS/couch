@@ -207,6 +207,34 @@ fn lift_geometry(app: &App, row: panel::Window) -> panel::Lift {
     }
 }
 
+/// The focused row's band with the name and the icon painted out of it: what
+/// the row fades away as, once the two of them are flying out of it.
+///
+/// Here rather than beside the transition so that the tests over the real
+/// pages build it exactly the way the panel does.
+pub(crate) fn handed_band(
+    room: &[u32],
+    width: usize,
+    height: usize,
+    lift: panel::Lift,
+) -> panel::Sprite {
+    let mut band = panel::Sprite::cut(
+        room,
+        width,
+        height,
+        panel::Window {
+            x: 0,
+            y: lift.row.y,
+            w: width as i32,
+            h: lift.row.h,
+            r: 0,
+        },
+    );
+    band.paint(lift.label, panel::LIFT_SURFACE);
+    band.paint(lift.disc, panel::LIFT_SURFACE);
+    band
+}
+
 fn overlay(app: &App) -> Option<Overlay> {
     Some(if app.get_activity_busy() {
         Overlay::Activity

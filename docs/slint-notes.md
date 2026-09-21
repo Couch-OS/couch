@@ -438,6 +438,15 @@ grows. Both problems have the same answer - do not touch every pixel.
   do more than 40% of everything it ever does in one frame, unless it is a
   piece that is on screen in *both* of the two frames and has therefore moved
   rather than appeared.
+- **A thing that travels leaves its place.** The band the focused row fades
+  away as is a copy of itself with the name and the icon painted out in the
+  colour of the card they sat on - the same colour the sprites are keyed
+  against, so the glyph edges land back on exactly it and leave no halo. Two
+  copies of a name, one flying and one fading where it started, is a ghost,
+  and it is what the row used to leave behind. Its second line and its chevron
+  do not travel, so they stay in the band and fade with it. The first frame is
+  still the room exactly: at that point the sprites sit on their own source and
+  put back precisely what was painted out.
 - **Blending only where there is anything to blend.** A room is mostly its
   background, so one pass before the first frame records where each scanline
   has content and the fade touches only that span. On a list that is about
