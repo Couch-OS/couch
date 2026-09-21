@@ -137,6 +137,39 @@ const IRIS_RING_UNTIL: f32 = 1.0;
 /// #FFFFFF, which is the same word whichever way round the channels go.
 const IRIS_RING: u32 = 0xffff_ffff;
 
+/// The lift's default time. It has more to say than a window opening - rows
+/// falling away, a card travelling, cards arriving - and reads hurried at the
+/// iris's 300 ms.
+pub const LIFT: Duration = Duration::from_millis(320);
+
+/// Where the focused row's card is lifted to: the band the control screen
+/// keeps its title and its back arrow in.
+const LIFT_HEADER_Y: i32 = 14;
+/// How far into the lift the travelling card has arrived and handed over to
+/// the real header underneath it.
+const LIFT_CARD_UNTIL: f32 = 0.58;
+/// How far below their places the control screen's bar cards start.
+const LIFT_BARS_DROP: i32 = 14;
+/// The band those cards live in, top and height (ui/screens/light.slint).
+const LIFT_BARS: (i32, i32) = (190, 452);
+/// How much later the furthest scanline starts to change than the focused
+/// row does, as a fraction of the whole travel: the stagger that makes the
+/// rest of the room fall away from the row outwards rather than all at once.
+///
+/// It is generous because it is also what stops the panel passing through
+/// bare background all at once: while the rows near the row are already
+/// filling with the screen, the far ones have not begun to leave.
+const LIFT_STAGGER: f32 = 0.35;
+/// How quickly the focused row gives up its own place. At once, near enough:
+/// the row is not there any anymore, the card that is rising is.
+const LIFT_ROW_OUT: f32 = 0.10;
+/// `Theme.bg`, #15130F, packed the way the panel takes it. A scanline goes
+/// out to this and comes back in from it rather than crossing straight from
+/// one page to the other: two pages of text on top of each other for a third
+/// of a second reads as a smear, and the rows are meant to fall away before
+/// the screen arrives.
+const LIFT_BG: u32 = 0xff0f_1315;
+
 /// Where the development switch for the opening transition is read from.
 /// Under `/tmp`, so it is gone at the next boot and nothing a person set up is
 /// ever changed by it.
@@ -149,15 +182,19 @@ pub enum Opening {
     Iris,
     /// The row's band, the whole width of the panel, opens up and down.
     Curtain,
+    /// The room falls away from the row outwards, the row's card rises into
+    /// the header, and the screen's cards arrive from below it.
+    Lift,
 }
 
 /// How a control screen opens: the shape, and how long it takes.
 ///
-/// Two shapes are in so they can be compared on the device, the one way to
+/// Three shapes are in so they can be compared on the device, the one way to
 /// judge a transition. `echo "curtain 220" > /tmp/couch-transition` on the
 /// remote takes effect on the next press; no file is the iris at [`IRIS`].
-/// Both are the same compositor with a different first window, so neither
-/// costs more than the other.
+/// The iris and the curtain are the same compositor with a different first
+/// window and cost the same; the lift blends, and says what it cost in the
+/// line it prints when it is over.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct Transition {
     pub opening: Opening,
@@ -181,28 +218,37 @@ impl Transition {
             .map(|text| Self::parse(&text))
             .unwrap_or_default()
     }
-    /// `iris` or `curtain`, then optionally milliseconds. Anything that is
-    /// not understood is the default for that part, and the time is kept
-    /// between a tenth of a second and a whole one.
+    /// `iris`, `curtain` or `lift`, then optionally milliseconds. Anything
+    /// that is not understood is the default for that part, and the time is
+    /// kept between a tenth of a second and a whole one.
     fn parse(text: &str) -> Self {
         let mut chosen = Self::default();
+        let mut given = None;
         for word in text.split_whitespace() {
             match word {
                 "iris" => chosen.opening = Opening::Iris,
                 "curtain" => chosen.opening = Opening::Curtain,
+                "lift" => chosen.opening = Opening::Lift,
                 other => {
                     if let Ok(ms) = other.parse::<u64>() {
-                        chosen.time = Duration::from_millis(ms.clamp(100, 1000));
+                        given = Some(Duration::from_millis(ms.clamp(100, 1000)));
                     }
                 }
             }
         }
+        // Each shape has a time that suits it; a number in the file is what
+        // the person on the remote wants instead, whichever shape it is.
+        chosen.time = given.unwrap_or(match chosen.opening {
+            Opening::Lift => LIFT,
+            Opening::Iris | Opening::Curtain => IRIS,
+        });
         chosen
     }
     /// The window this opening starts from (and closes onto) for a row.
     pub fn from_row(self, row: Window, width: u32) -> Window {
         match self.opening {
-            Opening::Iris => row,
+            // The lift never opens a window; the row is its card.
+            Opening::Iris | Opening::Lift => row,
             Opening::Curtain => Window {
                 x: 0,
                 w: width as i32,
@@ -807,6 +853,26 @@ impl Panel {
         shown: Shown,
         duration: Duration,
     ) -> SlideCost {
+        self.transition(Compose::Iris { from, to }, shown, duration)
+    }
+
+    /// The lift: the room falls away from the focused row outwards, that
+    /// row's card rises into the header band and hands over, and the control
+    /// screen's bar cards arrive from a little below their places.
+    ///
+    /// Composed from the same two buffers as the iris, with two primitives
+    /// the iris does not need: a band of one page copied to a different `y`,
+    /// and a per-pixel cross-fade. It is the one transition here that blends,
+    /// so it is the one whose cost has to be read rather than assumed - the
+    /// line the loop prints when it is over says what it was.
+    pub fn lift(&mut self, row: Window, shown: Shown, duration: Duration) -> SlideCost {
+        self.transition(Compose::Lift { row }, shown, duration)
+    }
+
+    /// The frame loop every opening shares: eased time, one composed frame,
+    /// the same pacing a drawn frame gets, and the same per-frame report, so
+    /// two shapes can be compared on one set of numbers.
+    fn transition(&mut self, what: Compose, shown: Shown, duration: Duration) -> SlideCost {
         let report = std::env::var_os("COUCH_REGION").is_some();
         let duration = duration.max(FRAME).as_secs_f32();
         let began = Instant::now();
@@ -817,7 +883,10 @@ impl Panel {
             // next refresh, so it is drawn one period ahead of the clock.
             let t = ((started.duration_since(began) + FRAME).as_secs_f32() / duration).min(1.0);
             let done = t >= 1.0;
-            self.compose_iris(from, to, shown, t);
+            match what {
+                Compose::Iris { from, to } => self.compose_iris(from, to, shown, t),
+                Compose::Lift { row } => self.compose_lift(row, shown, t),
+            }
             let work = started.elapsed();
             self.pace(started);
             let wait = started.elapsed().saturating_sub(work);
@@ -827,16 +896,46 @@ impl Panel {
             cost.wait_us += wait_us;
             cost.max_us = cost.max_us.max(work_us);
             if report {
-                let window = from.lerp(to, ease_out(t));
-                println!(
-                    "couch-gui: iris frame {}: {}x{} at {},{} r{}, {work_us} us, {wait_us} us paced",
-                    cost.frames, window.w, window.h, window.x, window.y, window.r
-                );
+                match what {
+                    Compose::Iris { from, to } => {
+                        let window = from.lerp(to, ease_out(t));
+                        println!(
+                            "couch-gui: iris frame {}: {}x{} at {},{} r{}, {work_us} us, {wait_us} us paced",
+                            cost.frames, window.w, window.h, window.x, window.y, window.r
+                        );
+                    }
+                    Compose::Lift { .. } => println!(
+                        "couch-gui: lift frame {}: t {:.2}, {work_us} us, {wait_us} us paced",
+                        cost.frames, t
+                    ),
+                }
             }
             if done {
                 return cost;
             }
         }
+    }
+
+    /// One lift frame into the framebuffer.
+    fn compose_lift(&mut self, row: Window, shown: Shown, t: f32) {
+        let (width, height, stride) = (
+            self.width as usize,
+            self.height as usize,
+            self.stride_px as usize,
+        );
+        let (arriving, leaving) = (pixels(&self.ram), pixels(&self.spare));
+        lift_frame(
+            Surface {
+                pixels: &mut self.map[..],
+                stride,
+                width,
+                height,
+            },
+            (arriving, leaving),
+            row,
+            shown,
+            t,
+        );
     }
 
     /// One iris frame into the framebuffer.
@@ -989,6 +1088,143 @@ pub(crate) fn iris_frame(
             IRIS_RING_WIDTH,
             IRIS_RING,
         );
+    }
+}
+
+/// Which shape a transition is composing, so that one frame loop can time,
+/// pace and report for all of them on the same terms.
+#[derive(Copy, Clone)]
+enum Compose {
+    Iris { from: Window, to: Window },
+    Lift { row: Window },
+}
+
+/// One lift frame: the room crossing to the control screen, staggered
+/// outwards from the focused row, with that row's card travelling up into
+/// the header and the screen's bar cards arriving from below.
+///
+/// The close is the open run backwards over the same two pages, so `t` of 0
+/// is always the room and `t` of 1 always the screen whichever way it is
+/// going - which is what keeps the last frame of either a whole page.
+pub(crate) fn lift_frame(
+    mut dst: Surface<'_>,
+    pages: (&[u32], &[u32]),
+    row: Window,
+    shown: Shown,
+    t: f32,
+) {
+    let (arriving, leaving) = pages;
+    let (room, screen, p) = match shown {
+        Shown::Arriving => (leaving, arriving, t),
+        Shown::Leaving => (arriving, leaving, 1.0 - t),
+    };
+    let (w, h, stride) = (dst.width, dst.height, dst.stride);
+    // The screen's bar cards start `LIFT_BARS_DROP` low and rise: reading the
+    // screen that many rows earlier is the same picture, moved down. The band
+    // is read that much taller so the bottom of a dropped card is still in it.
+    let drop = (LIFT_BARS_DROP as f32 * (1.0 - ease_out(p))).round() as i32;
+    let bars = LIFT_BARS.0..LIFT_BARS.0 + LIFT_BARS.1 + LIFT_BARS_DROP;
+    // The stagger: how much later a scanline starts than the focused row's
+    // own does, by how far from it it is. One alpha a scanline, so the inner
+    // loop stays a flat run over the row.
+    let centre = row.y + row.h / 2;
+    let reach = centre.max(h as i32 - centre).max(1) as f32;
+    let span = 1.0 - LIFT_STAGGER;
+    let band = row.y..row.y + row.h;
+    for y in 0..h {
+        let away = ((y as i32 - centre).abs() as f32 / reach).min(1.0);
+        // Nought to one is this scanline of the room leaving, one to two is
+        // the screen arriving in its place. The focused row's own scanlines
+        // skip most of the first half: the card is what carries them now.
+        let mut stage = ((p - LIFT_STAGGER * away) / span * 2.0).clamp(0.0, 2.0);
+        if band.contains(&(y as i32)) {
+            stage = stage.max((p / LIFT_ROW_OUT).min(1.0));
+        }
+        let out = &mut dst.pixels[y * stride..y * stride + w];
+        if stage <= 1.0 {
+            let k = 256 - (stage * 256.0).round() as u32;
+            blend_flat(out, &room[y * w..(y + 1) * w], LIFT_BG, k);
+        } else {
+            let from = if bars.contains(&(y as i32)) {
+                (y as i32 - drop).clamp(0, h as i32 - 1) as usize
+            } else {
+                y
+            };
+            let k = ((stage - 1.0) * 256.0).round() as u32;
+            blend_flat(out, &screen[from * w..(from + 1) * w], LIFT_BG, k);
+        }
+    }
+    // The focused row's card, rising into the header band and handing over to
+    // the real one underneath it. At the very start it is the room's own row
+    // in its own place, so it changes nothing; by `LIFT_CARD_UNTIL` it is
+    // gone and the screen's header has arrived under it.
+    if p < LIFT_CARD_UNTIL {
+        let travel = ease_out(p / LIFT_CARD_UNTIL);
+        let dy = (((LIFT_HEADER_Y - row.y) as f32) * travel).round() as i32;
+        let k = (256.0 * (1.0 - p / LIFT_CARD_UNTIL)).round() as u32;
+        band_over(&mut dst, room, row, dy, k);
+    }
+}
+
+/// A band of `src`, `dy` pixels from where it sits there, put into the
+/// surface: `k` of 256 of it, or copied outright when that is all of it.
+///
+/// One `copy_from_slice` or one blended run a scanline, clipped at all four
+/// edges, nothing allocated. The cheap half of what the lift needs.
+fn band_over(dst: &mut Surface<'_>, src: &[u32], band: Window, dy: i32, k: u32) {
+    let (w, h, stride) = (dst.width, dst.height, dst.stride);
+    let left = band.x.clamp(0, w as i32) as usize;
+    let right = (band.x + band.w).clamp(left as i32, w as i32) as usize;
+    if left == right || k == 0 {
+        return;
+    }
+    for row in 0..band.h.max(0) {
+        let (from, to) = (band.y + row, band.y + row + dy);
+        if from < 0 || from >= h as i32 || to < 0 || to >= h as i32 {
+            continue;
+        }
+        let (from, to) = (from as usize, to as usize);
+        let taken = &src[from * w + left..from * w + right];
+        let put = &mut dst.pixels[to * stride + left..to * stride + right];
+        if k >= 256 {
+            put.copy_from_slice(taken);
+        } else {
+            blend_over(put, taken, k);
+        }
+    }
+}
+
+/// One scanline of `src` crossed to a flat colour: `k` of 256 is how much of
+/// `src`, so 256 is the page untouched and 0 is the colour.
+///
+/// Two channels to a multiply, packed in the spare halves of a `u32`: red and
+/// blue in one, green and alpha in the other. Each product is at most
+/// `255 * 256`, which is exactly sixteen bits, so neither pair can carry into
+/// the other and no unpacking is needed. Written as a zip over two slices of
+/// the same length so the hot loop has no bounds checks and the compiler is
+/// free to widen it; the flat operand's two halves are worked out once for
+/// the whole run.
+fn blend_flat(dst: &mut [u32], src: &[u32], flat: u32, k: u32) {
+    debug_assert!(k <= 256);
+    let (ks, kf) = (k, 256 - k);
+    let (flat_lo, flat_hi) = ((flat & 0x00ff_00ff) * kf, ((flat >> 8) & 0x00ff_00ff) * kf);
+    for (d, &s) in dst.iter_mut().zip(src) {
+        let lo = ((s & 0x00ff_00ff) * ks + flat_lo) >> 8;
+        let hi = (((s >> 8) & 0x00ff_00ff) * ks + flat_hi) & 0xff00_ff00;
+        *d = (lo & 0x00ff_00ff) | hi;
+    }
+}
+
+/// The same crossing, in place: `k` of 256 of `src` into what is already in
+/// `dst`. What the travelling card is laid over the frame with.
+fn blend_over(dst: &mut [u32], src: &[u32], k: u32) {
+    debug_assert!(k <= 256);
+    let (kd, ks) = (256 - k, k);
+    for (d, &s) in dst.iter_mut().zip(src) {
+        let p = *d;
+        let lo = ((p & 0x00ff_00ff) * kd + (s & 0x00ff_00ff) * ks) >> 8;
+        let hi = (((p >> 8) & 0x00ff_00ff) * kd + ((s >> 8) & 0x00ff_00ff) * ks) & 0xff00_ff00;
+        *d = (lo & 0x00ff_00ff) | hi;
     }
 }
 
@@ -1207,6 +1443,158 @@ mod tests {
         // A time nobody could want is brought back into a range somebody could.
         assert_eq!(Transition::parse("5").time, Duration::from_millis(100));
         assert_eq!(Transition::parse("99999").time, Duration::from_millis(1000));
+        // The lift keeps its own default, and takes a time like the others.
+        let lift = Transition::parse("lift");
+        assert_eq!(lift.opening, Opening::Lift);
+        assert_eq!(lift.time, LIFT);
+        assert_eq!(
+            Transition::parse("lift 400").time,
+            Duration::from_millis(400)
+        );
+        assert_eq!(Transition::parse("lift 400").opening, Opening::Lift);
+        // It opens out of the row's own card, as the iris does.
+        let row = Window {
+            x: 20,
+            y: 199,
+            w: 440,
+            h: 90,
+            r: 14,
+        };
+        assert_eq!(lift.from_row(row, 480), row);
+    }
+
+    /// The two primitives the lift adds to the compositor, on buffers a few
+    /// pixels across: a band of one page put down somewhere else, and one
+    /// scanline of a page crossed to another.
+    #[test]
+    fn a_band_lands_where_it_is_put_and_a_blend_is_the_mean_of_its_ends() {
+        // A four-pixel-wide band, two rows, moved up one row.
+        let src: Vec<u32> = (0..W * H).map(|i| i as u32).collect();
+        let mut pixels = vec![0u32; W * H];
+        let band = Window {
+            x: 2,
+            y: 5,
+            w: 4,
+            h: 2,
+            r: 0,
+        };
+        fn surface(pixels: &mut [u32]) -> Surface<'_> {
+            Surface {
+                pixels,
+                stride: W,
+                width: W,
+                height: H,
+            }
+        }
+        band_over(&mut surface(&mut pixels), &src, band, -1, 256);
+        assert_eq!(&pixels[4 * W + 2..4 * W + 6], &src[5 * W + 2..5 * W + 6]);
+        assert_eq!(&pixels[5 * W + 2..5 * W + 6], &src[6 * W + 2..6 * W + 6]);
+        // Nothing either side of the band's columns, or on the rows it left.
+        assert_eq!(pixels[4 * W + 1], 0);
+        assert_eq!(pixels[4 * W + 6], 0);
+        assert!(pixels[6 * W..7 * W].iter().all(|p| *p == 0));
+
+        // Off the top: the row that would land outside is dropped and the
+        // one that still fits arrives, with nothing wrapped round to the
+        // other end of the panel.
+        let mut pixels = vec![0u32; W * H];
+        band_over(&mut surface(&mut pixels), &src, band, -6, 256);
+        assert_eq!(&pixels[2..6], &src[6 * W + 2..6 * W + 6]);
+        assert!(pixels[6..W].iter().all(|p| *p == 0));
+        assert!(pixels[W..].iter().all(|p| *p == 0));
+        // And a band wider than the panel is cut to it rather than wrapping.
+        let mut pixels = vec![0u32; W * H];
+        let wide = Window {
+            x: -4,
+            y: 5,
+            w: 40,
+            h: 1,
+            r: 0,
+        };
+        band_over(&mut surface(&mut pixels), &src, wide, 0, 256);
+        assert_eq!(&pixels[5 * W..6 * W], &src[5 * W..6 * W]);
+        assert!(pixels[4 * W..5 * W].iter().all(|p| *p == 0));
+        // Nothing of it at all when there is none of it to put down.
+        let mut pixels = vec![7u32; W * H];
+        band_over(&mut surface(&mut pixels), &src, band, -1, 0);
+        assert!(pixels.iter().all(|p| *p == 7));
+
+        // The crossing to a flat colour: all of the page, none of it, and the
+        // mean of the two in between, channel by channel, alpha left alone.
+        let page = [0xff20_4060u32, 0xffff_ffff];
+        let flat = 0xffa0_c0e0u32;
+        let mut out = [0u32; 2];
+        blend_flat(&mut out, &page, flat, 256);
+        assert_eq!(out, page);
+        blend_flat(&mut out, &page, flat, 0);
+        assert_eq!(out, [flat, flat]);
+        blend_flat(&mut out, &page, flat, 128);
+        assert_eq!(out, [0xff60_80a0, 0xffcf_dfef]);
+        // And in place, over what is already there, is the same arithmetic
+        // with two pages instead of a page and a colour.
+        let mut over = page;
+        blend_over(&mut over, &[flat, flat], 128);
+        assert_eq!(over, [0xff60_80a0, 0xffcf_dfef]);
+        blend_over(&mut over, &[flat, flat], 0);
+        assert_eq!(over, [0xff60_80a0, 0xffcf_dfef]);
+    }
+
+    /// The lift itself: the room at one end, the control screen at the
+    /// other, and neither of them anywhere in between.
+    #[test]
+    fn a_lift_starts_on_the_room_ends_on_the_screen_and_reverses() {
+        let room: Vec<u32> = vec![0xff20_2020; W * H];
+        let screen: Vec<u32> = vec![0xffc0_c0c0; W * H];
+        let row = Window {
+            x: 2,
+            y: 6,
+            w: 12,
+            h: 3,
+            r: 0,
+        };
+        let at = |shown, t| {
+            let mut pixels = vec![0u32; W * H];
+            // The page being arrived at is the screen on the way in and the
+            // room on the way out; the panel hands them over the same way.
+            let pages = match shown {
+                Shown::Arriving => (&screen[..], &room[..]),
+                Shown::Leaving => (&room[..], &screen[..]),
+            };
+            lift_frame(
+                Surface {
+                    pixels: &mut pixels,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                pages,
+                row,
+                shown,
+                t,
+            );
+            pixels
+        };
+        // Opening: the room, then the screen.
+        assert_eq!(at(Shown::Arriving, 0.0), room);
+        assert_eq!(at(Shown::Arriving, 1.0), screen);
+        for step in 1..4 {
+            let frame = at(Shown::Arriving, step as f32 / 4.0);
+            assert_ne!(frame, room, "frame {step} never left the room");
+            assert_ne!(frame, screen, "frame {step} is already the screen");
+        }
+        // Closing is the same run backwards: it starts on the screen it is
+        // leaving and ends on the room, so the last frame is a whole page
+        // either way round.
+        assert_eq!(at(Shown::Leaving, 0.0), screen);
+        assert_eq!(at(Shown::Leaving, 1.0), room);
+        for step in 1..4 {
+            let t = step as f32 / 4.0;
+            assert_eq!(
+                at(Shown::Leaving, t),
+                at(Shown::Arriving, 1.0 - t),
+                "the close is not the open backwards at {t}"
+            );
+        }
     }
 
     #[test]
