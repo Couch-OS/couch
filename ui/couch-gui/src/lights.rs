@@ -4723,6 +4723,96 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A device row's screen is not up in the pass that reads its press.
+    ///
+    /// This is the asymmetry behind a player that slid in and lifted out. The
+    /// lights controller shows a light's screen itself, in `poll`; for every
+    /// other kind of row it only *invokes* - the activity runtime takes a
+    /// Sonos or a Kodi, the television's own queue takes a television - and
+    /// those screens appear a poll or two later. Both arm the transition, so
+    /// the row has to outlive the pass that armed it (`main.rs`, `Armed`).
+    #[test]
+    fn a_device_rows_screen_is_not_up_in_the_pass_that_reads_its_press() {
+        const NAME: &str =
+            "lights::tests::a_device_rows_screen_is_not_up_in_the_pass_that_reads_its_press";
+        if std::env::var_os("COUCH_TEST_ROW_OPENS").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_ROW_OPENS", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::ComponentHandle;
+        let config = packaged();
+        let path = std::env::temp_dir().join(format!("couch-opens-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        crate::config_snapshot::start(path.clone());
+        let _window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let room = Id::new("living-room");
+        let entries = configured_in(&config, &room).unwrap();
+        let at = |id: &str| {
+            entries
+                .iter()
+                .position(|e| e.id.as_str() == id)
+                .unwrap_or_else(|| panic!("{id} is not in the fixture"))
+        };
+        // A lamp, a thermostat and a receiver: three kinds of row, all of
+        // which open a screen of some sort.
+        let (lamp, heat, avr) = (
+            at("plugin:bridge/lamp/1"),
+            at("device:heat"),
+            at("device:avr"),
+        );
+        for (name, which, at_once) in [
+            ("a lamp", lamp, true),
+            ("a thermostat", heat, false),
+            ("a receiver", avr, false),
+        ] {
+            let mut controller = Controller::install(&app);
+            controller.entries = entries.clone();
+            controller.room = Some(room.clone());
+            app.set_light_shown(true);
+            app.set_light_screen_shown(false);
+            app.set_tv_shown(false);
+            app.set_thermostat_shown(false);
+            controller.input.borrow_mut().clear();
+            controller.input.borrow_mut().push_back(Input::Pick(which));
+
+            // Every one of them arms the transition: the row is read here,
+            // while the ring is still on it.
+            assert!(
+                controller.screen_pending(),
+                "{name} does not arm the transition, so no row is ever taken for it"
+            );
+            controller.poll(&app);
+            // And only one of them has a screen to show for it in this pass.
+            assert_eq!(
+                app.get_light_screen_shown(),
+                at_once,
+                "{name}: the light screen is {} after the press",
+                if at_once { "not up" } else { "up" }
+            );
+            if !at_once {
+                assert!(
+                    !app.get_tv_shown() && !app.get_thermostat_shown(),
+                    "{name}: its screen turned up in the same pass after all - if that is now \
+                     true the row need not be held, but the holding must go with it"
+                );
+            }
+        }
+        app.hide().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// A switch pressed while the worker is busy is held, not dropped.
     ///
     /// The worker takes one operation at a time and its queue is one deep. A
