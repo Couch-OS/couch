@@ -367,8 +367,9 @@ slide's machinery with the run boundaries worked out per row instead of once:
   returns, RAM and the panel agree again.
 - **The ring is not faded.** A fade is a per-pixel blend of two layers, which
   is the one thing this compositor never does; the ring is filled as a
-  `ring-width` outline on the window's edge and simply stops being drawn
-  partway through (`IRIS_RING_UNTIL`). `IRIS` is the duration and the three
+  `ring-width` outline on the window's edge and rides it all the way: it sits
+  outside the window, so it leaves the panel by itself as the window reaches
+  the edges (`IRIS_RING_UNTIL` cuts it off earlier if that is ever wanted). `IRIS` is the duration and the three
   `IRIS_RING_*` constants are the rest: they are there to be turned on the
   device.
 

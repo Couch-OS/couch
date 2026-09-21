@@ -126,10 +126,13 @@ const IRIS_RING_BLEED: i32 = 6;
 /// Its thickness, the same `Theme.ring-width` the row's own ring has.
 const IRIS_RING_WIDTH: i32 = 3;
 /// How much of the transition the ring rides for. It is not faded out - a
-/// fade is a per-pixel blend, and this compositor never blends anything - it
-/// simply stops being drawn, by which point the window is most of the way to
-/// the edges and the ring is largely off the panel already.
-const IRIS_RING_UNTIL: f32 = 0.6;
+/// fade is a per-pixel blend, and this compositor never blends anything - so
+/// it rides the window all the way: the window ends at the panel's edges and
+/// the ring sits outside the window, so it leaves the panel by itself, edge
+/// by edge, and is never seen to stop. A lower value cuts it off early, which
+/// on a row near the top showed as the bottom of the ring vanishing while it
+/// was still a hundred and fifty pixels from the edge.
+const IRIS_RING_UNTIL: f32 = 1.0;
 /// The ring's colour, packed the way the panel takes it. `Theme.accent` is
 /// #FFFFFF, which is the same word whichever way round the channels go.
 const IRIS_RING: u32 = 0xffff_ffff;
