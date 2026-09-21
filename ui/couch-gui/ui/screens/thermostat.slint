@@ -1,10 +1,18 @@
 import { Theme } from "../theme.slint";
-import { MediaBack } from "../widgets/media-back.slint";
+import { ScreenHeader } from "../components/screen_header.slint";
 import { BottomTray } from "../components/bottom_tray.slint";
 
 export component Thermostat inherits Rectangle {
     in property <bool> shown;
     in property <string> title;
+    /// "Living room · Home Assistant": where it is and what drives it. It
+    /// used to be the literal "Home Assistant" on every thermostat, whatever
+    /// was actually behind it.
+    in property <string> room;
+    /// The row's own icon and reading: the disc the lift flies here.
+    in property <image> icon;
+    in property <bool> active;
+    in property <bool> known;
     in property <string> current;
     in property <string> target;
     in property <string> status;
@@ -20,11 +28,15 @@ export component Thermostat inherits Rectangle {
     public function take-focus() { keys.focus(); }
     changed modes-shown => { root.selected = 0; }
     background: Theme.bg;
-    MediaBack { x:24px; y:22px; activate => { root.action("close", 0); } }
-    Text { x:88px; y:27px; width:parent.width - 112px; height:28px; text:root.title; font-size:21px; font-weight:600; color:Theme.text; overflow:elide; }
-    Text { x:88px; y:59px; width:parent.width - 112px; height:24px; text:"Home Assistant"; font-size:16px; color:Theme.text-secondary; }
-    Rectangle { x:200px; y:120px; width:80px; height:80px; border-radius:40px; background:Theme.accent-bg;
-        Image { x:22px; y:22px; width:36px; height:36px; source:@image-url("../../../../assets/lucide/thermometer.svg"); colorize:Theme.accent; }
+    // The same band every screen a room row opens draws. The disc it carries
+    // is the row's own - the eighty-pixel accent circle that used to sit here
+    // was a second drawing of the same thing, and the lift would have flown
+    // one onto the other.
+    head := ScreenHeader {
+        x:0px; y:0px; width:parent.width;
+        title:root.title; subtitle:root.room;
+        icon:root.icon; active:root.active; known:root.known;
+        back => { root.action("close", 0); }
     }
     Text { x:24px; y:220px; width:parent.width - 48px; height:30px; text:root.range ? "HEAT / COOL TARGET" : "TARGET TEMPERATURE"; horizontal-alignment:center; font-size:16px; letter-spacing:2px; color:Theme.text-secondary; }
     Text { x:24px; y:266px; width:parent.width - 48px; height:100px; text:root.target; horizontal-alignment:center; vertical-alignment:center; font-size:root.range ? 46px : 76px; font-weight:700; color:root.adjustable ? Theme.text : Theme.text-secondary; }
@@ -54,6 +66,33 @@ export component Thermostat inherits Rectangle {
             }
         }
     }
+    // --- what the lift needs to know about this page ------------------------
+    public pure function title-box-x() -> length { return head.title-box-x(); }
+    public pure function title-box-y() -> length { return head.title-box-y(); }
+    public pure function title-box-w() -> length { return head.title-box-w(); }
+    public pure function title-box-h() -> length { return head.title-box-h(); }
+    public pure function disc-box-x() -> length { return head.disc-box-x(); }
+    public pure function disc-box-y() -> length { return head.disc-box-y(); }
+    public pure function disc-box-size() -> length { return head.disc-box-size(); }
+    public pure function header-h() -> length { return head.header-h(); }
+    public pure function plate-x() -> length { return head.plate-x(); }
+    public pure function plate-y() -> length { return head.plate-y(); }
+    public pure function plate-w() -> length { return head.plate-w(); }
+    public pure function plate-h() -> length { return head.plate-h(); }
+    public pure function plate-r() -> length { return head.plate-r(); }
+    /// What it is set to, and whether it is on its way there.
+    public pure function body-y() -> length { return 210px; }
+    public pure function body-h() -> length { return 212px; }
+    /// The two cards under it: what the room actually is, and the mode.
+    public pure function rows() -> int { return 2; }
+    public pure function row-y(which: int) -> length { return which == 0 ? 435px : 545px; }
+    public pure function row-h(which: int) -> length { return 114px; }
+    /// The line at the bottom that explains the keys.
+    public pure function footer-y() -> length { return 669px; }
+    /// It always has its target, its reading and two cards on it.
+    public pure function lift-ready() -> bool { return true; }
+    public pure function sparse() -> bool { return false; }
+
     keys := FocusScope { enabled:root.shown;
         key-pressed(e) => {
             if (e.text == Key.Escape) { root.action(root.modes-shown ? "dismiss" : "close",0); }

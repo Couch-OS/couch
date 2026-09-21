@@ -362,7 +362,8 @@ fn tv_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<pan
         // The last row always lands where a light screen's footer does, so
         // no screen is finished before the transition is - including one with
         // a single row, which would otherwise arrive first and leave the rest
-        // of the transition with nothing to show.
+        // of the transition with nothing happening. A sparse page brings the
+        // rest of itself forward instead, with `sooner`.
         let f = if rows <= 1 {
             1.0
         } else {
@@ -438,7 +439,8 @@ fn player_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option
         // The last row always lands where a light screen's footer does, so
         // no screen is finished before the transition is - including one with
         // a single row, which would otherwise arrive first and leave the rest
-        // of the transition with nothing to show.
+        // of the transition with nothing happening. A sparse page brings the
+        // rest of itself forward instead, with `sooner`.
         let f = if rows <= 1 {
             1.0
         } else {
@@ -460,7 +462,92 @@ fn player_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option
         });
     }
     let _ = height;
-    Some(plan)
+    // A page with almost nothing on it crosses with the room rather than
+    // arriving after it: "Connecting to Sonos…" is a line and a button, and
+    // waiting for the room to go first leaves the panel bare.
+    Some(if app.invoke_ps_sparse() {
+        plan.sooner(panel::LIFT_HASTE)
+    } else {
+        plan
+    })
+}
+
+/// The thermostat, as one plan: a header, what it is set to, the two cards
+/// under it, and the line that explains the keys.
+fn thermostat_plan(
+    app: &App,
+    row: panel::Window,
+    width: i32,
+    height: i32,
+) -> Option<panel::LiftPlan> {
+    if !app.invoke_ths_lift_ready() {
+        return None;
+    }
+    let disc = app.invoke_ths_disc_size();
+    let mut plan = headed(
+        app,
+        "thermostat",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_ths_title_x(),
+                app.invoke_ths_title_y(),
+                app.invoke_ths_title_w(),
+                app.invoke_ths_title_h(),
+            ),
+            disc: at(app.invoke_ths_disc_x(), app.invoke_ths_disc_y(), disc, disc),
+            depth: app.invoke_ths_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_ths_plate_r().round() as i32,
+                ..at(
+                    app.invoke_ths_plate_x(),
+                    app.invoke_ths_plate_y(),
+                    app.invoke_ths_plate_w(),
+                    app.invoke_ths_plate_h(),
+                )
+            },
+        },
+    )
+    .piece(panel::Piece {
+        rect: at(
+            0.0,
+            app.invoke_ths_body_y(),
+            width as f32,
+            app.invoke_ths_body_h(),
+        ),
+        window: panel::LIFT_STATE_IN,
+        fade: 1.0,
+        kind: panel::Arriving::Fade,
+    });
+    let rows = app.invoke_ths_rows().min(3);
+    for which in 0..rows {
+        let f = if rows <= 1 {
+            1.0
+        } else {
+            which as f32 / (rows - 1) as f32
+        };
+        plan = plan.piece(panel::Piece {
+            rect: at(
+                0.0,
+                app.invoke_ths_row_y(which),
+                width as f32,
+                app.invoke_ths_row_h(which),
+            ),
+            window: (
+                panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
+                panel::LIFT_CARDS_IN.1 + (panel::LIFT_FOOTER_IN.1 - panel::LIFT_CARDS_IN.1) * f,
+            ),
+            fade: panel::LIFT_CARDS_FADE,
+            kind: panel::Arriving::Rise(panel::LIFT_BARS_DROP),
+        });
+    }
+    plan = plan.footer(width, height, app.invoke_ths_footer_y().round() as i32);
+    Some(if app.invoke_ths_sparse() {
+        plan.sooner(panel::LIFT_HASTE)
+    } else {
+        plan
+    })
 }
 
 /// The focused row's band with the name and the icon painted out of it: what
@@ -562,6 +649,8 @@ fn device_screen(app: &App) -> Option<Overlay> {
         Some(Overlay::Light)
     } else if app.get_tv_shown() {
         Some(Overlay::Tv)
+    } else if app.get_thermostat_shown() {
+        Some(Overlay::Thermostat)
     } else if app.get_player_shown() && !app.get_custom_activity_shown() {
         Some(Overlay::Player)
     } else {
@@ -665,6 +754,7 @@ fn screen_plan(
         Overlay::Light => Some(light_plan(app, row, w, h)),
         Overlay::Tv => tv_plan(app, row, w, h),
         Overlay::Player => player_plan(app, row, w, h),
+        Overlay::Thermostat => thermostat_plan(app, row, w, h),
         _ => None,
     }
 }

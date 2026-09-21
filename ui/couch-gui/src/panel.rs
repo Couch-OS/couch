@@ -209,6 +209,16 @@ pub(crate) const LIFT_CARDS_FADE: f32 = 0.9;
 pub(crate) const LIFT_STATE_IN: (f32, f32) = (0.30, 0.56);
 pub(crate) const LIFT_GROW: (f32, f32) = (0.52, 1.0);
 pub(crate) const LIFT_FOOTER_IN: (f32, f32) = (0.66, 0.94);
+/// How much earlier everything the screen does happens when the page it is
+/// arriving at has very little on it.
+///
+/// A control screen full of cards can afford to arrive after the room has
+/// gone, because what arrives is most of the panel. A page that says only
+/// "Connecting to Sonos…" cannot: the room leaves on the same schedule, and
+/// between the two there is nothing but the name and the icon in flight -
+/// which is the panel looking broken for a third of a second. A sparse page
+/// crosses with the room rather than after it.
+pub(crate) const LIFT_HASTE: f32 = 0.22;
 
 /// Where the development switch for the opening transition is read from.
 /// Under `/tmp`, so it is gone at the next boot and nothing a person set up is
@@ -1374,6 +1384,37 @@ impl LiftPlan {
         })
     }
 
+    /// The screen arrives earlier, without finishing earlier.
+    ///
+    /// Every piece opens `by` sooner and settles when it always did, so it
+    /// crosses with the room rather than following it; what travels lands
+    /// `by` sooner instead, because the hand-over cannot begin until it has.
+    /// Shifting the whole schedule earlier would only move the empty part of
+    /// the transition to the end.
+    ///
+    /// The room takes `by` longer to go, too. It is the overlap between the
+    /// two that keeps the panel occupied, and on a page this empty the room
+    /// is the only thing with anything on it for the first third.
+    pub fn sooner(mut self, by: f32) -> Self {
+        let opens = |w: (f32, f32)| ((w.0 - by).max(0.0), w.1);
+        let lands = |w: (f32, f32)| (w.0, (w.1 - by).max(w.0 + 0.02));
+        self.fall = (self.fall.0, self.fall.1 + by);
+        self.hand_over = opens(self.hand_over);
+        if let Some((to, rise)) = self.plate {
+            self.plate = Some((to, lands(rise)));
+        }
+        for traveller in self.travellers.iter_mut().flatten() {
+            traveller.fly = lands(traveller.fly);
+        }
+        for piece in self.pieces.iter_mut().flatten() {
+            piece.window = opens(piece.window);
+            if let Arriving::Card { grow, .. } = &mut piece.kind {
+                *grow = opens(*grow);
+            }
+        }
+        self
+    }
+
     /// One more piece, drawn after the ones already given.
     pub fn piece(mut self, piece: Piece) -> Self {
         if let Some(slot) = self.pieces.iter_mut().find(|slot| slot.is_none()) {
@@ -2447,6 +2488,83 @@ pub(crate) mod checks {
             total / (FRAMES + 1) as f32
         );
         (total / (FRAMES + 1) as f32, worst)
+    }
+
+    /// The panel is never nearly empty on the way across.
+    ///
+    /// Measured against the pages themselves rather than against a flat
+    /// percentage: a control screen is mostly background and a "Connecting…"
+    /// page is almost all background, so "no more than 92% of the panel is
+    /// the background colour" says nothing about a page that is 95% background
+    /// when it has finished arriving. What matters is how much of what the
+    /// screen will hold is already there, so every frame is held against the
+    /// emptier of the two pages it is between.
+    ///
+    /// Returns the worst share any frame reached and when, so a plan can be
+    /// measured before a threshold is put on it; `never_bare` puts the
+    /// threshold on it.
+    pub(crate) fn bareness(
+        room: &[u32],
+        screen: &[u32],
+        panel_w: usize,
+        panel_h: usize,
+        plan: LiftPlan,
+    ) -> (f32, f32) {
+        let ink = |page: &[u32]| page.iter().filter(|p| **p != LIFT_BG).count();
+        let floor = ink(room).min(ink(screen)).max(1) as f32;
+        let mut art = crate::lift_art(room, screen, panel_w, panel_h, plan);
+        let content = lift_content(room, panel_w, panel_h);
+        let screen_content = lift_content(screen, panel_w, panel_h);
+        let (mut worst, mut at) = (f32::MAX, 0.0);
+        for step in 0..=FRAMES {
+            let t = step as f32 / FRAMES as f32;
+            let mut pixels = vec![0u32; panel_w * panel_h];
+            lift_frame(
+                Surface {
+                    pixels: &mut pixels,
+                    stride: panel_w,
+                    width: panel_w,
+                    height: panel_h,
+                },
+                (screen, room),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                Shown::Arriving,
+                t,
+            );
+            let share = ink(&pixels) as f32 / floor;
+            if share < worst {
+                worst = share;
+                at = t;
+            }
+        }
+        (worst, at)
+    }
+
+    /// The panel always holds a quarter of what the emptier of the two pages
+    /// holds.
+    ///
+    /// A quarter rather than a half because the floor case is real: a
+    /// "Connecting to Sonos…" page is one line and one button, and while the
+    /// room is leaving there is genuinely not much to put on the panel. A
+    /// light screen reaches 0.52 and a television 0.67; the player's waiting
+    /// page reached 0.17 before it learnt to cross with the room instead of
+    /// following it, which is the frame this is here to catch.
+    pub(crate) fn never_bare(
+        room: &[u32],
+        screen: &[u32],
+        panel_w: usize,
+        panel_h: usize,
+        plan: LiftPlan,
+        what: &str,
+    ) {
+        let (share, at) = bareness(room, screen, panel_w, panel_h, plan);
+        assert!(
+            share >= 0.25,
+            "{what}: at {at:.2} the panel held {share:.2} of what the emptier of the two \
+             pages holds - the room had gone and the screen had not arrived"
+        );
     }
 
     /// Nothing appears or disappears in one frame. Over the frames a

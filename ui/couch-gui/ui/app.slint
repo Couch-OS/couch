@@ -167,6 +167,11 @@ export component App inherits Window {
     public function focus-camera(){camera-page.take-focus();}
     in-out property <bool> thermostat-shown;
     in-out property <string> thermostat-title;
+    /// Where it is and what drives it, and the room row's own disc.
+    in-out property <string> thermostat-room;
+    in-out property <image> thermostat-icon;
+    in-out property <bool> thermostat-active;
+    in-out property <bool> thermostat-known;
     // Runtime HA text includes degree/range symbols and unknown placeholders, while
     // entity names may contain Cyrillic. Software font embedding scans Slint
     // literals, so retain all dynamic text glyph coverage here.
@@ -409,6 +414,29 @@ export component App inherits Window {
     public function ps-row-y(which: int) -> length { return cinema.row-y(which); }
     public function ps-row-h(which: int) -> length { return cinema.row-h(which); }
     public function ps-lift-ready() -> bool { return cinema.lift-ready(); }
+    public function ps-sparse() -> bool { return cinema.sparse(); }
+    // The thermostat's own, the same set again.
+    public function ths-title-x() -> length { return thermostat-page.title-box-x(); }
+    public function ths-title-y() -> length { return thermostat-page.title-box-y(); }
+    public function ths-title-w() -> length { return thermostat-page.title-box-w(); }
+    public function ths-title-h() -> length { return thermostat-page.title-box-h(); }
+    public function ths-disc-x() -> length { return thermostat-page.disc-box-x(); }
+    public function ths-disc-y() -> length { return thermostat-page.disc-box-y(); }
+    public function ths-disc-size() -> length { return thermostat-page.disc-box-size(); }
+    public function ths-header-h() -> length { return thermostat-page.header-h(); }
+    public function ths-plate-x() -> length { return thermostat-page.plate-x(); }
+    public function ths-plate-y() -> length { return thermostat-page.plate-y(); }
+    public function ths-plate-w() -> length { return thermostat-page.plate-w(); }
+    public function ths-plate-h() -> length { return thermostat-page.plate-h(); }
+    public function ths-plate-r() -> length { return thermostat-page.plate-r(); }
+    public function ths-body-y() -> length { return thermostat-page.body-y(); }
+    public function ths-body-h() -> length { return thermostat-page.body-h(); }
+    public function ths-rows() -> int { return thermostat-page.rows(); }
+    public function ths-row-y(which: int) -> length { return thermostat-page.row-y(which); }
+    public function ths-row-h(which: int) -> length { return thermostat-page.row-h(which); }
+    public function ths-footer-y() -> length { return thermostat-page.footer-y(); }
+    public function ths-lift-ready() -> bool { return thermostat-page.lift-ready(); }
+    public function ths-sparse() -> bool { return thermostat-page.sparse(); }
     public function focus-home() { fs.focus(); }
 
     // --- keyboard -------------------------------------------------------------
@@ -750,6 +778,8 @@ export component App inherits Window {
         width:parent.width; height:parent.height;
         visible:root.thermostat-shown; shown:root.thermostat-shown;
         title:root.thermostat-title; current:root.thermostat-current; target:root.thermostat-target;
+        room:root.thermostat-room; icon:root.thermostat-icon;
+        active:root.thermostat-active; known:root.thermostat-known;
         status:root.thermostat-status; detail:root.thermostat-detail; mode:root.thermostat-mode;
         modes:root.thermostat-modes; modes-shown:root.thermostat-modes-shown;
         range:root.thermostat-range; adjustable:root.thermostat-adjustable; pending:root.thermostat-pending;
