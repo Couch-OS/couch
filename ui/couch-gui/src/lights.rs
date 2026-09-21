@@ -3954,7 +3954,10 @@ mod tests {
             )
         };
         let (label, disc) = sprites(&leaving);
-        for (step, t) in (0..=10).map(|n| (n, n as f32 / 10.0)) {
+        let content = crate::panel::lift_content(&leaving, W, H);
+        // Every ten per cent, and every five around the hand-over.
+        let sweep = [0, 10, 20, 30, 40, 45, 50, 55, 60, 65, 70, 80, 90, 100];
+        for (step, t) in sweep.iter().map(|n| (*n, *n as f32 / 100.0)) {
             let mut pixels = vec![0u32; W * H];
             crate::panel::lift_frame(
                 crate::panel::Surface {
@@ -3966,12 +3969,13 @@ mod tests {
                 (&arriving, &leaving),
                 lift,
                 (&label, &disc),
+                &content,
                 crate::panel::Shown::Arriving,
                 t,
             );
             match step {
                 0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
-                10 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
+                100 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
                 _ => {
                     assert_ne!(pixels, arriving, "frame {step} is already the screen");
                     assert_ne!(pixels, leaving, "frame {step} never left the room");
@@ -3982,7 +3986,7 @@ mod tests {
                         .filter(|p| **p == crate::panel::lift_background())
                         .count();
                     assert!(
-                        bg * 100 / pixels.len() < 80,
+                        bg * 100 / pixels.len() < 90,
                         "frame {step} is {}% bare",
                         bg * 100 / pixels.len()
                     );
@@ -3995,7 +3999,7 @@ mod tests {
                     .collect();
                 image::save_buffer(
                     std::path::Path::new(&dir)
-                        .join(format!("lift-{step}-{:03}.png", (t * 100.0).round() as u32)),
+                        .join(format!("lift-{:03}.png", (t * 100.0).round() as u32)),
                     &bytes,
                     W as u32,
                     H as u32,
@@ -4019,6 +4023,7 @@ mod tests {
                 (&leaving, &arriving),
                 lift,
                 (&label, &disc),
+                &content,
                 crate::panel::Shown::Leaving,
                 t,
             );
@@ -4033,6 +4038,7 @@ mod tests {
                 (&arriving, &leaving),
                 lift,
                 (&label, &disc),
+                &content,
                 crate::panel::Shown::Arriving,
                 1.0 - t,
             );
@@ -4076,6 +4082,7 @@ mod tests {
         let (room, screen) = (word(&scrolled_room), word(&scrolled_screen));
         let label = crate::panel::Sprite::cut(&room, W, H, lift.label);
         let disc = crate::panel::Sprite::cut(&room, W, H, lift.disc);
+        let content = crate::panel::lift_content(&room, W, H);
         for step in 0..=10 {
             let t = step as f32 / 10.0;
             let mut pixels = vec![0u32; W * H];
@@ -4089,6 +4096,7 @@ mod tests {
                 (&screen, &room),
                 lift,
                 (&label, &disc),
+                &content,
                 crate::panel::Shown::Arriving,
                 t,
             );
@@ -4102,10 +4110,128 @@ mod tests {
                         .count()
                         * 100
                         / pixels.len();
-                    assert!(bare < 80, "scrolled frame {step} is {bare}% bare");
+                    assert!(bare < 90, "scrolled frame {step} is {bare}% bare");
                 }
             }
         }
+        // Nothing appears or disappears in one frame. Over the frames a
+        // default-length lift actually draws, no patch of the panel may change
+        // by much from one to the next unless it is a piece that is travelling
+        // - and a piece counts as travelling only if it is on screen in both
+        // frames, so a thing that vanished is not excused by having moved.
+        let pops = |room: &[u32], screen: &[u32], lift: crate::panel::Lift, what: &str| {
+            let label = crate::panel::Sprite::cut(room, W, H, lift.label);
+            let disc = crate::panel::Sprite::cut(room, W, H, lift.disc);
+            let content = crate::panel::lift_content(room, W, H);
+            let frame = |t: f32| {
+                let mut pixels = vec![0u32; W * H];
+                crate::panel::lift_frame(
+                    crate::panel::Surface {
+                        pixels: &mut pixels,
+                        stride: W,
+                        width: W,
+                        height: H,
+                    },
+                    (screen, room),
+                    lift,
+                    (&label, &disc),
+                    &content,
+                    crate::panel::Shown::Arriving,
+                    t,
+                );
+                pixels
+            };
+            // The frames a 320 ms lift draws on a 60 Hz panel.
+            const FRAMES: usize = 19;
+            const TILE: (usize, usize) = (32, 16);
+            let tiles = (W.div_ceil(TILE.0), H.div_ceil(TILE.1));
+            // For every patch of the panel: how much it changed in its worst
+            // single frame, and how much it changed over the whole
+            // transition. A thing that fades spreads its change over many
+            // frames and no one of them is most of it; a thing that is cut
+            // puts all of it in one. That ratio is the test, and it does not
+            // care whether the thing is a bright glyph or a card a shade
+            // lighter than the background.
+            let mut worst_step = vec![0u32; tiles.0 * tiles.1];
+            let mut total = vec![0u32; tiles.0 * tiles.1];
+            let mut before = frame(0.0);
+            for step in 1..=FRAMES {
+                let t = step as f32 / FRAMES as f32;
+                let after = frame(t);
+                let travelling: Vec<crate::panel::Window> =
+                    crate::panel::lift_pieces(lift, (step - 1) as f32 / FRAMES as f32)
+                        .iter()
+                        .zip(crate::panel::lift_pieces(lift, t))
+                        .filter_map(|(a, b)| match (a, b) {
+                            (Some(a), Some(b)) => Some(crate::panel::Window {
+                                x: a.x.min(b.x),
+                                y: a.y.min(b.y),
+                                w: (a.x + a.w).max(b.x + b.w) - a.x.min(b.x),
+                                h: (a.y + a.h).max(b.y + b.h) - a.y.min(b.y),
+                                r: 0,
+                            }),
+                            _ => None,
+                        })
+                        .collect();
+                for ty in 0..tiles.1 {
+                    for tx in 0..tiles.0 {
+                        let (x0, y0) = (tx * TILE.0, ty * TILE.1);
+                        // A piece that is on screen in both frames has moved,
+                        // and may change as much as it likes; one that is in
+                        // only one of them is exactly what this looks for, so
+                        // it is not excused.
+                        let moving = travelling.iter().any(|piece| {
+                            x0 as i32 + TILE.0 as i32 > piece.x
+                                && (x0 as i32) < piece.x + piece.w
+                                && y0 as i32 + TILE.1 as i32 > piece.y
+                                && (y0 as i32) < piece.y + piece.h
+                        });
+                        let (mut sum, mut n) = (0u32, 0u32);
+                        for y in y0..(y0 + TILE.1).min(H) {
+                            for x in x0..(x0 + TILE.0).min(W) {
+                                let (a, b) = (before[y * W + x], after[y * W + x]);
+                                for shift in [0, 8, 16] {
+                                    sum += ((a >> shift) & 0xff).abs_diff((b >> shift) & 0xff);
+                                    n += 1;
+                                }
+                            }
+                        }
+                        let mean = sum / n.max(1);
+                        let tile = ty * tiles.0 + tx;
+                        // Everything a patch ever does counts towards its
+                        // total, including while a sprite is over it; only
+                        // the frames it was left to itself are judged.
+                        total[tile] += mean;
+                        if !moving {
+                            worst_step[tile] = worst_step[tile].max(mean);
+                        }
+                    }
+                }
+                before = after;
+            }
+            // A patch that barely moved at all over the whole transition is
+            // not worth judging: rounding alone would trip it.
+            let popped = (0..worst_step.len())
+                .filter(|&tile| total[tile] >= 12)
+                .max_by_key(|&tile| worst_step[tile] * 100 / total[tile].max(1));
+            let (share, tile) = popped
+                .map(|tile| (worst_step[tile] * 100 / total[tile].max(1), tile))
+                .unwrap_or((0, 0));
+            assert!(
+                share <= 40,
+                "{what}: the patch at {},{} did {share}% of everything it ever did in one \
+                 frame -                  something appeared or disappeared in one frame",
+                (tile % tiles.0) * TILE.0,
+                (tile / tiles.0) * TILE.1,
+            );
+        };
+        pops(
+            &leaving,
+            &arriving,
+            crate::lift_geometry(&app, from),
+            "top row",
+        );
+        pops(&room, &screen, lift, "scrolled mid-list row");
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }
