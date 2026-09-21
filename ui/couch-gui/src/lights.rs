@@ -1819,8 +1819,20 @@ impl Controller {
                             self.device_resource(i).unwrap_or_else(|| e.id.clone()),
                             e.name.clone(),
                         );
+                        // Where it is and what drives it, and this row's own
+                        // disc: the screen used to say the literal "Home
+                        // Assistant" whatever was actually behind it.
+                        let (line, icon) = (self.source_line(e), e.icon);
+                        let (on, known) = (
+                            e.state.as_ref().is_some_and(|s| s.active() == Some(true)),
+                            e.state.as_ref().is_some_and(|s| s.active().is_some()),
+                        );
                         self.clear_brightness(app);
                         app.invoke_open_thermostat(id.into(), name.into());
+                        app.set_thermostat_room(line.as_str().into());
+                        app.set_thermostat_icon(crate::icons::image(icon));
+                        app.set_thermostat_active(on);
+                        app.set_thermostat_known(known);
                         continue;
                     }
                     if let Some(id) = e.id.strip_prefix("activity:") {
@@ -4810,6 +4822,167 @@ mod tests {
                 );
             }
         }
+        app.hide().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The thermostat lifts out of its row, and holds the same rules.
+    ///
+    /// `COUCH_LIFT_SCREENSHOTS=<dir>` keeps the pictures.
+    #[test]
+    fn the_thermostat_lifts_out_of_its_row() {
+        const NAME: &str = "lights::tests::the_thermostat_lifts_out_of_its_row";
+        if std::env::var_os("COUCH_TEST_THERMO_LIFT").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_THERMO_LIFT", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::ComponentHandle;
+        const W: usize = 480;
+        const H: usize = 800;
+        let config = packaged();
+        let path = std::env::temp_dir().join(format!("couch-thlift-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        crate::config_snapshot::start(path.clone());
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.show().unwrap();
+        window.dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
+        let mut controller = Controller::install(&app);
+        let room = Id::new("living-room");
+        controller.entries = configured_in(&config, &room).unwrap();
+        controller.room = Some(room);
+        let which = controller
+            .entries
+            .iter()
+            .position(|e| e.id.as_str() == "device:heat")
+            .expect("the packaged fixture has a thermostat");
+        app.set_light_title("Living room".into());
+        app.set_light_shown(true);
+        app.set_feedback_enabled(true);
+        controller.update_rows(&app, true);
+        let settle = || {
+            for _ in 0..20 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        };
+        let draw = |into: &mut Vec<slint::Rgb8Pixel>| {
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(into, W);
+            });
+        };
+        settle();
+        let top = crate::room_window(&app);
+        app.set_light_index(which as i32);
+        let mut a = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut a);
+        let from = crate::room_window(&app);
+        assert_ne!(from.y, top.y, "the ring never moved off the first row");
+
+        // Page B, as the row's press leaves it.
+        let entry = &controller.entries[which];
+        app.set_thermostat_title(entry.name.as_str().into());
+        app.set_thermostat_room(controller.source_line(entry).as_str().into());
+        app.set_thermostat_icon(crate::icons::image(entry.icon));
+        app.set_thermostat_active(true);
+        app.set_thermostat_known(true);
+        app.set_thermostat_current("20.5 °C".into());
+        app.set_thermostat_target("21.0 °C".into());
+        app.set_thermostat_status("Heating".into());
+        app.set_thermostat_mode("Heat".into());
+        app.set_thermostat_adjustable(true);
+        app.set_thermostat_detail("Volume raises and lowers the target.".into());
+        app.set_thermostat_shown(true);
+        app.invoke_focus_thermostat();
+        let mut b = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut b);
+        assert!(a != b, "the two pages are the same picture");
+        // The second line names the room and what drives it, not a literal.
+        assert!(
+            app.get_thermostat_room().contains("Living room"),
+            "the thermostat's second line does not say which room it is in: {}",
+            app.get_thermostat_room()
+        );
+        let word = |page: &[slint::Rgb8Pixel]| -> Vec<u32> {
+            page.iter()
+                .map(|p| 0xff00_0000 | ((p.b as u32) << 16) | ((p.g as u32) << 8) | p.r as u32)
+                .collect()
+        };
+        let (arriving, leaving) = (word(&b), word(&a));
+        let plan = crate::thermostat_plan(&app, from, W as i32, H as i32)
+            .expect("the thermostat always has a plan");
+        let mut art = crate::lift_art(&leaving, &arriving, W, H, plan);
+        let content = crate::panel::lift_content(&leaving, W, H);
+        let screen_content = crate::panel::lift_content(&arriving, W, H);
+        let sweep = [0, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100];
+        for (step, t) in sweep.iter().map(|n| (*n, *n as f32 / 100.0)) {
+            let mut pixels = vec![0u32; W * H];
+            crate::panel::lift_frame(
+                crate::panel::Surface {
+                    pixels: &mut pixels,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&arriving, &leaving),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                crate::panel::Shown::Arriving,
+                t,
+            );
+            match step {
+                0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
+                100 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
+                _ => {
+                    assert_ne!(pixels, arriving, "frame {step} is already the screen");
+                    assert_ne!(pixels, leaving, "frame {step} never left the room");
+                }
+            }
+            if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels
+                    .iter()
+                    .flat_map(|p| [*p as u8, (*p >> 8) as u8, (*p >> 16) as u8])
+                    .collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir).join(format!(
+                        "thermostat-lift-{:03}.png",
+                        (t * 100.0).round() as u32
+                    )),
+                    &bytes,
+                    W as u32,
+                    H as u32,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        let (mean, worst) =
+            crate::panel::checks::profile(&leaving, &arriving, W, H, plan, "thermostat");
+        assert!(
+            mean <= 0.35 && worst <= 0.50,
+            "the thermostat lift costs {mean:.2} panels a frame on average and {worst:.2} at \
+             its worst"
+        );
+        crate::panel::checks::never_bare(&leaving, &arriving, W, H, plan, "thermostat row");
+        crate::panel::checks::lands(&leaving, &arriving, W, H, plan, "thermostat row");
+        crate::panel::checks::stronger(&leaving, &arriving, W, H, plan, "thermostat row");
+        crate::panel::checks::ghosts(&leaving, &arriving, W, H, plan, "thermostat row");
+        crate::panel::checks::pops(&leaving, &arriving, W, H, plan, "thermostat row");
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }

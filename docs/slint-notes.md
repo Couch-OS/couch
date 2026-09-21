@@ -655,6 +655,37 @@ slide it always had, so this is the default only for the screens that can
 honour it. `/tmp/couch-transition` still picks any of the three shapes and any
 time between 100 and 1000 ms: `echo "iris 300" > /tmp/couch-transition`.
 
+### A sparse page crosses with the room; a rich one follows it
+
+A control screen full of cards can arrive after the room has left, because
+what arrives is most of the panel. A page that says only "Connecting to
+Sonos…" cannot: the room leaves on the same schedule and between the two there
+is nothing but the name and the icon in flight.
+
+So a screen reports `sparse()`, and `LiftPlan::sooner(LIFT_HASTE)` opens every
+piece `LIFT_HASTE` earlier while leaving each one settling when it always did;
+what travels *lands* that much earlier instead, because the hand-over cannot
+begin until it has; and the room takes the same amount longer to go. Shifting
+the whole schedule earlier only moves the empty part of the transition to the
+end.
+
+**How bare is measured.** Not "no frame is more than 92% background" - that
+says nothing about a page that is 95% background when it has finished
+arriving. `checks::never_bare` counts what is on the panel against **the
+emptier of the two pages**, and holds every frame to a quarter of it. Measured
+on the screens that exist:
+
+| screen | worst share | at |
+|---|---|---|
+| television controls | 0.67 | 0.40 |
+| thermostat | 0.53 | 0.40 |
+| light screen | 0.52 | 0.24 |
+| player, waiting page | 0.29 | 0.48 |
+| player, before `sooner` | **0.17** | 0.40 |
+
+The last row is the frame the owner reported, and the check fails on it.
+
+
 ### Artwork is the one page a lift cannot build
 
 Two screens carry a photograph behind everything: the television while it is
