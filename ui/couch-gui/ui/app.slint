@@ -703,18 +703,18 @@ export component App inherits Window {
     }
     if root.activity-running && (root.player-shown || root.tv-shown) && !root.activity-busy: Rectangle {
         x: parent.width - 112px; y: 22px; width: 88px; height: 44px;
-        background: #171717; border-radius: 22px;
-        Text { text: "End"; color: #ffffff; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+        background: Theme.surface; border-radius: 22px;
+        Text { text: "End"; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
         TouchArea { clicked => { root.end-activity(); } }
     }
     if root.activity-busy: Rectangle {
-        width: parent.width; height: parent.height; background: #101010;
+        width: parent.width; height: parent.height; background: Theme.bg;
         VerticalLayout {
             padding: 36px; alignment: center; spacing: 20px;
-            Text { text: root.activity-progress; color: #ffffff; font-size: 26px; wrap: word-wrap; horizontal-alignment: center; }
-            Text { text: root.activity-step; color: #bbbbbb; font-size: 20px; horizontal-alignment: center; }
-            Rectangle { height: 52px; border-radius: 26px; background: #292929;
-                Text { text: "Cancel"; color: #ffffff; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+            Text { text: root.activity-progress; color: Theme.text; font-size: 26px; wrap: word-wrap; horizontal-alignment: center; }
+            Text { text: root.activity-step; color: Theme.text-secondary; font-size: 20px; horizontal-alignment: center; }
+            Rectangle { height: 52px; border-radius: 26px; background: Theme.surface-raised;
+                Text { text: "Cancel"; color: Theme.text; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
                 TouchArea { clicked => { root.cancel-activity(); } }
             }
         }
