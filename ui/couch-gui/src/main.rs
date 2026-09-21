@@ -139,6 +139,74 @@ fn room_window(app: &App) -> panel::Window {
     }
 }
 
+/// Everything the lift needs, read off the two pages once, at the press.
+///
+/// The room's half comes from the list and the screen's from `light.slint`,
+/// both as functions rather than properties for the reason the ring's box is
+/// (docs/slint-notes.md). Nothing here is a number of its own.
+fn lift_geometry(app: &App, row: panel::Window) -> panel::Lift {
+    let at = |x: f32, y: f32, w: f32, h: f32| panel::Window {
+        x: x.round() as i32,
+        y: y.round() as i32,
+        w: w.round() as i32,
+        h: h.round() as i32,
+        r: 0,
+    };
+    let disc = app.invoke_ls_disc_size();
+    let card = |which: i32| {
+        at(
+            app.invoke_ls_card_x(which),
+            app.invoke_ls_cards_y(),
+            app.invoke_ls_card_w(),
+            app.invoke_ls_cards_h(),
+        )
+    };
+    let track = |which: i32| {
+        at(
+            app.invoke_ls_track_x(which),
+            app.invoke_ls_track_y(),
+            app.invoke_ls_track_w(),
+            app.invoke_ls_track_h(),
+        )
+    };
+    // The second bar is only there on a lamp that reports a colour
+    // temperature; a blind's buttons are not a card that arrives.
+    let two = app.get_light_screen_tunable() && !app.get_light_screen_cover();
+    let none = panel::Window::default();
+    panel::Lift {
+        row,
+        pitch: app.invoke_room_row_pitch().round() as i32,
+        label: at(
+            row.x as f32 + app.invoke_room_label_x(),
+            row.y as f32 + app.invoke_room_label_y(),
+            app.invoke_room_label_w(),
+            app.invoke_room_label_h(),
+        ),
+        // The row's icon: the layout's own left padding, and centred on the
+        // card, which is where a row draws it.
+        disc: at(
+            row.x as f32 + app.invoke_room_disc_inset(),
+            row.y as f32 + (row.h as f32 - disc) / 2.0,
+            disc,
+            disc,
+        ),
+        title: at(
+            app.invoke_ls_title_x(),
+            app.invoke_ls_title_y(),
+            app.invoke_ls_title_w(),
+            app.invoke_ls_title_h(),
+        ),
+        screen_disc: at(app.invoke_ls_disc_x(), app.invoke_ls_disc_y(), disc, disc),
+        header_h: app.invoke_ls_header_h().round() as i32,
+        cards: [card(0), if two { card(1) } else { none }],
+        footer_y: app.invoke_ls_footer_y().round() as i32,
+        track: [track(0), if two { track(1) } else { none }],
+        fill_h: app.invoke_ls_fill_h().round() as i32,
+        marker_y: app.invoke_ls_marker_y().round() as i32,
+        marker_h: app.invoke_ls_marker_h().round() as i32,
+    }
+}
+
 fn overlay(app: &App) -> Option<Overlay> {
     Some(if app.get_activity_busy() {
         Overlay::Activity
@@ -1554,7 +1622,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let cost = match chosen.opening {
                     // The lift is not a window: it crosses the two pages and
                     // carries the row's card up between them.
-                    panel::Opening::Lift => screen.lift(row, shown, chosen.time),
+                    panel::Opening::Lift => {
+                        screen.lift(lift_geometry(&app, row), shown, chosen.time)
+                    }
                     panel::Opening::Iris | panel::Opening::Curtain => {
                         screen.iris(from, to, shown, chosen.time)
                     }

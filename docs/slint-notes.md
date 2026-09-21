@@ -382,45 +382,71 @@ slide's machinery with the run boundaries worked out per row instead of once:
   `IRIS_RING_*` constants are the rest: they are there to be turned on the
   device.
 
-### The lift, and the two primitives it costs
+### The lift: sprites, reveals, and blending a quarter of the panel
 
 The lift is the one shape here that is not a window. The room falls away from
-the focused row outwards, that row's card rises into the header band and hands
-over, and the control screen's bar cards arrive from a little below their
-places. It is still composed from the same two buffers, with two things the
-window compositor does not need:
+the focused row outwards, that row's card rises into the header band with its
+name and its icon riding on it, and the control screen arrives piece by piece.
+It is still composed from the same two buffers, and it is worth reading how it
+got here, because the obvious version was the wrong trade.
 
-- **A translated band copy** (`band_over`): a band of one page put down `dy`
-  rows from where it sits, clipped at all four edges, one `copy_from_slice` a
-  scanline - or one blended run when it is fading. This is what carries the
-  row's card up. It costs a fraction of a frame: one row band, not a panel.
-- **A per-pixel crossing** (`blend_flat`, `blend_over`): two channels to a
-  multiply, packed in the spare halves of a `u32` - red and blue in one, green
-  and alpha in the other. Each product is at most `255 * 256`, exactly sixteen
-  bits, so neither pair carries into the other and nothing has to be unpacked.
-  About a dozen integer operations a pixel, written as a zip over two slices
-  of the same length so the hot loop has no bounds checks and the compiler is
-  free to widen it. **This is the expensive part**: one blended scanline where
-  the other shapes do one `memcpy`, so a lift frame moves half as much again
-  as a slide frame and does arithmetic on all of it.
+**The first version cross-faded the whole panel** - one blended scanline where
+the other shapes do one `memcpy` - and measured on the HA100 at **9.1 to 10.4
+ms a frame, worst frames 12 to 18 ms, and one frame of 38.5 ms** against a 16.7
+ms budget, where the iris and the curtain hold 60 fps. It also did not look
+like the thing it was copying: in a cross-fade nothing travels and nothing
+grows. Both problems have the same answer - do not touch every pixel.
 
-A scanline never crosses straight from one page to the other. It goes out to
-`Theme.bg` and comes back in from it, which is why `LIFT_STAGGER` is generous:
-while the scanlines near the row are already filling with the screen, the far
-ones have not begun to leave, so the panel is never bare all at once. Two
-pages of text on top of each other for a third of a second reads as a smear,
-and the rows are meant to fall away before the screen arrives.
+- **Sprites.** A rectangle cut out of a page once, before the first frame, into
+  a small owned buffer, and put down at an interpolated place on each frame:
+  the row's name and its icon, a few tens of kilobytes between them. `put`
+  clips at all four edges and takes a **colour key** - the card the name was
+  cut from - so that only the glyphs travel and the plate under them stays
+  behind. A compare a pixel over a few tens of thousands of pixels, against a
+  blend over three hundred and eighty thousand.
+- **The rising card** is a filled rounded rectangle in `Theme.surface` with a
+  pixel of `Theme.border` round it, interpolated from the row's rect to the
+  header band's. It is the focus ring's own row-run arithmetic, filled instead
+  of stroked, over a rectangle that is never more than a tenth of the panel.
+- **Reveals, not redraws.** The level bar's fill and the colour marker are
+  already in the page at their values, so neither is drawn: the fill is
+  un-revealed from the top by painting the empty part of the track in the
+  colour the page gives it, and the marker is moved by painting over it with
+  the gradient from just above and putting it back where it has got to. The
+  geometry - track, fill height, marker - is exported from `light.slint`
+  rather than written down twice.
+- **Blending, banded.** The only real blending is the room falling away, and a
+  band is blended only while it is inside its own short window: before it the
+  band is a copy of the room, after it a fill. One band is one row's pitch, so
+  a card is never caught half faded, and `LIFT_BAND_FADE` is about twice
+  `LIFT_BAND_STEP`, which holds the blended part of the panel to **roughly a
+  quarter** at any instant however many rows there are.
+- **Nothing reads the framebuffer back.** Every blend writes; the sprites and
+  bands copy. A framebuffer is mapped for writing, and reading it back is far
+  slower than reading RAM - which the first version did, for its travelling
+  card, on every frame.
+- The crossing itself now does **two pixels an iteration**, four channels
+  packed in the halves of a `u64`. Ten milliseconds for a panel where a
+  `memcpy` of the same is 1.3 is far more than a dozen integer operations a
+  pixel should cost, so it was not being widened; halving the iterations is
+  the part of that worth having without reaching for intrinsics.
 
-What the preview has and this cannot: the bar fills and the colour marker
-growing to their values, and the row label swapping size as it becomes the
-title. Both need a renderer; here they are simply part of the screen arriving.
-The renderer version of the whole thing would be 10-29 ms a frame by the
-measurements above, against a 16.7 ms budget, so it was not written.
+**The name is the same size in both places.** `Theme.device-name` is what a
+room row gives a device's name and what the control screen gives its title, so
+the sprite lands on the title it is replacing and the hand-over is a cut with
+nothing to fade. The two have different widths available, so a long name can
+elide differently in the two places; the last frame is the page itself, whole,
+so any difference is gone by then.
 
-Because it is the one shape whose cost has to be read rather than assumed,
-every opening prints what it cost when it is over - frames, the mean work per
+What the preview has and this still has not: the row's label and the screen's
+title are the same size now, but the **second line** is not - a row shows the
+device's state where the screen shows where it is and what drives it, so those
+words change at the hand-over. The renderer version of the whole thing would
+be 10-29 ms a frame by the measurements above, so it was not written.
+
+Every opening prints what it cost when it is over - frames, the mean work per
 frame and the worst one, in microseconds - and `COUCH_REGION=1` prints each
-frame as it goes, the same as the iris.
+frame as it goes, the same for all three shapes.
 
 A press that only switches a row must not arm it (`screen_pending` in
 `lights.rs` asks the row the same question `poll` does), and Home leaves the

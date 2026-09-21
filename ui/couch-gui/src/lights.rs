@@ -3943,9 +3943,27 @@ mod tests {
         );
         assert_eq!(pixels, leaving, "the close does not end on the room");
 
-        // The lift, over the same two pages: the room crossing to the screen
-        // with the row's card carried up between them.
-        for (step, t) in [(0, 0.0), (1, 0.25), (2, 0.5), (3, 0.75), (4, 1.0)] {
+        // The lift, over the same two pages: the room falling away from the
+        // row, its name and icon flying to the title and the disc, and the
+        // screen arriving piece by piece.
+        let lift = crate::lift_geometry(&app, from);
+        let sprites = |page: &[u32]| {
+            (
+                crate::panel::Sprite::cut(page, W, H, lift.label),
+                crate::panel::Sprite::cut(page, W, H, lift.disc),
+            )
+        };
+        let (label, disc) = sprites(&leaving);
+        for (step, t) in [
+            (0, 0.0),
+            (1, 0.15),
+            (2, 0.30),
+            (3, 0.45),
+            (4, 0.60),
+            (5, 0.75),
+            (6, 0.90),
+            (7, 1.0),
+        ] {
             let mut pixels = vec![0u32; W * H];
             crate::panel::lift_frame(
                 crate::panel::Surface {
@@ -3955,13 +3973,14 @@ mod tests {
                     height: H,
                 },
                 (&arriving, &leaving),
-                from,
+                lift,
+                (&label, &disc),
                 crate::panel::Shown::Arriving,
                 t,
             );
             match step {
                 0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
-                4 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
+                7 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
                 _ => {
                     assert_ne!(pixels, arriving, "frame {step} is already the screen");
                     assert_ne!(pixels, leaving, "frame {step} never left the room");
@@ -3974,7 +3993,7 @@ mod tests {
                     .collect();
                 image::save_buffer(
                     std::path::Path::new(&dir)
-                        .join(format!("lift-{step}-{:03}.png", (t * 100.0) as u32)),
+                        .join(format!("lift-{step}-{:03}.png", (t * 100.0).round() as u32)),
                     &bytes,
                     W as u32,
                     H as u32,
@@ -3983,8 +4002,9 @@ mod tests {
                 .unwrap();
             }
         }
-        // And its close is the open backwards: the page arriving is the room
-        // now, so the last frame is the room whole.
+        // And its close is the open backwards, frame for frame: the page
+        // arriving is the room now, so the last frame is the room whole.
+        // Cut from the room either way, as the panel does.
         for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let mut closing = vec![0u32; W * H];
             crate::panel::lift_frame(
@@ -3995,7 +4015,8 @@ mod tests {
                     height: H,
                 },
                 (&leaving, &arriving),
-                from,
+                lift,
+                (&label, &disc),
                 crate::panel::Shown::Leaving,
                 t,
             );
@@ -4008,7 +4029,8 @@ mod tests {
                     height: H,
                 },
                 (&arriving, &leaving),
-                from,
+                lift,
+                (&label, &disc),
                 crate::panel::Shown::Arriving,
                 1.0 - t,
             );

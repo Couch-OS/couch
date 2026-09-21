@@ -312,11 +312,42 @@ export component App inherits Window {
     /// outline, for the room navigation test. Functions rather than out
     /// properties, for the reason given where they come from.
     public function room-scroll-destination() -> length { return light-page.scroll-destination(); }
-    public function room-ring-position() -> length { return light-page.ring-position(); }
+    /// The list is below the status bar, and everything it reports is in its
+    /// own coordinates: a transition draws on the panel, so the page's own
+    /// offset has to be added here or a window opens a status bar's height
+    /// above the row it came from.
+    public function room-ring-position() -> length { return light-page.y + light-page.ring-position(); }
     public function room-ring-height() -> length { return light-page.ring-height(); }
     public function room-ring-radius() -> length { return light-page.ring-radius(); }
     public function room-ring-x() -> length { return light-page.ring-box-x(); }
     public function room-ring-width() -> length { return light-page.ring-box-width(); }
+    public function room-row-pitch() -> length { return light-page.row-pitch(); }
+    public function room-disc-inset() -> length { return light-page.disc-inset(); }
+    public function room-label-x() -> length { return light-page.label-box-x(); }
+    public function room-label-y() -> length { return light-page.label-box-y(); }
+    public function room-label-w() -> length { return light-page.label-box-w(); }
+    public function room-label-h() -> length { return light-page.label-box-h(); }
+    /// The control screen's own geometry, for the lift (panel.rs).
+    public function ls-title-x() -> length { return light-screen-page.title-box-x(); }
+    public function ls-title-y() -> length { return light-screen-page.title-box-y(); }
+    public function ls-title-w() -> length { return light-screen-page.title-box-w(); }
+    public function ls-title-h() -> length { return light-screen-page.title-box-h(); }
+    public function ls-disc-x() -> length { return light-screen-page.disc-box-x(); }
+    public function ls-disc-y() -> length { return light-screen-page.disc-box-y(); }
+    public function ls-disc-size() -> length { return light-screen-page.disc-box-size(); }
+    public function ls-header-h() -> length { return light-screen-page.header-h(); }
+    public function ls-cards-y() -> length { return light-screen-page.cards-y(); }
+    public function ls-cards-h() -> length { return light-screen-page.cards-h(); }
+    public function ls-card-x(which: int) -> length { return light-screen-page.card-x(which); }
+    public function ls-card-w() -> length { return light-screen-page.card-w(); }
+    public function ls-track-x(which: int) -> length { return light-screen-page.track-box-x(which); }
+    public function ls-track-y() -> length { return light-screen-page.track-box-y(); }
+    public function ls-track-w() -> length { return light-screen-page.track-box-w(); }
+    public function ls-track-h() -> length { return light-screen-page.track-box-h(); }
+    public function ls-fill-h() -> length { return light-screen-page.fill-h(); }
+    public function ls-marker-y() -> length { return light-screen-page.marker-y(); }
+    public function ls-marker-h() -> length { return light-screen-page.marker-h(); }
+    public function ls-footer-y() -> length { return light-screen-page.footer-y(); }
     public function focus-home() { fs.focus(); }
 
     // --- keyboard -------------------------------------------------------------
