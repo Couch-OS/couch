@@ -367,6 +367,10 @@ pub struct Controller {
     /// at once, as it shows a brightness step at once, and it lasts exactly
     /// as long as the switch is out. It is never sent: the switch is.
     toggle_target: Option<(String, u8)>,
+    /// A switch whose press found the worker's queue full. It is held rather
+    /// than dropped, and the latest one wins the way a held brightness key's
+    /// latest target does - one press, one switch, whenever the worker frees.
+    toggle_pending: Option<String>,
     refreshing: bool,
     last_refresh: Instant,
     brightness_pending: VecDeque<(String, u8)>,
@@ -943,6 +947,7 @@ impl Controller {
             busy: None,
             busy_since: None,
             toggle_target: None,
+            toggle_pending: None,
             refreshing: false,
             last_refresh: Instant::now(),
             brightness_pending: VecDeque::new(),
@@ -1032,6 +1037,7 @@ impl Controller {
             .is_ok();
     }
     pub fn clear_brightness(&mut self, app: &App) {
+        self.toggle_pending = None;
         self.brightness_pending.clear();
         self.mirek_pending.clear();
         self.ir_pending.clear();
@@ -1232,8 +1238,27 @@ impl Controller {
             app.set_light_detail("".into());
             self.update_rows(app, false);
         } else {
-            app.set_light_detail("Connection busy. Press OK again in a moment.".into());
+            // The worker takes one operation at a time and its queue is one
+            // deep. A press that arrives while it is full used to be dropped
+            // where it stood, with a line asking for it again; it is held
+            // here instead and goes out the moment the worker frees, which is
+            // the rule a held brightness key has always had.
+            self.toggle_pending = Some(id);
         }
+    }
+
+    /// The switch that was held back, once there is room for it. The latest
+    /// press is the one that goes: pressing OK twice while the worker is busy
+    /// is one switch, not two, exactly as holding the brightness key is one
+    /// level rather than every level it passed through.
+    fn send_toggle(&mut self, app: &App) {
+        if self.busy.is_some() || self.refreshing || self.room.is_none() {
+            return;
+        }
+        let Some(id) = self.toggle_pending.take() else {
+            return;
+        };
+        self.toggle_row(app, id);
     }
     /// Where the level bar of a dimmable lamp goes when it is switched: to
     /// nothing when it is on, and back to the level it kept when it is off and
@@ -1943,6 +1968,7 @@ impl Controller {
             }
         }
         self.send_ir();
+        self.send_toggle(app);
         self.send_brightness();
         // The screen is another view of the row behind it: every reading that
         // moves the row moves the screen too, and a row that has left the room
@@ -4503,6 +4529,129 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A switch pressed while the worker is busy is held, not dropped.
+    ///
+    /// The worker takes one operation at a time and its queue is one deep. A
+    /// press that arrived while it was full used to do nothing at all beyond
+    /// a line of text asking for it again - the lamp did not switch, and on a
+    /// slow bridge that is most of the presses in a burst. It is held now,
+    /// and the latest one wins, which is the rule a held brightness key has
+    /// always had.
+    #[test]
+    fn a_switch_pressed_while_the_worker_is_busy_is_held_rather_than_dropped() {
+        const NAME: &str =
+            "lights::tests::a_switch_pressed_while_the_worker_is_busy_is_held_rather_than_dropped";
+        if std::env::var_os("COUCH_TEST_HELD_SWITCH").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_HELD_SWITCH", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::ComponentHandle;
+        let config = packaged();
+        let _window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let room = Id::new("living-room");
+        // A queue exactly one deep, and nothing draining it: the worker as it
+        // is while one operation is still out.
+        let (tx, requests) = mpsc::sync_channel(1);
+        let (_events, rx) = mpsc::channel();
+        let mut controller = Controller {
+            input: Rc::new(RefCell::new(VecDeque::new())),
+            ir_pending: VecDeque::new(),
+            physical_repeat: Rc::new(std::cell::Cell::new(false)),
+            active: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tx,
+            rx,
+            generation: 0,
+            room: Some(room.clone()),
+            entries: configured_in(&config, &room).unwrap(),
+            cache: StateCache::default(),
+            hue: Arc::new(crate::connections::HueFleet::default()),
+            busy: None,
+            busy_since: None,
+            toggle_target: None,
+            toggle_pending: None,
+            refreshing: false,
+            last_refresh: Instant::now(),
+            brightness_pending: VecDeque::new(),
+            position_targets: HashMap::new(),
+            brightness_flight: None,
+            brightness_until: None,
+            last_brightness_send: Instant::now(),
+            mirek_pending: VecDeque::new(),
+            mirek_flight: None,
+            screen: None,
+            screen_button: 0,
+            last_screen: None,
+            notice: None,
+        };
+        let (first, second) = (
+            controller.entries[0].id.to_string(),
+            controller.entries[1].id.to_string(),
+        );
+        controller
+            .tx
+            .try_send((0, room.clone(), Operation::List))
+            .expect("the queue starts empty");
+
+        // A press now finds no room. Before, that was the end of it.
+        controller.toggle_row(&app, first.clone());
+        assert_eq!(controller.toggle_pending.as_deref(), Some(first.as_str()));
+        assert!(
+            controller.busy.is_none(),
+            "nothing went out, so nothing is out"
+        );
+
+        // A second press replaces the first: two presses while the worker is
+        // busy are one switch, not two.
+        controller.toggle_row(&app, second.clone());
+        assert_eq!(controller.toggle_pending.as_deref(), Some(second.as_str()));
+
+        // The worker frees. The switch goes out on the next poll, by itself.
+        assert!(matches!(requests.try_recv(), Ok((_, _, Operation::List))));
+        controller.send_toggle(&app);
+        assert_eq!(controller.toggle_pending, None);
+        assert_eq!(controller.busy.as_deref(), Some(second.as_str()));
+        match requests.try_recv() {
+            Ok((_, _, Operation::Toggle(id))) => assert_eq!(id, second),
+            Ok(_) => panic!("something other than the held switch went out"),
+            Err(_) => panic!("the held switch never went out"),
+        }
+
+        // A held switch waits for the one that is still out rather than
+        // pushing in front of it, even once the queue has room again.
+        controller
+            .tx
+            .try_send((0, room.clone(), Operation::List))
+            .expect("the queue is empty again");
+        controller.toggle_row(&app, first.clone());
+        assert_eq!(controller.toggle_pending.as_deref(), Some(first.as_str()));
+        assert!(requests.try_recv().is_ok());
+        controller.send_toggle(&app);
+        assert_eq!(
+            controller.toggle_pending.as_deref(),
+            Some(first.as_str()),
+            "a switch went out while another was still out"
+        );
+
+        // And it goes the moment that one answers.
+        controller.release();
+        controller.send_toggle(&app);
+        assert_eq!(controller.toggle_pending, None);
+        assert_eq!(controller.busy.as_deref(), Some(first.as_str()));
+        app.hide().unwrap();
+    }
+
     /// Which presses arm the iris that opens the control screen out of its
     /// row, and which must not: a transition is a third of a second of the
     /// remote holding the keys, so a row that only switches never starts one.
@@ -4526,6 +4675,7 @@ mod tests {
             busy: None,
             busy_since: None,
             toggle_target: None,
+            toggle_pending: None,
             refreshing: false,
             last_refresh: Instant::now(),
             brightness_pending: VecDeque::new(),
