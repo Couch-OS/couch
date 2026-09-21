@@ -3954,16 +3954,7 @@ mod tests {
             )
         };
         let (label, disc) = sprites(&leaving);
-        for (step, t) in [
-            (0, 0.0),
-            (1, 0.15),
-            (2, 0.30),
-            (3, 0.45),
-            (4, 0.60),
-            (5, 0.75),
-            (6, 0.90),
-            (7, 1.0),
-        ] {
+        for (step, t) in (0..=10).map(|n| (n, n as f32 / 10.0)) {
             let mut pixels = vec![0u32; W * H];
             crate::panel::lift_frame(
                 crate::panel::Surface {
@@ -3980,10 +3971,21 @@ mod tests {
             );
             match step {
                 0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
-                7 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
+                10 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
                 _ => {
                     assert_ne!(pixels, arriving, "frame {step} is already the screen");
                     assert_ne!(pixels, leaving, "frame {step} never left the room");
+                    // Nothing is ever nearly bare: the room hands over to the
+                    // screen, it does not empty the panel and refill it.
+                    let bg = pixels
+                        .iter()
+                        .filter(|p| **p == crate::panel::lift_background())
+                        .count();
+                    assert!(
+                        bg * 100 / pixels.len() < 80,
+                        "frame {step} is {}% bare",
+                        bg * 100 / pixels.len()
+                    );
                 }
             }
             if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
@@ -4035,6 +4037,74 @@ mod tests {
                 1.0 - t,
             );
             assert_eq!(closing, opening, "the lift's close is not its open at {t}");
+        }
+        // The same transition again with a long, scrolled list and the row in
+        // the middle of it, which is where a real room puts it: the bands
+        // either side are counted from the row, so an off-by-one there would
+        // paint the wrong part of the panel, and the list's own offset would
+        // show up as a window in the wrong place.
+        let mut many = Vec::new();
+        for n in 0..12 {
+            let mut entry = controller.entries[0].clone();
+            entry.id = format!("{}-{n}", entry.id);
+            entry.name = format!("Lamp {n}");
+            many.push(entry);
+        }
+        controller.entries = many;
+        controller.update_rows(&app, true);
+        // A new list puts itself back to the top from its own change handler,
+        // which runs on the next tick - so let it, and then choose the row.
+        settle();
+        app.set_light_index(6);
+        settle();
+        assert!(
+            app.invoke_room_scroll_destination() > 0.0,
+            "the list did not scroll"
+        );
+        let mut scrolled_room = vec![slint::Rgb8Pixel::default(); W * H];
+        draw(&mut scrolled_room);
+        let middle = crate::room_window(&app);
+        assert!(
+            middle.y > 200 && middle.y + middle.h < H as i32,
+            "{middle:?} is not a row in the middle of the panel"
+        );
+        controller.open_screen(&app, 6);
+        let mut scrolled_screen = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut scrolled_screen);
+        let lift = crate::lift_geometry(&app, middle);
+        let (room, screen) = (word(&scrolled_room), word(&scrolled_screen));
+        let label = crate::panel::Sprite::cut(&room, W, H, lift.label);
+        let disc = crate::panel::Sprite::cut(&room, W, H, lift.disc);
+        for step in 0..=10 {
+            let t = step as f32 / 10.0;
+            let mut pixels = vec![0u32; W * H];
+            crate::panel::lift_frame(
+                crate::panel::Surface {
+                    pixels: &mut pixels,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&screen, &room),
+                lift,
+                (&label, &disc),
+                crate::panel::Shown::Arriving,
+                t,
+            );
+            match step {
+                0 => assert_eq!(pixels, room, "the scrolled first frame is not the room"),
+                10 => assert_eq!(pixels, screen, "the scrolled last frame is not the screen"),
+                _ => {
+                    let bare = pixels
+                        .iter()
+                        .filter(|p| **p == crate::panel::lift_background())
+                        .count()
+                        * 100
+                        / pixels.len();
+                    assert!(bare < 80, "scrolled frame {step} is {bare}% bare");
+                }
+            }
         }
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
