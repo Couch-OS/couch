@@ -47,6 +47,12 @@ three places, and they must stay tries:
 - Locks 2 and 3 are held across a package's answer, so **every request path
   only ever tries them** (or tries for a bounded time with `patiently`) and
   answers `busy`. Nothing may wait for one while holding anything.
+  A request to a package, and a listing, try lock 3 for a quarter of a second
+  (`REQUEST_LOCK_WAIT`): a read takes about thirty milliseconds, and without
+  that the panel and a phone reading one bridge refused each other one time in
+  ten. It stays well under the 750 ms a request may queue for, and four
+  requests stuck behind a stalled connection free the four workers again in
+  that quarter of a second.
 - The gate is written with `try_write` only. `std`'s `RwLock` makes new readers
   queue behind a waiting writer, so a deletion that *waited* behind one slow
   request would stall every other request to that connection with it.
