@@ -16,7 +16,7 @@ export component BtPairOverlay inherits Rectangle {
     in property <string> detail: "";
 
     visible: root.shown;
-    background: #000000F0;
+    background: Theme.scrim;
     // Nothing below may take a touch while this is up.
     TouchArea { enabled: root.shown; }
 
