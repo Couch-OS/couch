@@ -407,7 +407,7 @@ names a child goes through `request_child_detailed(kind, request)` instead: the
 kind is what the gate checks against and is never written. On the package's
 side the defaulted `DeviceClient::child_kinds`, `children`, `child_command`,
 `child_action` and `child_status` answer for one child at a time; see
-[`docs/client-sdk.md`](../client-sdk.md).
+[`docs/client-sdk.md`](https://github.com/Couch-OS/couch/blob/main/docs/client-sdk.md).
 
 ### What a protocol 1 or 2 package never sees
 
