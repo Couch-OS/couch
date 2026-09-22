@@ -2,7 +2,7 @@
 
 The integrated native installer prepares the host dependencies, enrolls the
 remote over USB, and uses authenticated Wi-Fi for backups and OS transfer.
-Release `installer-v0.1.0`, the first installer published from
+Release `installer-v0.1.1`, the first installer published from
 [Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer), is a
 prerelease; it installs the OS payload its release descriptor pins. Its
 launchers passed download, checksum and safe-Cancel tests on Linux, macOS and
@@ -98,13 +98,13 @@ Linux x64 and macOS, from an interactive terminal:
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.0/install.sh | sh
+  https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.1/install.sh | sh
 ```
 
 Windows x64, from PowerShell:
 
 ```powershell
-Invoke-RestMethod 'https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.0/install.ps1' | Invoke-Expression
+Invoke-RestMethod 'https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.1/install.ps1' | Invoke-Expression
 ```
 
 The release launcher verifies the native host, terminal and release configuration
@@ -223,6 +223,26 @@ floor](runtime-updates.md#compatibility-floor)). The releases already published
 are the remaining half: until those three `.dev` prereleases are withdrawn, or a
 newer promoted release is cut above them, an affected remote is still offered
 `.164.dev`. Retry **Check for updates** after the next release.
+
+### My remote shows COUCH RECOVERY every time it starts
+
+A runtime update that fails its health check is rolled back correctly, but on
+images whose bootstrap predates the rollback fix the reboot enters recovery with
+the `boot-recovery` flag still armed, and recovery keeps that flag on purpose -
+so the remote returns to the COUCH RECOVERY screen on every boot until the flag
+is cleared. Run the installer and choose **My remote shows COUCH RECOVERY** at
+the first menu. It needs no release configuration and downloads nothing: connect
+the remote by USB while that screen is showing, and the installer finds it on
+its serial port, checks that it really is a Couch recovery shell on your remote,
+shows which Couch version the next boot will start, and, once you confirm,
+clears the flag, reads the block back to prove it is clear, and restarts the
+remote. Nothing else is written: only the first 512 bytes of the `para`
+partition change, the `ENV_v1` area is preserved, and no other partition is
+touched. If more than one remote in recovery is connected it refuses and asks
+you to disconnect the others; if the readback does not come back clear it stops
+without restarting and says so. Watch the remote restart, then open
+**Settings → Updates** to finish updating it. The same fix by hand, from the
+recovery shell, is in the [device recovery guide](device-recovery.md#leaving-recovery-after-a-rejected-runtime-candidate).
 
 ## Reinstalling Couch on a new computer
 

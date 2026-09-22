@@ -26,7 +26,7 @@ carried by Wi-Fi. Start Android on the HA100, enable USB debugging, connect the
 remote, then run the pinned installer for the current prerelease in a terminal:
 
 ```sh
-curl -fsSL https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.0/install.sh | sh
+curl -fsSL https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.1/install.sh | sh
 ```
 
 Windows users run `install.ps1` from the same release in PowerShell. The script
