@@ -105,8 +105,9 @@ impl Demo {
                         media: false,
                         activity: false,
                         kind: 0,
-                        // A dimmable lamp: OK opens its control screen.
-                        controls: true,
+                        // The demo switches a lamp on OK; it has no light
+                        // control screen, so the row does not promise one.
+                        controls: false,
                         icon: lamp(),
                     },
                 );
@@ -183,6 +184,8 @@ impl Demo {
         app.set_player_title("Tears of Steel".into());
         app.set_player_metadata("2012 · Science fiction · 12 min".into());
         app.set_player_activity("Watch a movie".into());
+        // The shared header carries the device's icon, as on the remote.
+        app.set_player_icon(tv());
         app.set_player_room(ROOMS[self.room.unwrap_or(0)].into());
         app.set_player_panel(0);
         self.progress(app);
@@ -653,7 +656,7 @@ pub fn documentation_screen(name: &str) {
                     a.set_camera_image(slint::Image::from_rgb8(frame));
                     a.set_camera_title("Camera preview fixture".into());
                     a.set_camera_message("TEST PATTERN · No camera connection".into());
-                    a.set_camera_shown(true);a.invoke_focus_camera();
+                    a.set_camera_icon(png(include_bytes!("../../ui/couch-gui/assets/icon-monitor.png")));a.set_camera_shown(true);a.invoke_focus_camera();
                 }
                 "thermostat-feedback" => {
                     d.open_room(a,0);
@@ -679,6 +682,7 @@ pub fn documentation_screen(name: &str) {
                         a.set_thermostat_status("Unavailable".into()); a.set_thermostat_modes(ModelRc::default());
                         a.set_thermostat_detail("Home Assistant reports this thermostat is unavailable.".into());
                     }
+                    a.set_thermostat_icon(png(include_bytes!("../../ui/couch-gui/assets/icon-thermometer.png")));
                     a.set_thermostat_shown(true);
                     a.set_thermostat_modes_shown(name == "thermostat-modes");
                     a.invoke_focus_thermostat();
@@ -772,6 +776,7 @@ pub fn documentation_screen(name: &str) {
                     );
                     a.set_tv_sound("TV speakers".into());
                     a.set_tv_picture("Cinema".into());
+                    a.set_tv_icon(tv());
                     a.set_tv_shown(true);
                     a.invoke_focus_tv();
                     if name == "android-apps" || name == "apple-apps" {
