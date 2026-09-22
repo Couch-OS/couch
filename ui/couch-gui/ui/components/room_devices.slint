@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
 import { FocusRing } from "focus_ring.slint";
+import { DeviceDisc } from "device_disc.slint";
 import { ChoiceItem } from "chooser.slint";
 
 // One flat list. State updates mutate model rows, preserving focus and scroll.
@@ -94,7 +95,56 @@ export component RoomDevices inherits Rectangle {
     /// either would make a reader of the ring's geometry, and every frame of
     /// a move would repaint whatever read it (docs/slint-notes.md).
     public function scroll-destination() -> length { return root.scroll-goal; }
+    /// Whether a row is doing nothing and should sink back: a lamp that is
+    /// off, or a light or blind that has not said. Nothing else - a receiver's
+    /// row has controls behind it and no state to be idle in.
+    public pure function recessed(item: ChoiceItem) -> bool {
+        return !item.activity && (item.power-known ? !item.active : item.light);
+    }
+    /// What the focused row is actually drawn in. The lift cuts its name and
+    /// its icon out of that row and keys them on the card they sat on, and
+    /// the card it raises starts in the same colour - so it has to be the
+    /// colour the row really has, not the one a lit row would have had.
+    public pure function focused-surface() -> color {
+        if (root.index >= root.items.length) { return Theme.surface; }
+        return root.items[root.index].activity ? Theme.surface-raised
+             : root.recessed(root.items[root.index]) ? Theme.surface-idle : Theme.surface;
+    }
+    public pure function focused-border() -> color {
+        if (root.index >= root.items.length) { return Theme.border; }
+        return root.items[root.index].activity ? Theme.border-raised
+             : root.recessed(root.items[root.index]) ? Theme.border-idle : Theme.border;
+    }
     public function ring-position() -> length { return fs.ring-y; }
+    /// The rest of the highlighted row's box, for the iris that opens out of
+    /// it (panel.rs). Read at the press rather than kept anywhere, for the
+    /// same reason as the two above; the x and the width are the arithmetic
+    /// the list above is laid out by, not a reading of it.
+    public function ring-height() -> length { return fs.ring-h; }
+    public function ring-radius() -> length { return fs.ring-r; }
+    public function ring-box-x() -> length { return Theme.pad-side; }
+    public function ring-box-width() -> length { return root.width - 2 * Theme.pad-side; }
+    /// One row to the next, so the lift can find the bands either side of the
+    /// focused one without being told the whole list.
+    public function row-pitch() -> length { return root.pitch; }
+    /// Where a row's name is drawn inside its card - the rectangle the lift
+    /// cuts out and flies to the control screen's title. Arithmetic that
+    /// mirrors the layout above rather than a reading of it, for the reason
+    /// `place-ring` is: reading a laid-out box back dirties the subtree that
+    /// holds it. The band is generous on purpose; the pixels that are the
+    /// card rather than the name are dropped when it is put down.
+    public function disc-inset() -> length { return 18px; }
+    /// Where the disc sits down the row: the layout above pads the card by
+    /// `disc-inset` all round and centres the disc in what is left, so this
+    /// is that arithmetic and not a guess at it - the lift flies this very
+    /// rectangle to the screen's own disc, and a pixel out shows.
+    public function disc-box-y() -> length { return 18px; }
+    public function label-box-x() -> length { return 18px + 52px + 16px; }
+    public function label-box-w() -> length {
+        return root.width - 2 * Theme.pad-side - (18px + 52px + 16px) - 16px - 22px - 18px;
+    }
+    public function label-box-h() -> length { return 34px; }
+    public function label-box-y() -> length { return (root.row-h - 58px) / 2; }
     // One ring for the whole page rather than one per section, and its
     // geometry on a zero-size element so that moving it cannot dirty the root
     // that paints the background. Set imperatively, because a bound property
@@ -121,9 +171,19 @@ export component RoomDevices inherits Rectangle {
                 x: 0px; y: i * root.pitch; width: parent.width; height: root.row-h;
                 // An activity row is the area page's activity strip, at row
                 // height: raised card, accent glyph, title over "source · room".
-                background: item.activity ? Theme.surface-raised : Theme.surface;
+                //
+                // A row that is doing nothing sinks back, the way a room row
+                // on the hub does: a lamp that is off, or a light or blind
+                // that has not answered. A device row with controls behind it
+                // is not "off" and does not sink - it has nothing to be off
+                // about. The title stays at full strength either way, because
+                // it is the word the lift flies to the screen's own title and
+                // the two have to be one drawing.
+                background: item.activity ? Theme.surface-raised
+                          : root.recessed(item) ? Theme.surface-idle : Theme.surface;
                 border-width: 1px;
-                border-color: item.activity ? Theme.border-raised : Theme.border;
+                border-color: item.activity ? Theme.border-raised
+                            : root.recessed(item) ? Theme.border-idle : Theme.border;
                 border-radius: item.activity ? Theme.r-card : Theme.r-row;
                 // Like the room list, a tap selects; OK acts on the focused row.
                 TouchArea { clicked => { root.index = i; } }
@@ -153,32 +213,34 @@ export component RoomDevices inherits Rectangle {
                 }
                 if !item.activity: HorizontalLayout {
                     padding: 18px; spacing: 16px;
-                    Rectangle {
-                        width: 52px; height: 52px; border-radius: Theme.r-disc;
-                        background: item.power-known && !item.active ? Theme.surface-icon-idle : Theme.surface-icon;
-                        border-width: 1px; border-color: item.power-known && !item.active ? Theme.border-icon-idle : Theme.border-icon;
-                        Image {
-                            x: 14px; y: 14px; width: 24px; height: 24px;
-                            source: item.icon;
-                            colorize: item.active ? Theme.accent : item.power-known ? Theme.text-quaternary : Theme.text-secondary;
-                            animate colorize { duration: 180ms; easing: ease-out; }
-                        }
-                    }
+                    DeviceDisc { icon: item.icon; active: item.active; known: item.power-known; }
                     VerticalLayout {
-                        alignment: center; spacing: 2px;
-                        Text { text: item.title; color: Theme.text; font-size: 26px; font-weight: 600; overflow: elide; }
-                        Text { text: item.detail; color: item.active ? Theme.accent : Theme.text-secondary; font-size: 19px; overflow: elide; }
+                        alignment: center; spacing: 2px; horizontal-stretch: 1;
+                        Text { text: item.title; color: Theme.text; font-size: Theme.device-name; font-weight: Theme.device-name-weight; overflow: elide; }
+                        Text { text: item.detail; color: item.active ? Theme.accent : root.recessed(item) ? Theme.text-quaternary : Theme.text-secondary; font-size: 19px; overflow: elide; }
+                    }
+                    // A row whose OK opens a screen says so with a chevron
+                    // rather than words: the state text is what matters, and
+                    // there is no room for both.
+                    Rectangle {
+                        width: 22px; horizontal-stretch: 0; background: transparent;
+                        Image {
+                            x: 0px; y: (parent.height - 22px) / 2; width: 22px; height: 22px;
+                            source: @image-url("../../../../assets/lucide/chevron-right.svg");
+                            colorize: Theme.text-quaternary;
+                            visible: item.controls;
+                        }
                     }
                 }
             }
         }
     }
     Text { x: 20px; y: parent.height - 188px; width: parent.width - 40px; height: 48px; text: root.detail; color: Theme.text-secondary; font-size: 16px; wrap: word-wrap; }
-    Text { x: Theme.pad-side; y: parent.height - 128px; text: "SCENES"; color: Theme.text-secondary; font-size: 15px; letter-spacing: 1.8px; }
+    Text { x: Theme.pad-side; y: parent.height - 128px; text: "SCENES"; color: Theme.text-quaternary; font-size: 15px; letter-spacing: 0.14 * 15px; }
     Rectangle {
         x: Theme.pad-side; y: root.scenes-y; width: parent.width - 2 * Theme.pad-side; height: root.scenes-card-h;
         background: Theme.surface; border-width: 1px; border-color: Theme.border; border-radius: Theme.r-card;
-        Text { x: 18px; y: 0px; width: parent.width - 70px; height: parent.height; vertical-alignment: center; text: root.scene-label; overflow: elide; color: Theme.text; font-size: 21px; }
+        Text { x: 18px; y: 0px; width: parent.width - 70px; height: parent.height; vertical-alignment: center; text: root.scene-label; overflow: elide; color: Theme.text; font-size: 21px; font-weight: 600; }
         Image { x: parent.width - 40px; y: 26px; width: 22px; height: 22px; source: @image-url("../../../../assets/lucide/arrow-big-right.svg"); colorize: Theme.text-secondary; }
         TouchArea { clicked => { root.index=root.items.length; root.open-scenes(); } }
     }

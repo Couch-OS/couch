@@ -114,6 +114,23 @@ configuration surface instead, and say so in review.
 the transport-agnostic cases, so `couch-echo` here and `couch-denon` in its own
 repository are unchanged.
 
+### When you move your SDK revision
+
+`Request::Command` gained a field (the protocol 3 key phase, which a protocol 1
+or 2 package is never sent), so it is no longer built as a struct literal. An
+integration in its own repository whose `tests/admission.rs` says
+
+```rust
+request: Request::Command { function: "play".into() },
+```
+
+must say `request: Request::command("play"),` from the first SDK revision that
+has it. Nothing else in an admission file changes, the wire bytes are the same,
+and a package built from an older revision keeps working unchanged: this is a
+source change for the next time you bump the pin, not a reason to bump it.
+`couch_sdk::Error` also gained two variants (`Unpaired`, `Explained`), so an
+exhaustive `match` on it needs a new arm.
+
 ## Hardware evidence
 
 Moving an entry to `production` requires at least one evidence record with:

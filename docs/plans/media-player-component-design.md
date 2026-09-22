@@ -1052,6 +1052,22 @@ in parallel with 1-3. 5 needs 3 and 4. 6 needs 3. 7 needs 2. 10 needs 5.
    before or together with PR 10. Doing it first repeats the PR 4 trick and makes
    PR 10 smaller.
 
+## Corrections found while building the shared player controller (#236)
+
+Step 4 of the plan is merged: `ui/couch-gui/src/media_player.rs` holds the device-neutral controller (`Backend` trait) and built-in Sonos is its first backend, with 29 rendered pictures proving the screen did not change. Building it showed where this document was wrong. Steps 1-3 and 5 must follow these, not the sections above:
+
+1. **Sonos needs its "Up next" sheet.** Section 7's manifest has `lists: []`, but the built-in screen has an Up next sheet. Declare a `queue` list (as the example in 3.1 does) or keep building it from `media.next`; otherwise the packaged screen cannot match the pictures.
+2. **`set_mode { mode, on }` cannot leave "repeat this track" in one write.** Today that clears `repeat` and `repeat_one` together. The wire action should take a partial set of modes (the controller's `ModeChange { shuffle, repeat, repeat_one, crossfade: Option<bool> }`).
+3. **`Media` needs the device's own name.** The idle sentence says "Lounge is idle." using the speaker's name, which can differ from the Couch device name. The controller carries `Media.device_name`; the wire `media` reply needs the same field.
+4. **Line two is not simply "container when there is no track".** With a track and no artist/album, line two is the container; with no track, the TITLE is the container and line two is its kind.
+5. **The backend needs `close`.** A command that cannot reach the speaker drops the connection until Reconnect; a failed periodic read does not. Both are in the pictures.
+6. **`watch` must not block the command worker.** It is called with zero wait from the one worker that also sends commands; a 10 s long poll there would hold key presses. Step 5 needs short waits or a second thread.
+7. `list()` is not in the trait yet (Sonos does not use it), and `Can.next/previous` are carried but not enforced, because today's screen sends the skip and words the refusal.
+
+Kodi stays on its own screen for now. To move onto this controller it needs: a real wait or `changed` hook with the cadence chosen by the backend, a navigation mode that sends D-pad keys and reads nothing back, declared lists with a current row, operations guarded by `Media::item`, art roles (backdrop and logo), relative seek, its own idle sentence, and `try_device_ir` before `perform`.
+
+The packaged backend (step 5) is held to the same states and picture names through `media_player::fixtures` and `COUCH_PLAYER_GOLDENS`.
+
 ## Source references
 
 - `ui/couch-gui/src/shortcuts.rs`, `sonos_player.rs`, `activity.rs`,

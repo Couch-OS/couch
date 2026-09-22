@@ -312,6 +312,13 @@ fn Shell() -> impl IntoView {
                 (Route::Updates, "Updates"),
             ])}
         </nav>
+
+        // Protocol 3 (unreleased): the pairing dialog, mounted once out here.
+        // Out of the fieldset the app disables while a write is out - a
+        // pairing is not an edit of the house and must not be greyed out by
+        // one - and reached from a connection's page and from a device panel
+        // alike, so there is never more than one of it.
+        {move || (app.paired.get() == Some(true)).then(|| screens::plugin_pairing::dialog(app))}
     }
 }
 

@@ -64,14 +64,105 @@ pub(crate) fn layout(config: &couch_model::Config, device: &couch_model::Device)
     })
 }
 
-fn ask(connection: &str, request: Request) -> Result<Response, String> {
-    couch_plugin::local_request(
-        &crate::home::path("plugin.sock"),
+/// The panel does no pairing of its own (T3): this is the whole of what it
+/// offers instead, on the toast, the packaged control screen's status line
+/// and a packaged light row's detail.
+pub(crate) const PAIRING_HINT: &str = "Open Couch in a browser to pair";
+
+/// What the panel says when a packaged device's request fails: Couch's own
+/// sentence for the code, and under it the package's line when it gave one
+/// (protocol 3; the host has already held it to 160 bytes of printable text).
+/// The sentence comes first because it is the part that is always there, and
+/// the part a one-line surface keeps.
+///
+/// `Unpaired` is the one code that never shows the package's own line:
+/// rendering the sentence, the package's line and [`PAIRING_HINT`] together
+/// takes three lines, which do not fit the 72px toast bar (checked by
+/// rendering it - the card grows past its own border rather than wrapping).
+/// Two lines do, so `Unpaired` keeps Couch's sentence and the hint, the same
+/// pair on every surface that shows it.
+pub(crate) fn refusal(failure: &couch_plugin::Failure) -> String {
+    if failure.code == couch_plugin::Error::Unpaired {
+        return format!("{}\n{PAIRING_HINT}", failure.code);
+    }
+    let said = failure
+        .reason
+        .as_ref()
+        .map(|reason| reason.text().trim())
+        .filter(|text| !text.is_empty());
+    match said {
+        Some(text) => format!("{}\n{text}", failure.code),
+        None => failure.code.to_string(),
+    }
+}
+
+/// One request to the daemon's panel socket. A refusal is an `Err`, with its
+/// reason; `Ok` is never `Response::Error`.
+pub(crate) fn ask_detailed(
+    connection: &str,
+    request: Request,
+) -> Result<Response, couch_plugin::Failure> {
+    ask_within(
         connection,
         request,
         couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
     )
-    .map_err(|e| e.to_string())
+}
+
+/// [`ask_detailed`] with a deadline of its own: the room list gives a status
+/// read far less than a command's, because a room full of rows is read one
+/// after another on one worker.
+pub(crate) fn ask_within(
+    connection: &str,
+    request: Request,
+    timeout: Duration,
+) -> Result<Response, couch_plugin::Failure> {
+    couch_plugin::local_request_detailed(
+        &crate::home::path("plugin.sock"),
+        connection,
+        request,
+        timeout,
+    )
+}
+
+/// Which child of its connection a packaged device is, if it is one.
+///
+/// A device that *is* the connection - a receiver, a TV - names nothing, and
+/// every frame sent for it is the one a protocol 1 or 2 package has always
+/// read, byte for byte. A saved `resource_id` alone does not make a child:
+/// `zone1` on a receiver is part of the connection's own settings.
+pub(crate) fn resource(integration: &Integration) -> Option<&str> {
+    match integration {
+        Integration::Plugin {
+            resource_id,
+            child: Some(_),
+            ..
+        } => Some(resource_id),
+        _ => None,
+    }
+}
+
+/// `request`, aimed at the child this device is; unchanged for a device that
+/// is the connection itself.
+pub(crate) fn aimed(request: Request, integration: &Integration) -> Request {
+    match resource(integration) {
+        Some(child) => request.at(child),
+        None => request,
+    }
+}
+
+/// One request for a packaged device, aimed at the child it is.
+///
+/// The connection is taken from the device's own resolved integration, so a
+/// child's name can never be carried to another connection's package.
+pub(crate) fn ask_device(
+    integration: &Integration,
+    request: Request,
+) -> Result<Response, couch_plugin::Failure> {
+    let Integration::Plugin { connection_id, .. } = integration else {
+        return Err(couch_plugin::Error::Invalid.into());
+    };
+    ask_detailed(connection_id.as_str(), aimed(request, integration))
 }
 
 /// The function a screen action means for this device, given its last status.
@@ -113,6 +204,60 @@ pub(crate) fn level(status: &Status) -> String {
     }
 }
 
+/// What one status reading puts in the header and on the big line.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Shown {
+    /// Under the device's name: "Off" wins, then whether it is playing, then
+    /// "On", and "Connected" for a device that reports none of them.
+    pub status: &'static str,
+    /// The Power tile: "On", "Off", or nothing the device reports.
+    pub power: &'static str,
+    /// The big line: what is playing when the device says, else its input.
+    pub source: String,
+    /// The Input tile's line when a title has taken the input's place.
+    pub input: String,
+}
+
+pub(crate) fn shown(status: &Status, inputs: &[couch_plugin::Selectable]) -> Shown {
+    let input = status
+        .input
+        .as_deref()
+        .map(|id| {
+            inputs
+                .iter()
+                .find(|input| input.id == id)
+                .map_or_else(|| id.to_owned(), |input| input.name.clone())
+        })
+        .unwrap_or_default();
+    let power = match status.on {
+        Some(true) => "On",
+        Some(false) => "Off",
+        None => "",
+    };
+    let title = status.title.as_deref().map(str::trim).unwrap_or_default();
+    Shown {
+        status: match (status.on, status.playing) {
+            // A device that is off is not playing, whatever it last said.
+            (Some(false), _) => "Off",
+            (_, Some(true)) => "Playing",
+            (_, Some(false)) => "Paused",
+            (Some(true), None) => "On",
+            (None, None) => "Connected",
+        },
+        power,
+        source: if title.is_empty() {
+            input.clone()
+        } else {
+            title.to_owned()
+        },
+        input: if title.is_empty() {
+            String::new()
+        } else {
+            input
+        },
+    }
+}
+
 pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, String> {
     let current =
         || super::infrared::request_current(work, active, crate::connections::config().as_ref());
@@ -128,18 +273,19 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         .devices()
         .find(|(_, d)| d.id.as_str() == id)
         .ok_or("Device was removed")?;
-    let Some(Integration::Plugin {
-        connection_id,
-        supports_inputs,
-        ..
-    }) = config.resolve_integration(&device.integration)
+    let integration = config
+        .resolve_integration(&device.integration)
+        .ok_or("Selected device is no longer a packaged integration")?;
+    let Integration::Plugin {
+        supports_inputs, ..
+    } = &integration
     else {
         return Err("Selected device is no longer a packaged integration".into());
     };
-    let connection = connection_id.as_str();
-    let read = || match ask(connection, Request::Status)? {
+    let supports_inputs = *supports_inputs;
+    let ask = |request| ask_device(&integration, request).map_err(|f| refusal(&f));
+    let read = || match ask(Request::status())? {
         Response::Status { status } => Ok(status),
-        Response::Error { code } => Err(code.to_string()),
         _ => Err("The integration returned an invalid status".to_string()),
     };
     // Power is decided against what the device says now, not what the screen
@@ -151,15 +297,17 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         if !current() {
             return Ok(None);
         }
-        match ask(connection, Request::Command { function })? {
+        match ask(Request::command(function))? {
             Response::Ok => {}
-            Response::Error { code } => return Err(code.to_string()),
+            // A write to a child may be acknowledged with the state it left
+            // it in; this screen reads the status straight after anyway.
+            Response::Status { .. } => {}
             _ => return Err("The integration returned an invalid response".into()),
         }
     }
     let status = read()?;
     let inputs = if supports_inputs {
-        match ask(connection, Request::Inputs) {
+        match ask(Request::Inputs) {
             Ok(Response::Inputs { inputs }) => inputs,
             _ => vec![],
         }
@@ -171,21 +319,7 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     {
         return Ok(None);
     }
-    let source = status
-        .input
-        .as_deref()
-        .map(|id| {
-            inputs
-                .iter()
-                .find(|input| input.id == id)
-                .map_or_else(|| id.to_owned(), |input| input.name.clone())
-        })
-        .unwrap_or_default();
-    let power = match status.on {
-        Some(true) => "On",
-        Some(false) => "Off",
-        None => "",
-    };
+    let shown = shown(&status, &inputs);
     let mut choices: Vec<(String, String, String)> = inputs
         .iter()
         .map(|input| {
@@ -210,12 +344,14 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     }
     Ok(Some(Event {
         generation: work.generation,
-        // The header says whether it is on; the level has the line under the
-        // current input to itself, and the volume card keeps that line fresh.
-        status: Ok(if power.is_empty() { "Connected" } else { power }.into()),
+        // The header says whether it is on or playing; the level has the line
+        // under the title or input to itself, and the volume card keeps that
+        // line fresh.
+        status: Ok(shown.status.into()),
         details: Some(Details {
-            source,
-            sound: power.into(),
+            source: shown.source,
+            input: shown.input,
+            sound: shown.power.into(),
             picture: level(&status),
             choices,
             ..Details::default()
@@ -269,6 +405,109 @@ mod tests {
         );
     }
 
+    /// `refusal` is what both the toast (`activity_buttons::plugin_failure`)
+    /// and this screen's own status line are built from, so what it does for
+    /// `Unpaired` reaches both: Couch's sentence and the browser hint, never
+    /// the package's own line, because the panel does no pairing of its own.
+    #[test]
+    fn an_unpaired_refusal_gives_the_status_line_the_browser_hint_not_the_reason() {
+        use couch_plugin::{Error, Failure, Reason};
+        assert_eq!(
+            refusal(&Failure::from(Error::Unpaired)),
+            format!("{}\n{PAIRING_HINT}", Error::Unpaired)
+        );
+        assert_eq!(
+            refusal(&Failure {
+                code: Error::Unpaired,
+                reason: Some(Reason::Message {
+                    text: "Pair this TV again".into()
+                }),
+            }),
+            format!("{}\n{PAIRING_HINT}", Error::Unpaired)
+        );
+        // Every other code keeps carrying the package's own line, unchanged.
+        assert_eq!(
+            refusal(&Failure {
+                code: Error::Rejected,
+                reason: Some(Reason::Message {
+                    text: "The TV is locked".into()
+                }),
+            }),
+            format!("{}\nThe TV is locked", Error::Rejected)
+        );
+    }
+
+    /// Which frames name a child and which do not. This is the one place the
+    /// panel decides it, so every request it makes - a row key, a volume
+    /// write, a status read, the packaged screen - inherits the answer.
+    #[test]
+    fn only_a_child_is_named_and_a_receivers_frames_are_unchanged() {
+        let config = denon();
+        let (_, device) = config.devices().next().unwrap();
+        let receiver = config.resolve_integration(&device.integration).unwrap();
+        assert_eq!(resource(&receiver), None);
+        // A receiver with a zone saved on it is still the connection itself:
+        // `zone1` is part of its settings, not a child, and its frames are
+        // the bytes a protocol 2 package has always read.
+        let mut zoned = config.clone();
+        zoned.rooms[0].devices[0].integration = Integration::Connection {
+            connection_id: "theater-avr".into(),
+            resource_id: "zone1".into(),
+            child: None,
+        };
+        zoned.validate().unwrap();
+        let (_, device) = zoned.devices().next().unwrap();
+        let zoned = zoned.resolve_integration(&device.integration).unwrap();
+        assert_eq!(resource(&zoned), None);
+        for request in [
+            Request::status(),
+            Request::key("volume-up", couch_model::KeyPhase::Repeat),
+            Request::action(couch_model::TypedAction::SetVolumeDb { tenths: -395 }),
+            Request::Inputs,
+        ] {
+            assert_eq!(aimed(request.clone(), &zoned), request);
+            assert_eq!(
+                serde_json::to_string(&aimed(request.clone(), &receiver)).unwrap(),
+                serde_json::to_string(&request).unwrap()
+            );
+        }
+
+        // A child of a bridge: every frame that can name one does.
+        let bridge: couch_model::Config = serde_json::from_value(serde_json::json!({
+            "schema_version":1,
+            "connections":[{"id":"bridge","name":"Hue bridge","provider":{"kind":"plugin",
+                "id":"hue","label":"Philips Hue","children":[
+                    {"kind":"light","label":"Light","device_kind":"light","component":"light",
+                     "capabilities":[{"id":"toggle","label":"Toggle"}],
+                     "actions":[{"action":"set_light"}]}]}}],
+            "rooms":[{"id":"living-room","name":"Living room","devices":[
+                {"id":"desk","name":"Desk lamp","kind":"light","integration":{"via":"connection",
+                    "connection_id":"bridge","resource_id":"lamp/1",
+                    "child":{"kind":"light","light":{"dimmable":true}}}}]}]
+        }))
+        .unwrap();
+        bridge.validate().unwrap();
+        let (_, device) = bridge.devices().next().unwrap();
+        let child = bridge.resolve_integration(&device.integration).unwrap();
+        assert_eq!(resource(&child), Some("lamp/1"));
+        assert_eq!(
+            aimed(Request::status(), &child),
+            Request::status().at("lamp/1")
+        );
+        // A level on a child goes as the plain command it is; the host gate
+        // is what turns it into the typed action.
+        assert_eq!(
+            aimed(Request::key("dim:30", couch_model::KeyPhase::Tap), &child),
+            Request::Command {
+                function: "dim:30".into(),
+                phase: couch_model::KeyPhase::Tap,
+                resource: Some("lamp/1".into())
+            }
+        );
+        // Nothing that cannot name a child is changed by aiming it.
+        assert_eq!(aimed(Request::Inputs, &child), Request::Inputs);
+    }
+
     #[test]
     fn power_is_decided_from_the_observed_state_and_never_guessed() {
         let status = |json: serde_json::Value| -> Status { serde_json::from_value(json).unwrap() };
@@ -314,6 +553,99 @@ mod tests {
         assert_eq!(level(&status(serde_json::json!({}))), "");
     }
 
+    fn reading(json: serde_json::Value) -> Status {
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn receiver_inputs() -> Vec<couch_plugin::Selectable> {
+        vec![
+            couch_plugin::Selectable::new("BD", "CoreELEC"),
+            couch_plugin::Selectable::new("NET", "Network"),
+        ]
+    }
+
+    #[test]
+    fn the_header_says_playing_or_paused_and_a_title_takes_the_big_line() {
+        // A receiver that reports neither: exactly what the screen said before.
+        let denon = shown(
+            &reading(serde_json::json!({"on":true,"input":"BD",
+                "volume_db":{"kind":"reading","tenths":-395}})),
+            &receiver_inputs(),
+        );
+        assert_eq!(
+            denon,
+            Shown {
+                status: "On",
+                power: "On",
+                source: "CoreELEC".into(),
+                input: String::new(),
+            }
+        );
+        assert_eq!(
+            shown(&reading(serde_json::json!({})), &[]).status,
+            "Connected"
+        );
+        assert_eq!(
+            shown(&reading(serde_json::json!({"input":"AUX"})), &[]).source,
+            "AUX",
+            "an input the device did not list is shown by its ID"
+        );
+        // Kodi: no power, no inputs, a title while something is loaded.
+        let kodi = shown(
+            &reading(serde_json::json!({"volume":64,"muted":false,"playing":true,
+                "title":"Breaking Bad S5E14 - Ozymandias"})),
+            &[],
+        );
+        assert_eq!(
+            (
+                kodi.status,
+                kodi.power,
+                kodi.source.as_str(),
+                kodi.input.as_str()
+            ),
+            ("Playing", "", "Breaking Bad S5E14 - Ozymandias", "")
+        );
+        // Sonos 0.1.0: whether it plays, and no title.
+        let sonos = shown(
+            &reading(serde_json::json!({"volume":22,"muted":false,"playing":false})),
+            &[],
+        );
+        assert_eq!(
+            (sonos.status, sonos.source.as_str(), sonos.input.as_str()),
+            ("Paused", "", "")
+        );
+        // Both: the title has the big line and the Input tile keeps the input.
+        let streaming = shown(
+            &reading(
+                serde_json::json!({"on":true,"input":"NET","playing":true,"title":"  Blue in Green  "}),
+            ),
+            &receiver_inputs(),
+        );
+        assert_eq!(
+            (
+                streaming.status,
+                streaming.power,
+                streaming.source.as_str(),
+                streaming.input.as_str()
+            ),
+            ("Playing", "On", "Blue in Green", "Network")
+        );
+        // Off wins over a stale play state; an empty title is no title.
+        let off = shown(
+            &reading(serde_json::json!({"on":false,"input":"BD","playing":true,"title":" "})),
+            &receiver_inputs(),
+        );
+        assert_eq!(
+            (
+                off.status,
+                off.power,
+                off.source.as_str(),
+                off.input.as_str()
+            ),
+            ("Off", "Off", "CoreELEC", "")
+        );
+    }
+
     #[test]
     fn the_core_screen_shows_a_receiver_and_its_keys_move_between_tiles_and_rows() {
         if std::env::var_os("COUCH_TEST_CORE_SCREEN").is_none() {
@@ -340,16 +672,54 @@ mod tests {
         let actions = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let received = actions.clone();
         app.on_tv_action(move |name| received.borrow_mut().push(name.to_string()));
-        app.set_tv_shown(true);
-        app.set_tv_generic(true);
-        app.set_tv_kind_label("DENON AVR".into());
-        app.set_tv_can_power(true);
-        app.set_tv_can_input(true);
-        app.set_tv_title("Theater AVR".into());
-        app.set_tv_status("On".into());
-        app.set_tv_source("CoreELEC".into());
-        app.set_tv_sound("On".into());
-        app.set_tv_picture("-39.5 dB".into());
+        // One status reading, put on the screen the way the controller does.
+        let fill = |kind: &str,
+                    (power, input, command): (bool, bool, bool),
+                    name: &str,
+                    status: serde_json::Value| {
+            let status = reading(status);
+            let shown = shown(&status, &receiver_inputs());
+            app.set_tv_shown(false);
+            slint::platform::update_timers_and_animations();
+            app.set_tv_generic(true);
+            app.set_tv_kind_label(kind.into());
+            app.set_tv_can_power(power);
+            app.set_tv_can_input(input);
+            app.set_tv_can_command(command);
+            app.set_tv_title(name.into());
+            app.set_tv_status(shown.status.into());
+            app.set_tv_source(shown.source.into());
+            app.set_tv_input(shown.input.into());
+            app.set_tv_sound(
+                if shown.power.is_empty() {
+                    "Unavailable"
+                } else {
+                    shown.power
+                }
+                .into(),
+            );
+            app.set_tv_picture(level(&status).into());
+            app.set_tv_shown(true);
+            slint::platform::update_timers_and_animations();
+        };
+        // A receiver reports neither a title nor whether it plays: its screen
+        // is the one it always had.
+        fill(
+            "DENON AVR",
+            (true, true, false),
+            "Theater AVR",
+            serde_json::json!({"on":true,"input":"BD","volume_db":{"kind":"reading","tenths":-395}}),
+        );
+        assert_eq!(
+            (
+                app.get_tv_status().as_str(),
+                app.get_tv_source().as_str(),
+                app.get_tv_input().as_str(),
+                app.get_tv_sound().as_str(),
+                app.get_tv_picture().as_str()
+            ),
+            ("On", "CoreELEC", "", "On", "-39.5 dB")
+        );
         app.show().unwrap();
         window.dispatch_event(WindowEvent::WindowActiveChanged(true));
         app.invoke_focus_tv();
@@ -415,6 +785,44 @@ mod tests {
         app.set_tv_panel(0);
         key(slint::platform::Key::Escape);
         assert_eq!(actions.borrow().last().map(String::as_str), Some("close"));
+        // What a package says is playing: the header has the state, the big
+        // line the title.
+        fill(
+            "KODI",
+            (false, false, true),
+            "Living room Kodi",
+            serde_json::json!({"volume":64,"muted":false,"playing":true,
+                "title":"Breaking Bad S5E14 - Ozymandias"}),
+        );
+        assert_eq!(app.get_tv_status(), "Playing");
+        assert_eq!(app.get_tv_source(), "Breaking Bad S5E14 - Ozymandias");
+        // Let the input list finish sliding away before the first picture.
+        for _ in 0..30 {
+            slint::platform::update_timers_and_animations();
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        shot("core-4-playing-title.png");
+        fill(
+            "SONOS",
+            (false, false, true),
+            "Kitchen",
+            serde_json::json!({"volume":22,"muted":false,"playing":false}),
+        );
+        assert_eq!(app.get_tv_status(), "Paused");
+        assert_eq!(app.get_tv_source(), "");
+        shot("core-5-paused-no-title.png");
+        // A title longer than two lines ends in an ellipsis, and the Input
+        // tile still names the input.
+        fill(
+            "DENON AVR",
+            (true, true, false),
+            "Theater AVR",
+            serde_json::json!({"on":true,"input":"NET","playing":true,
+                "volume_db":{"kind":"reading","tenths":-395},
+                "title":"The Lord of the Rings: The Fellowship of the Ring (Extended Edition)"}),
+        );
+        assert_eq!(app.get_tv_input(), "Network");
+        shot("core-6-title-and-input.png");
         app.hide().unwrap();
     }
 }

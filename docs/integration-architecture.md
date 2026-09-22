@@ -43,12 +43,50 @@ explicit request may restart a failed child.
 
 Private settings live beside the house configuration in the connection store.
 They travel over the inherited socket, never in arguments or environment
-variables. On a root-started HA100 daemon, the host clears inherited groups,
-drops the child to UID and primary GID 65534, enables `no_new_privs`, and grants
-only the `AID_INET` supplemental group needed for ordinary network sockets.
-Other root-started targets receive no supplemental groups. Non-root development
-hosts retain their existing credentials. Plugins share an unprivileged UID and
-LAN access; this is privilege separation, not a sandbox for hostile code.
+variables.
+
+Each installed package runs as a user of its own. The package store keeps the
+table in `uids.json` at its root: one row per package id, allocated in order
+from 60000 to 64999, group id equal to user id, written under the store's
+exclusive lock, and never held by two packages at once. A removed package
+keeps its row, so a package installed later does not inherit a user something
+else once ran as; the only two things that reuse a number are the range
+running out, which drops the rows of packages that are no longer installed and
+takes the lowest free number, and a table too damaged to read, which is
+rebuilt from the sorted installed ids. A rebuild is counted, and the daemon
+retires its package children when the count moves, so each comes back as the
+user the table now gives it.
+
+A package is given its user when it is installed, and packages installed by an
+older Couch are given theirs in one pass when the daemon starts. A busy store
+is a busy answer that the next key press retries; a range genuinely full is an
+error that says so and is not retried, because waiting changes nothing; a
+table that cannot be written keeps the number in memory for the life of the
+daemon and says so in the log. No package is ever quietly started as another
+package's user, or as the 65534 they used to share.
+
+On a root-started HA100 daemon, the host clears inherited groups, drops the
+child to that user and group, enables `no_new_privs`, sets `RLIMIT_CORE` to
+zero, and grants only the `AID_INET` supplemental group needed for ordinary
+network sockets. Other root-started targets receive no supplemental groups.
+Non-root development hosts retain their existing credentials, and the
+per-package user simply does not apply there. The package's own half of it is
+in the SDK: `serve` makes the child undumpable before anything else, which is
+what puts `/proc/<pid>` beyond every other user's reach. It has to happen in
+the child, because `execve` undoes it.
+
+Nothing on disk belongs to these users. No package file is chowned and no
+package file changes mode, so a core rolled back to a release that knows
+nothing of the table runs every package exactly as it did, all under one user,
+and leaves `uids.json` alone.
+
+On the HA100's 3.18 kernel there is no Yama and `/proc` carries no `hidepid`,
+so what one package cannot do to another comes from the user difference alone;
+being undumpable is what separates two connections of one package, and only
+for packages rebuilt against this SDK. This is privilege separation, not a
+sandbox for hostile code: a package still reaches the LAN and still sees that
+other processes exist. What is and is not enforced is listed under
+[Isolation between packages](integration-packages.md#isolation-between-packages).
 
 The installer invokes `apk` in a temporary root, verifies signatures, disables
 scripts and network access during extraction, and accepts only the integration
@@ -85,6 +123,60 @@ do not silently return. An explicitly restorable recovery export can restore a
 prior state. Missing packages leave saved connection and activity configuration
 intact, with execution unavailable. A v2 package remains incompatible with an
 older host; existing v1 previous-slot fallback is unchanged.
+
+### Protocol 3 layer: unreleased
+
+Protocol 3 is unreleased and switched off; this describes groundwork that may
+change until it is switched on. The envelope gains one more optional layer,
+`integration_config_v3`, written only when the configuration holds something a
+protocol 2 core cannot read. The first such thing is a package-named button
+(`x:<id>`): as a declared capability, inside a command group or switch, or bound
+to a key, a step, an on/off sequence, a page button or a scene. The second is the
+children of a connection, below. The layers beneath it are
+computed from one another (`integration_config_v2` is the v3 document with
+those removed, `integration_config` is the v1 projection of that, the ordinary
+fields are the legacy projection of that), so they are exactly what a released
+core writes and checks. A configuration with nothing new in it produces the
+same bytes as before.
+
+The second thing only that layer holds is the children of a connection: the
+kinds of child a package declares, the snapshot (kind and traits) saved with a
+room device that is one of them, package scenes (`Scene.resource`), the
+`set_light`, `set_cover` and `set_climate` actions, and a `light`, `cover` or
+`climate` component. A protocol 2 core ignores a field it does not know on a
+device, a connection or a scene, so none of these would stop it parsing; each is
+removed from the layer it reads because of what it would do with the rest. It
+validates a key against the connection's commands, not the kind's, so
+`dim:30` or `toggle` bound to a lamp of a bridge stops its daemon starting; what
+it did accept it would send with no resource, to the whole bridge; and it cannot
+parse the new action and component tags at all. So in the v2 layer:
+
+1. the kinds a connection declares are cleared;
+2. a child's snapshot is cleared and its `connection_id` and `resource_id` are
+   kept, so the device stays where it is;
+3. everything aimed at a child goes, whatever the command: a key stays as an
+   explicitly disabled key, steps, on and off commands and page buttons are
+   removed and the activity forgets the device; a quick-access key that toggles
+   a child is dropped, one that opens it stays;
+4. a package scene is removed, with every area's reference to it;
+5. typed actions are cut to the one that core knows, and
+6. the three components are removed.
+
+What a rolled-back remote shows, then: the lamps stay in their rooms as rows
+that do nothing (that core refuses a protocol 3 package, so nothing is sent);
+package scenes are gone until the remote is updated again; keys and steps that
+were aimed at those lamps are lost for good if the old version saves, exactly as
+`x:` bindings are. After the next update the devices heal by themselves: they
+are still there with their connection and resource, and listing the
+connection's children says again what each one is.
+
+A rolled-back protocol 2 core ignores the v3 key, loads the v2 layer, and
+validates it. If it saves, the v3 key is gone and that save is authoritative
+after re-upgrade: stripped bindings stay as explicitly disabled keys and do not
+return. A v3 layer that does not match the layers beneath it is refused rather
+than half-loaded. `tools/tests/config-crossload.sh` builds the model source of
+the last release beside the current one and exchanges real files in both
+directions; it runs in CI on every change to the model.
 
 Each payload is immutable by integration ID and manifest version. Any payload
 change needs a new manifest version and matching APK `pkgver`; changing only an

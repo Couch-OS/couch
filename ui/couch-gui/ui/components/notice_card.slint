@@ -1,0 +1,38 @@
+import { Theme } from "../theme.slint";
+
+// The 84px status card the microphone overlay and the Bluetooth-pairing
+// overlay each drew by hand, byte-for-byte the same drawing: a coloured
+// dot beside a bold, letter-spaced word, on a border in the same colour.
+// The outer spacing around it (padding, alignment) stays with each caller,
+// since that is the one place the two overlays genuinely differed.
+export component NoticeCard inherits Rectangle {
+    in property <color> tone;
+    in property <string> word;
+    height: 84px;
+    background: Theme.surface-raised;
+    border-radius: Theme.r-card;
+    border-width: 2px;
+    border-color: root.tone;
+    HorizontalLayout {
+        alignment: center;
+        spacing: 14px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 22px; height: 22px;
+                border-radius: 11px;
+                background: root.tone;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.word;
+                font-size: 26px;
+                font-weight: 700;
+                letter-spacing: 2px;
+                color: Theme.text;
+            }
+        }
+    }
+}

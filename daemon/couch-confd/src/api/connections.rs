@@ -201,10 +201,17 @@ impl Api {
                     supports_inputs,
                     presentation,
                     actions,
+                    children,
                 } = &mut input.provider
                 {
                     match self.plugins.manifest(id) {
                         Ok(manifest) => {
+                            // Like everything else in this snapshot, the kinds
+                            // of child a connection offers come from the
+                            // package, never from the browser. No manifest
+                            // this build accepts can declare any (protocol 3,
+                            // unreleased), so there are none.
+                            *children = manifest.children;
                             *label = manifest.label;
                             *capabilities = manifest
                                 .capabilities
@@ -399,7 +406,10 @@ fn stored_name(name: &str) -> bool {
 /// Keep trying until the deadline, a couple of seconds for the whole deletion:
 /// a status read or a command may be passing through, a pairing that waits on
 /// somebody's TV is not worth waiting for.
-fn patiently<T>(deadline: std::time::Instant, mut attempt: impl FnMut() -> Option<T>) -> Option<T> {
+pub(crate) fn patiently<T>(
+    deadline: std::time::Instant,
+    mut attempt: impl FnMut() -> Option<T>,
+) -> Option<T> {
     loop {
         if let Some(value) = attempt() {
             return Some(value);
@@ -455,11 +465,18 @@ fn remove_stored(root: &std::path::Path, name: &str) -> std::io::Result<bool> {
     Err(DirectoryNotEmpty.into())
 }
 
+/// What [`gate_for`] and [`lock_for`] hand out. Where each sits among the
+/// daemon's locks is `docs/development/confd-locking.md`: the gate is the
+/// first lock a request takes, and a settings lock is only ever tried.
+type Gate = crate::lock_order::RankedRwLock<crate::lock_order::level::ConnectionGate, ()>;
+pub(crate) type SettingsLock =
+    crate::lock_order::RankedMutex<crate::lock_order::level::ConnectionSettings, ()>;
+
 /// Held for reading by every operation inside one connection's folder, and for
 /// writing while the connection is deleted.
-fn gate_for(folder: &std::path::Path) -> std::sync::Arc<std::sync::RwLock<()>> {
-    use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
-    static GATES: OnceLock<Mutex<std::collections::HashMap<std::path::PathBuf, Weak<RwLock<()>>>>> =
+fn gate_for(folder: &std::path::Path) -> std::sync::Arc<Gate> {
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    static GATES: OnceLock<Mutex<std::collections::HashMap<std::path::PathBuf, Weak<Gate>>>> =
         OnceLock::new();
     let mut gates = GATES
         .get_or_init(|| Mutex::new(Default::default()))
@@ -469,15 +486,15 @@ fn gate_for(folder: &std::path::Path) -> std::sync::Arc<std::sync::RwLock<()>> {
     if let Some(gate) = gates.get(folder).and_then(|v| v.upgrade()) {
         return gate;
     }
-    let gate = Arc::new(RwLock::new(()));
+    let gate = Arc::new(Gate::new(()));
     gates.insert(folder.into(), Arc::downgrade(&gate));
     gate
 }
 
-pub(crate) fn lock_for(path: &std::path::Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+pub(crate) fn lock_for(path: &std::path::Path) -> std::sync::Arc<SettingsLock> {
     use std::sync::{Arc, Mutex, OnceLock};
     static LOCKS: OnceLock<
-        Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<Mutex<()>>>>,
+        Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<SettingsLock>>>,
     > = OnceLock::new();
     let mut locks = LOCKS
         .get_or_init(|| Mutex::new(Default::default()))
@@ -487,7 +504,7 @@ pub(crate) fn lock_for(path: &std::path::Path) -> std::sync::Arc<std::sync::Mute
     if let Some(lock) = locks.get(path).and_then(|v| v.upgrade()) {
         return lock;
     }
-    let lock = Arc::new(Mutex::new(()));
+    let lock = Arc::new(SettingsLock::new(()));
     locks.insert(path.into(), Arc::downgrade(&lock));
     lock
 }
@@ -549,7 +566,12 @@ mod app_tests {
 #[cfg(test)]
 mod delete_tests {
     use super::*;
-    use crate::{assets::Assets, auth::Auth, store::Store};
+    use crate::{
+        assets::Assets,
+        auth::Auth,
+        plugins::{write_executable, FIXTURE_APK},
+        store::Store,
+    };
     use serde_json::{json, Value};
     use std::{
         fs,
@@ -825,8 +847,7 @@ mod delete_tests {
             .unwrap()
             .success());
         let apk = home.join("fixture-apk");
-        fs::write(&apk, "#!/bin/sh\nset -eu\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --root ]; then shift; destination=$1; fi\n  last=$1; shift\ndone\ntar -xzf \"$last\" -C \"$destination\"\n").unwrap();
-        fs::set_permissions(&apk, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&apk, FIXTURE_APK);
         couch_integrations::Store::new(home.join("integrations"))
             .with_apk(apk)
             .install(&package)
@@ -835,6 +856,108 @@ mod delete_tests {
 
     fn alive(pid: i32) -> bool {
         unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// The two locks this file and `plugins.rs` hold are taken in one order
+    /// and one order only: the configuration store first, then the package
+    /// registry. A deletion does exactly that. The ten-second sweep has to
+    /// read the configuration too - it is what says which connections a
+    /// device still refers to - and it reads it **before** it locks the
+    /// registry, never while holding it. Taken the other way round, one
+    /// sweep and one delete would wait on each other for good, and every
+    /// configuration read on the remote would queue behind them.
+    #[test]
+    fn a_sweep_never_holds_the_package_registry_while_it_reads_the_configuration() {
+        use std::time::{Duration, Instant};
+        let house = House::new("sweep-order", json!({"schema_version":1,"revision":0}));
+        let pids = house.home.join("pids");
+        install_sample(&house.home, &pids);
+        assert_eq!(
+            house.create(
+                json!({"name":"Receiver","provider":{"kind":"plugin","id":"sample","label":""}})
+            ),
+            "receiver"
+        );
+        assert_eq!(
+            house
+                .api
+                .connection_route(
+                    "POST",
+                    &["receiver", "plugin", "settings"],
+                    br#"{"host":"avr.invalid"}"#,
+                    None,
+                )
+                .status,
+            200
+        );
+        assert_eq!(
+            house
+                .api
+                .connection_route("GET", &["receiver", "plugin", "status"], b"", None)
+                .status,
+            200
+        );
+        // A child that nothing will ask for again, which is what `keep_alive`
+        // makes of one.
+        house.api.plugins.keep_alive_for_test("receiver");
+
+        // The configuration is held, as it is while a deletion saves.
+        let held = house.api.store.lock().unwrap();
+        std::thread::scope(|scope| {
+            let sweeping = scope.spawn(|| {
+                let in_use = house.api.connections_in_use();
+                house
+                    .api
+                    .plugins
+                    .reap(&|connection| in_use.contains(connection));
+            });
+            // The sweep is now waiting for the configuration. While it does,
+            // anything that needs a package child has to get through.
+            std::thread::sleep(Duration::from_millis(200));
+            let at = Instant::now();
+            house.api.plugins.retire("receiver");
+            assert!(
+                at.elapsed() < Duration::from_secs(2),
+                "the sweep was holding the package registry while it waited"
+            );
+            drop(held);
+            sweeping.join().unwrap();
+        });
+    }
+
+    /// The same order, held to by `lock_order` rather than by a clock: the
+    /// sweep exactly as the reaper thread runs it, over a child that asked to
+    /// stay, on one thread. Asking the configuration anything while the
+    /// registry is held panics in a debug build the first time it happens,
+    /// with no second thread and nothing to time.
+    #[test]
+    fn the_sweep_the_daemon_runs_takes_its_locks_in_order() {
+        let house = House::new("sweep-ranked", json!({"schema_version":1,"revision":0}));
+        let pids = house.home.join("pids");
+        install_sample(&house.home, &pids);
+        assert_eq!(
+            house.create(
+                json!({"name":"Receiver","provider":{"kind":"plugin","id":"sample","label":""}})
+            ),
+            "receiver"
+        );
+        for (method, path, body) in [
+            ("POST", "settings", &br#"{"host":"avr.invalid"}"#[..]),
+            ("GET", "status", &b""[..]),
+        ] {
+            let reply =
+                house
+                    .api
+                    .connection_route(method, &["receiver", "plugin", path], body, None);
+            assert_eq!(reply.status, 200, "{method} {path}");
+        }
+        // Only a child that asked to stay is measured against the
+        // configuration at all.
+        house.api.plugins.keep_alive_for_test("receiver");
+        house.api.sweep_packages();
+        // Nothing refers to the connection, so the sweep let the child idle
+        // out as it would any other, and deleting it still works afterwards.
+        assert_eq!(house.delete("receiver", None), 200);
     }
 
     #[test]
@@ -859,6 +982,11 @@ mod delete_tests {
         );
         let settings = house.folder("receiver").join("plugin-connection.json");
         assert!(fs::read_to_string(&settings).unwrap().contains("private"));
+        // Protocol 3 (unreleased): a pairing key and the line beside it live
+        // in the same folder and go the same way. Nothing a shipped build
+        // runs writes them; planted here so the removal is stated.
+        let key = house.stored("receiver", "plugin-credential.json");
+        let paired = house.stored("receiver", "plugin-pairing.json");
         let status =
             house
                 .api
@@ -882,11 +1010,12 @@ mod delete_tests {
 
         assert!(!alive(child));
         assert!(!settings.exists() && !house.folder("receiver").exists());
+        assert!(!key.exists() && !paired.exists());
         // The panel's route to the package finds neither connection nor child.
         assert!(house
             .api
             .plugins
-            .execute("receiver", "sample", couch_plugin::Request::Status)
+            .execute("receiver", "sample", None, couch_plugin::Request::status())
             .is_err());
         assert!(!house.folder("receiver").exists());
         // The same name again is a new connection that knows nothing.

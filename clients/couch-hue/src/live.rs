@@ -100,6 +100,45 @@ impl Session {
     fn toggle(&self, id: &str) -> Result<Light> {
         self.command(id, None)
     }
+    /// Colour temperature, written straight through. It is kept out of
+    /// `command` on purpose: the settling guard there is about power and
+    /// level, and a lamp's mirek is never guessed from a press - the screen
+    /// carries its own pending target for the second the bridge takes.
+    fn set_mirek(&self, id: &str, mirek: u16) -> Result<Light> {
+        let cached = {
+            let c = self.cache.lock().unwrap();
+            c.fresh().then(|| c.lights.get(id).cloned()).flatten()
+        };
+        let mut state = match cached {
+            Some(s) => s,
+            None => self.client.control_state(id)?,
+        };
+        if state.on.is_none() {
+            return Err(Error::Unavailable);
+        }
+        {
+            let mut c = self.cache.lock().unwrap();
+            c.generation += 1;
+            c.commanding = true;
+        }
+        let result = self
+            .client
+            .command_for_state(&state, couch_ha::Command::Mirek(mirek));
+        let mut c = self.cache.lock().unwrap();
+        c.commanding = false;
+        c.generation += 1;
+        if let Err(e) = result {
+            c.invalidate();
+            c.dirty = true;
+            return Err(e);
+        }
+        // Hue turns the lamp on to show a colour temperature, so say so.
+        state.on = Some(true);
+        state.mirek = Some(mirek);
+        c.dirty = true;
+        c.lights.insert(id.into(), state.clone());
+        Ok(state)
+    }
     fn command(&self, id: &str, brightness: Option<u8>) -> Result<Light> {
         let cached = {
             let c = self.cache.lock().unwrap();
@@ -237,6 +276,14 @@ impl Live {
     }
     pub fn toggle(&self, id: &str) -> Result<Light> {
         self.session()?.toggle(id)
+    }
+    /// Colour temperature, in mirek. A room's grouped light and a scene have
+    /// no range of their own, so neither takes one.
+    pub fn mirek(&self, id: &str, mirek: u16) -> Result<Light> {
+        if id.starts_with("scene:") || id.starts_with("room:") {
+            return Err(Error::ColourTemperature);
+        }
+        self.session()?.set_mirek(id, mirek)
     }
 }
 fn poll(weak: Weak<Session>) {
@@ -391,6 +438,8 @@ mod tests {
             on: Some(false),
             brightness_percent: Some(56),
             dimmable: true,
+            mirek: None,
+            mirek_range: None,
         };
         let mut cache = Cache::default();
         cache.apply_snapshot(vec![off.clone()], Instant::now());
@@ -431,6 +480,8 @@ mod tests {
             on: Some(true),
             brightness_percent: Some(56),
             dimmable: true,
+            mirek: None,
+            mirek_range: None,
         };
         let mut cache = Cache::default();
         cache.pending.insert(
@@ -494,6 +545,8 @@ mod tests {
                 on: Some(true),
                 brightness_percent: Some(50),
                 dimmable: true,
+                mirek: None,
+                mirek_range: None,
             },
         );
         let session = Session {
@@ -571,6 +624,8 @@ mod tests {
                 on: Some(true),
                 brightness_percent: Some(50),
                 dimmable: true,
+                mirek: None,
+                mirek_range: None,
             },
         );
         let session = Session {
@@ -604,6 +659,73 @@ mod tests {
         assert!(matches!(
             session.command(id, Some(5)),
             Err(Error::Brightness)
+        ));
+        remote.join().unwrap();
+    }
+    /// A room's colour temperature goes to its grouped light, the same way its
+    /// brightness does: one PUT to `grouped_light/<id>`, and the same mirek the
+    /// screen asked for.
+    #[test]
+    fn a_rooms_colour_temperature_is_written_to_its_grouped_light() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr();
+        let uuid = "00000000-0000-0000-0000-000000000001";
+        let id = "room:00000000-0000-0000-0000-000000000001";
+        let remote = thread::spawn(move || {
+            let mut request = server
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.method(), &tiny_http::Method::Put);
+            assert_eq!(
+                request.url(),
+                format!("/clip/v2/resource/grouped_light/{uuid}")
+            );
+            let mut body = String::new();
+            request.as_reader().read_to_string(&mut body).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({"on":{"on":true},"color_temperature":{"mirek":300}})
+            );
+            request
+                .respond(tiny_http::Response::from_string(
+                    serde_json::json!({"errors":[],"data":[{"rid":uuid,"rtype":"grouped_light"}]})
+                        .to_string(),
+                ))
+                .unwrap();
+        });
+        let mut cache = Cache {
+            updated: Some(Instant::now()),
+            ..Cache::default()
+        };
+        cache.lights.insert(
+            id.into(),
+            Light {
+                entity_id: id.into(),
+                name: "Living room".into(),
+                on: Some(true),
+                brightness_percent: Some(50),
+                dimmable: true,
+                mirek: Some(370),
+                mirek_range: Some((200, 454)),
+            },
+        );
+        let session = Session {
+            client: Arc::new(Hue {
+                base: format!("http://{address}"),
+                key: "fixture".into(),
+                agent: ureq::Agent::new_with_defaults(),
+            }),
+            cache: Mutex::new(cache),
+            refresh_lock: Mutex::new(()),
+        };
+        let state = session.set_mirek(id, 300).unwrap();
+        assert_eq!(state.mirek, Some(300));
+        assert_eq!(session.cache.lock().unwrap().lights[id].mirek, Some(300));
+        // Outside the range the room's lamps share, nothing is sent at all.
+        assert!(matches!(
+            session.set_mirek(id, 500),
+            Err(Error::ColourTemperature)
         ));
         remote.join().unwrap();
     }
@@ -646,6 +768,8 @@ mod tests {
                 on: Some(false),
                 brightness_percent: Some(0),
                 dimmable: false,
+                mirek: None,
+                mirek_range: None,
             },
         );
         let session = Arc::new(Session {

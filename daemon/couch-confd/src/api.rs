@@ -40,7 +40,7 @@ mod updates;
 mod webos;
 
 use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use couch_model::{
     Action, Activity, ActivityKind, Area, Config, Device, DeviceKind, Icon, Id, Integration, Room,
@@ -52,6 +52,7 @@ use tiny_http::{Header, Request, Response, StatusCode};
 
 use crate::assets::Assets;
 use crate::auth::{self, Auth, Verdict};
+use crate::lock_order::{level, RankedMutex};
 use crate::store::{self, Store};
 
 /// Bodies are small by construction - a whole house is a few KB - so a cap this
@@ -60,7 +61,9 @@ use crate::store::{self, Store};
 const MAX_BODY: u64 = 512 * 1024;
 
 pub struct Api {
-    store: Mutex<Store>,
+    /// The configuration. Its place among the daemon's locks, and what may
+    /// not happen while it is held, is in `docs/development/confd-locking.md`.
+    store: RankedMutex<level::ConfigStore, Store>,
     assets: Assets,
     auth: Arc<Auth>,
     plugins: crate::plugins::Runtime,
@@ -232,7 +235,7 @@ impl Api {
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_path_buf();
         Api {
-            store: Mutex::new(store),
+            store: RankedMutex::new(store),
             assets,
             auth,
             integration_packages: couch_integrations::management::Manager::new(
@@ -779,10 +782,16 @@ impl Api {
             hue: Option<couch_model::HueScene>,
             #[serde(default)]
             rooms: Vec<Id>,
+            #[serde(default)]
+            resource: Option<AskedResource>,
         }
         let new: NewScene = match parse(body) {
             Ok(v) => v,
             Err(r) => return r,
+        };
+        let resource = match self.stamp_scene(new.resource.map(AskedResource::into_parts), None) {
+            Ok(resource) => resource,
+            Err(reply) => return reply,
         };
         let mut created = Id::new("");
         let reply = self.edit(if_match, |cfg| {
@@ -795,6 +804,7 @@ impl Api {
                 steps: Vec::new(),
                 hue: new.hue,
                 rooms: new.rooms,
+                resource,
             });
         });
         with_created(reply, &created)
@@ -828,6 +838,14 @@ impl Api {
             Ok(v) => v,
             Err(r) => return r,
         };
+        // A device that is one child of a packaged connection is described by
+        // the package, never by the request: see `Api::stamp_device`.
+        let (integration, child_kind) =
+            match self.stamp_device(new.integration.unwrap_or_default(), None) {
+                Ok(stamped) => stamped,
+                Err(reply) => return reply,
+            };
+        let kind = child_kind.unwrap_or(new.kind);
         let room = Id::new(room);
         let mut created = Id::new("");
         let reply = self.edit_found(if_match, |cfg| {
@@ -839,9 +857,9 @@ impl Api {
             target.devices.push(Device {
                 id,
                 name: new.name,
-                kind: new.kind,
+                kind,
                 icon: new.icon,
-                integration: new.integration.unwrap_or_default(),
+                integration,
                 ir: new.ir,
                 bluetooth: new.bluetooth,
                 preferred_transport: new.preferred_transport,
@@ -858,11 +876,30 @@ impl Api {
         room: &str,
         device: &str,
     ) -> Reply {
-        let incoming: Device = match parse(body) {
+        let mut incoming: Device = match parse(body) {
             Ok(v) => v,
             Err(r) => return r,
         };
         let (room, device) = (Id::new(room), Id::new(device));
+        // What this device is a child of, as it is saved. An edit that leaves
+        // it there keeps the snapshot the package gave, so a rename works
+        // with the package stopped; anything the request said about the child
+        // is thrown away either way.
+        let saved = self.with(|s| {
+            s.config()
+                .room(&room)
+                .and_then(|r| r.device(&device))
+                .map(|d| d.integration.clone())
+        });
+        let (integration, child_kind) =
+            match self.stamp_device(std::mem::take(&mut incoming.integration), saved.as_ref()) {
+                Ok(stamped) => stamped,
+                Err(reply) => return reply,
+            };
+        incoming.integration = integration;
+        if let Some(kind) = child_kind {
+            incoming.kind = kind;
+        }
         let mut dropped = None;
         let reply = self.edit_found(if_match, |cfg| {
             let target = cfg.room_mut(&room)?;
@@ -927,12 +964,22 @@ impl Api {
             hue: Option<couch_model::HueScene>,
             #[serde(default)]
             rooms: Vec<Id>,
+            #[serde(default)]
+            resource: Option<AskedResource>,
         }
         let incoming: Body = match parse(body) {
             Ok(v) => v,
             Err(r) => return r,
         };
         let id = Id::new(id);
+        let saved = self.with(|s| s.config().scene(&id).and_then(|s| s.resource.clone()));
+        let resource = match self.stamp_scene(
+            incoming.resource.map(AskedResource::into_parts),
+            saved.as_ref(),
+        ) {
+            Ok(resource) => resource,
+            Err(reply) => return reply,
+        };
         self.edit_found(if_match, move |cfg| {
             let scene = cfg.scene_mut(&id)?;
             scene.name = incoming.name;
@@ -940,6 +987,7 @@ impl Api {
             scene.steps = incoming.steps;
             scene.hue = incoming.hue;
             scene.rooms = incoming.rooms;
+            scene.resource = resource;
             Some(())
         })
     }
@@ -1093,6 +1141,7 @@ impl Api {
                         steps: Vec::new(),
                         hue: None,
                         rooms: Vec::new(),
+                        resource: None,
                     });
                     id
                 }
@@ -1252,6 +1301,23 @@ impl Api {
 /// Tell the daemon to drop a bond a device no longer holds. Best effort: the
 /// configuration is already saved, and a daemon that is not running has no
 /// bond to keep either.
+/// Protocol 3 (unreleased). Which child of which connection a package scene
+/// is, as a request may name it: the connection and the package's own id for
+/// the scene, and nothing else. Which *kind* of scene that is decides what the
+/// scene can be told, so it is filled in by the daemon from the package's own
+/// listing (`Api::stamp_scene`); a `kind` sent with the request is read by
+/// nothing, which is what lets a page send a scene back exactly as it read it.
+#[derive(Debug, Deserialize)]
+struct AskedResource {
+    connection_id: Id,
+    resource_id: String,
+}
+impl AskedResource {
+    fn into_parts(self) -> (Id, String) {
+        (self.connection_id, self.resource_id)
+    }
+}
+
 fn forget_bond(address: Option<String>) {
     let Some(address) = address.filter(|a| couch_system::bluetooth::valid_address(a)) else {
         return;

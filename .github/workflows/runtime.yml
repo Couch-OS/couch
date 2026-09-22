@@ -48,6 +48,15 @@ jobs:
           - id: clients
             workspace: clients
             command: cargo test --locked
+          # Protocol 3 is unreleased and switched off in every shipped build.
+          # This leg is the only place its switch is on: the whole clients
+          # workspace again, with couch-plugin's `protocol-3-preview` feature
+          # and the echo fixture that needs it. The legs above and below run
+          # with it off, and couch-confd and couch-integrations each carry a
+          # test that fails if anything in daemon/ ever turns it on.
+          - id: clients-protocol-3-preview
+            workspace: clients
+            command: cargo test --locked --features couch-plugin/protocol-3-preview,couch-echo/protocol-3-preview
           # couch-confd's build.rs treats a missing web/couch-web/dist as the
           # normal state of a fresh clone, so the daemon tests need no trunk
           # build first; they compile against the placeholder asset table.
@@ -92,5 +101,42 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ matrix.workspace }}
+      # The player screen test draws 29 pictures of the screen from one fixed
+      # speaker, and the built-in Kodi screen test (PR-D0) draws seven more
+      # from fixture data. Nothing binary is kept in the tree, so they are
+      # kept here: two runs' pictures can be compared, and a change to either
+      # screen can be seen.
+      - name: Keep the player screens' pictures
+        if: matrix.id == 'gui'
+        run: |
+          echo "COUCH_PLAYER_SCREENSHOTS=$RUNNER_TEMP/player-screen" >> "$GITHUB_ENV"
+          echo "COUCH_KODI_SCREENSHOTS=$RUNNER_TEMP/kodi-screen" >> "$GITHUB_ENV"
       - run: ${{ matrix.command }}
         working-directory: ${{ matrix.workspace }}
+      # What one package's user may do to another's can only be asked with
+      # real user ids, so these cases are ignored unless they are run as root.
+      # The test binary is built as the ordinary user, so nothing root-owned
+      # lands in the cached target directory; only the binary itself runs
+      # under sudo. Ubuntu's kernel.yama.ptrace_scope is 1, which the test
+      # notices: it then skips the one assertion that needs a read between two
+      # processes to succeed, and says so.
+      - name: A package cannot reach into another package
+        if: matrix.id == 'clients'
+        working-directory: clients
+        run: |
+          cargo test --locked -p couch-plugin --features testing --test isolation --no-run
+          binary=$(cargo test --locked -p couch-plugin --features testing --test isolation \
+            --no-run --message-format=json 2>/dev/null \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "isolation")
+                     | select(.executable != null) | .executable' | tail -1)
+          echo "kernel.yama.ptrace_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo absent)"
+          sudo "$binary" --ignored --test-threads=1 --nocapture
+      - uses: actions/upload-artifact@v4
+        if: matrix.id == 'gui' && always()
+        with:
+          name: player-screen
+          path: |
+            ${{ runner.temp }}/player-screen
+            ${{ runner.temp }}/kodi-screen
+          if-no-files-found: warn
+          retention-days: 14

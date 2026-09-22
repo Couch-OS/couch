@@ -288,6 +288,17 @@ not implemented puts a key on screen that silently does nothing, so the test
 harness checks every ID parses, is canonical, is unique, and is accepted by
 your own `supports`.
 
+`x:<id>` ids (a package's own button names) are part of protocol 3, which is
+unreleased and switched off: a protocol 1 or 2 manifest that declares one is
+invalid, and a protocol 3 manifest is refused. See the
+[protocol reference](development/protocol.md#protocol-3-unreleased-and-switched-off).
+The same goes for `Error::Unpaired`, `Error::because`,
+`DeviceClient::execute_phased` and everything under
+[One connection, many children](#one-connection-many-children) below: they
+compile, and a protocol 1 or 2 package that uses them still sends exactly the
+bytes it always sent (`Unpaired` leaves as `rejected`, the reason is dropped,
+every key is a tap, and a manifest that declares children is invalid).
+
 Dynamic functions - `input:<id>` and `app:<id>` - are **not** listed here.
 Declare them by overriding `supports_input` / `supports_app`, which are asked
 about one specific ID. Constrain those IDs: they are persisted and read back by
@@ -325,6 +336,157 @@ Never put a credential in one - these strings reach the browser and the panel.
 
 `Error::retryable()` is true only for `Transport`. `Timeout` is deliberately
 not retryable.
+
+### One connection, many children
+
+Protocol 3, unreleased and switched off. Most devices are one connection and
+one device. A bridge - a Hue hub, Home Assistant, a Protect controller - is one
+connection and many, and Couch calls those its *children*. A client that has
+none implements nothing here: every method below has a default that refuses,
+`child_kinds()` is empty, and the bytes such a client puts on the wire are
+unchanged.
+
+A package declares the *kinds* of child it offers, not the children
+themselves: what a kind is called, what kind of room device it becomes, which
+built-in control it is drawn with (`light`, `cover`, `climate` or `scene`), the
+commands it takes and the one typed action that goes with its control. They go
+in the manifest's `children` and in `child_kinds()`, and `serve` refuses to
+start if the two lists differ, exactly as it does for capabilities and actions.
+
+```rust
+fn child_kinds() -> &'static [couch_model::PluginChildKind];
+fn children(&mut self, cursor: Option<&str>) -> Result<ChildPage>;
+fn child_command(&mut self, resource: &str, function: &Function, phase: KeyPhase)
+    -> Result<Option<Status>>;
+fn child_action(&mut self, resource: &str, action: TypedAction) -> Result<Option<Status>>;
+fn child_status(&mut self, resource: &str) -> Result<Status>;
+```
+
+`children` returns one page. If the device hands you everything at once, let
+`ChildPage::fill(all, cursor)` do the cutting: it stops at 32 children or 48
+KiB of serialized page, whichever comes first, always returns at least one
+child while any are left, and uses the id of the first child of the next page
+as the cursor - so paging is stable as long as your ids are, and a cursor
+naming no child is `Error::Invalid`. A page with a cursor is never empty, and
+the host reads at most 1024 children over at most 64 pages in ten seconds
+before it decides the listing will never end and retires you.
+
+A `Child` is an id, a kind, a name, an optional room hint, and the traits of
+this particular lamp, blind or thermostat. Keep the ids stable: they are saved
+with the room device and are how a binding made today still names the same lamp
+tomorrow.
+
+`child_command` and `child_action` answer `Ok(None)`, or `Ok(Some(status))`
+with the state the child is in afterwards, which saves the panel a read after
+every slider move. The host has already checked that the resource is well
+spelt and that the child's kind declares what is being asked, so what is left
+to you is the device. `dim:30`, `position:40` and `mode:heat` never arrive as
+commands: the host turns each into the typed action the kind declares before it
+writes anything.
+
+`couch_plugin::testing_v3::children` is the admission case: it lists twice and
+compares, checks the paging ends where the count says it should, refuses an
+unknown resource, and proves a write's acknowledgement agrees with the next
+read and that a kind never answers for another.
+
+### Pairing, and the key Couch keeps
+
+Protocol 3, unreleased and switched off. A package that needs a key from the
+device - a Hue hub's application key, a webOS client key, an Android TV
+certificate - never draws a dialog and never stores anything. It describes one
+step at a time; Couch draws its own headline, collects what the person types,
+and keeps the key in `connections/<id>/plugin-credential.json` (root, mode
+0600). A client that needs no key implements nothing here.
+
+Declare it in the manifest, and only a protocol 3 manifest may:
+
+```json
+"pairing": { "required": true, "max_seconds": 120 },
+"keep_alive": true
+```
+
+`required` means the connection is unusable until Couch holds a key, so the
+daemon answers `unpaired` without starting you. `max_seconds` is how long you
+want one attempt to last, from 10 to 300; Couch gives you that and never more.
+`keep_alive` asks for your child not to be reaped when the connection goes
+idle, for a device that costs seconds to reconnect to.
+
+Three methods on `DeviceClient`, all defaulted:
+
+```rust
+fn connect_with(settings: &Self::Settings, credential: Option<&Credential>) -> Result<Self>;
+fn pair_start(settings: &Self::Settings, existing: Option<&Credential>)
+    -> Result<Box<dyn PairFlow>>;
+fn take_credential(&mut self) -> Option<Credential>;
+```
+
+`connect_with` is the only way you ever see the key: it is not in the settings,
+not in the environment, and not on disk anywhere you can read. `take_credential`
+is for a device that rotates its key under you - return it once, and Couch
+stores it beside the answer to the request that discovered it. `existing` on
+`pair_start` is the key Couch already holds, for a device that issues a second
+one against the first.
+
+A `PairFlow` is the conversation:
+
+```rust
+use couch_sdk::{CodeAlphabet, Credential, PairFailure, PairFlow, PairInput, PairPrompt, PairStep, Result};
+
+struct BridgePairing { bridge: Bridge }
+
+impl PairFlow for BridgePairing {
+    fn step(&mut self, input: Option<PairInput>) -> Result<PairStep> {
+        // Whatever the person typed for the last prompt, if it asked for
+        // anything. Couch has already checked it against that prompt.
+        if let Some(PairInput::Code { code }) = input {
+            return Ok(match self.bridge.submit(&code)? {
+                Some(key) => PairStep::done(Credential::new(key)?, "Paired with the hall bridge"),
+                None => PairStep::failed(PairFailure::WrongCode).because("That was not the code shown"),
+            });
+        }
+        match self.bridge.poll()? {
+            Pairing::Pressed(key) => Ok(PairStep::done(Credential::new(key)?, "Paired with the hall bridge")
+                .with_settings(self.bridge.corrected_settings())),
+            Pairing::NeedsCode => Ok(PairStep::waiting(PairPrompt::enter_code(6, CodeAlphabet::Hex), 0)),
+            Pairing::Waiting => Ok(PairStep::waiting(
+                PairPrompt::press_button().saying("The button is on top of the bridge"), 2000)),
+            Pairing::Expired => Ok(PairStep::failed(PairFailure::TimedOut)),
+        }
+    }
+
+    fn cancel(&mut self) { self.bridge.give_up(); }
+}
+```
+
+`step` is called once to begin, and again for every poll or every submitted
+code, and it must return well inside the host's twelve second request timeout:
+**describe** a wait with `PairStep::waiting`, do not sleep through one. `serve`
+owns at most one flow, names the session (`p1`, `p2`, …), refuses a step for
+any other session, and drops the flow the moment a step is `done` or `failed`
+or the person cancels. A second `pair_start` replaces the first.
+
+Three prompts, and Couch writes the headline for each: `press_button` ("Press
+the button on the device"), `approve_on_device` ("Approve on the device") and
+`enter_code` ("Enter the code shown on the device"). `saying(..)` adds your one
+line under it. `poll_after_ms` is how long Couch waits before asking you again:
+500 to 10 000 milliseconds, or 0 for a code prompt, which means "come back when
+they have typed it". `with_settings` on a `done` step hands back settings the
+device would rather Couch saved - a corrected port, the address it answered on
+- and they have to pass your own manifest.
+
+Every bound is enforced by the host, and a step that breaks one is a protocol
+error that costs you your child process. The constructors above clamp, so an
+author using them cannot emit one: `PairStep::waiting` clamps the delay,
+`PairPrompt::enter_code` clamps the length to 1..=16, and `saying`, `because`
+and `done`'s summary clamp text to 160 printable bytes. A `Credential` is a
+JSON object of at most 16 KiB, prints as `Credential(..)` and has no `Display`,
+so nothing that formats a value containing one can leak it. Never put a key in
+a `Reason`, a summary or a status field: those are shown to a person and
+written to logs.
+
+`couch_plugin::testing_v3::pairing` is the admission case: it pairs, checks
+every step's bounds, proves the key reaches you and is never echoed back in an
+answer, and drives a refusal, an expiry and a cancellation.
 
 ### 4. Tests, with no device
 

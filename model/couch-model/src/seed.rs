@@ -55,6 +55,7 @@ fn scene(id: &str, name: &str, steps: Vec<Action>) -> Scene {
         icon: None,
         steps,
         hue: None,
+        resource: None,
         rooms: Vec::new(),
     }
 }

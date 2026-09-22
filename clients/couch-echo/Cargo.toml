@@ -9,6 +9,37 @@ description = "A worked example integration for couch-sdk: copy this crate to st
 # device that does not exist. Its "TV" is couch_sdk::testing::MockHost, so this
 # builds, runs and passes its tests on any machine - no remote, no TV, no
 # credentials, no network beyond loopback.
+# Protocol 3 is unreleased. This builds the fixture in src/v3.rs and turns on
+# couch-plugin's switch so the tests in tests/protocol3.rs can run a protocol 3
+# package end to end. Off by default; the packaged couch-plugin-echo never has
+# it. Run with `cargo test -p couch-echo --features protocol-3-preview`.
+[features]
+protocol-3-preview = ["couch-plugin/protocol-3-preview"]
+
+[[bin]]
+name = "couch-plugin-echo-v3"
+path = "src/bin/couch-plugin-echo-v3.rs"
+required-features = ["protocol-3-preview"]
+
+[[bin]]
+name = "couch-plugin-echo-bridge"
+path = "src/bin/couch-plugin-echo-bridge.rs"
+required-features = ["protocol-3-preview"]
+
+[[bin]]
+name = "couch-plugin-echo-pair"
+path = "src/bin/couch-plugin-echo-pair.rs"
+required-features = ["protocol-3-preview"]
+
+[[bin]]
+name = "couch-plugin-echo-pair-hostile"
+path = "src/bin/couch-plugin-echo-pair-hostile.rs"
+required-features = ["protocol-3-preview"]
+
+[[test]]
+name = "protocol3"
+required-features = ["protocol-3-preview"]
+
 [dependencies]
 couch-plugin = { path = "../couch-plugin" }
 serde_json = "1"

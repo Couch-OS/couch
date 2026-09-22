@@ -26,6 +26,10 @@ pub(super) struct PluginTarget {
     pub room: String,
     pub device: String,
     pub connection: String,
+    /// Which child of that connection this device is, if it is one. Empty for
+    /// a device that is the connection itself, which is every packaged device
+    /// a shipped remote can have.
+    pub resource: String,
     pub label: String,
     pub capabilities: Vec<PluginCapability>,
     pub actions: Vec<PluginActionSchema>,
@@ -181,17 +185,15 @@ fn plugin_worker(
         let event = if is_action {
             PluginEvent::ActionDone(match response {
                 Ok(PluginResponse::Ok) => Ok(()),
-                Ok(PluginResponse::Error { code }) => Err(code.to_string()),
-                Err(error) => Err(error.to_string()),
+                Err(error) => Err(error),
                 _ => Err("The integration sent an unexpected reply".into()),
             })
         } else {
             match response {
                 Ok(PluginResponse::Status { status }) => PluginEvent::Status(status),
                 Ok(PluginResponse::Inputs { inputs }) => PluginEvent::Inputs(inputs),
-                Ok(PluginResponse::Error { code }) => PluginEvent::Error(code.to_string()),
                 Ok(_) => PluginEvent::Error("The integration sent an unexpected reply".into()),
-                Err(error) => PluginEvent::Error(error.to_string()),
+                Err(error) => PluginEvent::Error(error),
             }
         };
         let _ = reply.send((work.generation, event));
@@ -229,14 +231,11 @@ impl Pages {
                 plugin_work,
                 plugin_reply,
                 plugin_generation,
+                // A refusal arrives as an `Err`, never as a reply: the code's
+                // sentence, and the package's line under it when it gave one.
                 |connection, request| {
-                    couch_plugin::local_request(
-                        &crate::home::path("plugin.sock"),
-                        connection,
-                        request,
-                        couch_plugin::REQUEST_TIMEOUT + std::time::Duration::from_secs(1),
-                    )
-                    .map_err(|error| error.to_string())
+                    crate::tv::plugin::ask_detailed(connection, request)
+                        .map_err(|failure| crate::tv::plugin::refusal(&failure))
                 },
             );
         });
@@ -276,7 +275,7 @@ impl Pages {
         });
         app.set_custom_activity_shown(true);
         app.set_custom_activity_available(true);
-        self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+        self.request_plugin(app, PluginRequest::status(), "Refreshing status…");
         if self
             .plugin
             .as_ref()
@@ -304,7 +303,13 @@ impl Pages {
             at: std::time::Instant::now(),
             generation: self.generation.load(Ordering::SeqCst),
             connection: plugin.target.connection.clone(),
-            request,
+            // A child of the connection is named; a device that is the
+            // connection sends the frame it always did.
+            request: if plugin.target.resource.is_empty() {
+                request
+            } else {
+                request.at(plugin.target.resource.as_str())
+            },
         });
         app.set_custom_activity_status(if result.is_ok() {
             message.into()
@@ -444,7 +449,7 @@ impl Pages {
                 plugin_command(&tile.action, &plugin.status)
             }
             PluginTileAction::RefreshStatus => {
-                self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+                self.request_plugin(app, PluginRequest::status(), "Refreshing status…");
                 return;
             }
             PluginTileAction::RefreshInputs => {
@@ -468,9 +473,7 @@ impl Pages {
             PluginTileAction::SetVolume(tenths) => {
                 if self.request_plugin(
                     app,
-                    PluginRequest::Action {
-                        action: TypedAction::SetVolumeDb { tenths: *tenths },
-                    },
+                    PluginRequest::action(TypedAction::SetVolumeDb { tenths: *tenths }),
                     "Setting volume…",
                 ) {
                     self.busy = true;
@@ -508,7 +511,7 @@ impl Pages {
                 Err(e) => e.into(),
             });
             if succeeded && self.plugin.is_some() {
-                self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+                self.request_plugin(app, PluginRequest::status(), "Refreshing status…");
             }
         }
         let events = self.plugin_rx.try_iter().collect::<Vec<_>>();
@@ -524,7 +527,7 @@ impl Pages {
                 app.set_custom_activity_status(message.into());
                 self.render(app);
                 if action_done {
-                    self.request_plugin(app, PluginRequest::Status, "Refreshing status…");
+                    self.request_plugin(app, PluginRequest::status(), "Refreshing status…");
                 }
             }
         }
@@ -574,11 +577,9 @@ fn format_db(tenths: i16) -> String {
 }
 
 fn volume_schema(view: &PluginView) -> Option<PluginActionSchema> {
-    view.target
-        .actions
-        .iter()
-        .copied()
-        .find(|schema| schema.is_valid())
+    // By kind: a package may declare other typed actions beside this one.
+    PluginActionSchema::find(&view.target.actions, couch_model::ActionKind::SetVolumeDb)
+        .filter(|schema| schema.is_valid())
 }
 
 fn observed_volume(view: &PluginView) -> Option<i16> {
@@ -595,7 +596,10 @@ fn adjusted_volume(view: &PluginView, delta: i16) -> Option<i16> {
         min_tenths,
         max_tenths,
         step_tenths,
-    } = volume_schema(view)?;
+    } = volume_schema(view)?
+    else {
+        return None;
+    };
     // An unknown/minimum reading never becomes an invented actual value. The
     // first adjustment explicitly chooses the lowest permitted target.
     let next = view
@@ -802,6 +806,11 @@ fn plugin_pages(view: &PluginView) -> Vec<PluginPanelPage> {
                     };
                     chunk_page(label, tiles, &mut pages);
                 }
+                // Protocol 3 (unreleased): no manifest this build accepts can
+                // declare one, and the controls come with the panel step.
+                PluginComponent::Light { .. }
+                | PluginComponent::Cover { .. }
+                | PluginComponent::Climate { .. } => {}
             }
         }
     }
@@ -825,6 +834,7 @@ mod tests {
     fn volume_view() -> PluginView {
         PluginView {
             target: PluginTarget {
+                resource: String::new(),
                 activity: "Listen".into(),
                 room: "Living room".into(),
                 device: "receiver".into(),
@@ -892,9 +902,7 @@ mod tests {
                 at,
                 generation,
                 connection: "receiver".into(),
-                request: PluginRequest::Action {
-                    action: TypedAction::SetVolumeDb { tenths: -345 },
-                },
+                request: PluginRequest::action(TypedAction::SetVolumeDb { tenths: -345 }),
             })
             .unwrap();
         }
@@ -918,6 +926,7 @@ mod tests {
     fn plugin_presentation_uses_native_pages_and_live_state() {
         let view = PluginView {
             target: PluginTarget {
+                resource: String::new(),
                 activity: "Listen".into(),
                 room: "Living room".into(),
                 device: "receiver".into(),
@@ -986,6 +995,7 @@ mod tests {
         let mut pages = Pages::new();
         pages.plugin = Some(PluginView {
             target: PluginTarget {
+                resource: String::new(),
                 activity: "New activity".into(),
                 room: "Living room".into(),
                 device: "receiver".into(),
@@ -1218,12 +1228,14 @@ mod tests {
         assert_eq!(&*actions.borrow(), &[("page".into(), -1)]);
         pages.handle(&app, "page", -1);
         actions.borrow_mut().clear();
+        // Inside the first tile, which starts below the shared header band
+        // rather than under the title (ui/screens/activity_pages.slint).
         window.dispatch_event(WindowEvent::PointerPressed {
-            position: slint::LogicalPosition::new(40., 160.),
+            position: slint::LogicalPosition::new(40., 240.),
             button: PointerEventButton::Left,
         });
         window.dispatch_event(WindowEvent::PointerReleased {
-            position: slint::LogicalPosition::new(40., 160.),
+            position: slint::LogicalPosition::new(40., 240.),
             button: PointerEventButton::Left,
         });
         assert_eq!(&*actions.borrow(), &[("command".into(), 0)]);
@@ -1280,7 +1292,8 @@ mod tests {
         assert!(matches!(
             work.try_recv().unwrap().request,
             PluginRequest::Action {
-                action: TypedAction::SetVolumeDb { tenths: -340 }
+                action: TypedAction::SetVolumeDb { tenths: -340 },
+                ..
             }
         ));
         pages.handle(&app, "command", 1);

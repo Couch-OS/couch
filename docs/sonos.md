@@ -253,8 +253,9 @@ seek bar and its clocks, the volume meter, shuffle/repeat/crossfade state, the
 queue, group and coordinator awareness, the per-row source detail text and every
 hand-written sentence do not. Status is also read on demand rather than polled.
 The catalog entry in `integrations/catalog.json` lists these as limitations; the
-built-in screens in `ui/couch-gui/src/sonos_player.rs` and `room_sonos.rs` stay
-the way to get them.
+built-in screens stay the way to get them: the player screen in
+`ui/couch-gui/src/media_player.rs`, with the built-in client behind it in
+`sonos_player.rs`, and the room rows in `room_sonos.rs`.
 
 ## Commands and the requests they make
 

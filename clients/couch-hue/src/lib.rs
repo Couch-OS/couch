@@ -16,6 +16,7 @@ pub enum Error {
     Response,
     Unavailable,
     Brightness,
+    ColourTemperature,
     Rejected,
 }
 impl std::fmt::Display for Error {
@@ -28,6 +29,7 @@ impl std::fmt::Display for Error {
         Self::Response=>"Hue returned an invalid or oversized response",
         Self::Unavailable=>"This Hue light is missing or unreachable",
         Self::Brightness=>"Brightness requires a dimmable light and a value from 0 to 100",
+        Self::ColourTemperature=>"Colour temperature requires a tunable-white light and a value inside its range",
         Self::Rejected=>"Hue rejected the light command",
     })
     }
@@ -184,12 +186,36 @@ impl Hue {
             } else {
                 None
             };
+            // Hue's own colour-temperature schema, coolest mirek first. A lamp
+            // in a colour mode reports `mirek_valid: false`, which is not a
+            // reading: the screen shows no Kelvin rather than a stale one.
+            let temperature = &v["color_temperature"];
+            let schema = &temperature["mirek_schema"];
+            let mirek_range = match (
+                schema["mirek_minimum"].as_u64(),
+                schema["mirek_maximum"].as_u64(),
+            ) {
+                (Some(cool), Some(warm)) if cool <= warm && warm <= u64::from(u16::MAX) => {
+                    Some((cool as u16, warm as u16))
+                }
+                _ => None,
+            };
+            let mirek = mirek_range
+                .filter(|_| on.is_some() && temperature["mirek_valid"].as_bool() != Some(false))
+                .and_then(|(cool, warm)| {
+                    temperature["mirek"]
+                        .as_u64()
+                        .filter(|m| (u64::from(cool)..=u64::from(warm)).contains(m))
+                        .map(|m| m as u16)
+                });
             lights.push(Light {
                 entity_id: id.into(),
                 name: v["metadata"]["name"].as_str().unwrap_or(id).into(),
                 on,
                 brightness_percent,
                 dimmable,
+                mirek,
+                mirek_range,
             });
         }
         lights.sort_by(|a, b| a.name.cmp(&b.name).then(a.entity_id.cmp(&b.entity_id)));
@@ -235,6 +261,15 @@ impl Hue {
                 }
                 json!({"on":{"on":true},"dimming":{"brightness":p}})
             }
+            Command::Mirek(m) => {
+                if !state
+                    .mirek_range
+                    .is_some_and(|(cool, warm)| (cool..=warm).contains(&m))
+                {
+                    return Err(Error::ColourTemperature);
+                }
+                json!({"on":{"on":true},"color_temperature":{"mirek":m}})
+            }
         };
         self.write_light(id, body)
     }
@@ -274,6 +309,85 @@ impl Hue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Hue's own colour-temperature schema, and the write that follows it.
+    #[test]
+    fn colour_temperature_comes_from_the_schema_and_is_written_as_mirek() {
+        let id = "00000000-0000-0000-0000-000000000001";
+        let lamp = |temperature: Value| {
+            vec![
+                json!({"type":"zigbee_connectivity","owner":{"rid":"device"},"status":"connected"}),
+                json!({"type":"light","id":id,"owner":{"rid":"device"},"on":{"on":true},
+                       "dimming":{"brightness":40.0},"metadata":{"name":"Desk lamp"},
+                       "color_temperature":temperature}),
+            ]
+        };
+        let schema = json!({"mirek":370,"mirek_valid":true,
+            "mirek_schema":{"mirek_minimum":153,"mirek_maximum":500}});
+        let tunable = Hue::parse_lights(&lamp(schema.clone())).unwrap();
+        assert_eq!(tunable[0].mirek, Some(370));
+        assert_eq!(tunable[0].mirek_range, Some((153, 500)));
+        // A lamp showing a colour rather than a white says its mirek is not
+        // valid. The range is still true; the reading is not, so there is none.
+        let colour = Hue::parse_lights(&lamp(json!({"mirek":370,"mirek_valid":false,
+            "mirek_schema":{"mirek_minimum":153,"mirek_maximum":500}})))
+        .unwrap();
+        assert_eq!(colour[0].mirek, None);
+        assert_eq!(colour[0].mirek_range, Some((153, 500)));
+        // No schema at all, and a mirek outside the one given: not tunable,
+        // and not a reading.
+        assert_eq!(
+            Hue::parse_lights(&lamp(Value::Null)).unwrap()[0].mirek_range,
+            None
+        );
+        let outside = Hue::parse_lights(&lamp(json!({"mirek":900,"mirek_valid":true,
+            "mirek_schema":{"mirek_minimum":153,"mirek_maximum":500}})))
+        .unwrap();
+        assert_eq!(outside[0].mirek, None);
+
+        // The write is a mirek at the light, and turns it on to show it.
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr();
+        let worker = std::thread::spawn(move || {
+            let mut request = server
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.url(), format!("/clip/v2/resource/light/{id}"));
+            let mut text = String::new();
+            std::io::Read::read_to_string(request.as_reader(), &mut text).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&text).unwrap(),
+                json!({"on":{"on":true},"color_temperature":{"mirek":250}})
+            );
+            request
+                .respond(tiny_http::Response::from_string(
+                    json!({"errors":[],"data":[{"rid":id,"rtype":"light"}]}).to_string(),
+                ))
+                .unwrap();
+        });
+        let client = Hue {
+            base: format!("http://{address}"),
+            key: "fixture".into(),
+            agent: ureq::Agent::new_with_defaults(),
+        };
+        client
+            .command_for_state(&tunable[0], Command::Mirek(250))
+            .unwrap();
+        worker.join().unwrap();
+        // A value outside the light's range, and a light with no range, are
+        // refused here rather than sent to the bridge.
+        assert_eq!(
+            client.command_for_state(&tunable[0], Command::Mirek(600)),
+            Err(Error::ColourTemperature)
+        );
+        assert_eq!(
+            client.command_for_state(
+                &Hue::parse_lights(&lamp(Value::Null)).unwrap()[0],
+                Command::Mirek(250)
+            ),
+            Err(Error::ColourTemperature)
+        );
+    }
     #[test]
     fn toggle_reads_once_and_only_returns_target_after_acknowledgement() {
         use std::io::{Read, Write};

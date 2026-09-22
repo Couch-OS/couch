@@ -1,18 +1,59 @@
 import { Theme } from "../theme.slint";
-import { MediaBack } from "../widgets/media-back.slint";
+import { ScreenHeader } from "../components/screen_header.slint";
 export component Camera inherits Rectangle {
     in property <bool> shown;
     in property <string> title;
+    /// "Hall · UniFi Protect": where it is and what drives it. It used to be
+    /// the literal "UniFi Protect" on every camera, with no mention of where
+    /// the camera actually is.
+    in property <string> room;
+    /// The row's own icon and reading: the disc the lift flies here.
+    in property <image> icon;
+    in property <bool> active;
+    in property <bool> known;
     in property <string> message;
     in property <image> frame;
     callback close();
     public function take-focus(){keys.focus();}
     background:Theme.bg;
-    MediaBack { x:24px; y:22px; activate=>{root.close();} }
-    Text {x:88px;y:27px;width:parent.width - 112px;height:32px;text:root.title;font-size:21px;font-weight:600;color:Theme.text;overflow:elide;}
-    Text {x:24px;y:95px;text:"UniFi Protect";font-size:16px;color:Theme.text-secondary;}
+    head := ScreenHeader {
+        x:0px; y:0px; width:parent.width;
+        title:root.title; subtitle:root.room;
+        icon:root.icon; active:root.active; known:root.known;
+        back => { root.close(); }
+    }
     Image {x:0px;y:170px;width:parent.width;height:270px;source:root.frame;image-fit:contain;}
     Text {x:24px;y:470px;width:parent.width - 48px;text:root.message;wrap:word-wrap;font-size:18px;color:Theme.text-secondary;}
     Text {x:24px;y:620px;width:parent.width - 48px;text:"Press Back to close the feed.";font-size:16px;color:Theme.text-secondary;}
+
+    // --- what the lift needs to know about this page ------------------------
+    public pure function title-box-x() -> length { return head.title-box-x(); }
+    public pure function title-box-y() -> length { return head.title-box-y(); }
+    public pure function title-box-w() -> length { return head.title-box-w(); }
+    public pure function title-box-h() -> length { return head.title-box-h(); }
+    public pure function disc-box-x() -> length { return head.disc-box-x(); }
+    public pure function disc-box-y() -> length { return head.disc-box-y(); }
+    public pure function disc-box-size() -> length { return head.disc-box-size(); }
+    public pure function header-h() -> length { return head.header-h(); }
+    public pure function plate-x() -> length { return head.plate-x(); }
+    public pure function plate-y() -> length { return head.plate-y(); }
+    public pure function plate-w() -> length { return head.plate-w(); }
+    public pure function plate-h() -> length { return head.plate-h(); }
+    public pure function plate-r() -> length { return head.plate-r(); }
+    /// The picture, and the two lines under it.
+    public pure function body-y() -> length { return 166px; }
+    public pure function body-h() -> length { return 278px; }
+    public pure function rows() -> int { return 1; }
+    public pure function row-y(which: int) -> length { return 460px; }
+    public pure function row-h(which: int) -> length { return 200px; }
+    public pure function footer-y() -> length { return 612px; }
+    public pure function lift-ready() -> bool { return true; }
+    /// Once a frame is up the picture is a photograph, and the panel crosses
+    /// to it band by band rather than fading a third of itself in at once.
+    /// Before that the page is a line of text and it falls like any other.
+    public pure function banded() -> bool { return root.frame.width > 0; }
+    /// A camera waiting for its first frame is one line on an empty page.
+    public pure function sparse() -> bool { return root.frame.width <= 0; }
+
     keys:=FocusScope {enabled:root.shown;key-pressed(e)=>{if(e.text==Key.Escape || e.text==Key.Home){root.close();}return accept;}}
 }

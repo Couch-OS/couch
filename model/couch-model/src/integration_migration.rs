@@ -36,7 +36,22 @@ pub struct LegacyBuiltin {
     pub package: &'static str,
     /// The package's name in a sentence: "Needs the Denon package".
     pub name: &'static str,
-    settings: fn(&Provider) -> Option<LegacySettings>,
+    /// The saved connection's own fields, as the package's settings.
+    pub settings: fn(&Provider) -> Option<LegacySettings>,
+    /// Protocol 3 (unreleased): the file the built-in client kept its key in,
+    /// inside `connections/<id>/` - `"hue-connection.json"`, say. `None` for a
+    /// built-in that stored nothing, which is every row there is today.
+    ///
+    /// The daemon reads it, maps it with [`LegacyBuiltin::credential`] and
+    /// hands the result to the package as its credential. The old file is
+    /// **left where it is**: a Couch rolled back to one that still has the
+    /// built-in client has to find its pairing.
+    pub credential_file: Option<&'static str>,
+    /// What that file's contents become as a package credential, or `None` if
+    /// this one cannot be handed over (a half-written file, a shape the
+    /// built-in never wrote). Pure JSON to JSON: nothing here performs I/O,
+    /// and the result must be a JSON object.
+    pub credential: Option<fn(&serde_json::Value) -> Option<serde_json::Value>>,
 }
 
 /// Every built-in that has left, in the order they left.
@@ -45,6 +60,10 @@ pub const LEGACY_BUILTINS: &[LegacyBuiltin] = &[LegacyBuiltin {
     package: "denon",
     name: "Denon",
     settings: denon_settings,
+    // A Denon receiver is told an address and a port and nothing else; the
+    // built-in client never stored a key, so there is nothing to hand over.
+    credential_file: None,
+    credential: None,
 }];
 
 fn denon_settings(provider: &Provider) -> Option<LegacySettings> {
@@ -66,6 +85,16 @@ impl LegacyBuiltin {
     /// for a provider that is not this row's.
     pub fn settings(&self, provider: &Provider) -> Option<LegacySettings> {
         (self.settings)(provider)
+    }
+
+    /// Protocol 3 (unreleased): what the built-in client's stored file becomes
+    /// as the package's credential. `None` when this row hands nothing over,
+    /// when the mapping refuses what it was given, or when the result is not a
+    /// JSON object. Nothing here reads a file: the daemon does that and passes
+    /// the contents in.
+    pub fn map_credential(&self, stored: &serde_json::Value) -> Option<serde_json::Value> {
+        let mapped = (self.credential?)(stored)?;
+        mapped.is_object().then_some(mapped)
     }
 
     /// The one sentence every surface shows for an unconverted connection: the
@@ -212,6 +241,7 @@ impl Config {
                 self.rooms[room].devices[device].integration = Integration::Connection {
                     connection_id,
                     resource_id: String::new(),
+                    child: None,
                 };
                 changed = true;
             }
@@ -262,6 +292,7 @@ mod tests {
             supports_inputs: true,
             presentation: alloc::vec![],
             actions: alloc::vec![],
+            children: alloc::vec![],
         }
     }
 
@@ -387,6 +418,7 @@ mod tests {
                 Integration::Connection {
                     connection_id: Id::new("old-avr"),
                     resource_id: String::new(),
+                    child: None,
                 }
             );
         }
@@ -432,6 +464,54 @@ mod tests {
             let older: Config = serde_json::from_slice(&bytes).unwrap();
             older.validate().unwrap();
         }
+    }
+
+    /// Protocol 3 (unreleased). No row hands a key over yet - Denon never
+    /// stored one - so the hook is proved on a row made here, of the shape a
+    /// built-in that did keep a key would have.
+    #[test]
+    fn a_row_that_names_a_stored_key_maps_it_and_one_that_does_not_hands_nothing_over() {
+        fn mapped(stored: &serde_json::Value) -> Option<serde_json::Value> {
+            let key = stored.get("application_key")?.as_str()?;
+            (!key.is_empty()).then(|| serde_json::json!({"key": key}))
+        }
+        let row = LegacyBuiltin {
+            kind: "hue",
+            package: "hue",
+            name: "Hue",
+            settings: denon_settings,
+            credential_file: Some("hue-connection.json"),
+            credential: Some(mapped),
+        };
+        assert_eq!(row.credential_file, Some("hue-connection.json"));
+        assert_eq!(
+            row.map_credential(&serde_json::json!({"url": "https://b/", "application_key": "abc"})),
+            Some(serde_json::json!({"key": "abc"}))
+        );
+        // A file the built-in never wrote, an empty key, and a mapping that
+        // would not give back an object: all of them hand nothing over.
+        for stored in [
+            serde_json::json!({}),
+            serde_json::json!({"application_key": ""}),
+            serde_json::json!({"application_key": 7}),
+            serde_json::json!("nonsense"),
+        ] {
+            assert_eq!(row.map_credential(&stored), None, "{stored}");
+        }
+        fn not_an_object(_: &serde_json::Value) -> Option<serde_json::Value> {
+            Some(serde_json::json!(["k"]))
+        }
+        let listy = LegacyBuiltin {
+            credential: Some(not_an_object),
+            ..row
+        };
+        assert_eq!(listy.map_credential(&serde_json::json!({})), None);
+
+        // The shipped row stores nothing, and says so.
+        let denon = LegacyBuiltin::for_kind("denon").unwrap();
+        assert_eq!(denon.credential_file, None);
+        assert!(denon.credential.is_none());
+        assert_eq!(denon.map_credential(&serde_json::json!({"a": 1})), None);
     }
 
     #[test]

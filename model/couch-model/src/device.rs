@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::icon::Icon;
 use crate::id::Id;
-use crate::{DeviceId, PluginCapability, PluginComponent};
+use crate::{ChildSnapshot, DeviceId, PluginCapability, PluginComponent};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Device {
@@ -72,6 +72,7 @@ impl Device {
             Integration::Connection {
                 connection_id,
                 resource_id,
+                ..
             } if config
                 .connection(connection_id)
                 .is_some_and(|c| c.provider == crate::Provider::Ir) =>
@@ -371,6 +372,10 @@ pub enum Integration {
         connection_id: Id,
         #[serde(default)]
         resource_id: String,
+        /// Protocol 3 (unreleased): set when the device is one child of a
+        /// packaged connection (one lamp of a bridge). See [`ChildSnapshot`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        child: Option<ChildSnapshot>,
     },
     Kodi {
         host: String,
@@ -418,6 +423,10 @@ pub enum Integration {
         presentation: Vec<PluginComponent>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         actions: Vec<crate::PluginActionSchema>,
+        /// Protocol 3 (unreleased): the device is this child of the
+        /// connection, and `capabilities` and `actions` are its kind's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        child: Option<ChildSnapshot>,
     },
     HomeAssistant {
         entity_id: String,

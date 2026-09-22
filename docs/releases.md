@@ -70,6 +70,12 @@ sets the compiler and key environment once for all of them, and the inventory
 and packaging steps below run on the same machine. A macOS checkout builds the same binaries with the same scripts for
 development; it is not the release host.
 
+Every run ends by checking that `couch-confd` does not carry the protocol 3
+preview marker, and stops if it does: a release is never built with
+`COUCH_PROTOCOL_3_PREVIEW` set, and a preview daemon left in `daemon/target` by
+an earlier build is not a release input
+([SDK and protocol](development/protocol.md#a-preview-build-for-one-development-remote)).
+
 ## Assemble offline packages
 
 On the dedicated Linux host, `tools/release/prepare_rootfs.py SPEC CLOSURE NEW_OUTPUT` combines the same staging specification with a verified `package_closure.py` cache. `CLOSURE` is either a prepared closure directory or the [retained closure archive](offline-packages.md#retain-the-closure-archive) pinned by the OS baseline; an archive is bound to that pin, restored and verified before anything is assembled. It runs authenticated APK installation and its ARM maintainer scripts in an isolated container using the host's ARM binfmt emulator. No host binfmt registration, loop mount, device access or privileged container is used. The container has only the filesystem/chroot capabilities required for a disposable tmpfs root, no network, read-only inputs, and one new writable output directory.

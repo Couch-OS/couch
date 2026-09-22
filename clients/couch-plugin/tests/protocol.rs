@@ -3,9 +3,10 @@ use couch_plugin::{
 };
 use serde_json::json;
 use std::{
-    io::Cursor,
+    io::{Cursor, Write},
     os::unix::fs::{symlink, PermissionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
@@ -27,9 +28,10 @@ impl Package {
         Self { root, manifest }
     }
     fn script(&self, text: &str) {
-        let path = self.root.join("bin/plugin");
-        std::fs::write(&path, format!("#!/bin/sh\n{text}\n")).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(
+            &self.root.join("bin/plugin"),
+            format!("#!/bin/sh\n{text}\n").as_bytes(),
+        );
     }
     fn hello(&self) -> String {
         print_frame(&json!({"id":1,"body":{"type":"hello","manifest":self.manifest}}))
@@ -39,6 +41,29 @@ impl Drop for Package {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+/// Writes a package executable without this process ever holding a descriptor
+/// open for writing it.
+///
+/// Linux refuses `execve` with ETXTBSY (errno 26) while anyone has the file
+/// open for writing, and `Host::spawn` reports that as `Error::Transport`.
+/// Spawning forks first, and the fork inherits every descriptor this process
+/// had open at that moment until its own exec closes it, so one test thread
+/// writing its own script is still a writer of that script from the point of
+/// view of another test thread's fork. Let a short-lived child hold the
+/// writing descriptor instead: nothing this process forks can inherit it. The
+/// shared admission fixture avoids the same race by linking the Cargo
+/// artifact, which it never writes.
+fn write_executable(path: &Path, bytes: &[u8]) {
+    let mut writer = Command::new("/bin/sh")
+        .args(["-c", r#"exec /bin/cat > "$1""#, "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer.stdin.take().unwrap().write_all(bytes).unwrap();
+    assert!(writer.wait().unwrap().success(), "write {}", path.display());
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 fn print_bytes(bytes: &[u8]) -> String {
     let escaped: String = bytes.iter().map(|b| format!("\\{:03o}", b)).collect();
@@ -199,6 +224,479 @@ fn manifest_settings_reject_unknowns_types_and_secrets_in_defaults() {
 }
 
 #[test]
+fn only_a_protocol_3_manifest_may_name_buttons_of_its_own() {
+    let p = Package::new();
+    for manifest in [p.manifest.clone(), v2_manifest(p.manifest.clone())] {
+        assert!(manifest.validate().is_ok());
+        assert!(!manifest.supports("x:info"));
+        let mut named = manifest.clone();
+        named.capabilities.push(couch_plugin::Capability {
+            id: "x:info".into(),
+            label: "Info".into(),
+        });
+        assert_eq!(
+            named.validate(),
+            Err(Error::Invalid),
+            "protocol {}",
+            manifest.protocol_version
+        );
+        // Even a manifest that slipped through is never sent one.
+        assert!(!named.supports("x:info"));
+    }
+}
+
+/// couch-model learnt three typed actions and three components in protocol 3,
+/// step T2, and a manifest is parsed with couch-model's types. Until the wire
+/// for them exists no manifest may declare a component, and a protocol 1 or 2
+/// manifest may not declare an action either, so no released package can be
+/// sent one. Each of these was a parse error before the model knew the words.
+#[test]
+fn light_cover_and_climate_are_in_no_manifest_an_older_package_could_send() {
+    use couch_plugin::{Component, PluginActionSchema, TypedAction};
+    let p = Package::new();
+    let schemas = [
+        PluginActionSchema::SetLight {},
+        PluginActionSchema::SetCover {},
+        PluginActionSchema::SetClimate {},
+    ];
+    let actions = [
+        TypedAction::SetLight {
+            on: Some(true),
+            brightness: None,
+            mirek: None,
+            xy: None,
+        },
+        TypedAction::SetCover { position: 40 },
+        TypedAction::SetClimate {
+            target_tenths: Some(215),
+            low_tenths: None,
+            high_tenths: None,
+            mode: None,
+        },
+    ];
+    for manifest in [p.manifest.clone(), v2_manifest(p.manifest.clone())] {
+        assert!(manifest.validate().is_ok());
+        for (schema, action) in schemas.into_iter().zip(actions) {
+            let mut declares = manifest.clone();
+            declares.actions = vec![schema];
+            assert_eq!(
+                declares.validate(),
+                Err(Error::Invalid),
+                "protocol {} {schema:?}",
+                manifest.protocol_version
+            );
+            assert_eq!(
+                manifest.validate_action(action),
+                Err(Error::Unsupported),
+                "protocol {} {action:?}",
+                manifest.protocol_version
+            );
+            assert_eq!(
+                couch_plugin::requires(&Request::action(action)),
+                couch_plugin::NEXT_PROTOCOL_VERSION
+            );
+        }
+        for component in [
+            Component::Light {
+                label: "Lamp".into(),
+            },
+            Component::Cover {
+                label: "Blind".into(),
+            },
+            Component::Climate {
+                label: "Heating".into(),
+            },
+        ] {
+            let mut declares = manifest.clone();
+            declares.presentation = vec![component.clone()];
+            assert_eq!(
+                declares.validate(),
+                Err(Error::Invalid),
+                "protocol {} {component:?}",
+                manifest.protocol_version
+            );
+        }
+    }
+    assert_eq!(
+        couch_plugin::requires(&Request::action(TypedAction::SetVolumeDb { tenths: -345 })),
+        2
+    );
+}
+
+/// Protocol 3 is unreleased. Without the `protocol-3-preview` feature, which
+/// no shipped crate enables, its manifest is a package that needs a newer
+/// Couch, whatever else it says, and nothing is executed.
+#[cfg(not(feature = "protocol-3-preview"))]
+#[test]
+fn a_protocol_3_manifest_is_refused_as_needing_a_newer_couch() {
+    assert_eq!(
+        couch_plugin::accepted_protocol_version(),
+        couch_plugin::PROTOCOL_VERSION
+    );
+    assert_eq!(couch_plugin::PROTOCOL_VERSION, 2);
+    let mut p = Package::new();
+    p.manifest = v3_manifest(p.manifest.clone());
+    assert_eq!(p.manifest.validate(), Err(Error::Incompatible));
+    let mut plain = v2_manifest(p.manifest.clone());
+    plain.capabilities.pop();
+    plain.protocol_version = 3;
+    plain.min_core_protocol_version = 3;
+    assert_eq!(plain.validate(), Err(Error::Incompatible));
+    let marker = p.root.join("ran");
+    p.script(&format!(": > {}\nexec /bin/sleep 10", marker.display()));
+    assert!(matches!(
+        Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)),
+        Err(Error::Incompatible)
+    ));
+    assert!(matches!(
+        couch_plugin::Endpoint::start(&p.root, p.manifest.clone(), json!({"host":"example"})),
+        Err(Error::Incompatible)
+    ));
+    assert!(!marker.exists(), "a refused package was executed");
+}
+
+#[cfg(feature = "protocol-3-preview")]
+#[test]
+fn the_preview_switch_admits_protocol_3_and_nothing_newer() {
+    assert_eq!(couch_plugin::accepted_protocol_version(), 3);
+    assert_eq!(
+        couch_plugin::PROTOCOL_VERSION,
+        2,
+        "the release constant never moves"
+    );
+    let p = Package::new();
+    let manifest = v3_manifest(p.manifest.clone());
+    assert_eq!(manifest.validate(), Ok(()));
+    assert!(manifest.supports("x:info"));
+    assert!(!manifest.supports("x:other"));
+    let wire = serde_json::to_value(&manifest).unwrap();
+    assert_eq!(wire["protocol_version"], 3);
+    assert_eq!(wire["min_core_protocol_version"], 3);
+
+    let mut next = manifest.clone();
+    next.protocol_version = 4;
+    next.min_core_protocol_version = 4;
+    assert_eq!(next.validate(), Err(Error::Incompatible));
+
+    for id in ["x:", "x:Info", "x:in fo", "x:info!"] {
+        let mut bad = manifest.clone();
+        bad.capabilities[1].id = id.into();
+        assert_eq!(bad.validate(), Err(Error::Invalid), "{id}");
+    }
+    let mut many = manifest.clone();
+    many.capabilities.truncate(1);
+    for index in 0..32 {
+        many.capabilities.push(couch_plugin::Capability {
+            id: format!("x:button-{index}"),
+            label: format!("Button {index}"),
+        });
+    }
+    assert_eq!(many.validate(), Ok(()));
+    many.capabilities.push(couch_plugin::Capability {
+        id: "x:one-too-many".into(),
+        label: "One too many".into(),
+    });
+    assert_eq!(many.validate(), Err(Error::Invalid));
+
+    // Schemas are found by kind and no kind is declared twice. Only one kind
+    // exists, so a second schema is still a duplicate.
+    let mut twice = manifest.clone();
+    twice.actions.push(twice.actions[0]);
+    assert_eq!(twice.validate(), Err(Error::Invalid));
+    let mut grouped = manifest.clone();
+    grouped.presentation = vec![couch_plugin::Component::CommandGroup {
+        title: "More".into(),
+        commands: vec!["x:info".into()],
+    }];
+    assert_eq!(grouped.validate(), Ok(()));
+}
+
+/// What a scripted child saw on its stdin: the hello frame and `requests`
+/// more, read by exact length so the child can answer in between.
+fn seen(p: &Package) -> Vec<u8> {
+    std::fs::read(p.root.join("seen")).unwrap_or_default()
+}
+fn read_exactly(p: &Package, bytes: usize) -> String {
+    format!(
+        "/bin/dd bs=1 count={bytes} >> {} 2>/dev/null\n",
+        p.root.join("seen").display()
+    )
+}
+/// The exact text, in the host's own field order: `json!` would sort it.
+fn frame_bytes(text: &str) -> Vec<u8> {
+    let mut bytes = (text.len() as u32).to_be_bytes().to_vec();
+    bytes.extend_from_slice(text.as_bytes());
+    bytes
+}
+fn hello_frame(manifest: &Manifest) -> Vec<u8> {
+    frame_bytes(&format!(
+        r#"{{"id":1,"body":{{"method":"hello","protocol_version":{}}}}}"#,
+        manifest.protocol_version
+    ))
+}
+
+#[test]
+fn a_key_phase_never_reaches_a_protocol_1_or_2_package() {
+    use couch_plugin::KeyPhase;
+    // The bytes 00ab4da writes for a tap; see src/wire_golden.rs.
+    let tap = frame_bytes(r#"{"id":2,"body":{"method":"command","function":"power-on"}}"#);
+    for use_v2 in [false, true] {
+        for phase in [KeyPhase::Tap, KeyPhase::Repeat, KeyPhase::LongPress] {
+            let mut p = Package::new();
+            if use_v2 {
+                p.manifest = v2_manifest(p.manifest.clone());
+            }
+            let hello = hello_frame(&p.manifest);
+            p.script(&format!(
+                "{}{}{}exec /bin/sleep 10",
+                p.hello(),
+                read_exactly(&p, hello.len() + tap.len()),
+                print_frame(&json!({"id":2,"body":{"type":"ok"}}))
+            ));
+            let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+            assert_eq!(host.key("power-on", phase), Ok(()), "{phase:?}");
+            assert_eq!(seen(&p), [hello, tap.clone()].concat(), "{phase:?}");
+        }
+    }
+}
+
+#[cfg(feature = "protocol-3-preview")]
+#[test]
+fn a_protocol_3_package_is_told_the_phase_and_a_tap_is_still_not_written() {
+    use couch_plugin::KeyPhase;
+    for (function, phase, body) in [
+        (
+            "power-on",
+            KeyPhase::Tap,
+            r#"{"method":"command","function":"power-on"}"#,
+        ),
+        (
+            "power-on",
+            KeyPhase::Repeat,
+            r#"{"method":"command","function":"power-on","phase":"repeat"}"#,
+        ),
+        (
+            "x:info",
+            KeyPhase::LongPress,
+            r#"{"method":"command","function":"x:info","phase":"long_press"}"#,
+        ),
+    ] {
+        let mut p = Package::new();
+        p.manifest = v3_manifest(p.manifest.clone());
+        let hello = hello_frame(&p.manifest);
+        let expected = frame_bytes(&format!(r#"{{"id":2,"body":{body}}}"#));
+        p.script(&format!(
+            "{}{}{}exec /bin/sleep 10",
+            p.hello(),
+            read_exactly(&p, hello.len() + expected.len()),
+            print_frame(&json!({"id":2,"body":{"type":"ok"}}))
+        ));
+        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        assert_eq!(host.key(function, phase), Ok(()));
+        assert_eq!(
+            String::from_utf8_lossy(&seen(&p)),
+            String::from_utf8_lossy(&[hello, expected].concat())
+        );
+    }
+}
+
+#[test]
+fn a_package_named_button_is_refused_before_any_io_unless_declared() {
+    let mut manifests = vec![Package::new().manifest.clone()];
+    manifests.push(v2_manifest(manifests[0].clone()));
+    #[cfg(feature = "protocol-3-preview")]
+    manifests.push(v3_manifest(manifests[0].clone()));
+    for manifest in manifests {
+        let mut p = Package::new();
+        p.manifest = manifest;
+        // The child answers exactly one request after hello, with id 2. A
+        // refused command that had reached it would have used that id up.
+        p.script(&format!(
+            "{}{}exec /bin/sleep 10",
+            p.hello(),
+            print_frame(&json!({"id":2,"body":{"type":"status","status":{"on":true}}}))
+        ));
+        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        let declared = p.manifest.protocol_version >= 3;
+        for function in ["x:undeclared", "x:Bad", "x:"] {
+            assert_eq!(host.command(function), Err(Error::Unsupported));
+        }
+        if !declared {
+            assert_eq!(host.command("x:info"), Err(Error::Unsupported));
+            assert_eq!(couch_plugin::requires(&Request::command("x:info")), 3);
+        }
+        assert!(host.is_alive());
+        assert_eq!(host.status().unwrap().on, Some(true));
+    }
+    assert_eq!(couch_plugin::requires(&Request::command("power-on")), 1);
+    assert_eq!(couch_plugin::requires(&Request::status()), 1);
+    assert_eq!(
+        couch_plugin::requires(&Request::action(couch_plugin::TypedAction::SetVolumeDb {
+            tenths: 0
+        })),
+        2
+    );
+}
+
+#[test]
+fn a_reason_or_unpaired_from_a_protocol_1_or_2_package_retires_it() {
+    for use_v2 in [false, true] {
+        for body in [
+            json!({"type":"error","code":"unpaired"}),
+            json!({"type":"error","code":"rejected","reason":{"kind":"message","text":"Pair again"}}),
+            json!({"type":"error","code":"invalid","reason":{"kind":"invalid_setting","field":"host","text":"No"}}),
+        ] {
+            let mut p = Package::new();
+            if use_v2 {
+                p.manifest = v2_manifest(p.manifest.clone());
+            }
+            p.script(&format!(
+                "{}{}exec /bin/sleep 10",
+                p.hello(),
+                print_frame(&json!({"id":2,"body":body}))
+            ));
+            let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+            let pid = host.pid();
+            assert_eq!(
+                host.request_detailed(Request::status()),
+                Err(Error::Protocol.into()),
+                "{body}"
+            );
+            assert!(!host.is_alive());
+            assert_eq!(
+                unsafe { libc::kill(pid as i32, 0) },
+                -1,
+                "child must be reaped"
+            );
+        }
+        // The nine codes it has always been allowed still arrive as they are.
+        let mut p = Package::new();
+        if use_v2 {
+            p.manifest = v2_manifest(p.manifest.clone());
+        }
+        p.script(&format!(
+            "{}{}exec /bin/sleep 10",
+            p.hello(),
+            print_frame(&json!({"id":2,"body":{"type":"error","code":"rejected"}}))
+        ));
+        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            host.request_detailed(Request::status()),
+            Err(couch_plugin::Failure {
+                code: Error::Rejected,
+                reason: None
+            })
+        );
+        assert!(host.is_alive());
+    }
+}
+
+#[cfg(feature = "protocol-3-preview")]
+#[test]
+fn a_protocol_3_reason_is_kept_and_one_couch_cannot_show_retires_the_package() {
+    use couch_plugin::{Failure, Reason};
+    for (body, expected) in [
+        (
+            json!({"type":"error","code":"unpaired","reason":{"kind":"message","text":"Pair this TV again"}}),
+            Some(Failure {
+                code: Error::Unpaired,
+                reason: Some(Reason::Message {
+                    text: "Pair this TV again".into(),
+                }),
+            }),
+        ),
+        (
+            json!({"type":"error","code":"invalid","reason":{"kind":"invalid_setting","field":"host","text":"Not an address"}}),
+            Some(Failure {
+                code: Error::Invalid,
+                reason: Some(Reason::InvalidSetting {
+                    field: "host".into(),
+                    text: "Not an address".into(),
+                }),
+            }),
+        ),
+        (
+            json!({"type":"error","code":"unpaired"}),
+            Some(Error::Unpaired.into()),
+        ),
+        (
+            json!({"type":"error","code":"rejected","reason":{"kind":"message","text":"a".repeat(161)}}),
+            None,
+        ),
+        (
+            json!({"type":"error","code":"rejected","reason":{"kind":"message","text":"two\nlines"}}),
+            None,
+        ),
+        (
+            json!({"type":"error","code":"invalid","reason":{"kind":"invalid_setting","field":"undeclared","text":"No"}}),
+            None,
+        ),
+        (
+            json!({"type":"error","code":"rejected","reason":{"kind":"link","text":"No"}}),
+            None,
+        ),
+        (
+            json!({"type":"error","code":"rejected","reason":{"kind":"message","text":"No","more":1}}),
+            None,
+        ),
+    ] {
+        let mut p = Package::new();
+        p.manifest = v3_manifest(p.manifest.clone());
+        p.script(&format!(
+            "{}{}exec /bin/sleep 10",
+            p.hello(),
+            print_frame(&json!({"id":2,"body":body}))
+        ));
+        let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+        let pid = host.pid();
+        match expected {
+            Some(failure) => {
+                assert_eq!(
+                    host.request_detailed(Request::status()),
+                    Err(failure),
+                    "{body}"
+                );
+                assert!(host.is_alive(), "{body}");
+            }
+            None => {
+                assert_eq!(
+                    host.request_detailed(Request::status()),
+                    Err(Error::Protocol.into()),
+                    "{body}"
+                );
+                assert!(!host.is_alive(), "{body}");
+                assert_eq!(
+                    unsafe { libc::kill(pid as i32, 0) },
+                    -1,
+                    "child must be reaped"
+                );
+            }
+        }
+    }
+    // The plain call still answers with the code alone.
+    let mut p = Package::new();
+    p.manifest = v3_manifest(p.manifest.clone());
+    p.script(&format!(
+        "{}{}{}exec /bin/sleep 10",
+        p.hello(),
+        print_frame(&json!({"id":2,"body":{"type":"ok"}})),
+        print_frame(&json!({"id":3,"body":{"type":"error","code":"unpaired","reason":{"kind":"message","text":"Pair again"}}}))
+    ));
+    let endpoint =
+        couch_plugin::Endpoint::start(&p.root, p.manifest.clone(), json!({"host":"example"}))
+            .unwrap();
+    assert_eq!(
+        endpoint.request_detailed(Request::status()),
+        Err(Failure {
+            code: Error::Unpaired,
+            reason: Some(Reason::Message {
+                text: "Pair again".into()
+            })
+        })
+    );
+}
+
+#[test]
 fn executable_must_be_contained_and_not_writable_by_other_users() {
     let mut p = Package::new();
     p.script("exit 1");
@@ -259,14 +757,14 @@ fn wrong_ids_malformed_and_oversized_replies_retire_and_reap_child() {
         p.script(&format!("{}{}exec /bin/sleep 10", p.hello(), payload));
         let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
         let pid = host.pid();
-        assert_eq!(host.request(Request::Status), Err(Error::Protocol));
+        assert_eq!(host.request(Request::status()), Err(Error::Protocol));
         assert!(!host.is_alive());
         assert_eq!(
             unsafe { libc::kill(pid as i32, 0) },
             -1,
             "child must be reaped"
         );
-        assert_eq!(host.request(Request::Status), Err(Error::Transport));
+        assert_eq!(host.request(Request::status()), Err(Error::Transport));
     }
 }
 
@@ -280,7 +778,7 @@ fn timeout_is_absolute_including_partial_frames_and_kills_descendants() {
     host.set_timeout(Duration::from_millis(100)).unwrap();
     let pid = host.pid();
     let start = Instant::now();
-    assert_eq!(host.request(Request::Status), Err(Error::Timeout));
+    assert_eq!(host.request(Request::status()), Err(Error::Timeout));
     assert!(start.elapsed() < Duration::from_millis(500));
     assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
 }
@@ -297,7 +795,7 @@ fn unsupported_commands_never_reach_child_and_drop_reaps_it() {
     let pid = host.pid();
     assert_eq!(host.command("play-pause"), Err(Error::Unsupported));
     assert_eq!(
-        host.request(Request::Status),
+        host.request(Request::status()),
         Ok(Response::Status {
             status: couch_plugin::Status::on(true)
         })
@@ -318,7 +816,7 @@ fn final_endpoint_drop_synchronously_reaps_its_process() {
     let endpoint =
         couch_plugin::Endpoint::start(&p.root, p.manifest.clone(), json!({"host":"example"}))
             .unwrap();
-    let response = endpoint.request(Request::Status).unwrap();
+    let response = endpoint.request(Request::status()).unwrap();
     let Response::Status { status } = response else {
         panic!("expected status")
     };
@@ -430,6 +928,17 @@ printf '%s' "$body"
     )
 }
 
+fn v3_manifest(manifest: Manifest) -> Manifest {
+    let mut manifest = v2_manifest(manifest);
+    manifest.protocol_version = 3;
+    manifest.min_core_protocol_version = 3;
+    manifest.capabilities.push(couch_plugin::Capability {
+        id: "x:info".into(),
+        label: "Info".into(),
+    });
+    manifest
+}
+
 fn v2_manifest(mut manifest: Manifest) -> Manifest {
     manifest.protocol_version = 2;
     manifest.min_core_protocol_version = 2;
@@ -492,7 +1001,10 @@ fn v2_is_explicit_and_headless_actions_do_not_depend_on_presentation() {
         Err(Error::Invalid),
         "no v2 controls in v1"
     );
-    for (version, minimum) in [(0, 0), (1, 2), (2, 1), (2, 3), (3, 3)] {
+    // (3, 3) unless the protocol 3 preview is switched on, which no shipped
+    // build does; then (4, 4).
+    let next = couch_plugin::accepted_protocol_version() + 1;
+    for (version, minimum) in [(0, 0), (1, 2), (2, 1), (2, 3), (next, next)] {
         let mut manifest = v2_manifest(v1.clone());
         manifest.protocol_version = version;
         manifest.min_core_protocol_version = minimum;
@@ -574,4 +1086,204 @@ fn typed_action_refusals_do_not_consume_a_child_request_and_bad_measurements_ret
         Err(Error::Protocol),
         "v1 cannot smuggle a v2 reading"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Protocol 3, step T2: the children of a connection.
+// ---------------------------------------------------------------------------
+
+fn lamp_kind() -> couch_plugin::PluginChildKind {
+    use couch_plugin::{ChildComponent, PluginActionSchema};
+    use couch_sdk::couch_model::{DeviceKind, PluginCapability};
+    couch_plugin::PluginChildKind {
+        kind: "light".into(),
+        label: "Lamp".into(),
+        device_kind: DeviceKind::Light,
+        component: ChildComponent::Light,
+        capabilities: vec![
+            PluginCapability {
+                id: "on".into(),
+                label: "On".into(),
+            },
+            PluginCapability {
+                id: "toggle".into(),
+                label: "Toggle".into(),
+            },
+        ],
+        actions: vec![PluginActionSchema::SetLight {}],
+    }
+}
+
+/// A manifest that declares children is a protocol 3 manifest, whatever else
+/// it says. With the switch off nothing gets that far, which is what keeps
+/// `children` out of every shipped build.
+#[test]
+fn only_a_protocol_3_manifest_may_declare_children() {
+    let p = Package::new();
+    for mut manifest in [p.manifest.clone(), v2_manifest(p.manifest.clone())] {
+        assert!(manifest.validate().is_ok());
+        assert!(manifest.children.is_empty(), "older manifests declare none");
+        manifest.children = vec![lamp_kind()];
+        assert_eq!(
+            manifest.validate(),
+            Err(Error::Invalid),
+            "protocol {}",
+            manifest.protocol_version
+        );
+    }
+}
+
+/// Pairing and a kept-alive child are protocol 3 words, like children and
+/// `x:` ids: an older manifest that declares either is invalid, which is what
+/// keeps a key away from every package Couch can already run.
+#[test]
+fn only_a_protocol_3_manifest_may_declare_pairing_or_ask_to_be_kept_alive() {
+    use couch_plugin::Pairing;
+    let p = Package::new();
+    for older in [p.manifest.clone(), v2_manifest(p.manifest.clone())] {
+        assert!(older.validate().is_ok());
+        assert!(older.pairing.is_none() && !older.keep_alive);
+        assert!(!older.pairs(), "a package Couch can run today never pairs");
+        let mut pairs = older.clone();
+        pairs.pairing = Some(Pairing {
+            required: true,
+            max_seconds: 120,
+        });
+        assert_eq!(
+            pairs.validate(),
+            Err(Error::Invalid),
+            "protocol {}",
+            older.protocol_version
+        );
+        let mut kept = older.clone();
+        kept.keep_alive = true;
+        assert_eq!(
+            kept.validate(),
+            Err(Error::Invalid),
+            "protocol {}",
+            older.protocol_version
+        );
+    }
+    // Neither is written when it says nothing, so a published manifest's
+    // bytes are unchanged.
+    let wire = serde_json::to_value(&p.manifest).unwrap();
+    assert!(wire.get("pairing").is_none());
+    assert!(wire.get("keep_alive").is_none());
+    // And the window a package may ask for is bounded, whatever its protocol.
+    let mut v3 = v3_manifest(p.manifest.clone());
+    for (seconds, valid) in [(9, false), (10, true), (300, true), (301, false)] {
+        v3.pairing = Some(Pairing {
+            required: false,
+            max_seconds: seconds,
+        });
+        // With the switch off a protocol 3 manifest is incompatible before
+        // anything else is looked at; the bound is the same either way.
+        let expected = if couch_plugin::accepted_protocol_version() < 3 {
+            Err(Error::Incompatible)
+        } else if valid {
+            Ok(())
+        } else {
+            Err(Error::Invalid)
+        };
+        assert_eq!(v3.validate(), expected, "{seconds} s");
+    }
+}
+
+/// A listing has to end, be no longer than the host will hold, and never name
+/// the same child twice. Each of those is a protocol error, whoever asks.
+#[test]
+fn a_listing_that_never_ends_or_repeats_itself_is_a_protocol_error() {
+    use couch_plugin::{list_children, Child, Failure, Response, MAX_CHILDREN, MAX_CHILD_PAGES};
+    let lamp = |n: usize| Child::new(format!("lamp-{n}"), "light", format!("Lamp {n}"));
+    // A page at a time, for as many pages as the closure says.
+    let paged = |pages: usize, per_page: usize, cursors: Box<dyn Fn(usize) -> Option<String>>| {
+        let mut page = 0;
+        move |_request: Request| -> std::result::Result<Response, Failure> {
+            let children = (0..per_page).map(|n| lamp(page * per_page + n)).collect();
+            let next = if page + 1 < pages {
+                cursors(page)
+            } else {
+                None
+            };
+            page += 1;
+            Ok(Response::Children { children, next })
+        }
+    };
+    // The happy case: three pages, ending.
+    let mut ask = paged(3, 4, Box::new(|page| Some(format!("page-{}", page + 1))));
+    assert_eq!(list_children(&mut ask).map(|all| all.len()), Ok(12));
+
+    // A cursor already followed: the listing is going round in a circle.
+    let mut ask = paged(usize::MAX, 1, Box::new(|_| Some("loop".into())));
+    assert_eq!(list_children(&mut ask), Err(Error::Protocol));
+
+    // More pages than the host will read, even with a fresh cursor each time.
+    let mut ask = paged(
+        MAX_CHILD_PAGES + 1,
+        1,
+        Box::new(|page| Some(format!("page-{page}"))),
+    );
+    assert_eq!(list_children(&mut ask), Err(Error::Protocol));
+
+    // More children than the host will hold.
+    let mut page = 0;
+    let mut ask = |_request: Request| -> std::result::Result<Response, Failure> {
+        let children = (0..32).map(|n| lamp(page * 32 + n)).collect();
+        page += 1;
+        Ok(Response::Children {
+            children,
+            next: Some(format!("page-{page}")),
+        })
+    };
+    assert_eq!(list_children(&mut ask), Err(Error::Protocol));
+    assert!(page * 32 <= MAX_CHILDREN + 32);
+
+    for broken in [
+        // A page bigger than a page may be.
+        Response::Children {
+            children: (0..couch_plugin::MAX_PAGE + 1).map(lamp).collect(),
+            next: None,
+        },
+        // Nothing, but carry on: a listing that can never end.
+        Response::Children {
+            children: Vec::new(),
+            next: Some("page-1".into()),
+        },
+        // The same child twice on one page.
+        Response::Children {
+            children: vec![lamp(1), lamp(1)],
+            next: None,
+        },
+        // A child whose id could climb out of its connection.
+        Response::Children {
+            children: vec![Child::new("../secrets", "light", "Climbing")],
+            next: None,
+        },
+        // A cursor that could not be a resource.
+        Response::Children {
+            children: vec![lamp(1)],
+            next: Some("a/../b".into()),
+        },
+        // Not a listing at all.
+        Response::Ok,
+    ] {
+        let mut ask = |_request: Request| Ok(broken.clone());
+        assert_eq!(list_children(&mut ask), Err(Error::Protocol), "{broken:?}");
+    }
+
+    // The same child on two pages: every page is well formed, the listing is
+    // not, and only the caller can see it.
+    let mut page = 0;
+    let mut ask = |_request: Request| -> std::result::Result<Response, Failure> {
+        page += 1;
+        Ok(Response::Children {
+            children: vec![lamp(1)],
+            next: (page == 1).then(|| "page-1".to_owned()),
+        })
+    };
+    assert_eq!(list_children(&mut ask), Err(Error::Protocol));
+
+    // A refusal is the package's own code, not a protocol error.
+    let mut ask = |_request: Request| Err(Failure::from(Error::Busy));
+    assert_eq!(list_children(&mut ask), Err(Error::Busy));
 }

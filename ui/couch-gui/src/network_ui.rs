@@ -109,6 +109,7 @@ impl Controller {
                     activity: false,
                     kind: 0,
                     power_known: false,
+                    controls: false,
                     icon: slint::Image::default(),
                 })
                 .collect::<Vec<_>>(),

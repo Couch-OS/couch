@@ -37,9 +37,17 @@ remains unavailable until the built-in blaster can send codes.
   Back; existing long-Back overrides are retained in configuration but ignored.
 - Other short and long presses are independent. A configured long press fires once
   after 600 ms. Its short action waits for release and never also fires on a hold.
+- Power is timed the same way, everywhere, whether or not it is mapped: a tap
+  goes to what is on screen, and a hold of the same 600 ms ends the running
+  activity. A mapped Power still takes the tap; nothing overrides the hold.
 - D-pad, volume and channel keys retain repeat; they cannot have long bindings.
   Repeat events only repeat navigation, volume and channel functions, even when
   a repeat-capable button is assigned to a toggle or power function.
+- While a light's or blind's controls are open, the volume and channel keys
+  belong to that screen: they are its brightness and colour temperature, and no
+  binding - an activity's or a highlighted row's - hears them meanwhile. Every
+  other key, Power included, still goes where it went. Closing the screen gives
+  them back.
 - A volume or mute press mapped to a device that can report its level (Sonos,
   Kodi, LG webOS, Denon) shows the volume card with the level read back after
   the command, the same card the room list shows for a highlighted speaker.

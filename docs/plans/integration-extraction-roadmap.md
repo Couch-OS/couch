@@ -344,6 +344,11 @@ as a protocol 2 core.
 | **T6** Discovery and apps | Manifest `discovery { mdns, ssdp }`, daemon-owned browse, `Probe`; `apps` request, `supports_apps`, `app:<id>` allowed; optional `now_playing` component for the TV layout reusing T4. | Hue doc (v); apps not yet designed | M | TVs; nice-to-have elsewhere |
 | **T7** Switch on | `PROTOCOL_VERSION = 3`; harness cases `pairing(`, `children(`, `media(`, `hints(` (harness digest update); echo exercises all of them; tested set gains `supported_protocol_versions: [1, 2, 3]` and a protocol 3 package; **evidence renewal**; core release; feed `PROTOCOL_VERSIONS = {1, 2, 3}` and per-version `compatibility.json`. | both | S | publishing |
 
+The first three steps each have a full implementation plan: [T1 groundwork](protocol-3-t1-groundwork.md),
+[T2 children and domain controls](protocol-3-t2-children-and-domain-controls.md), and
+[T3 pairing and isolation](protocol-3-t3-pairing-and-isolation.md). T1, T2 and T3 are complete on
+`dev` (2026-09-20), switched off; T4 (media) has not started.
+
 Rules for running it:
 
 - **T6 may be dropped from the train, never delay it.** It is the only step

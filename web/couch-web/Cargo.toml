@@ -15,4 +15,7 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
     "History", "Location", "Window", "Event", "PopStateEvent", "Crypto",
+    # The pairing dialog is a modal, so it has to ask itself what inside it
+    # can take the focus and keep Tab from leaving.
+    "Document", "Element", "HtmlElement", "Node", "NodeList", "KeyboardEvent",
 ] }

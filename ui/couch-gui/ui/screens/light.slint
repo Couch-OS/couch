@@ -1,0 +1,272 @@
+import { Theme } from "../theme.slint";
+import { ScreenHeader } from "../components/screen_header.slint";
+import { FocusRing } from "../components/focus_ring.slint";
+
+// One device screen for every light and blind, whatever drives it: built-in
+// Hue, Home Assistant, Matter or a packaged child. The room row behind it
+// keeps its highlight, so Back lands where the press came from.
+//
+// The controls are tall vertical bars, because the panel is 480x800 and a
+// portrait bar has three times the travel a horizontal one had: brightness on
+// the left, colour temperature on the right, or one centred bar where the lamp
+// only dims. Both fill and read from the bottom - up is more, and up is the key
+// that raises the number printed above the bar.
+//
+// Neither bar is ever highlighted: each has a key of its own (volume for the
+// level, channel for the colour temperature), so there is nothing to select
+// between and no ring to move. Only a blind's three buttons carry a highlight,
+// because OK has to know which one it presses.
+//
+// The whole screen is driven from properties: nothing here reads a device, and
+// every number arrives already worked out (lights.rs), including the two bar
+// fills, which are percentages so that Slint never has to divide a range.
+export component LightScreen inherits Rectangle {
+    in property <bool> shown;
+    in property <string> title;
+    // "Living room · Philips Hue" - where it is and what drives it.
+    in property <string> room;
+    // "On · 40%", "Off", "Unavailable", "Open · 60% open".
+    in property <string> state;
+    in property <bool> active;
+    /// The device's own icon, and whether it has said what it is doing: the
+    /// disc is the row's disc, so it is drawn from the row's own facts.
+    in property <image> icon;
+    in property <bool> known;
+    // "BRIGHTNESS" or "OPEN POSITION", and the big reading above the bar.
+    in property <string> level-label;
+    in property <string> level;
+    in property <int> level-percent;
+    in property <bool> level-known;
+    in property <bool> adjustable;
+    // A blind is drawn with the same shape, and its own three buttons.
+    in property <bool> cover;
+    in property <bool> can-stop;
+    // Only a light that reports a mirek range is offered a colour temperature.
+    in property <bool> tunable;
+    in property <string> kelvin;
+    // 0 is the warm end of this lamp's own range, 100 the cool end. Cool is at
+    // the top of the bar, so a marker at 100 sits at the top.
+    in property <int> mirek-percent;
+    in property <bool> mirek-known;
+    // Which of Open / Stop / Close is highlighted, on a blind. The bars have
+    // no highlight of their own.
+    in property <int> button;
+    in property <string> detail;
+    // The one line at the bottom that teaches the keys.
+    in property <string> hint;
+    // "Updating…" in place of the state line, once one operation has been out
+    // long enough to be worth mentioning.
+    in property <bool> pending;
+    // Whether a bar travels to a new value or is simply at it. It travels
+    // while somebody is looking at the screen and changes something - a
+    // brightness step, the lamp switched off - and it is simply there while
+    // the screen is being opened or closed, because the opening draws this
+    // page once and must find it finished.
+    in property <bool> glide;
+    property <duration> travel: root.glide ? 220ms : 0ms;
+    callback action(string, int);
+    public function take-focus() { keys.focus(); }
+    background: Theme.bg;
+
+    // Two bars side by side only where there are two; one lamp that merely
+    // dims, and a blind, get a single wider bar in the middle of the panel.
+    property <bool> two-up: root.tunable && !root.cover;
+    property <length> col-w: root.two-up ? 204px : 220px;
+    property <length> col-x: root.two-up ? 24px : (root.width - 220px) / 2;
+    property <length> bars-y: 190px;
+    // A blind gives up the bottom of its bar to the Open / Stop / Close strip.
+    property <length> bars-h: root.cover ? 352px : 452px;
+    property <length> track-w: root.two-up ? 62px : 68px;
+    property <length> track-y: 82px;
+    property <length> track-h: root.bars-h - 134px;
+
+    // The back arrow, the name, the room, the disc and the state line: the
+    // same band every screen a row opens draws, and the disc is the row's own
+    // so the lift can fly one onto the other.
+    head := ScreenHeader {
+        x: 0px; y: 0px; width: parent.width;
+        title: root.title; subtitle: root.room;
+        icon: root.icon; active: root.active; known: root.known;
+        state: root.pending ? "Updating…" : root.state;
+        back => { root.action("close", 0); }
+    }
+
+    // --- the level, which is brightness on a lamp and position on a blind ---
+    Rectangle {
+        x: root.col-x; y: root.bars-y; width: root.col-w; height: root.bars-h;
+        background: Theme.surface; border-width: 1px;
+        border-color: Theme.border; border-radius: Theme.r-card;
+        Text {
+            x: 8px; y: 16px; width: parent.width - 16px; height: 52px; text: root.level;
+            horizontal-alignment: center; vertical-alignment: center;
+            font-size: root.two-up ? 36px : 48px; font-weight: 700;
+            color: root.level-known && root.adjustable ? Theme.text : Theme.text-secondary;
+        }
+        Rectangle {
+            x: (parent.width - root.track-w) / 2; y: root.track-y;
+            width: root.track-w; height: root.track-h; border-radius: 6px;
+            background: Theme.surface-icon;
+            // Filled from the bottom: the bar is as full as the lamp is bright.
+            // The corners are barely rounded on purpose - a pill-shaped fill
+            // reads as a knob that has been dragged, not as a level.
+            Rectangle {
+                x: 0px; width: parent.width; border-radius: 6px;
+                height: root.level-known ? parent.height * root.level-percent / 100 : 0px;
+                y: parent.height - self.height;
+                background: Theme.accent;
+                // Inside a fixed track and sized from a number, so no layout
+                // depends on it: the one kind of geometry that may move.
+                animate height { duration: root.travel; easing: ease-out; }
+            }
+        }
+        Text {
+            x: 8px; y: parent.height - 40px; width: parent.width - 16px; height: 22px;
+            text: root.level-label; horizontal-alignment: center;
+            font-size: 12px; letter-spacing: 1.5px; color: Theme.text-secondary;
+        }
+    }
+
+    // --- colour temperature, only where the light reports a range -----------
+    if root.tunable && !root.cover: Rectangle {
+        x: root.col-x + root.col-w + 24px; y: root.bars-y; width: root.col-w; height: root.bars-h;
+        background: Theme.surface; border-width: 1px;
+        border-color: Theme.border; border-radius: Theme.r-card;
+        Text {
+            x: 8px; y: 16px; width: parent.width - 16px; height: 52px; text: root.kelvin;
+            horizontal-alignment: center; vertical-alignment: center;
+            font-size: 36px; font-weight: 700;
+            color: root.mirek-known ? Theme.text : Theme.text-secondary;
+        }
+        Rectangle {
+            x: (parent.width - root.track-w) / 2; y: root.track-y;
+            width: root.track-w; height: root.track-h; border-radius: 6px;
+            // The software renderer does not round a gradient, so the track
+            // clips it instead (docs/slint-notes.md).
+            clip: true;
+            // Warm at the bottom, cool at the top: the direction the up key
+            // travels, so the key and the picture agree. Up is also the higher
+            // number in Kelvin, which is what the read-out above says.
+            Rectangle {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                background: @linear-gradient(0deg, #FFB463 0%, #FFE9C8 45%, #FFFFFF 62%, #C9DCFF 100%);
+            }
+            Rectangle {
+                x: 0px; width: parent.width; height: 10px;
+                y: root.mirek-known ? (parent.height - 10px) * (100 - root.mirek-percent) / 100 : 0px;
+                background: root.mirek-known ? Theme.text : transparent;
+                border-width: 2px; border-color: root.mirek-known ? Theme.bg : transparent;
+                animate y { duration: root.travel; easing: ease-out; }
+            }
+        }
+        Text {
+            x: (parent.width + root.track-w) / 2 + 8px; y: root.track-y; width: 46px; height: 18px;
+            text: "COOL"; font-size: 11px; letter-spacing: 1.2px; color: Theme.text-tertiary;
+        }
+        Text {
+            x: (parent.width + root.track-w) / 2 + 8px; y: root.track-y + root.track-h - 18px;
+            width: 46px; height: 18px;
+            text: "WARM"; font-size: 11px; letter-spacing: 1.2px; color: Theme.text-tertiary;
+        }
+        Text {
+            x: 8px; y: parent.height - 40px; width: parent.width - 16px; height: 22px;
+            text: "COLOUR TEMP"; horizontal-alignment: center;
+            font-size: 12px; letter-spacing: 1.5px; color: Theme.text-secondary;
+        }
+    }
+
+    // --- a blind's own buttons, under its bar --------------------------------
+    if root.cover: Rectangle {
+        x: 24px; y: root.bars-y + root.bars-h + 18px;
+        width: parent.width - 48px; height: 74px; background: transparent;
+        for name[i] in ["Open", "Stop", "Close"]: Rectangle {
+            x: i * (parent.width / 3); width: parent.width / 3 - 10px; height: parent.height;
+            background: root.button == i ? Theme.accent-bg : Theme.surface;
+            border-width: 1px; border-radius: Theme.r-card;
+            border-color: root.button == i ? Theme.accent : Theme.border;
+            Text {
+                width: parent.width; height: parent.height; text: name;
+                horizontal-alignment: center; vertical-alignment: center; font-size: 20px;
+                color: i == 1 && !root.can-stop ? Theme.text-disabled : Theme.text;
+            }
+            TouchArea { clicked => { root.action("cover", i); } }
+            // The only ring left on this screen, and it earns it: it is the
+            // one thing OK presses.
+            FocusRing { focused: root.button == i; radius-inner: Theme.r-card; box-width: parent.width; box-height: parent.height; }
+        }
+    }
+
+    Text { x: 36px; y: 650px; width: parent.width - 72px; height: 64px; text: root.detail; font-size: 17px; color: Theme.text-secondary; wrap: word-wrap; horizontal-alignment: center; }
+    Text {
+        x: 24px; y: 744px; width: parent.width - 48px; height: 32px; horizontal-alignment: center;
+        text: root.hint; font-size: 15px; color: Theme.text-tertiary; overflow: elide;
+    }
+
+    // --- what the lift needs to know about this page ------------------------
+    // The pieces that arrive rather than being there, in panel pixels, as the
+    // arithmetic above rather than a reading of the laid-out boxes
+    // (docs/slint-notes.md). The transition flies the row's label onto
+    // `title-box`, its icon onto `disc-box`, and brings the header, the cards
+    // and the footer in as bands.
+    public pure function title-box-x() -> length { return head.title-box-x(); }
+    public pure function title-box-y() -> length { return head.title-box-y(); }
+    public pure function title-box-w() -> length { return head.title-box-w(); }
+    public pure function title-box-h() -> length { return head.title-box-h(); }
+    public pure function disc-box-x() -> length { return head.disc-box-x(); }
+    public pure function disc-box-y() -> length { return head.disc-box-y(); }
+    public pure function disc-box-size() -> length { return head.disc-box-size(); }
+    public pure function header-h() -> length { return head.header-h(); }
+    public pure function plate-x() -> length { return head.plate-x(); }
+    public pure function plate-y() -> length { return head.plate-y(); }
+    public pure function plate-w() -> length { return head.plate-w(); }
+    public pure function plate-h() -> length { return head.plate-h(); }
+    public pure function plate-r() -> length { return head.plate-r(); }
+    public pure function cards-y() -> length { return root.bars-y; }
+    public pure function cards-h() -> length { return root.bars-h; }
+    public pure function card-x(which: int) -> length {
+        return which == 0 ? root.col-x : root.col-x + root.col-w + 24px;
+    }
+    public pure function card-w() -> length { return root.col-w; }
+    public pure function track-box-x(which: int) -> length {
+        return root.card-x(which) + (root.col-w - root.track-w) / 2;
+    }
+    public pure function track-box-y() -> length { return root.bars-y + root.track-y; }
+    public pure function track-box-w() -> length { return root.track-w; }
+    public pure function track-box-h() -> length { return root.track-h; }
+    /// How much of the level bar is filled, and where the colour marker sits:
+    /// both are what the bar already draws, so the transition can reveal them
+    /// out of this page rather than invent them.
+    public pure function fill-h() -> length {
+        return root.level-known ? root.track-h * root.level-percent / 100 : 0px;
+    }
+    public pure function marker-y() -> length {
+        return root.mirek-known
+            ? root.track-box-y() + (root.track-h - 10px) * (100 - root.mirek-percent) / 100
+            : -1px;
+    }
+    public pure function marker-h() -> length { return 10px; }
+    /// The detail and hint lines, which come in last.
+    public pure function footer-y() -> length { return 640px; }
+
+    keys := FocusScope {
+        enabled: root.shown;
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.action("close", 0); return accept; }
+            if (e.text == Key.Home) { root.action("home", 0); return accept; }
+            // OK switches a lamp; on a blind it presses the highlighted one
+            // of Open, Stop and Close.
+            if (e.text == Key.Return) { root.action(root.cover ? "cover" : "toggle", root.button); return accept; }
+            // Volume and up/down are the level; channel is the colour
+            // temperature. F21-F24 are the internal tokens keypad.rs gives the
+            // channel and volume keys.
+            if (e.text == Key.UpArrow || e.text == Key.F23) { root.action("level", 1); return accept; }
+            if (e.text == Key.DownArrow || e.text == Key.F24) { root.action("level", -1); return accept; }
+            if (e.text == Key.F21) { root.action("warmth", 1); return accept; }
+            if (e.text == Key.F22) { root.action("warmth", -1); return accept; }
+            // With no bar to select, left and right have only a blind's three
+            // buttons to walk; on a lamp they do nothing.
+            if (e.text == Key.RightArrow) { root.action("button", 1); return accept; }
+            if (e.text == Key.LeftArrow) { root.action("button", -1); return accept; }
+            return accept;
+        }
+    }
+}

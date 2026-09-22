@@ -21,7 +21,11 @@ mod evdev;
 mod home;
 mod input;
 mod keypad;
+#[cfg(test)]
+mod kodi_pictures;
+mod light_screen;
 mod lights;
+mod media_player;
 mod mic;
 mod motion;
 mod navigation;
@@ -32,6 +36,8 @@ mod power_ui;
 mod qr;
 mod room_sonos;
 mod scenes;
+#[cfg(test)]
+mod screen_pictures;
 mod shortcuts;
 mod sonos_player;
 mod system;
@@ -91,6 +97,7 @@ enum Overlay {
     Activity,
     Camera,
     Thermostat,
+    Light,
     Tv,
     Player,
     Room,
@@ -109,10 +116,840 @@ impl Overlay {
     fn device(self) -> bool {
         matches!(
             self,
-            Overlay::Camera | Overlay::Thermostat | Overlay::Tv | Overlay::Player
+            Overlay::Camera | Overlay::Thermostat | Overlay::Light | Overlay::Tv | Overlay::Player
         )
     }
 }
+/// What a short Power press says while an activity runs and nothing on screen
+/// wants the key. It is the only place the new rule is taught, so it names the
+/// activity the hold would end.
+fn hold_to_end(config: Option<&couch_model::Config>, activity: &str) -> String {
+    let name = config
+        .and_then(|config| config.activities.iter().find(|a| a.id.as_str() == activity))
+        .map(|a| a.name.as_str())
+        .unwrap_or("the activity");
+    format!("Hold Power to end {name}")
+}
+/// The highlighted room row, in panel pixels: where the iris grows from, and
+/// where it collapses back to. Everything comes from the list itself, so
+/// nothing here has to know the row height, the padding or the scroll.
+fn room_window(app: &App) -> panel::Window {
+    panel::Window {
+        x: app.invoke_room_ring_x().round() as i32,
+        y: app.invoke_room_ring_position().round() as i32,
+        w: app.invoke_room_ring_width().round() as i32,
+        h: app.invoke_room_ring_height().round() as i32,
+        r: app.invoke_room_ring_radius().round() as i32,
+    }
+}
+
+/// Everything the lift needs, read off the two pages once, at the press.
+///
+/// The room's half comes from the list and the screen's from `light.slint`,
+/// both as functions rather than properties for the reason the ring's box is
+/// (docs/slint-notes.md). Nothing here is a number of its own.
+/// A colour from the layout, in the panel's own packing.
+fn packed(colour: slint::Color) -> u32 {
+    0xff00_0000
+        | ((colour.blue() as u32) << 16)
+        | ((colour.green() as u32) << 8)
+        | colour.red() as u32
+}
+
+/// A rectangle from the layout, rounded to the panel's own pixels.
+fn at(x: f32, y: f32, w: f32, h: f32) -> panel::Window {
+    panel::Window {
+        x: x.round() as i32,
+        y: y.round() as i32,
+        w: w.round() as i32,
+        h: h.round() as i32,
+        r: 0,
+    }
+}
+
+/// What every screen that has a `ScreenHeader` hands the lift: the name and
+/// the icon flying out of the row to where the header draws its own, and the
+/// two bands the header arrives in.
+///
+/// Both ends of both travellers come from the layouts themselves - the row's
+/// through `room_devices.slint`, the screen's through its own header - so a
+/// traveller lands on itself rather than on another drawing of the same
+/// thing, which is what makes the hand-over nothing at all.
+struct Band {
+    /// Where the name and the icon are drawn.
+    title: panel::Window,
+    disc: panel::Window,
+    /// How deep the band is, and the rectangle the row's card rises to.
+    depth: i32,
+    plate: panel::Window,
+}
+
+fn headed(
+    app: &App,
+    name: &'static str,
+    row: panel::Window,
+    width: i32,
+    band: Band,
+) -> panel::LiftPlan {
+    let Band {
+        title,
+        disc: screen_disc,
+        depth: header_h,
+        plate,
+    } = band;
+    let disc = app.invoke_ls_disc_size();
+    let label = at(
+        row.x as f32 + app.invoke_room_label_x(),
+        row.y as f32 + app.invoke_room_label_y(),
+        app.invoke_room_label_w(),
+        app.invoke_room_label_h(),
+    );
+    // The name lands lined up on the title's box rather than filling it: the
+    // two are the same size and weight (`Theme.device-name`), so this is a
+    // cut, not a fade.
+    let landing = panel::Window {
+        x: title.x,
+        y: title.y + (title.h - label.h) / 2,
+        ..label
+    };
+    panel::LiftPlan::out_of(name, row)
+        .drawn_in(
+            packed(app.invoke_room_surface()),
+            packed(app.invoke_room_border()),
+        )
+        .rising_to(plate, plate.r)
+        .carrying(
+            (label, landing),
+            // The row's icon: the layout's own left padding, and where a row
+            // draws it within its card.
+            (
+                at(
+                    row.x as f32 + app.invoke_room_disc_inset(),
+                    row.y as f32 + app.invoke_room_disc_y(),
+                    disc,
+                    disc,
+                ),
+                screen_disc,
+            ),
+        )
+        .header(width, header_h, screen_disc.y + screen_disc.h)
+}
+
+/// The light screen, as one plan: a header, one or two bar cards a little
+/// below their places, and the footer.
+fn light_plan(app: &App, row: panel::Window, width: i32, height: i32) -> panel::LiftPlan {
+    let disc = app.invoke_ls_disc_size();
+    // The second bar is only there on a lamp that reports a colour
+    // temperature; a blind's buttons are not a card that arrives.
+    let two = app.get_light_screen_tunable() && !app.get_light_screen_cover();
+    let card = |which: i32| {
+        at(
+            app.invoke_ls_card_x(which),
+            app.invoke_ls_cards_y(),
+            app.invoke_ls_card_w(),
+            app.invoke_ls_cards_h(),
+        )
+    };
+    let track = |which: i32| {
+        at(
+            app.invoke_ls_track_x(which),
+            app.invoke_ls_track_y(),
+            app.invoke_ls_track_w(),
+            app.invoke_ls_track_h(),
+        )
+    };
+    let marker_h = app.invoke_ls_marker_h().round() as i32;
+    // The left one overlaps the last of the room's fade and the right one
+    // does not, on purpose: a whole-panel fade is about twenty-four
+    // milliseconds on this device and a card another six, so one may sit on
+    // top of it and two may not.
+    let bar = |which: i32, fill_h: i32, marker_y: i32| panel::Piece {
+        rect: card(which),
+        window: (
+            panel::LIFT_CARDS_IN.0 + panel::LIFT_BARS_LAG * which as f32,
+            panel::LIFT_CARDS_IN.1 + panel::LIFT_BARS_LAG * which as f32,
+        ),
+        fade: panel::LIFT_CARDS_FADE,
+        kind: panel::Arriving::Card {
+            rise: panel::LIFT_BARS_DROP,
+            track: track(which),
+            fill_h,
+            marker_y,
+            marker_h,
+            grow: panel::LIFT_GROW,
+        },
+    };
+    headed(
+        app,
+        "light",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_ls_title_x(),
+                app.invoke_ls_title_y(),
+                app.invoke_ls_title_w(),
+                app.invoke_ls_title_h(),
+            ),
+            disc: at(app.invoke_ls_disc_x(), app.invoke_ls_disc_y(), disc, disc),
+            depth: app.invoke_ls_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_ls_plate_r().round() as i32,
+                ..at(
+                    app.invoke_ls_plate_x(),
+                    app.invoke_ls_plate_y(),
+                    app.invoke_ls_plate_w(),
+                    app.invoke_ls_plate_h(),
+                )
+            },
+        },
+    )
+    // The level fills from the bottom as it settles; the colour marker slides
+    // up to where the lamp has it.
+    .piece(bar(0, app.invoke_ls_fill_h().round() as i32, -1))
+    .maybe(two.then(|| bar(1, 0, app.invoke_ls_marker_y().round() as i32)))
+    .footer(width, height, app.invoke_ls_footer_y().round() as i32)
+}
+
+/// The television controls, as one plan: a header, what is on, and up to
+/// three rows of controls that arrive one after another the way a light
+/// screen's bar cards do.
+///
+/// It has no bar to reveal, so nothing here is a `Card`: its rows simply rise
+/// the last few pixels as they fade, which is the same movement without the
+/// level growing inside it.
+fn tv_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<panel::LiftPlan> {
+    if !app.invoke_tvs_lift_ready() {
+        return None;
+    }
+    let disc = app.invoke_tvs_disc_size();
+    let mut plan = headed(
+        app,
+        "tv",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_tvs_title_x(),
+                app.invoke_tvs_title_y(),
+                app.invoke_tvs_title_w(),
+                app.invoke_tvs_title_h(),
+            ),
+            disc: at(app.invoke_tvs_disc_x(), app.invoke_tvs_disc_y(), disc, disc),
+            depth: app.invoke_tvs_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_tvs_plate_r().round() as i32,
+                ..at(
+                    app.invoke_tvs_plate_x(),
+                    app.invoke_tvs_plate_y(),
+                    app.invoke_tvs_plate_w(),
+                    app.invoke_tvs_plate_h(),
+                )
+            },
+        },
+    )
+    // What is on - the kind, the name of the source, the line about the keys
+    // - is text over the background, so it is faded where it belongs rather
+    // than moved: only the part of each row that has anything on it is
+    // touched, which is most of the saving on a screen this empty.
+    .piece(panel::Piece {
+        rect: at(
+            0.0,
+            app.invoke_tvs_body_y(),
+            width as f32,
+            app.invoke_tvs_body_h(),
+        ),
+        window: panel::LIFT_STATE_IN,
+        fade: 1.0,
+        kind: panel::Arriving::Fade,
+    });
+    // The rows of controls, each a little later than the one above it, so the
+    // screen builds downwards rather than arriving all at once. One row at a
+    // time is also what keeps a frame inside its budget: the whole block is
+    // four tenths of the panel, and a frame may not blend that much.
+    // Spread between the two ends the light screen uses - when its first bar
+    // card arrives and when its footer has settled - so the last row of a
+    // television lands at the same moment the last piece of a light screen
+    // does, and neither screen is finished before the transition is.
+    let rows = app.invoke_tvs_rows().min(3);
+    for which in 0..rows {
+        // The last row always lands where a light screen's footer does, so
+        // no screen is finished before the transition is - including one with
+        // a single row, which would otherwise arrive first and leave the rest
+        // of the transition with nothing happening. A sparse page brings the
+        // rest of itself forward instead, with `sooner`.
+        let f = if rows <= 1 {
+            1.0
+        } else {
+            which as f32 / (rows - 1) as f32
+        };
+        plan = plan.piece(panel::Piece {
+            rect: at(
+                0.0,
+                app.invoke_tvs_row_y(which),
+                width as f32,
+                app.invoke_tvs_row_h(which),
+            ),
+            window: (
+                panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
+                panel::LIFT_CARDS_IN.1 + (panel::LIFT_FOOTER_IN.1 - panel::LIFT_CARDS_IN.1) * f,
+            ),
+            fade: panel::LIFT_CARDS_FADE,
+            kind: panel::Arriving::Rise(panel::LIFT_BARS_DROP),
+        });
+    }
+    let _ = height;
+    // Showing what is playing: a photograph behind everything, which crosses
+    // band by band rather than falling to a background it does not have.
+    Some(if app.invoke_tvs_banded() {
+        plan.banded()
+    } else {
+        plan
+    })
+}
+
+/// The media player, as one plan: a header over its artwork, what is playing,
+/// and three rows - where it is up to, the transport, and the sheets.
+///
+/// The same shape as the television's, which is the point: two screens that
+/// look nothing alike describe themselves to the lift in the same words.
+fn player_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<panel::LiftPlan> {
+    if !app.invoke_ps_lift_ready() {
+        return None;
+    }
+    let disc = app.invoke_ps_disc_size();
+    let mut plan = headed(
+        app,
+        "player",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_ps_title_x(),
+                app.invoke_ps_title_y(),
+                app.invoke_ps_title_w(),
+                app.invoke_ps_title_h(),
+            ),
+            disc: at(app.invoke_ps_disc_x(), app.invoke_ps_disc_y(), disc, disc),
+            depth: app.invoke_ps_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_ps_plate_r().round() as i32,
+                ..at(
+                    app.invoke_ps_plate_x(),
+                    app.invoke_ps_plate_y(),
+                    app.invoke_ps_plate_w(),
+                    app.invoke_ps_plate_h(),
+                )
+            },
+        },
+    )
+    .piece(panel::Piece {
+        rect: at(
+            0.0,
+            app.invoke_ps_body_y(),
+            width as f32,
+            app.invoke_ps_body_h(),
+        ),
+        window: panel::LIFT_STATE_IN,
+        fade: 1.0,
+        kind: panel::Arriving::Fade,
+    });
+    let rows = app.invoke_ps_rows().min(3);
+    for which in 0..rows {
+        // The last row always lands where a light screen's footer does, so
+        // no screen is finished before the transition is - including one with
+        // a single row, which would otherwise arrive first and leave the rest
+        // of the transition with nothing happening. A sparse page brings the
+        // rest of itself forward instead, with `sooner`.
+        let f = if rows <= 1 {
+            1.0
+        } else {
+            which as f32 / (rows - 1) as f32
+        };
+        plan = plan.piece(panel::Piece {
+            rect: at(
+                0.0,
+                app.invoke_ps_row_y(which),
+                width as f32,
+                app.invoke_ps_row_h(which),
+            ),
+            window: (
+                panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
+                panel::LIFT_CARDS_IN.1 + (panel::LIFT_FOOTER_IN.1 - panel::LIFT_CARDS_IN.1) * f,
+            ),
+            fade: panel::LIFT_CARDS_FADE,
+            kind: panel::Arriving::Rise(panel::LIFT_BARS_DROP),
+        });
+    }
+    let _ = height;
+    // A photograph behind everything has no background to fall to: the panel
+    // crosses to it band by band instead, and the pieces go with it - the
+    // whole page arrives with the bands. What travels and the row's card are
+    // untouched either way.
+    if app.invoke_ps_banded() {
+        return Some(plan.banded());
+    }
+    // A page with almost nothing on it crosses with the room rather than
+    // arriving after it: "Connecting to Sonos…" is a line and a button, and
+    // waiting for the room to go first leaves the panel bare.
+    Some(if app.invoke_ps_sparse() {
+        plan.sooner(panel::LIFT_HASTE)
+    } else {
+        plan
+    })
+}
+
+/// The thermostat, as one plan: a header, what it is set to, the two cards
+/// under it, and the line that explains the keys.
+fn thermostat_plan(
+    app: &App,
+    row: panel::Window,
+    width: i32,
+    height: i32,
+) -> Option<panel::LiftPlan> {
+    if !app.invoke_ths_lift_ready() {
+        return None;
+    }
+    let disc = app.invoke_ths_disc_size();
+    let mut plan = headed(
+        app,
+        "thermostat",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_ths_title_x(),
+                app.invoke_ths_title_y(),
+                app.invoke_ths_title_w(),
+                app.invoke_ths_title_h(),
+            ),
+            disc: at(app.invoke_ths_disc_x(), app.invoke_ths_disc_y(), disc, disc),
+            depth: app.invoke_ths_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_ths_plate_r().round() as i32,
+                ..at(
+                    app.invoke_ths_plate_x(),
+                    app.invoke_ths_plate_y(),
+                    app.invoke_ths_plate_w(),
+                    app.invoke_ths_plate_h(),
+                )
+            },
+        },
+    )
+    .piece(panel::Piece {
+        rect: at(
+            0.0,
+            app.invoke_ths_body_y(),
+            width as f32,
+            app.invoke_ths_body_h(),
+        ),
+        window: panel::LIFT_STATE_IN,
+        fade: 1.0,
+        kind: panel::Arriving::Fade,
+    });
+    let rows = app.invoke_ths_rows().min(3);
+    for which in 0..rows {
+        let f = if rows <= 1 {
+            1.0
+        } else {
+            which as f32 / (rows - 1) as f32
+        };
+        plan = plan.piece(panel::Piece {
+            rect: at(
+                0.0,
+                app.invoke_ths_row_y(which),
+                width as f32,
+                app.invoke_ths_row_h(which),
+            ),
+            window: (
+                panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
+                panel::LIFT_CARDS_IN.1 + (panel::LIFT_FOOTER_IN.1 - panel::LIFT_CARDS_IN.1) * f,
+            ),
+            fade: panel::LIFT_CARDS_FADE,
+            kind: panel::Arriving::Rise(panel::LIFT_BARS_DROP),
+        });
+    }
+    plan = plan.footer(width, height, app.invoke_ths_footer_y().round() as i32);
+    Some(if app.invoke_ths_sparse() {
+        plan.sooner(panel::LIFT_HASTE)
+    } else {
+        plan
+    })
+}
+
+/// The camera, as one plan: a header, the picture, the line under it and the
+/// line that says how to leave.
+///
+/// Once a frame is up the picture is a photograph and the panel crosses to it
+/// band by band; before that the page is a line of text on an empty screen
+/// and it falls like any other, arriving early because there is so little of
+/// it.
+fn camera_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<panel::LiftPlan> {
+    if !app.invoke_cs_lift_ready() {
+        return None;
+    }
+    let disc = app.invoke_cs_disc_size();
+    let mut plan = headed(
+        app,
+        "camera",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_cs_title_x(),
+                app.invoke_cs_title_y(),
+                app.invoke_cs_title_w(),
+                app.invoke_cs_title_h(),
+            ),
+            disc: at(app.invoke_cs_disc_x(), app.invoke_cs_disc_y(), disc, disc),
+            depth: app.invoke_cs_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_cs_plate_r().round() as i32,
+                ..at(
+                    app.invoke_cs_plate_x(),
+                    app.invoke_cs_plate_y(),
+                    app.invoke_cs_plate_w(),
+                    app.invoke_cs_plate_h(),
+                )
+            },
+        },
+    )
+    .piece(panel::Piece {
+        rect: at(
+            0.0,
+            app.invoke_cs_body_y(),
+            width as f32,
+            app.invoke_cs_body_h(),
+        ),
+        window: panel::LIFT_STATE_IN,
+        fade: 1.0,
+        kind: panel::Arriving::Fade,
+    });
+    let rows = app.invoke_cs_rows().min(3);
+    for which in 0..rows {
+        let f = if rows <= 1 {
+            1.0
+        } else {
+            which as f32 / (rows - 1) as f32
+        };
+        plan = plan.piece(panel::Piece {
+            rect: at(
+                0.0,
+                app.invoke_cs_row_y(which),
+                width as f32,
+                app.invoke_cs_row_h(which),
+            ),
+            window: (
+                panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
+                panel::LIFT_CARDS_IN.1 + (panel::LIFT_FOOTER_IN.1 - panel::LIFT_CARDS_IN.1) * f,
+            ),
+            fade: panel::LIFT_CARDS_FADE,
+            kind: panel::Arriving::Rise(panel::LIFT_BARS_DROP),
+        });
+    }
+    plan = plan.footer(width, height, app.invoke_cs_footer_y().round() as i32);
+    if app.invoke_cs_banded() {
+        return Some(plan.banded());
+    }
+    Some(if app.invoke_cs_sparse() {
+        plan.sooner(panel::LIFT_HASTE)
+    } else {
+        plan
+    })
+}
+
+/// A packaged device's own pages of buttons, as one plan: a header, the rows
+/// of buttons one after another, and the line about what it is doing with the
+/// pager under it.
+fn pages_plan(app: &App, row: panel::Window, width: i32, height: i32) -> Option<panel::LiftPlan> {
+    if !app.invoke_aps_lift_ready() {
+        return None;
+    }
+    let disc = app.invoke_aps_disc_size();
+    let mut plan = headed(
+        app,
+        "pages",
+        row,
+        width,
+        Band {
+            title: at(
+                app.invoke_aps_title_x(),
+                app.invoke_aps_title_y(),
+                app.invoke_aps_title_w(),
+                app.invoke_aps_title_h(),
+            ),
+            disc: at(app.invoke_aps_disc_x(), app.invoke_aps_disc_y(), disc, disc),
+            depth: app.invoke_aps_header_h().round() as i32,
+            plate: panel::Window {
+                r: app.invoke_aps_plate_r().round() as i32,
+                ..at(
+                    app.invoke_aps_plate_x(),
+                    app.invoke_aps_plate_y(),
+                    app.invoke_aps_plate_w(),
+                    app.invoke_aps_plate_h(),
+                )
+            },
+        },
+    );
+    let rows = app.invoke_aps_rows().min(4);
+    for which in 0..rows {
+        let f = if rows <= 1 {
+            1.0
+        } else {
+            which as f32 / (rows - 1) as f32
+        };
+        plan = plan.piece(panel::Piece {
+            rect: at(
+                0.0,
+                app.invoke_aps_row_y(which),
+                width as f32,
+                app.invoke_aps_row_h(which),
+            ),
+            window: (
+                panel::LIFT_CARDS_IN.0 + (panel::LIFT_FOOTER_IN.0 - panel::LIFT_CARDS_IN.0) * f,
+                panel::LIFT_CARDS_IN.1 + (panel::LIFT_FOOTER_IN.1 - panel::LIFT_CARDS_IN.1) * f,
+            ),
+            fade: panel::LIFT_CARDS_FADE,
+            kind: panel::Arriving::Rise(panel::LIFT_BARS_DROP),
+        });
+    }
+    plan = plan.footer(width, height, app.invoke_aps_footer_y().round() as i32);
+    Some(if app.invoke_aps_sparse() {
+        plan.sooner(panel::LIFT_HASTE)
+    } else {
+        plan
+    })
+}
+
+/// The focused row's band with the name and the icon painted out of it: what
+/// the row fades away as, once the two of them are flying out of it.
+///
+/// Here rather than beside the transition so that the tests over the real
+/// pages build it exactly the way the panel does.
+pub(crate) fn handed_band(
+    room: &[u32],
+    width: usize,
+    height: usize,
+    plan: panel::LiftPlan,
+) -> panel::Sprite {
+    let mut band = panel::Sprite::cut(
+        room,
+        width,
+        height,
+        panel::Window {
+            x: 0,
+            y: plan.row.y,
+            w: width as i32,
+            h: plan.row.h,
+            r: 0,
+        },
+    );
+    // In the colour the row really is, which is not the same for a lamp that
+    // is off as for one that is on.
+    for traveller in plan.travellers.iter().flatten() {
+        band.paint(traveller.from, plan.surface);
+    }
+    band
+}
+
+/// Everything a lift cuts out of the two pages, built once before its first
+/// frame. Here rather than beside the transition so that the tests over the
+/// real pages build it exactly the way the panel does.
+pub(crate) fn lift_art(
+    room: &[u32],
+    screen: &[u32],
+    width: usize,
+    height: usize,
+    plan: panel::LiftPlan,
+) -> panel::LiftArt {
+    let mut art = panel::LiftArt {
+        handed: handed_band(room, width, height, plan),
+        ..Default::default()
+    };
+    for (i, traveller) in plan.travellers.iter().enumerate() {
+        if let Some(traveller) = traveller {
+            art.travellers[i].recut(room, width, height, traveller.from);
+        }
+    }
+    // Each moving piece, cut whole once: only a card's track changes from
+    // frame to frame, so only its track is put back before the next one.
+    let mut strip = None;
+    for (i, piece) in plan.pieces.iter().enumerate() {
+        let Some(piece) = piece else { continue };
+        match piece.kind {
+            panel::Arriving::Fade => continue,
+            panel::Arriving::Card {
+                track,
+                marker_y,
+                marker_h,
+                ..
+            } => {
+                // The colour marker, and the gradient just above it, so a
+                // card can move it about inside its own buffer.
+                if marker_y >= 0 {
+                    strip = Some(panel::Window {
+                        x: track.x,
+                        y: marker_y,
+                        w: track.w,
+                        h: marker_h,
+                        r: 0,
+                    });
+                }
+            }
+            panel::Arriving::Rise(_) => {}
+        }
+        art.pieces[i].recut(screen, width, height, piece.rect);
+    }
+    if let Some(strip) = strip {
+        art.marker.recut(screen, width, height, strip);
+        art.under_marker.recut(
+            screen,
+            width,
+            height,
+            panel::Window {
+                y: strip.y - strip.h,
+                ..strip
+            },
+        );
+    }
+    art
+}
+
+/// Which device screen a room row has opened, if any: what the transition
+/// that opens and closes it has to watch, and which screen's plan it reads.
+fn device_screen(app: &App) -> Option<Overlay> {
+    if app.get_light_screen_shown() {
+        Some(Overlay::Light)
+    } else if app.get_tv_shown() {
+        Some(Overlay::Tv)
+    } else if app.get_camera_shown() {
+        Some(Overlay::Camera)
+    } else if app.get_thermostat_shown() {
+        Some(Overlay::Thermostat)
+    } else if app.get_player_shown() && app.get_custom_activity_shown() {
+        Some(Overlay::Activity)
+    } else if app.get_player_shown() {
+        Some(Overlay::Player)
+    } else {
+        None
+    }
+}
+
+/// How long the row a press came out of survives while the screen it opens is
+/// still on its way.
+///
+/// A light's screen is up in the same pass that reads the press. A Sonos or a
+/// Kodi row is not: its intent goes to the activity runtime and the player is
+/// shown a poll or two later, and a television's `open:` goes through the
+/// television's own queue. The row is held until the screen appears - and no
+/// longer, so a press that never opens anything cannot leave an arm behind to
+/// fire on some unrelated navigation later.
+const ARM_FOR: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// The row a press armed, until the screen it opens actually appears.
+#[derive(Default)]
+struct Armed(Option<(panel::Window, std::time::Instant)>);
+
+impl Armed {
+    fn arm(&mut self, row: panel::Window) {
+        self.0 = Some((row, std::time::Instant::now()));
+    }
+    fn clear(&mut self) {
+        self.0 = None;
+    }
+    /// The row, if one is still waiting and has not gone stale. Taking it
+    /// answers the press either way.
+    fn take(&mut self) -> Option<panel::Window> {
+        let (row, at) = self.0.take()?;
+        (at.elapsed() < ARM_FOR).then_some(row)
+    }
+}
+
+/// What the frame loop does about a device screen that has just opened or
+/// closed: lift it out of the row it came from, or slide.
+///
+/// Pulled out of the loop so the decision can be tested without one. The bug
+/// it is here to stop is a screen that opens a poll after its press: the row
+/// is known when the press is read and gone by the time the screen appears,
+/// and the loop then slid in and lifted out.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Move {
+    Lift {
+        screen: Overlay,
+        row: panel::Window,
+        shown: panel::Shown,
+    },
+    Slide {
+        screen: Option<Overlay>,
+        entering: bool,
+    },
+}
+
+fn device_move(before: Option<Overlay>, now: Option<Overlay>, row: Option<panel::Window>) -> Move {
+    match (before, now, row) {
+        (None, Some(screen), Some(row)) => Move::Lift {
+            screen,
+            row,
+            shown: panel::Shown::Arriving,
+        },
+        (Some(screen), None, Some(row)) => Move::Lift {
+            screen,
+            row,
+            shown: panel::Shown::Leaving,
+        },
+        // No row to come out of - a screen reached from an activity or from
+        // Home - or one device screen replacing another, which is not a row
+        // opening at all. Both keep the slide they always had.
+        _ => Move::Slide {
+            screen: now.or(before),
+            entering: now.is_some(),
+        },
+    }
+}
+
+/// What to call the shape in the line the loop prints: a lift that crosses
+/// band by band is a different thing to watch and a different thing to cost,
+/// so it says so.
+fn shape_name(opening: panel::Opening, plan: Option<&panel::LiftPlan>) -> String {
+    match plan.map(|plan| plan.crossing) {
+        Some(panel::Crossing::Banded) => "Lift(banded)".into(),
+        _ => format!("{opening:?}"),
+    }
+}
+
+/// What to call a screen in the line the loop prints.
+fn screen_name(which: Option<Overlay>) -> &'static str {
+    match which {
+        Some(Overlay::Tv) => "tv",
+        Some(Overlay::Player) => "player",
+        Some(Overlay::Thermostat) => "thermostat",
+        Some(Overlay::Camera) => "camera",
+        Some(Overlay::Activity) => "pages",
+        Some(Overlay::Light) => "light",
+        _ => "screen",
+    }
+}
+
+/// The plan for whichever device screen is opening or closing, or nothing
+/// because that screen has none and keeps the slide it always had.
+fn screen_plan(
+    app: &App,
+    which: Overlay,
+    row: panel::Window,
+    w: i32,
+    h: i32,
+) -> Option<panel::LiftPlan> {
+    match which {
+        Overlay::Light => Some(light_plan(app, row, w, h)),
+        Overlay::Tv => tv_plan(app, row, w, h),
+        Overlay::Player => player_plan(app, row, w, h),
+        Overlay::Thermostat => thermostat_plan(app, row, w, h),
+        Overlay::Camera => camera_plan(app, row, w, h),
+        Overlay::Activity => pages_plan(app, row, w, h),
+        _ => None,
+    }
+}
+
 fn overlay(app: &App) -> Option<Overlay> {
     Some(if app.get_activity_busy() {
         Overlay::Activity
@@ -120,6 +957,8 @@ fn overlay(app: &App) -> Option<Overlay> {
         Overlay::Camera
     } else if app.get_thermostat_shown() {
         Overlay::Thermostat
+    } else if app.get_light_screen_shown() {
+        Overlay::Light
     } else if app.get_tv_shown() {
         Overlay::Tv
     } else if app.get_player_shown() {
@@ -349,6 +1188,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rejections = config_snapshot::rejected();
     let mut no_config_at: Option<std::time::Instant> = None;
     let mut light_controls = lights::Controller::install(&app);
+    // The row a press came out of, held until the screen it opens appears.
+    let mut armed = Armed::default();
     let mut room_monitor = home::RoomMonitor::new(light_controls.hue_live());
     let mut shortcut_controls = shortcuts::Controller::new(light_controls.hue_live());
     let open_room_row = light_controls.opener();
@@ -461,6 +1302,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     activity: false,
                     kind: 0,
                     power_known: false,
+                    controls: false,
                     icon: slint::Image::default(),
                 })
                 .collect();
@@ -496,6 +1338,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         activity: false,
                         kind: 0,
                         power_known: false,
+                        controls: false,
                         icon: slint::Image::default(),
                     })
                     .collect::<Vec<_>>(),
@@ -535,6 +1378,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         activity: false,
                         kind: 0,
                         power_known: false,
+                        controls: false,
                         icon: slint::Image::default(),
                     })
                     .collect::<Vec<_>>(),
@@ -941,6 +1785,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.get_player_shown(),
             app.get_tv_shown(),
             app.get_thermostat_shown(),
+            app.get_light_screen_shown(),
         )
     };
     let mut last_feedback_page = feedback_page(&app);
@@ -959,10 +1804,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
     let mut back_hold = input::BackHold::default();
+    // The Power key is timed here, like the Back and menu holds.
+    let mut power_key = input::PowerKey::default();
     let exit_device = |app: &App| match overlay(app) {
         Some(Overlay::Activity) => app.invoke_cancel_activity(),
         Some(Overlay::Camera) => app.invoke_close_camera(),
         Some(Overlay::Thermostat) => app.invoke_thermostat_action("close".into(), 0),
+        Some(Overlay::Light) => app.invoke_light_screen_action("close".into(), 0),
         Some(Overlay::Tv) => app.invoke_tv_action("close".into()),
         Some(Overlay::Player) => {
             app.set_player_panel(0);
@@ -993,6 +1841,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         back_hold.context(back_context);
         if back_hold.poll(now_monotonic_us()) {
             exit_device(&app);
+        }
+        // A held Power key ends the running activity from anywhere, at the
+        // threshold a mapped long press uses. With no activity to end the hold
+        // does nothing, and the tap is still delivered when the key comes up.
+        if power_key.hold_due(now_monotonic_us(), app.get_activity_running()) {
+            app.invoke_end_activity();
         }
         let replay = button_controls.next_replay();
         let replayed = replay.is_some();
@@ -1044,6 +1898,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         screen.blank(true);
                         standby = Standby::Off;
                         println!("couch-gui: standby: sleep on side power");
+                    }
+                }
+                continue;
+            }
+            // The Power key's tap, now that the hold has been ruled out.
+            // Neither edge was dispatched on the way down: until the key comes
+            // up a tap and the start of a hold are the same press.
+            if press.released && press.code == keypad::KEY_POWER && !replayed {
+                if let Some(down) = power_key.release() {
+                    // Whatever is on screen gets the key first: a highlighted
+                    // row's Power, or an activity that maps the key itself.
+                    let mapped = button_controls.handle(&app, &down);
+                    button_controls.handle(&app, &press);
+                    let row = !mapped && light_controls.power_press(&app);
+                    match input::power_tap(mapped, row, app.get_activity_running()) {
+                        input::PowerTap::Hint => toast(
+                            hold_to_end(
+                                connections::config().as_deref(),
+                                app.get_active_activity().as_str(),
+                            ),
+                            3,
+                        ),
+                        // The binding and the row have already been given it.
+                        input::PowerTap::Mapped
+                        | input::PowerTap::Row
+                        | input::PowerTap::Nothing => {}
                     }
                 }
                 continue;
@@ -1164,8 +2044,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !replayed && button_controls.handle(&app, &press) {
                 continue;
             }
-            if press.code == 60 && app.get_activity_running() && !press.repeat {
-                app.invoke_end_activity();
+            // See the release edge above: the down edge only starts the clock.
+            // A replayed press is one `activity_buttons` handed back, and has
+            // been through this already.
+            if press.code == keypad::KEY_POWER && !replayed {
+                power_key.press(&press, now_monotonic_us());
                 continue;
             }
             if press.menu == Some(true) && !app.get_pair_shown() {
@@ -1408,8 +2291,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Capture only navigation, then slide framebuffer snapshots so the
         // room animation does not rasterize the entire Slint scene every frame.
         let was_room = app.get_light_shown();
+        let was_screen = device_screen(&app);
         let room_navigation = !app.get_pair_shown() && light_controls.navigation_pending();
-        if room_navigation {
+        // A light's or blind's controls do not arrive from the side: they open
+        // out of the row that was pressed. The row's box is read here, before
+        // the press is performed, because that is when the ring is still on it
+        // - and it is read from the list, so a scrolled list, a taller row or
+        // a different corner radius all move the window with them.
+        let screen_navigation = !app.get_pair_shown() && light_controls.screen_pending();
+        let iris_row = screen_navigation.then(|| room_window(&app));
+        // Reading the press is not the same as the screen appearing. A light's
+        // is up in this pass; a Sonos or a Kodi row hands its intent to the
+        // activity runtime and a television's `open:` goes to the television's
+        // own queue, and those screens are shown a poll or two later. The row
+        // is held until then, or the loop slides them in and lifts them out.
+        if let Some(row) = iris_row {
+            armed.arm(row);
+        }
+        if room_navigation || screen_navigation {
             screen.snapshot();
         }
         light_controls.poll(&app);
@@ -1447,6 +2346,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "couch-gui: room slide {} ({} frames)",
                     if app.get_light_shown() { "in" } else { "out" },
                     cost.frames
+                );
+            }
+            slint::platform::update_timers_and_animations();
+        } else if screen_navigation
+            && was_screen != device_screen(&app)
+            // Home closes the screen and leaves the room in one go. There is
+            // no row left to collapse onto, so that keeps the room's own
+            // behaviour rather than growing a window onto the wrong page.
+            && was_room == app.get_light_shown()
+        {
+            slint::platform::update_timers_and_animations();
+            if let Some(us) = screen.render_offscreen(&window) {
+                frames += 1;
+                render_us += us;
+                frame_max = frame_max.max(us);
+                let opening = device_screen(&app).is_some();
+                let whole = panel::Window::panel(screen.width, screen.height);
+                let chosen = panel::Transition::chosen();
+                // This screen is up already, so the press has been answered.
+                armed.clear();
+                let row = iris_row
+                    .map(|row| chosen.from_row(row, screen.width))
+                    .unwrap_or(whole);
+                let (from, to, shown) = if opening {
+                    (row, whole, panel::Shown::Arriving)
+                } else {
+                    (whole, row, panel::Shown::Leaving)
+                };
+                // Whichever screen this is: the one now showing on an open,
+                // the one that was on a close. A screen with no plan of its
+                // own keeps the window it always had.
+                let plan = device_screen(&app)
+                    .or(was_screen)
+                    .and_then(|which| {
+                        screen_plan(&app, which, row, screen.width as i32, screen.height as i32)
+                    })
+                    .filter(|_| chosen.opening == panel::Opening::Lift);
+                let shape = shape_name(chosen.opening, plan.as_ref());
+                let cost = match plan {
+                    // The lift is not a window: it crosses the two pages and
+                    // carries the row's card up between them.
+                    Some(plan) => screen.lift(plan, shown, chosen.time),
+                    None => screen.iris(from, to, shown, chosen.time),
+                };
+                frames += cost.frames;
+                render_us += cost.work_us;
+                wait_us += cost.wait_us;
+                frame_max = frame_max.max(cost.max_us);
+                // What it cost, on one line, so a shape can be judged from
+                // the remote's log as well as by looking at it.
+                println!(
+                    "couch-gui: {} {} {} ({} frames, {} ms, {} us/frame mean, {} us max, \
+                     {} rows/frame mean, {} max)",
+                    screen_name(device_screen(&app).or(was_screen)),
+                    shape,
+                    if opening { "open" } else { "close" },
+                    cost.frames,
+                    chosen.time.as_millis(),
+                    cost.work_us / cost.frames.max(1),
+                    cost.max_us,
+                    cost.rows / cost.frames.max(1),
+                    cost.max_rows
                 );
             }
             slint::platform::update_timers_and_animations();
@@ -1785,8 +2746,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.get_player_shown(),
             app.get_tv_shown(),
             app.get_thermostat_shown(),
+            app.get_camera_shown(),
         );
-        let activity_navigation = activity_controls.navigation_pending(&app)
+        let activity_navigation = cameras.navigation_pending()
+            || activity_controls.navigation_pending(&app)
             || tv_controls.navigation_pending()
             || thermostat_controls.navigation_pending();
         // A page turn on the controls screen slides like a navigation, but the
@@ -1795,6 +2758,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .page_turn_pending()
             .filter(|_| !activity_navigation && app.get_player_shown())
             .map(|step| (step, app.get_custom_activity_page()));
+        // A device screen that is not the light's closes through its own
+        // queue rather than the room's, so the row it collapses onto and the
+        // plan for the page that is leaving are both read here, before the
+        // press is performed: afterwards the screen has been torn down and
+        // has nothing left to say about itself.
+        let was_device = device_screen(&app);
+        let closing = (app.get_light_shown()
+            && (tv_controls.navigation_pending() || activity_controls.navigation_pending(&app)))
+        .then(|| room_window(&app))
+        .zip(was_device)
+        .and_then(|(row, which)| {
+            Some((
+                row,
+                screen_plan(&app, which, row, screen.width as i32, screen.height as i32)?,
+            ))
+        });
         if activity_navigation || page_turn.is_some() {
             screen.snapshot();
         }
@@ -1848,6 +2827,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.get_player_shown(),
                     app.get_tv_shown(),
                     app.get_thermostat_shown(),
+                    app.get_camera_shown(),
                 )
         {
             dismiss_feedback(&app, &mut scene_controls, &mut light_controls);
@@ -1856,26 +2836,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frames += 1;
                 render_us += us;
                 frame_max = frame_max.max(us);
-                let entering =
-                    app.get_player_shown() || app.get_tv_shown() || app.get_thermostat_shown();
-                let cost = screen.slide(
+                let entering = app.get_player_shown()
+                    || app.get_tv_shown()
+                    || app.get_thermostat_shown()
+                    || app.get_camera_shown();
+                let chosen = panel::Transition::chosen();
+                // The same decision either way round. Going in, the row comes
+                // from the press that was read a pass or two ago - this screen
+                // was not up when it happened, which is why it has to be held
+                // - and coming out, from the room still behind it. A screen
+                // reached from an activity or from Home has no row and keeps
+                // the slide it always had.
+                let what = device_move(
+                    if entering { None } else { was_device },
+                    if entering { device_screen(&app) } else { None },
                     if entering {
-                        Arrive::FromRight
+                        armed.take()
                     } else {
-                        Arrive::FromLeft
+                        closing.map(|(row, _)| row)
                     },
-                    &[],
-                    SLIDE,
                 );
+                let plan = match what {
+                    Move::Lift {
+                        screen: which, row, ..
+                    } if entering => {
+                        screen_plan(&app, which, row, screen.width as i32, screen.height as i32)
+                    }
+                    // Read before the press was performed: afterwards the
+                    // screen has been torn down and has nothing to say about
+                    // itself.
+                    Move::Lift { .. } => closing.map(|(_, plan)| plan),
+                    Move::Slide { .. } => None,
+                }
+                .filter(|_| chosen.opening == panel::Opening::Lift);
+                let cost = match plan {
+                    Some(plan) => screen.lift(
+                        plan,
+                        if entering {
+                            panel::Shown::Arriving
+                        } else {
+                            panel::Shown::Leaving
+                        },
+                        chosen.time,
+                    ),
+                    None => screen.slide(
+                        if entering {
+                            Arrive::FromRight
+                        } else {
+                            Arrive::FromLeft
+                        },
+                        &[],
+                        SLIDE,
+                    ),
+                };
                 frames += cost.frames;
                 render_us += cost.work_us;
                 wait_us += cost.wait_us;
                 frame_max = frame_max.max(cost.max_us);
-                println!(
-                    "couch-gui: activity slide {} ({} frames)",
-                    if entering { "in" } else { "out" },
-                    cost.frames
-                );
+                let name = screen_name(device_screen(&app).or(was_device));
+                let way = if entering { "open" } else { "close" };
+                match plan {
+                    Some(plan) => println!(
+                        "couch-gui: {name} {} {way} ({} frames, {} ms, {} us/frame mean, \
+                         {} us max, {} rows/frame mean, {} max)",
+                        shape_name(chosen.opening, Some(&plan)),
+                        cost.frames,
+                        chosen.time.as_millis(),
+                        cost.work_us / cost.frames.max(1),
+                        cost.max_us,
+                        cost.rows / cost.frames.max(1),
+                        cost.max_rows
+                    ),
+                    // Why it slid, so the log tells a screen that has no plan
+                    // from a press that had no row to come out of.
+                    None => println!(
+                        "couch-gui: {name} slide {way}{} ({} frames)",
+                        match what {
+                            Move::Slide { .. } => " (no row)",
+                            _ => "",
+                        },
+                        cost.frames
+                    ),
+                }
             }
             slint::platform::update_timers_and_animations();
         }
@@ -1984,6 +3026,160 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
+mod opening_tests {
+    use super::*;
+
+    fn row() -> panel::Window {
+        panel::Window {
+            x: 20,
+            y: 199,
+            w: 440,
+            h: 90,
+            r: 14,
+        }
+    }
+
+    /// A press is answered by the screen it opens, whenever that screen turns
+    /// up.
+    ///
+    /// This is the whole of the bug it is here to stop. A light's screen is
+    /// shown in the same pass that reads the press, so the row is still in
+    /// hand. A Sonos or a Kodi row hands its intent to the activity runtime
+    /// and a television's `open:` goes to the television's own queue, and
+    /// those screens appear a poll or two later - by which time the row had
+    /// been dropped, so the loop slid them in and lifted them out.
+    #[test]
+    fn a_row_is_held_until_the_screen_it_opens_turns_up() {
+        let mut armed = Armed::default();
+        armed.arm(row());
+        // Two passes in which nothing appears, as a Kodi row really does.
+        assert_eq!(
+            device_move(None, None, None),
+            Move::Slide {
+                screen: None,
+                entering: false
+            }
+        );
+        // And then it does, and the row is still there for it.
+        assert_eq!(
+            device_move(None, Some(Overlay::Player), armed.take()),
+            Move::Lift {
+                screen: Overlay::Player,
+                row: row(),
+                shown: panel::Shown::Arriving,
+            }
+        );
+        // Taking it answers the press: a second screen appearing later gets
+        // no row and no lift, or one stale press would open everything.
+        assert_eq!(
+            device_move(None, Some(Overlay::Tv), armed.take()),
+            Move::Slide {
+                screen: Some(Overlay::Tv),
+                entering: true
+            }
+        );
+    }
+
+    /// The close is the open backwards, out of the row that is still behind.
+    #[test]
+    fn a_screen_closes_back_into_its_row() {
+        assert_eq!(
+            device_move(Some(Overlay::Player), None, Some(row())),
+            Move::Lift {
+                screen: Overlay::Player,
+                row: row(),
+                shown: panel::Shown::Leaving,
+            }
+        );
+    }
+
+    /// A screen reached from an activity or from Home has no row to come out
+    /// of, and keeps the slide. That is a decision, not an oversight, so the
+    /// line the loop prints says which it was.
+    #[test]
+    fn a_screen_with_no_row_slides() {
+        assert_eq!(
+            device_move(None, Some(Overlay::Player), None),
+            Move::Slide {
+                screen: Some(Overlay::Player),
+                entering: true
+            }
+        );
+        assert_eq!(
+            device_move(Some(Overlay::Tv), None, None),
+            Move::Slide {
+                screen: Some(Overlay::Tv),
+                entering: false
+            }
+        );
+        // One device screen replacing another is not a row opening either.
+        assert_eq!(
+            device_move(Some(Overlay::Tv), Some(Overlay::Player), Some(row())),
+            Move::Slide {
+                screen: Some(Overlay::Player),
+                entering: true
+            }
+        );
+    }
+
+    /// A press that never opens anything cannot leave an arm behind to fire
+    /// on some unrelated navigation later.
+    #[test]
+    fn a_press_that_opens_nothing_goes_stale() {
+        let mut armed = Armed(Some((row(), std::time::Instant::now() - ARM_FOR)));
+        assert_eq!(armed.take(), None);
+        assert_eq!(
+            device_move(None, Some(Overlay::Player), None),
+            Move::Slide {
+                screen: Some(Overlay::Player),
+                entering: true
+            }
+        );
+    }
+
+    /// And what the loop calls each of them in the line it prints.
+    #[test]
+    fn every_device_screen_is_named_in_the_log() {
+        for (which, name) in [
+            (Overlay::Light, "light"),
+            (Overlay::Tv, "tv"),
+            (Overlay::Player, "player"),
+            (Overlay::Thermostat, "thermostat"),
+        ] {
+            assert_eq!(screen_name(Some(which)), name);
+        }
+    }
+}
+
+#[cfg(test)]
+mod power_hint_tests {
+    use super::*;
+    /// The sentence a short Power press raises while an activity runs and
+    /// nothing on screen wants the key: it names the activity, because naming
+    /// it is how the new hold gets taught.
+    #[test]
+    fn the_hint_names_the_activity_the_hold_would_end() {
+        let config: couch_model::Config = serde_json::from_value(serde_json::json!({
+            "schema_version":1,
+            "rooms":[{"id":"den","name":"Den","devices":[]}],
+            "activities":[{"id":"movie","name":"Movie night","room":"den"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            hold_to_end(Some(&config), "movie"),
+            "Hold Power to end Movie night"
+        );
+        // An activity that has gone, and no configuration at all, still say
+        // the thing that matters: the key has to be held.
+        assert_eq!(
+            hold_to_end(Some(&config), "gone"),
+            "Hold Power to end the activity"
+        );
+        assert_eq!(hold_to_end(None, "movie"), "Hold Power to end the activity");
+    }
+}
+
+#[cfg(test)]
 mod overlay_tests {
     use super::*;
 
@@ -2040,6 +3236,10 @@ mod overlay_tests {
             (
                 Box::new(|a: &App, v| a.set_thermostat_shown(v)),
                 Overlay::Thermostat,
+            ),
+            (
+                Box::new(|a: &App, v| a.set_light_screen_shown(v)),
+                Overlay::Light,
             ),
             (Box::new(|a: &App, v| a.set_tv_shown(v)), Overlay::Tv),
             (
@@ -2215,6 +3415,30 @@ mod room_nav_tests {
                 .all(|y| *y >= landed - 0.5 && *y <= scenes_card + 0.5),
             "the ring left the gap between the last row and the scenes card: {trail:?}"
         );
+
+        // The iris opens out of that same outline, so the window it starts
+        // from is the row's own box: the list's inset either side, the row's
+        // height and its corner, at wherever the ring has got to.
+        let window = room_window(&app);
+        assert_eq!((window.x, window.w), (20, 440));
+        assert_eq!(window.y, landed.round() as i32);
+        assert!(
+            (60..160).contains(&window.h),
+            "{} is not a row height",
+            window.h
+        );
+        assert_eq!(window.r, 14);
+        // It travels with the highlight rather than being worked out again:
+        // back at the top row the window is the top row.
+        app.set_light_index(0);
+        // Two ticks: the first runs the change handler, which is where the
+        // move is set, and the second is the one the move is animated from.
+        tick(900);
+        tick(1100);
+        let top = room_window(&app);
+        assert_eq!(top.y, app.invoke_room_ring_position().round() as i32);
+        assert!(top.y < window.y, "the window did not follow the outline");
+        assert_eq!((top.x, top.w, top.h, top.r), (20, 440, window.h, 14));
     }
 }
 

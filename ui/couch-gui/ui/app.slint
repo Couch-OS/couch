@@ -1,5 +1,6 @@
 import { Camera } from "screens/camera.slint";
 import { Thermostat } from "screens/thermostat.slint";
+import { LightScreen } from "screens/light.slint";
 import { ActivityPages, ActivityTile } from "screens/activity_pages.slint";
 export { ActivityTile }
 import { Television, TvChoice } from "screens/tv.slint";
@@ -159,6 +160,11 @@ export component App inherits Window {
     in-out property <string> thermostat-feedback-value;
     in-out property <bool> camera-shown;
     in-out property <string> camera-title;
+    /// Where it is and what drives it, and the room row's own disc.
+    in-out property <string> camera-room;
+    in-out property <image> camera-icon;
+    in-out property <bool> camera-active;
+    in-out property <bool> camera-known;
     in-out property <string> camera-message;
     in-out property <image> camera-image;
     callback open-camera(string,string);
@@ -166,6 +172,11 @@ export component App inherits Window {
     public function focus-camera(){camera-page.take-focus();}
     in-out property <bool> thermostat-shown;
     in-out property <string> thermostat-title;
+    /// Where it is and what drives it, and the room row's own disc.
+    in-out property <string> thermostat-room;
+    in-out property <image> thermostat-icon;
+    in-out property <bool> thermostat-active;
+    in-out property <bool> thermostat-known;
     // Runtime HA text includes degree/range symbols and unknown placeholders, while
     // entity names may contain Cyrillic. Software font embedding scans Slint
     // literals, so retain all dynamic text glyph coverage here.
@@ -208,9 +219,17 @@ export component App inherits Window {
     in-out property <bool> tv-media-has-duration: false;
     in-out property <bool> tv-media-live: false;
     in-out property <string> tv-title;
+    /// "Living room · LG webOS", and the room row's own icon: the second line
+    /// and the disc every screen a row opens carries.
+    in-out property <string> tv-room;
+    in-out property <image> tv-icon;
+    in-out property <bool> tv-active;
+    in-out property <bool> tv-known;
     in-out property <string> tv-status;
     in-out property <string> tv-error;
     in-out property <string> tv-source;
+    // The selected input, when tv-source says what is playing instead.
+    in-out property <string> tv-input;
     in-out property <string> tv-sound;
     in-out property <string> tv-picture;
     in-out property <int> tv-panel;
@@ -228,6 +247,11 @@ export component App inherits Window {
     in-out property <image> player-fanart;
     in-out property <image> player-logo;
     in-out property <string> player-activity;
+    /// The room row's own icon and reading, and whether its bars may travel.
+    in-out property <image> player-icon;
+    in-out property <bool> player-active;
+    in-out property <bool> player-known;
+    in-out property <bool> player-glide;
     in-out property <string> player-room;
     in-out property <string> player-title;
     in-out property <string> player-metadata;
@@ -277,13 +301,196 @@ export component App inherits Window {
     in-out property <int> light-scene-count;
     in-out property <string> light-scene-label;
     in-out property <string> light-room-id;
+
+    // --- the light / blind control screen -------------------------------------
+    // Opened with OK on a room row that has more than on and off behind it.
+    // Every value is worked out in lights.rs; see screens/light.slint.
+    in-out property <bool> light-screen-shown: false;
+    in-out property <string> light-screen-title;
+    in-out property <string> light-screen-room;
+    in-out property <string> light-screen-state;
+    in-out property <bool> light-screen-active;
+    in-out property <image> light-screen-icon;
+    in-out property <bool> light-screen-known;
+    in-out property <string> light-screen-level-label: "BRIGHTNESS";
+    in-out property <string> light-screen-level;
+    in-out property <int> light-screen-level-percent;
+    in-out property <bool> light-screen-level-known;
+    in-out property <bool> light-screen-adjustable;
+    in-out property <bool> light-screen-cover;
+    in-out property <bool> light-screen-can-stop;
+    in-out property <bool> light-screen-tunable;
+    in-out property <string> light-screen-kelvin;
+    in-out property <int> light-screen-mirek-percent;
+    in-out property <bool> light-screen-mirek-known;
+    in-out property <int> light-screen-button;
+    in-out property <string> light-screen-detail;
+    in-out property <string> light-screen-hint;
+    in-out property <bool> light-screen-pending;
+    in-out property <bool> light-screen-glide;
+    callback light-screen-action(string, int);
+    public function focus-light-screen() { light-screen-page.take-focus(); }
     changed chooser-shown => { if (root.chooser-shown) { fs.focus(); } else if (root.light-shown) { light-page.take-focus(); } }
     public function focus-light() { light-page.take-focus(); }
     /// The room page's scroll destination and the current place of its focus
     /// outline, for the room navigation test. Functions rather than out
     /// properties, for the reason given where they come from.
     public function room-scroll-destination() -> length { return light-page.scroll-destination(); }
-    public function room-ring-position() -> length { return light-page.ring-position(); }
+    /// The list is below the status bar, and everything it reports is in its
+    /// own coordinates: a transition draws on the panel, so the page's own
+    /// offset has to be added here or a window opens a status bar's height
+    /// above the row it came from.
+    public function room-ring-position() -> length { return light-page.y + light-page.ring-position(); }
+    public function room-ring-height() -> length { return light-page.ring-height(); }
+    public function room-ring-radius() -> length { return light-page.ring-radius(); }
+    public function room-ring-x() -> length { return light-page.ring-box-x(); }
+    public function room-ring-width() -> length { return light-page.ring-box-width(); }
+    public function room-row-pitch() -> length { return light-page.row-pitch(); }
+    /// What the focused row is really drawn in, so the lift keys its name and
+    /// its icon on that and raises a card of the same colour.
+    public function room-surface() -> color { return light-page.focused-surface(); }
+    public function room-border() -> color { return light-page.focused-border(); }
+    public function room-disc-inset() -> length { return light-page.disc-inset(); }
+    public function room-disc-y() -> length { return light-page.disc-box-y(); }
+    public function room-label-x() -> length { return light-page.label-box-x(); }
+    public function room-label-y() -> length { return light-page.label-box-y(); }
+    public function room-label-w() -> length { return light-page.label-box-w(); }
+    public function room-label-h() -> length { return light-page.label-box-h(); }
+    /// The control screen's own geometry, for the lift (panel.rs).
+    public function ls-title-x() -> length { return light-screen-page.title-box-x(); }
+    public function ls-title-y() -> length { return light-screen-page.title-box-y(); }
+    public function ls-title-w() -> length { return light-screen-page.title-box-w(); }
+    public function ls-title-h() -> length { return light-screen-page.title-box-h(); }
+    public function ls-disc-x() -> length { return light-screen-page.disc-box-x(); }
+    public function ls-disc-y() -> length { return light-screen-page.disc-box-y(); }
+    public function ls-disc-size() -> length { return light-screen-page.disc-box-size(); }
+    public function ls-header-h() -> length { return light-screen-page.header-h(); }
+    public function ls-cards-y() -> length { return light-screen-page.cards-y(); }
+    public function ls-cards-h() -> length { return light-screen-page.cards-h(); }
+    public function ls-card-x(which: int) -> length { return light-screen-page.card-x(which); }
+    public function ls-card-w() -> length { return light-screen-page.card-w(); }
+    public function ls-track-x(which: int) -> length { return light-screen-page.track-box-x(which); }
+    public function ls-track-y() -> length { return light-screen-page.track-box-y(); }
+    public function ls-track-w() -> length { return light-screen-page.track-box-w(); }
+    public function ls-track-h() -> length { return light-screen-page.track-box-h(); }
+    public function ls-fill-h() -> length { return light-screen-page.fill-h(); }
+    public function ls-marker-y() -> length { return light-screen-page.marker-y(); }
+    public function ls-marker-h() -> length { return light-screen-page.marker-h(); }
+    public function ls-footer-y() -> length { return light-screen-page.footer-y(); }
+    public function ls-plate-x() -> length { return light-screen-page.plate-x(); }
+    public function ls-plate-y() -> length { return light-screen-page.plate-y(); }
+    public function ls-plate-w() -> length { return light-screen-page.plate-w(); }
+    public function ls-plate-h() -> length { return light-screen-page.plate-h(); }
+    public function ls-plate-r() -> length { return light-screen-page.plate-r(); }
+    // The television's own, the same set: the lift reads whichever screen is
+    // opening, and every screen answers the same questions.
+    public function tvs-title-x() -> length { return television.title-box-x(); }
+    public function tvs-title-y() -> length { return television.title-box-y(); }
+    public function tvs-title-w() -> length { return television.title-box-w(); }
+    public function tvs-title-h() -> length { return television.title-box-h(); }
+    public function tvs-disc-x() -> length { return television.disc-box-x(); }
+    public function tvs-disc-y() -> length { return television.disc-box-y(); }
+    public function tvs-disc-size() -> length { return television.disc-box-size(); }
+    public function tvs-header-h() -> length { return television.header-h(); }
+    public function tvs-plate-x() -> length { return television.plate-x(); }
+    public function tvs-plate-y() -> length { return television.plate-y(); }
+    public function tvs-plate-w() -> length { return television.plate-w(); }
+    public function tvs-plate-h() -> length { return television.plate-h(); }
+    public function tvs-plate-r() -> length { return television.plate-r(); }
+    public function tvs-body-y() -> length { return television.body-y(); }
+    public function tvs-body-h() -> length { return television.body-h(); }
+    public function tvs-rows() -> int { return television.rows(); }
+    public function tvs-row-y(which: int) -> length { return television.row-y(which); }
+    public function tvs-row-h(which: int) -> length { return television.row-h(which); }
+    public function tvs-lift-ready() -> bool { return television.lift-ready(); }
+    public function tvs-banded() -> bool { return television.banded(); }
+    // The player's own, the same set again.
+    public function ps-title-x() -> length { return cinema.title-box-x(); }
+    public function ps-title-y() -> length { return cinema.title-box-y(); }
+    public function ps-title-w() -> length { return cinema.title-box-w(); }
+    public function ps-title-h() -> length { return cinema.title-box-h(); }
+    public function ps-disc-x() -> length { return cinema.disc-box-x(); }
+    public function ps-disc-y() -> length { return cinema.disc-box-y(); }
+    public function ps-disc-size() -> length { return cinema.disc-box-size(); }
+    public function ps-header-h() -> length { return cinema.header-h(); }
+    public function ps-plate-x() -> length { return cinema.plate-x(); }
+    public function ps-plate-y() -> length { return cinema.plate-y(); }
+    public function ps-plate-w() -> length { return cinema.plate-w(); }
+    public function ps-plate-h() -> length { return cinema.plate-h(); }
+    public function ps-plate-r() -> length { return cinema.plate-r(); }
+    public function ps-body-y() -> length { return cinema.body-y(); }
+    public function ps-body-h() -> length { return cinema.body-h(); }
+    public function ps-rows() -> int { return cinema.rows(); }
+    public function ps-row-y(which: int) -> length { return cinema.row-y(which); }
+    public function ps-row-h(which: int) -> length { return cinema.row-h(which); }
+    public function ps-lift-ready() -> bool { return cinema.lift-ready(); }
+    public function ps-sparse() -> bool { return cinema.sparse(); }
+    public function ps-banded() -> bool { return cinema.banded(); }
+    // The thermostat's own, the same set again.
+    public function ths-title-x() -> length { return thermostat-page.title-box-x(); }
+    public function ths-title-y() -> length { return thermostat-page.title-box-y(); }
+    public function ths-title-w() -> length { return thermostat-page.title-box-w(); }
+    public function ths-title-h() -> length { return thermostat-page.title-box-h(); }
+    public function ths-disc-x() -> length { return thermostat-page.disc-box-x(); }
+    public function ths-disc-y() -> length { return thermostat-page.disc-box-y(); }
+    public function ths-disc-size() -> length { return thermostat-page.disc-box-size(); }
+    public function ths-header-h() -> length { return thermostat-page.header-h(); }
+    public function ths-plate-x() -> length { return thermostat-page.plate-x(); }
+    public function ths-plate-y() -> length { return thermostat-page.plate-y(); }
+    public function ths-plate-w() -> length { return thermostat-page.plate-w(); }
+    public function ths-plate-h() -> length { return thermostat-page.plate-h(); }
+    public function ths-plate-r() -> length { return thermostat-page.plate-r(); }
+    public function ths-body-y() -> length { return thermostat-page.body-y(); }
+    public function ths-body-h() -> length { return thermostat-page.body-h(); }
+    public function ths-rows() -> int { return thermostat-page.rows(); }
+    public function ths-row-y(which: int) -> length { return thermostat-page.row-y(which); }
+    public function ths-row-h(which: int) -> length { return thermostat-page.row-h(which); }
+    public function ths-footer-y() -> length { return thermostat-page.footer-y(); }
+    public function ths-lift-ready() -> bool { return thermostat-page.lift-ready(); }
+    public function ths-sparse() -> bool { return thermostat-page.sparse(); }
+    // The camera's own, the same set again.
+    public function cs-title-x() -> length { return camera-page.title-box-x(); }
+    public function cs-title-y() -> length { return camera-page.title-box-y(); }
+    public function cs-title-w() -> length { return camera-page.title-box-w(); }
+    public function cs-title-h() -> length { return camera-page.title-box-h(); }
+    public function cs-disc-x() -> length { return camera-page.disc-box-x(); }
+    public function cs-disc-y() -> length { return camera-page.disc-box-y(); }
+    public function cs-disc-size() -> length { return camera-page.disc-box-size(); }
+    public function cs-header-h() -> length { return camera-page.header-h(); }
+    public function cs-plate-x() -> length { return camera-page.plate-x(); }
+    public function cs-plate-y() -> length { return camera-page.plate-y(); }
+    public function cs-plate-w() -> length { return camera-page.plate-w(); }
+    public function cs-plate-h() -> length { return camera-page.plate-h(); }
+    public function cs-plate-r() -> length { return camera-page.plate-r(); }
+    public function cs-body-y() -> length { return camera-page.body-y(); }
+    public function cs-body-h() -> length { return camera-page.body-h(); }
+    public function cs-rows() -> int { return camera-page.rows(); }
+    public function cs-row-y(which: int) -> length { return camera-page.row-y(which); }
+    public function cs-row-h(which: int) -> length { return camera-page.row-h(which); }
+    public function cs-footer-y() -> length { return camera-page.footer-y(); }
+    public function cs-lift-ready() -> bool { return camera-page.lift-ready(); }
+    public function cs-banded() -> bool { return camera-page.banded(); }
+    public function cs-sparse() -> bool { return camera-page.sparse(); }
+    // The activity pages' own, the same set again.
+    public function aps-title-x() -> length { return custom-pages.title-box-x(); }
+    public function aps-title-y() -> length { return custom-pages.title-box-y(); }
+    public function aps-title-w() -> length { return custom-pages.title-box-w(); }
+    public function aps-title-h() -> length { return custom-pages.title-box-h(); }
+    public function aps-disc-x() -> length { return custom-pages.disc-box-x(); }
+    public function aps-disc-y() -> length { return custom-pages.disc-box-y(); }
+    public function aps-disc-size() -> length { return custom-pages.disc-box-size(); }
+    public function aps-header-h() -> length { return custom-pages.header-h(); }
+    public function aps-plate-x() -> length { return custom-pages.plate-x(); }
+    public function aps-plate-y() -> length { return custom-pages.plate-y(); }
+    public function aps-plate-w() -> length { return custom-pages.plate-w(); }
+    public function aps-plate-h() -> length { return custom-pages.plate-h(); }
+    public function aps-plate-r() -> length { return custom-pages.plate-r(); }
+    public function aps-rows() -> int { return custom-pages.rows(); }
+    public function aps-row-y(which: int) -> length { return custom-pages.row-y(which); }
+    public function aps-row-h(which: int) -> length { return custom-pages.row-h(which); }
+    public function aps-footer-y() -> length { return custom-pages.footer-y(); }
+    public function aps-lift-ready() -> bool { return custom-pages.lift-ready(); }
+    public function aps-sparse() -> bool { return custom-pages.sparse(); }
     public function focus-home() { fs.focus(); }
 
     // --- keyboard -------------------------------------------------------------
@@ -566,11 +773,30 @@ export component App inherits Window {
         back => {root.light-back();}
     }
 
+    light-screen-page := LightScreen {
+        width:parent.width; height:parent.height;
+        visible:root.light-screen-shown; shown:root.light-screen-shown;
+        title:root.light-screen-title; room:root.light-screen-room; state:root.light-screen-state;
+        active:root.light-screen-active;
+        icon:root.light-screen-icon; known:root.light-screen-known;
+        level-label:root.light-screen-level-label; level:root.light-screen-level;
+        level-percent:root.light-screen-level-percent; level-known:root.light-screen-level-known;
+        adjustable:root.light-screen-adjustable;
+        cover:root.light-screen-cover; can-stop:root.light-screen-can-stop;
+        tunable:root.light-screen-tunable; kelvin:root.light-screen-kelvin;
+        mirek-percent:root.light-screen-mirek-percent; mirek-known:root.light-screen-mirek-known;
+        button:root.light-screen-button;
+        detail:root.light-screen-detail; hint:root.light-screen-hint;
+        pending:root.light-screen-pending;
+        glide:root.light-screen-glide;
+        action(name,index) => { root.light-screen-action(name,index); }
+    }
+
     television := Television {
         visible:root.tv-shown;shown:root.tv-shown;android-tv:root.tv-android;apple-tv:root.tv-apple;tizen:root.tv-tizen;infrared:root.tv-ir;sonos:root.tv-sonos;generic:root.tv-generic;kind-label:root.tv-kind-label;can-power:root.tv-can-power;can-input:root.tv-can-input;can-command:root.tv-can-command;tray-selected<=>root.tv-tray-selected;
         width:parent.width;height:parent.height;
-        title:root.tv-title;status:root.tv-status;error:root.tv-error;
-        source-name:root.tv-source;sound:root.tv-sound;picture:root.tv-picture;panel:root.tv-panel;choices:root.tv-choices;
+        title:root.tv-title;room:root.tv-room;icon:root.tv-icon;active:root.tv-active;known:root.tv-known;status:root.tv-status;error:root.tv-error;
+        source-name:root.tv-source;input-name:root.tv-input;sound:root.tv-sound;picture:root.tv-picture;panel:root.tv-panel;choices:root.tv-choices;
         media-active:root.tv-media-active;media-title:root.tv-media-title;media-subtitle:root.tv-media-subtitle;media-state:root.tv-media-state;media-app:root.tv-media-app;
         media-art:root.tv-media-art;media-has-art:root.tv-media-has-art;
         media-position:root.tv-media-position;media-duration:root.tv-media-duration;media-progress:root.tv-media-progress;
@@ -589,6 +815,7 @@ export component App inherits Window {
         progress:root.player-progress;message:root.player-message;
         panel:root.player-panel;panel-detail:root.player-panel-detail;choices:root.player-choices;
         music:root.player-music;sheets:root.player-sheets;selected <=> root.player-selected;
+        icon:root.player-icon;active:root.player-active;known:root.player-known;glide:root.player-glide;
         action(name,value)=>{root.player-action(name,value);}
     }
 
@@ -597,6 +824,7 @@ export component App inherits Window {
         shown:root.player-shown && root.custom-activity-shown;
         width:parent.width; height:parent.height;
         title:root.custom-activity-title; activity:root.player-activity;
+        icon:root.player-icon; active:root.player-active; known:root.player-known;
         tiles:root.custom-activity-tiles; page:root.custom-activity-page; page-count:root.custom-activity-count;
         has-source:root.custom-activity-source; busy:root.custom-activity-busy; status:root.custom-activity-status;
         action(name,index)=>{root.custom-activity-action(name,index);}
@@ -605,12 +833,14 @@ export component App inherits Window {
         width:parent.width; height:parent.height;
         visible:root.thermostat-shown; shown:root.thermostat-shown;
         title:root.thermostat-title; current:root.thermostat-current; target:root.thermostat-target;
+        room:root.thermostat-room; icon:root.thermostat-icon;
+        active:root.thermostat-active; known:root.thermostat-known;
         status:root.thermostat-status; detail:root.thermostat-detail; mode:root.thermostat-mode;
         modes:root.thermostat-modes; modes-shown:root.thermostat-modes-shown;
         range:root.thermostat-range; adjustable:root.thermostat-adjustable; pending:root.thermostat-pending;
         action(name,index) => { root.thermostat-action(name,index); }
     }
-    camera-page := Camera { x:0px;y:0px;width:parent.width;height:parent.height;visible:root.camera-shown;shown:root.camera-shown;title:root.camera-title;message:root.camera-message;frame:root.camera-image;close=>{root.close-camera();} }
+    camera-page := Camera { x:0px;y:0px;width:parent.width;height:parent.height;visible:root.camera-shown;shown:root.camera-shown;title:root.camera-title;room:root.camera-room;icon:root.camera-icon;active:root.camera-active;known:root.camera-known;message:root.camera-message;frame:root.camera-image;close=>{root.close-camera();} }
     if root.custom-activity-available && root.active-activity!="" && !root.custom-activity-shown && (root.player-shown || root.tv-shown): Rectangle {
         x:parent.width - 112px; y:80px; width:88px; height:44px; border-radius:22px; background:Theme.surface;
         Text { text:"Pages"; color:Theme.text; font-size:18px; horizontal-alignment:center; vertical-alignment:center; }
@@ -618,18 +848,18 @@ export component App inherits Window {
     }
     if root.activity-running && (root.player-shown || root.tv-shown) && !root.activity-busy: Rectangle {
         x: parent.width - 112px; y: 22px; width: 88px; height: 44px;
-        background: #171717; border-radius: 22px;
-        Text { text: "End"; color: #ffffff; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+        background: Theme.surface; border-radius: 22px;
+        Text { text: "End"; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
         TouchArea { clicked => { root.end-activity(); } }
     }
     if root.activity-busy: Rectangle {
-        width: parent.width; height: parent.height; background: #101010;
+        width: parent.width; height: parent.height; background: Theme.bg;
         VerticalLayout {
             padding: 36px; alignment: center; spacing: 20px;
-            Text { text: root.activity-progress; color: #ffffff; font-size: 26px; wrap: word-wrap; horizontal-alignment: center; }
-            Text { text: root.activity-step; color: #bbbbbb; font-size: 20px; horizontal-alignment: center; }
-            Rectangle { height: 52px; border-radius: 26px; background: #292929;
-                Text { text: "Cancel"; color: #ffffff; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+            Text { text: root.activity-progress; color: Theme.text; font-size: 26px; wrap: word-wrap; horizontal-alignment: center; }
+            Text { text: root.activity-step; color: Theme.text-secondary; font-size: 20px; horizontal-alignment: center; }
+            Rectangle { height: 52px; border-radius: 26px; background: Theme.surface-raised;
+                Text { text: "Cancel"; color: Theme.text; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
                 TouchArea { clicked => { root.cancel-activity(); } }
             }
         }
@@ -817,7 +1047,7 @@ export component App inherits Window {
         caption: root.brightness-label;
         value: root.light-brightness-percent;
         percentage: true;
-        shown: root.brightness-shown && root.light-shown && !root.chooser-shown;
+        shown: root.brightness-shown && root.light-shown && !root.chooser-shown && !root.light-screen-shown;
     }
     VolumeOverlay {
         visible: root.feedback-enabled;

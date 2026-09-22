@@ -63,7 +63,10 @@ fn page(app: App, id: Id) -> AnyView {
 
         {room_assignment(app, scene)}
         {move || scene.get().and_then(|s|s.hue).map(|_|view!{<section class="card"><h2>"Hue scene"</h2><p>"This recalls the scene saved on your bridge. Edit its lighting in the Hue app."</p></section>})}
-        <div hidden=move || scene.get().is_some_and(|s| s.hue.is_some())>
+        // Protocol 3 (unreleased): a scene a packaged integration keeps. Like
+        // a Hue scene it is recalled, not built here, so it has no steps.
+        {move || scene.get().and_then(|s|s.resource).map(|_|view!{<section class="card"><h2>"Integration scene"</h2><p>"This recalls a scene saved on the integration itself. Edit what it does in that integration's own app."</p></section>})}
+        <div hidden=move || scene.get().is_some_and(|s| s.hue.is_some() || s.resource.is_some())>
         {ui::section(
             "Device commands",
             Some("Add commands in the order they should run. For example, turn on the TV, then select its input. Command names depend on the integration; saving does not test or send them."),

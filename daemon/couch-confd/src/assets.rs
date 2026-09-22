@@ -9,6 +9,26 @@ use std::path::{Path, PathBuf};
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
+/// Says, in the bytes of the binary itself, that this daemon was built with
+/// protocol 3 switched on (docs/development/protocol.md, "The switch").
+///
+/// A Cargo feature leaves nothing behind that release tooling can see: the
+/// source tree, the version and the file names are the same either way. So the
+/// build scripts, the payload inventory and the update publisher all search
+/// `couch-confd` for this line, and the publisher refuses to sign a binary that
+/// carries it under anything but a `.p3.dev` version. The value is computed
+/// from the switch itself and not from a second `cfg`, so the two cannot drift
+/// apart: a daemon that admits protocol 3 carries the line, and no other does.
+/// `#[used]` keeps it through LTO and the linker's garbage collection although
+/// nothing reads it; tools/build-webui.sh checks that on every build.
+#[used]
+static PREVIEW_BUILD: &[u8] =
+    if couch_plugin::accepted_protocol_version() > couch_plugin::PROTOCOL_VERSION {
+        b"COUCH-PREVIEW-BUILD protocol-3\n"
+    } else {
+        b""
+    };
+
 /// Shown when the binary was built with no `dist` directory to embed.
 ///
 /// A blank page here would be indistinguishable from a routing bug, and this
@@ -174,6 +194,50 @@ fn content_type(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The release tooling trusts one thing about this line: it is in the
+    /// binary exactly when the daemon admits protocol 3. This test binary is
+    /// built from the same module with the same features, so it is its own
+    /// evidence, whichever way it was built. The line is spelt backwards here,
+    /// and turned round behind `black_box`, so that neither the test nor an
+    /// optimiser puts it in the binary. The search is `str::contains` over a
+    /// megabyte at a time because that is compiled into std and takes
+    /// milliseconds; a byte loop of this crate's own takes seconds over a
+    /// debug binary.
+    #[test]
+    fn the_preview_line_is_in_the_binary_exactly_when_protocol_3_is_on() {
+        use std::io::Read;
+        let on = couch_plugin::accepted_protocol_version() > couch_plugin::PROTOCOL_VERSION;
+        let line: String = std::hint::black_box(b"3-locotorp DLIUB-WEIVERP-HCUOC")
+            .iter()
+            .rev()
+            .map(|byte| char::from(*byte))
+            .collect();
+        if on {
+            assert_eq!(PREVIEW_BUILD, format!("{line}\n").as_bytes());
+        } else {
+            assert!(PREVIEW_BUILD.is_empty());
+        }
+        let mut binary = fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        let mut window = Vec::new();
+        let mut found = false;
+        loop {
+            // Keep the tail of the last read, so a line across two reads is seen.
+            let keep = window.len().saturating_sub(line.len() - 1);
+            window.drain(..keep);
+            let read = binary
+                .by_ref()
+                .take(1 << 20)
+                .read_to_end(&mut window)
+                .unwrap();
+            if read == 0 {
+                break;
+            }
+            // Lossy conversion replaces what is not UTF-8 and leaves ASCII alone.
+            found |= String::from_utf8_lossy(&window).contains(&line);
+        }
+        assert_eq!(found, on);
+    }
 
     #[test]
     fn traversal_is_refused() {

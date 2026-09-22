@@ -1,5 +1,5 @@
 import { BottomTray } from "../components/bottom_tray.slint";
-import { MediaBack } from "../widgets/media-back.slint";
+import { ScreenHeader } from "../components/screen_header.slint";
 import { Theme } from "../theme.slint";
 export struct TvChoice { action:string, title:string, detail:string }
 component Tile inherits Rectangle {
@@ -59,9 +59,20 @@ export component Television inherits Rectangle {
     changed shown => { root.selected-tile = 0; }
     property <bool> streaming-tv: root.android-tv || root.apple-tv || root.tizen || root.infrared || root.sonos || root.generic;
     in property <string> title;
+    /// "Living room · LG webOS": where it is and what drives it, the same
+    /// second line every screen a row opens carries.
+    in property <string> room;
+    /// The row's own icon and the row's own reading of the device, so the
+    /// disc the lift flies here lands on itself rather than on another
+    /// drawing of the same thing.
+    in property <image> icon;
+    in property <bool> active;
+    in property <bool> known;
     in property <string> status;
     in property <string> error;
     in property <string> source-name;
+    // Set when source-name carries what is playing: the Input tile still names the input.
+    in property <string> input-name;
     in property <string> sound;
     in property <string> picture;
     in property <int> panel;
@@ -78,11 +89,18 @@ export component Television inherits Rectangle {
         background:@linear-gradient(180deg, #00000090 0%, #00000020 20%, #000000c0 48%, #000000 78%);
     }
     if root.media-view && !root.media-has-art: Image {x:32px;y:166px;width:64px;height:64px;source:@image-url("../../../../assets/lucide/tv.svg");colorize:Theme.text-tertiary;}
-    MediaBack {x:24px;y:22px;activate=>{root.action("close");}}
-    Text {x:88px;y:27px;width:parent.width - 112px;height:27px;text:root.title;font-size:20px;color:Theme.text;font-weight:600;overflow:elide;}
-    Text {x:88px;y:58px;width:parent.width - 112px;height:25px;text:root.status;font-size:16px;color:Theme.text-secondary;overflow:elide;}
+    // The same band every screen a room row opens draws: the way back, the
+    // name at `Theme.device-name`, where it is and what drives it, the row's
+    // own disc, and what the device is doing. The disc is what the lift flies
+    // the row's icon onto, so it has to be this one.
+    head := ScreenHeader {
+        x:0px;y:0px;width:parent.width;
+        title:root.title;subtitle:root.room;
+        icon:root.icon;active:root.active;known:root.known;
+        state:root.status;
+        back=>{root.action("close");}
+    }
     if !root.media-view: Rectangle {x:0px;y:0px;width:parent.width;height:420px;background:transparent;
-    Image {x:32px;y:146px;width:52px;height:52px;source:(root.sonos || root.generic) ? @image-url("../../../../assets/lucide/speaker.svg") : @image-url("../../../../assets/lucide/tv.svg");colorize:Theme.accent;}
     Text {x:32px;y:220px;width:parent.width - 64px;height:25px;text:root.generic ? root.kind-label : root.sonos ? "SONOS" : root.infrared ? "INFRARED" : root.apple-tv ? "APPLE TV" : root.tizen ? "SAMSUNG TV" : root.android-tv ? "ANDROID TV" : "NOW ON YOUR TV";font-size:16px;letter-spacing:2px;color:Theme.accent;}
     Text {x:32px;y:256px;width:parent.width - 64px;height:108px;text:root.source-name;font-size:40px;font-weight:700;wrap:word-wrap;overflow:elide;color:Theme.text;}
     Text {x:32px;y:370px;width:parent.width - 64px;height:32px;text:root.generic ? root.picture : root.sonos ? "Playback controls the selected group" : root.infrared ? "Point the remote at your device" : root.apple-tv ? "Power sleeps Apple TV · Wake resumes it" : root.tizen ? "Power toggles the TV · Wake sends Wake-on-LAN" : "Playback controls depend on the active app";font-size:16px;color:Theme.text-secondary;}
@@ -132,7 +150,7 @@ export component Television inherits Rectangle {
     if (root.apple-tv || root.tizen) && !root.media-view: Tile {x:246px;y:514px;width:210px;height:120px;title:"Apps";detail:"Installed apps";icon:@image-url("../../../../assets/lucide/layout-grid.svg");activate=>{root.action("apps");}}
     if root.infrared: Tile {x:24px;y:424px;width:432px;height:120px;title:"Commands";detail:"Assigned to this device";icon:@image-url("../../../../assets/lucide/list.svg");activate=>{root.action("commands");}}
     if root.generic && root.can-power: Tile {x:24px;y:514px;width:210px;height:120px;title:"Power";detail:root.sound;selected:root.selected-tile==0 && root.panel==0;icon:@image-url("../../../../assets/lucide/power.svg");activate=>{root.selected-tile=0;root.action("power");}}
-    if root.generic && root.can-input: Tile {x:24px + mod(root.input-slot,2)*222px;y:514px + floor(root.input-slot/2)*132px;width:210px;height:120px;title:"Input";detail:root.source-name;selected:root.selected-tile==root.input-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/hdmi-port.svg");activate=>{root.selected-tile=root.input-slot;root.action("inputs");}}
+    if root.generic && root.can-input: Tile {x:24px + mod(root.input-slot,2)*222px;y:514px + floor(root.input-slot/2)*132px;width:210px;height:120px;title:"Input";detail:root.input-name != "" ? root.input-name : root.source-name;selected:root.selected-tile==root.input-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/hdmi-port.svg");activate=>{root.selected-tile=root.input-slot;root.action("inputs");}}
     if root.generic && root.can-command: Tile {x:24px + mod(root.command-slot,2)*222px;y:514px + floor(root.command-slot/2)*132px;width:210px;height:120px;title:"Commands";detail:"More controls";selected:root.selected-tile==root.command-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/list.svg");activate=>{root.selected-tile=root.command-slot;root.action("commands");}}
     tray := BottomTray {
         width: parent.width; height: parent.height;
@@ -142,7 +160,7 @@ export component Television inherits Rectangle {
         // Explicit bounds keep projected children relative to the inset surface.
         Rectangle { x: Theme.overlay-inset; y: tray.content-y; width: tray.content-width; height: tray.content-height;
             TouchArea { }
-            Text {x:26px;y:24px;width:parent.width - 110px;height:36px;text:root.displayed-panel==1 ? "Choose an input" : root.displayed-panel==2 ? (root.generic ? "Commands" : root.infrared ? "Assigned commands" : root.android-tv ? "App shortcuts" : "TV apps") : root.displayed-panel==3 ? "Picture" : "Sound output";font-size:27px;color:#ffffff;font-weight:600;}
+            Text {x:26px;y:24px;width:parent.width - 110px;height:36px;text:root.displayed-panel==1 ? "Choose an input" : root.displayed-panel==2 ? (root.generic ? "Commands" : root.infrared ? "Assigned commands" : root.android-tv ? "App shortcuts" : "TV apps") : root.displayed-panel==3 ? "Picture" : "Sound output";font-size:27px;color:Theme.text;font-weight:600;}
             IconButton {x:parent.width - 70px;y:20px;width:44px;height:44px;icon:@image-url("../../../../assets/lucide/x.svg");activate=>{root.action("dismiss");}}
             Text {x:26px;y:80px;width:parent.width - 52px;height:84px;wrap:word-wrap;text:root.displayed-panel==3 ? "Picture-mode changes are available through your TV’s on-screen settings." : root.choices.length==0 ? (root.infrared ? "Assign commands in Rooms & devices in the web UI." : root.android-tv ? "Add app shortcuts in Connections in the web UI." : "No choices available. Reconnect to refresh.") : root.generic ? "Up and Down to move, OK to choose." : "Select by touch. Physical buttons continue to control the TV.";font-size:19px;color:Theme.text-secondary;}
             Flickable {x:24px;y:176px;width:parent.width - 48px;height:parent.height - 198px;viewport-height:root.choices.length*82px;viewport-width:self.width;
@@ -150,7 +168,7 @@ export component Television inherits Rectangle {
                 viewport-y: root.generic ? -max(0px, min(max(0px, self.viewport-height - self.height), root.tray-selected*82px - 82px)) : 0px;
                 for item[i] in root.choices: Rectangle {x:0px;y:i*82px;width:parent.width;height:74px;background:Theme.surface-raised;border-radius:12px;
                     border-width:root.generic && root.tray-selected==i ? 3px : 0px;border-color:Theme.accent;
-                    Text {x:16px;y:10px;width:parent.width - 32px;height:29px;text:item.title;font-size:21px;color:#ffffff;overflow:elide;}
+                    Text {x:16px;y:10px;width:parent.width - 32px;height:29px;text:item.title;font-size:21px;color:Theme.text;overflow:elide;}
                     Text {x:16px;y:43px;width:parent.width - 32px;height:22px;text:item.detail;font-size:16px;color:Theme.text-secondary;overflow:elide;}
                     TouchArea {clicked=>{root.action(item.action);}}
                 }
@@ -158,9 +176,53 @@ export component Television inherits Rectangle {
         }
     }
     if root.error!="": Rectangle {x:24px;y:112px;width:parent.width - 48px;height:230px;background:Theme.surface-raised;border-radius:18px;
-        Text {x:20px;y:16px;width:parent.width - 40px;height:138px;text:root.error;wrap:word-wrap;color:#ffffff;font-size:20px;}
+        Text {x:20px;y:16px;width:parent.width - 40px;height:138px;text:root.error;wrap:word-wrap;color:Theme.text;font-size:20px;}
         Rectangle {x:20px;y:170px;width:parent.width - 40px;height:44px;background:Theme.accent;border-radius:12px;Text {width:parent.width;height:parent.height;text:root.infrared ? "Reload commands" : "Reconnect";color:Theme.bg;horizontal-alignment:center;vertical-alignment:center;font-size:20px;}TouchArea {clicked=>{root.action("retry");}}}
     }
+    // --- what the lift needs to know about this page ------------------------
+    // The header's own rectangles, and the bands the rest of the screen
+    // arrives in: what is on, and up to three rows of controls under it. As
+    // arithmetic rather than a reading of the laid-out boxes
+    // (docs/slint-notes.md).
+    public pure function title-box-x() -> length { return head.title-box-x(); }
+    public pure function title-box-y() -> length { return head.title-box-y(); }
+    public pure function title-box-w() -> length { return head.title-box-w(); }
+    public pure function title-box-h() -> length { return head.title-box-h(); }
+    public pure function disc-box-x() -> length { return head.disc-box-x(); }
+    public pure function disc-box-y() -> length { return head.disc-box-y(); }
+    public pure function disc-box-size() -> length { return head.disc-box-size(); }
+    public pure function header-h() -> length { return head.header-h(); }
+    public pure function plate-x() -> length { return head.plate-x(); }
+    public pure function plate-y() -> length { return head.plate-y(); }
+    public pure function plate-w() -> length { return head.plate-w(); }
+    public pure function plate-h() -> length { return head.plate-h(); }
+    public pure function plate-r() -> length { return head.plate-r(); }
+    /// What is on: the kind, the source name and the line about the keys.
+    public pure function body-y() -> length { return 198px; }
+    public pure function body-h() -> length { return 212px; }
+    /// The rows of controls, arriving one after another the way a light
+    /// screen's bar cards do: the transport buttons where there are any, and
+    /// the two rows of tiles under them. A packaged device has no transport
+    /// row - its keys are its own - so it has two, and a band with nothing in
+    /// it would only make the panel look emptier for longer.
+    public pure function rows() -> int { return root.transport() ? 3 : 2; }
+    public pure function row-y(which: int) -> length {
+        return root.transport()
+            ? (which == 0 ? 410px : which == 1 ? 506px : 640px)
+            : (which == 0 ? 506px : 640px);
+    }
+    public pure function row-h(which: int) -> length {
+        return root.transport()
+            ? (which == 0 ? 96px : which == 1 ? 134px : 150px)
+            : (which == 0 ? 134px : 150px);
+    }
+    pure function transport() -> bool { return !root.infrared && !root.generic; }
+    /// Every television page can be lifted out of its row. One showing what
+    /// is playing has a photograph behind everything and crosses band by
+    /// band instead of falling to a background it does not have.
+    public pure function lift-ready() -> bool { return true; }
+    public pure function banded() -> bool { return root.media-view && root.media-has-art; }
+
     keys:=FocusScope {enabled:root.shown;key-pressed(e)=>{
         if(root.generic){
             if(root.panel>0){

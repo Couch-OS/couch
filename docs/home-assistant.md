@@ -85,8 +85,15 @@ export CC_armv7_unknown_linux_musleabihf="$PWD/tools/arm-musl-cc.py"
 The ARM CLI, editor and Slint room controls are deployed. The GUI reads saved
 area/room order and reloads changes on the home screen; ALL ROOMS keeps rooms
 accessible during setup. Rooms show a flat device list immediately; highlight a
-light and press OK to toggle its live on/off state. Physical Back returns home,
-with a 180 ms slide in both directions. Brightness remains in the web editor.
+light and press **Power** to switch its live on/off state, or **OK** to open its
+controls: a tall brightness bar, and beside it a colour temperature bar where
+the entity reports a range (Home Assistant is asked in Kelvin). A blind opens
+the same screen with a position bar on it and Open, Stop and Close under it.
+The volume keys are the brightness bar and the channel keys the colour
+temperature; neither bar is ever highlighted, and on a blind left and right
+walk its three buttons. See
+[the key table](philips-hue.md#the-keys-on-a-lights-or-blinds-controls).
+Physical Back returns home, with a 180 ms slide in both directions.
 Requests run on a bounded worker queue; unavailable lights show an error in the
 room and old responses cannot replace a newer screen. State refreshes automatically
 every five seconds without moving focus. Aggregate room

@@ -43,6 +43,8 @@ pub fn provide_editor_state() {
     provide_context(activities::State::new());
     provide_context(activity_sequences::State::new());
     provide_context(device_picker::State::new());
+    provide_context(plugin_children::State::new());
+    provide_context(plugin_pairing::State::new());
     provide_context(infrared::State::new());
 }
 
@@ -386,6 +388,8 @@ mod hue;
 
 mod connections;
 mod device_picker;
+mod plugin_children;
+pub mod plugin_pairing;
 
 mod appearance;
 

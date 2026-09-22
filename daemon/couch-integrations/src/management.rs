@@ -12,12 +12,31 @@ use std::{
 const OFFICIAL_KEY: &str = include_str!("official.rsa.pub");
 /// Where the official feed is published, and where it was published before
 /// the feed repository moved owners. A GitHub Pages address follows its
-/// owner and is not forwarded, and indexes are fetched with redirects off, so
-/// the official repositories try the current address and then the previous
-/// one. Both serve the same feed, verified with the same key; whichever is
-/// live answers, before and after the move.
+/// owner and is not forwarded, so a repository that has not yet been held to
+/// `OFFICIAL_METADATA_REQUIRED` tries the current address and then the
+/// previous one: both served the same feed, verified with the same key, in
+/// the window around the move. What a remote remembers about a feed
+/// (`feed::Seen`) belongs to the repository, not to either address: the
+/// previous address cannot serve an older feed than the current one already
+/// did. Once metadata is required, `Manager::sources` stops trying the
+/// previous address at all: it is known to never carry signed metadata (the
+/// repository that served it moved away, and Pages does not forward), so
+/// trying it could only turn a real outage of the current address into a
+/// confusing refusal instead of a plain "unreachable", never a way to install
+/// something the current feed has not signed.
 const OFFICIAL_FEED: &str = "https://packages.couch-os.dev";
 const PREVIOUS_OFFICIAL_FEED: &str = "https://dangerouslaser.github.io/couch-integrations";
+/// Whether an official repository must come with valid signed metadata even
+/// on a remote that has never seen any from it. Verified true: the official
+/// feed has published signed `feed.json`/`feed.json.sig` weekly since
+/// 2026-09-19, and a remote running this code recorded both official
+/// channels' metadata as seen, with every package installable, against the
+/// live feed. A missing or invalid `feed.json` now refuses an official
+/// repository from its very first refresh, the same as any repository this
+/// remote has already seen metadata from; a custom repository is still
+/// trusted on first use.
+const OFFICIAL_METADATA_REQUIRED: bool = true;
+const UNREACHABLE: &str = "cannot download repository index over HTTPS";
 const MAX_INDEX: u64 = 4 * 1024 * 1024;
 const MAX_EXPANDED_INDEX: u64 = 32 * 1024 * 1024;
 
@@ -49,6 +68,19 @@ pub struct Available {
     pub description: String,
     pub repository: String,
     pub apk_version: String,
+    /// False when the feed's signed metadata says this Couch cannot run the
+    /// package; `reason` then says why, and install and update are refused
+    /// before anything is downloaded.
+    #[serde(default = "yes")]
+    pub installable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The file the feed's signed metadata promises for this package.
+    #[serde(skip)]
+    expected: Option<ExpectedApk>,
+}
+fn yes() -> bool {
+    true
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Operation {
@@ -78,12 +110,33 @@ struct Inner {
     operation: Mutex<Option<Operation>>,
     pending: Mutex<BTreeMap<String, Repository>>,
     cache: Mutex<Cache>,
+    /// Seconds since the Unix epoch. Tests set the time; nothing else does.
+    clock: Box<dyn Fn() -> u64 + Send + Sync>,
+}
+/// Why one address gave no catalog.
+enum Failure {
+    /// Nothing usable could be downloaded from it.
+    Unreachable(Error),
+    /// It answered, and what it served must not be used.
+    Refused(Error),
+}
+enum Download {
+    Body(Vec<u8>),
+    /// The server answered that there is no such file.
+    Absent,
 }
 #[derive(Clone)]
 pub struct Manager(Arc<Inner>);
 
 impl Manager {
     pub fn new(store: Store) -> Self {
+        Self::with_clock(store, || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs())
+        })
+    }
+    fn with_clock(store: Store, clock: impl Fn() -> u64 + Send + Sync + 'static) -> Self {
         let directory = store.root.join("management");
         Self(Arc::new(Inner {
             store,
@@ -92,6 +145,7 @@ impl Manager {
             operation: Mutex::new(None),
             pending: Mutex::new(BTreeMap::new()),
             cache: Mutex::new(Cache::default()),
+            clock: Box::new(clock),
         }))
     }
     fn layout(&self) -> Result<()> {
@@ -210,6 +264,9 @@ impl Manager {
         }
         repository.trusted = true;
         repositories.push(repository.clone());
+        // A repository added now starts with nothing remembered, whatever an
+        // earlier one with the same name published.
+        self.forget_feed(id)?;
         self.save_repositories(&repositories)?;
         pending.remove(id);
         Ok(repository)
@@ -232,6 +289,7 @@ impl Manager {
         }
         repositories.retain(|r| r.id != id);
         self.save_repositories(&repositories)?;
+        self.forget_feed(id)?;
         self.0
             .cache
             .lock()
@@ -278,7 +336,7 @@ impl Manager {
                 .iter()
                 .find(|p| p.id == manifest.id && repo.as_deref() == Some(&p.repository));
             let update = match available {
-                Some(p) if self.newer(&p.version, &manifest.version)? => Some(&p.version),
+                Some(p) if self.newer(&p.version, &manifest.version)? => Some(p),
                 _ => None,
             };
             let fallback = state
@@ -292,7 +350,9 @@ impl Manager {
             };
             installed.push(serde_json::json!({
                 "id":manifest.id,"name":manifest.label,"version":manifest.version,
-                "available_version":update,
+                "available_version":update.map(|p| &p.version),
+                "update_installable":update.is_none_or(|p| p.installable),
+                "update_reason":update.and_then(|p| p.reason.as_ref()),
                 "status":status, "repository":repo,
                 "connection_configured":configured.contains(&manifest.id),
                 "can_rollback":state.previous.as_ref().is_some_and(|slot| slot.version != manifest.version && self.0.store.slot(&manifest.id,slot).is_ok()),
@@ -411,7 +471,7 @@ impl Manager {
             libc::LOCK_EX,
         )?;
         if kind == "refresh" {
-            return self.refresh();
+            return self.refresh(self.repositories()?);
         }
         let action = action.ok_or_else(|| err("missing package selection"))?;
         if kind == "remove" {
@@ -420,7 +480,9 @@ impl Manager {
         if kind == "rollback" {
             return self.0.store.rollback(&action.id).map(|_| ());
         }
-        let repositories = self.repositories()?;
+        self.install(kind, action, &self.repositories()?)
+    }
+    fn install(&self, kind: &str, action: Action, repositories: &[Repository]) -> Result<()> {
         let repository = repositories
             .iter()
             .find(|r| Some(&r.id) == action.repository.as_ref())
@@ -435,6 +497,9 @@ impl Manager {
             .find(|p| p.id == action.id && p.repository == repository.id)
             .cloned()
             .ok_or_else(|| err("refresh repositories before selecting this package"))?;
+        // Known from the feed's signed metadata, so nothing is downloaded to
+        // find out: not the index again, and not the package.
+        refuse_not_installable(&selected)?;
         if kind == "update" {
             let (_, installed) = self.0.store.resolve(&action.id)?;
             if !self.newer(&selected.version, &installed.version)? {
@@ -445,14 +510,11 @@ impl Manager {
         // Refresh that source immediately before install. A signed index can
         // change between browsing and clicking; require the reviewed version.
         let (current, source) = self.fetch_index(repository, &keys)?;
-        if !current
+        let current = current
             .iter()
-            .any(|p| p.id == selected.id && p.apk_version == selected.apk_version)
-        {
-            return Err(err(
-                "repository package changed; refresh and review the new version",
-            ));
-        }
+            .find(|p| p.id == selected.id && p.apk_version == selected.apk_version)
+            .ok_or_else(|| err("repository package changed; refresh and review the new version"))?;
+        refuse_not_installable(current)?;
         // apk-tools 2.14 fetch accepts a name, not add's name=version syntax.
         // The expected manifest is checked before admission/activation, so a
         // newly published version racing this fetch fails without replacing it.
@@ -461,6 +523,7 @@ impl Manager {
             &package,
             &source,
             Some((&selected.id, &selected.version)),
+            current.expected.as_ref(),
         )?;
         let mut origins = self.origins()?;
         origins.insert(action.id, repository.id.clone());
@@ -469,8 +532,9 @@ impl Manager {
             &serde_json::to_vec(&origins).unwrap(),
         )
     }
-    fn refresh(&self) -> Result<()> {
-        let repositories = self.repositories()?;
+    /// One repository that cannot be used does not empty the others: each
+    /// contributes its packages or its reason.
+    fn refresh(&self, repositories: Vec<Repository>) -> Result<()> {
         let mut available = Vec::new();
         let mut errors = Vec::new();
         for repository in repositories {
@@ -517,10 +581,15 @@ impl Manager {
         Ok(latest.into_values().collect())
     }
     /// The addresses to try for a repository, in order. Only an official
-    /// repository at its built-in address has a second one.
-    fn sources(repository: &Repository) -> Vec<String> {
+    /// repository at its built-in address has a second one, and only while
+    /// `required` is false for it: once signed metadata is required, the
+    /// previous address is never tried, because it can never carry any (see
+    /// the comment on `PREVIOUS_OFFICIAL_FEED`) and trying it anyway would
+    /// let a feed that only answers there turn a real outage of the current
+    /// address into a refusal instead of a plain "unreachable".
+    fn sources(repository: &Repository, required: bool) -> Vec<String> {
         let mut sources = vec![repository.url.clone()];
-        if repository.official {
+        if repository.official && !required {
             if let Some(channel) = repository.url.strip_prefix(OFFICIAL_FEED) {
                 sources.push(format!("{PREVIOUS_OFFICIAL_FEED}{channel}"));
             }
@@ -534,47 +603,107 @@ impl Manager {
         repository: &Repository,
         keys: &Path,
     ) -> Result<(Vec<Available>, String)> {
-        let mut last = err("cannot download repository index over HTTPS");
-        for source in Self::sources(repository) {
-            match self.fetch_index_from(repository, &source, keys) {
-                Ok(available) => return Ok((available, source)),
-                Err(error) => last = error,
+        let mut state = self.feed_state();
+        let seen = state.get(&repository.id).copied().unwrap_or_default();
+        let required = feed::required(repository.official, seen, OFFICIAL_METADATA_REQUIRED);
+        let (mut unreachable, mut refused) = (err(UNREACHABLE), None);
+        for source in Self::sources(repository, required) {
+            match self.fetch_index_from(repository, &source, keys, seen, required) {
+                Ok((available, verified)) => {
+                    if let Some(verified) = verified {
+                        if verified.clock_unreliable {
+                            eprintln!(
+                                "couch-integrations: the clock is earlier than {}'s feed metadata was issued, so its expiry date was not checked",
+                                repository.id
+                            );
+                        }
+                        let now = feed::Seen {
+                            sequence: verified.sequence,
+                            seen_metadata: true,
+                        };
+                        if now != seen {
+                            state.insert(repository.id.clone(), now);
+                            self.save_feed_state(&state)?;
+                        }
+                    }
+                    return Ok((available, source));
+                }
+                // A feed that answered with something unusable says more than
+                // an address that did not answer at all.
+                Err(Failure::Refused(error)) => refused = refused.or(Some(error)),
+                Err(Failure::Unreachable(error)) => unreachable = error,
             }
         }
-        Err(last)
+        Err(refused.unwrap_or(unreachable))
     }
     fn fetch_index_from(
         &self,
         repository: &Repository,
         source: &str,
         keys: &Path,
-    ) -> Result<Vec<Available>> {
+        seen: feed::Seen,
+        required: bool,
+    ) -> std::result::Result<(Vec<Available>, Option<feed::Verified>), Failure> {
+        // Redirects are followed here, one at a time, so that each can be
+        // held to `feed::redirect`; and a status is read, not raised, so that
+        // "there is no feed.json" can be told from "the feed is out of reach".
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .max_redirects(0)
+            .http_status_as_error(false)
             .build()
             .new_agent();
-        let mut response = agent
-            .get(&format!("{source}/armv7/APKINDEX.tar.gz"))
-            .call()
-            .map_err(|_| err("cannot download repository index over HTTPS"))?;
-        // Redirects are off, so a moved address answers 3xx with a page, not
-        // an index: that is a failed download, not a malformed repository.
-        if response.status() != 200 {
-            return Err(err("cannot download repository index over HTTPS"));
-        }
-        let mut bytes = Vec::new();
-        response
-            .body_mut()
-            .as_reader()
-            .take(MAX_INDEX + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| io("read index", e))?;
+        let directory = format!("{source}/armv7");
+        let index = format!("{directory}/APKINDEX.tar.gz");
+        let bytes = match download(&agent, &index, MAX_INDEX, "repository index")? {
+            Download::Body(bytes) => bytes,
+            Download::Absent => return Err(Failure::Unreachable(err(UNREACHABLE))),
+        };
         if bytes.len() as u64 > MAX_INDEX {
-            return Err(err("repository index exceeds its size limit"));
+            return Err(Failure::Refused(err(
+                "repository index exceeds its size limit",
+            )));
         }
+        let metadata = |name: &str, limit| {
+            download(
+                &agent,
+                &format!("{directory}/{name}"),
+                limit,
+                "the package feed's signed metadata",
+            )
+        };
+        let document = metadata("feed.json", feed::MAX_METADATA)?;
+        let signature = match document {
+            Download::Body(_) => match metadata("feed.json.sig", feed::MAX_SIGNATURE)? {
+                Download::Body(signature) => Some(signature),
+                Download::Absent => None,
+            },
+            Download::Absent => None,
+        };
+        let verified = feed::check(
+            match &document {
+                Download::Body(document) => feed::Served::Metadata {
+                    document,
+                    signature: signature.as_deref(),
+                },
+                Download::Absent => feed::Served::Missing,
+            },
+            &feed::Check {
+                public_key: &repository.public_key,
+                seen,
+                required,
+                // Only an official repository's address names its channel.
+                channel: repository
+                    .official
+                    .then(|| repository.url.rsplit('/').next().unwrap_or_default()),
+                index: &bytes,
+                now: (self.0.clock)(),
+            },
+        )
+        .map_err(Failure::Refused)?;
         let temporary = self.0.directory.join(format!(".index-{}", nonce()));
-        fs::create_dir(&temporary).map_err(|e| io("create index verification directory", e))?;
+        fs::create_dir(&temporary)
+            .map_err(|e| Failure::Refused(io("create index verification directory", e)))?;
         let result = (|| {
             // The signature selects a filename only, never another key. Every
             // basename below contains precisely the key explicitly trusted by
@@ -599,8 +728,126 @@ impl Manager {
             self.latest(parse_index(&text, &repository.id)?)
         })();
         let _ = fs::remove_dir_all(&temporary);
-        result
+        let mut available = result.map_err(Failure::Refused)?;
+        if let Some(verified) = &verified {
+            for package in &mut available {
+                describe(package, &verified.packages);
+            }
+        }
+        Ok((available, verified))
     }
+    /// What this remote remembers about each repository's feed, by repository
+    /// id. Beside the other package manager records, and like them written
+    /// whole. A record that cannot be read is started again rather than
+    /// leaving the remote without packages: that forgets only what an
+    /// untouched remote never knew.
+    fn feed_state(&self) -> BTreeMap<String, feed::Seen> {
+        let path = self.0.directory.join("feed-state.json");
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                eprintln!(
+                    "couch-integrations: {} is not valid; starting it again",
+                    path.display()
+                );
+                BTreeMap::new()
+            }),
+            Err(_) => BTreeMap::new(),
+        }
+    }
+    fn save_feed_state(&self, state: &BTreeMap<String, feed::Seen>) -> Result<()> {
+        atomic_write(
+            &self.0.directory.join("feed-state.json"),
+            &serde_json::to_vec(state).unwrap(),
+        )
+    }
+    fn forget_feed(&self, id: &str) -> Result<()> {
+        let mut state = self.feed_state();
+        match state.remove(id) {
+            Some(_) => self.save_feed_state(&state),
+            None => Ok(()),
+        }
+    }
+}
+/// One file, following redirects by the feed's rule. The body is cut off one
+/// byte past `limit`, which the caller reports as it sees fit.
+fn download(
+    agent: &ureq::Agent,
+    address: &str,
+    limit: u64,
+    what: &str,
+) -> std::result::Result<Download, Failure> {
+    let unreachable =
+        |why: &str| Failure::Unreachable(err(format!("cannot download {what} over HTTPS{why}")));
+    let mut address = url::Url::parse(address).map_err(|_| unreachable(""))?;
+    for followed in 0.. {
+        let mut response = agent
+            .get(address.as_str())
+            .call()
+            .map_err(|_| unreachable(""))?;
+        match response.status().as_u16() {
+            200 => {
+                let mut bytes = Vec::new();
+                response
+                    .body_mut()
+                    .as_reader()
+                    .take(limit + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| unreachable(""))?;
+                return Ok(Download::Body(bytes));
+            }
+            301 | 302 | 303 | 307 | 308 => {
+                let location = response
+                    .headers()
+                    .get("location")
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| unreachable(""))?;
+                address = feed::redirect(&address, location, followed)
+                    .map_err(|error| unreachable(&format!(": {error}")))?;
+            }
+            // Not there, in whatever way this host says so (a bucket answers
+            // 403 for a file it does not have).
+            400..=499 => return Ok(Download::Absent),
+            _ => return Err(unreachable("")),
+        }
+    }
+    unreachable!("a redirect is followed or refused")
+}
+/// What the feed's signed metadata says about a package the index offers.
+fn describe(package: &mut Available, metadata: &[feed::Package]) {
+    let file = format!(
+        "couch-integration-{}-{}.apk",
+        package.id, package.apk_version
+    );
+    let Some(entry) = metadata
+        .iter()
+        .find(|entry| entry.apk == file && entry.id == package.id)
+    else {
+        // The index is the one the metadata signed for, so the package is
+        // still the feed's; it is only not described.
+        eprintln!("couch-integrations: the feed's metadata does not list {file}");
+        return;
+    };
+    package.expected = Some(ExpectedApk {
+        file,
+        size: entry.size,
+        sha256: entry.sha256.clone(),
+    });
+    if entry.min_core_protocol_version > PROTOCOL_VERSION {
+        package.installable = false;
+        package.reason = Some(feed::NEEDS_NEWER_COUCH.into());
+    }
+}
+fn refuse_not_installable(package: &Available) -> Result<()> {
+    if package.installable {
+        return Ok(());
+    }
+    Err(err(format!(
+        "{}. Update this remote, then install the package again",
+        package
+            .reason
+            .as_deref()
+            .unwrap_or("This package cannot be installed")
+    )))
 }
 struct BusyGuard(Arc<Inner>);
 impl Drop for BusyGuard {
@@ -767,6 +1014,9 @@ fn parse_index(text: &str, repository: &str) -> Result<Vec<Available>> {
             description: fields.get("T").unwrap_or(&"").chars().take(1024).collect(),
             apk_version: (*apk_version).into(),
             repository: repository.into(),
+            installable: true,
+            reason: None,
+            expected: None,
         };
         // Feeds retain old APKs. APK semantic version comparison picks the
         // newest during install; expose one candidate using the same comparator
@@ -806,26 +1056,34 @@ mod tests {
         }
     }
     #[test]
-    fn only_official_repositories_fall_back_to_the_previous_feed_address() {
+    fn only_official_repositories_fall_back_and_only_while_metadata_is_not_required() {
         let official = Manager::official();
         assert_eq!(official.len(), 2);
         for (repository, channel) in official.iter().zip(["stable", "preview"]) {
             assert_eq!(
-                Manager::sources(repository),
+                Manager::sources(repository, false),
                 [
                     format!("https://packages.couch-os.dev/{channel}"),
                     format!("https://dangerouslaser.github.io/couch-integrations/{channel}"),
                 ]
+            );
+            // Required, which every official repository now always is: the
+            // previous address is not tried, since it can never carry signed
+            // metadata and trying it would only turn a real outage of the
+            // current address into a confusing refusal.
+            assert_eq!(
+                Manager::sources(repository, true),
+                [format!("https://packages.couch-os.dev/{channel}")]
             );
         }
         // A user's repository is fetched from its own address only, even one
         // that claims the official host, and so is anything not marked official.
         let mut theirs = official[0].clone();
         theirs.official = false;
-        assert_eq!(Manager::sources(&theirs), [theirs.url.clone()]);
+        assert_eq!(Manager::sources(&theirs, false), [theirs.url.clone()]);
         let mut elsewhere = official[0].clone();
         elsewhere.url = "https://example.com/feed".into();
-        assert_eq!(Manager::sources(&elsewhere), [elsewhere.url.clone()]);
+        assert_eq!(Manager::sources(&elsewhere, false), [elsewhere.url.clone()]);
     }
     #[test]
     fn trust_requires_exact_review_and_survives_restart() {
@@ -925,6 +1183,789 @@ mod tests {
         ]))
         .is_err());
     }
+    // ---- Feed metadata, against a feed served from this machine ----
+
+    use crate::feed::tests::{document, TestKey, ISSUED};
+    use std::{
+        io::{BufRead, BufReader},
+        net::{TcpListener, TcpStream},
+        sync::atomic::AtomicU64,
+    };
+
+    #[derive(Clone)]
+    enum Route {
+        Body(Vec<u8>),
+        Redirect(String),
+        Status(u16),
+    }
+    /// The `feed.json` to publish beside an index, given that index's bytes.
+    type Metadata<'a> = &'a dyn Fn(&[u8]) -> serde_json::Value;
+    /// A feed on a local port. Whatever has no route answers 404.
+    struct Feed {
+        address: String,
+        routes: Arc<Mutex<BTreeMap<String, Route>>>,
+        requests: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+    }
+    impl Feed {
+        fn new() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = format!("http://{}", listener.local_addr().unwrap());
+            let routes = Arc::new(Mutex::new(BTreeMap::<String, Route>::new()));
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (served, log, stopping) = (routes.clone(), requests.clone(), stop.clone());
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    if stopping.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let Ok(mut stream) = stream else { continue };
+                    let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+                    let Some(Ok(request)) = lines.next() else {
+                        continue;
+                    };
+                    while lines.next().is_some_and(|l| l.is_ok_and(|l| !l.is_empty())) {}
+                    let path = request.split(' ').nth(1).unwrap_or_default().to_owned();
+                    let route = served.lock().unwrap().get(&path).cloned();
+                    log.lock().unwrap().push(path);
+                    let (status, extra, body) = match route {
+                        Some(Route::Body(body)) => (200, String::new(), body),
+                        Some(Route::Redirect(to)) => (302, format!("Location: {to}\r\n"), vec![]),
+                        Some(Route::Status(status)) => (status, String::new(), vec![]),
+                        None => (404, String::new(), b"not here".to_vec()),
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status} Test\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(&body);
+                }
+            });
+            Self {
+                address,
+                routes,
+                requests,
+                stop,
+            }
+        }
+        fn route(&self, path: &str, route: Route) {
+            self.routes.lock().unwrap().insert(path.into(), route);
+        }
+        fn remove(&self, path: &str) {
+            self.routes.lock().unwrap().remove(path);
+        }
+        /// An index offering these `(id, apk version)` packages under
+        /// `/<name>/armv7`, with signed metadata if there is a document.
+        fn publish(
+            &self,
+            name: &str,
+            packages: &[(&str, &str)],
+            key: &TestKey,
+            metadata: Option<Metadata>,
+        ) -> Vec<u8> {
+            let text: String = packages
+                .iter()
+                .map(|(id, version)| {
+                    format!("P:couch-integration-{id}\nV:{version}\nA:armv7\nT:Test\n\n")
+                })
+                .collect();
+            let index = archive(&[
+                (".SIGN.RSA.test.rsa.pub", b"checked by the fixture apk"),
+                ("APKINDEX", text.as_bytes()),
+            ]);
+            let directory = format!("/{name}/armv7");
+            self.route(
+                &format!("{directory}/APKINDEX.tar.gz"),
+                Route::Body(index.clone()),
+            );
+            match metadata {
+                Some(metadata) => {
+                    let bytes = serde_json::to_vec(&metadata(&index)).unwrap();
+                    self.route(
+                        &format!("{directory}/feed.json.sig"),
+                        Route::Body(key.sign(&bytes)),
+                    );
+                    self.route(&format!("{directory}/feed.json"), Route::Body(bytes));
+                }
+                None => {
+                    self.remove(&format!("{directory}/feed.json"));
+                    self.remove(&format!("{directory}/feed.json.sig"));
+                }
+            }
+            index
+        }
+        fn requested(&self, suffix: &str) -> usize {
+            let requests = self.requests.lock().unwrap();
+            requests.iter().filter(|r| r.ends_with(suffix)).count()
+        }
+    }
+    impl Drop for Feed {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            let _ = TcpStream::connect(self.address.trim_start_matches("http://"));
+        }
+    }
+
+    /// Writes an executable a test is about to run, without this process ever
+    /// holding a descriptor open for writing it.
+    ///
+    /// Linux refuses `execve` with ETXTBSY (errno 26) while anyone has the
+    /// file open for writing, and a fork made by another test thread inherits
+    /// this thread's descriptors until its own exec closes them. A
+    /// short-lived child holds the writing descriptor instead: nothing this
+    /// process forks can inherit it.
+    fn write_executable(path: &Path, bytes: &[u8]) {
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
+        };
+        let mut writer = Command::new("/bin/sh")
+            .args(["-c", r#"exec /bin/cat > "$1""#, "sh"])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer.stdin.take().unwrap().write_all(bytes).unwrap();
+        assert!(writer.wait().unwrap().success(), "write {}", path.display());
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Stands in for apk: `verify` accepts (real signature checking is
+    /// covered by tools/integrations/smoke.sh), `version --test` compares,
+    /// `fetch` hands over whatever the test put in `served/` and notes that
+    /// it ran, `add` unpacks.
+    const FIXTURE_APK: &str = r#"#!/bin/sh
+set -eu
+here=$(dirname "$0")
+command=
+for argument in "$@"; do
+  case "$argument" in verify|version|fetch|add) command=$argument; break;; esac
+done
+case "$command" in
+  verify) exit 0;;
+  version)
+    if [ "$3" = "$4" ]; then echo "="
+    elif [ "$(printf '%s\n%s\n' "$3" "$4" | sort -V | tail -n 1)" = "$3" ]; then echo ">"
+    else echo "<"; fi;;
+  fetch)
+    echo fetch >> "$here/apk.log"
+    while [ $# -gt 0 ]; do
+      if [ "$1" = --output ]; then shift; output=$1; fi
+      shift
+    done
+    cp "$here"/served/*.apk "$output"/;;
+  add)
+    while [ $# -gt 0 ]; do
+      if [ "$1" = --root ]; then shift; root=$1; fi
+      last=$1; shift
+    done
+    tar -xzf "$last" -C "$root";;
+  *) exit 64;;
+esac
+"#;
+
+    struct Remote {
+        fixture: Fixture,
+        manager: Manager,
+        now: Arc<AtomicU64>,
+    }
+    impl Remote {
+        fn new() -> Self {
+            let fixture = Fixture::new();
+            fs::create_dir_all(fixture.0.join("served")).unwrap();
+            let apk = fixture.0.join("apk");
+            write_executable(&apk, FIXTURE_APK.as_bytes());
+            let now = Arc::new(AtomicU64::new(ISSUED + 3600));
+            let clock = now.clone();
+            let manager = Manager::with_clock(
+                Store::new(fixture.0.join("integrations")).with_apk(apk),
+                move || clock.load(Ordering::Acquire),
+            );
+            manager.layout().unwrap();
+            Self {
+                fixture,
+                manager,
+                now,
+            }
+        }
+        /// What a refresh says and what the catalog then offers, as `id version`.
+        fn refresh(&self, repositories: &[&Repository]) -> (Result<()>, Vec<String>) {
+            let result = self
+                .manager
+                .refresh(repositories.iter().map(|r| (*r).clone()).collect());
+            let catalog = self.manager.catalog(&[]).unwrap();
+            let offered = catalog["available"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{} {} from {}",
+                        p["id"].as_str().unwrap(),
+                        p["version"].as_str().unwrap(),
+                        p["repository"].as_str().unwrap()
+                    )
+                })
+                .collect();
+            (result, offered)
+        }
+        fn seen(&self, id: &str) -> Option<feed::Seen> {
+            self.manager.feed_state().get(id).copied()
+        }
+        fn fetches(&self) -> usize {
+            fs::read_to_string(self.fixture.0.join("apk.log")).map_or(0, |log| log.lines().count())
+        }
+    }
+    fn repository(id: &str, feed: &Feed, key: &TestKey) -> Repository {
+        Repository {
+            id: id.into(),
+            name: format!("Feed {id}"),
+            url: format!("{}/{id}", feed.address),
+            fingerprint: fingerprint(&key.public_pem),
+            official: false,
+            trusted: true,
+            public_key: key.public_pem.clone(),
+        }
+    }
+    fn sequence(sequence: u64) -> impl Fn(&[u8]) -> serde_json::Value {
+        move |index| document(sequence, index)
+    }
+    const DENON: [(&str, &str); 1] = [("denon", "0.2.1-r0")];
+
+    #[test]
+    fn valid_metadata_is_remembered_and_an_older_feed_is_then_refused() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let mine = repository("mine", &feed, &key);
+        feed.publish("mine", &DENON, &key, Some(&sequence(10)));
+        let (result, offered) = remote.refresh(&[&mine]);
+        result.unwrap();
+        assert_eq!(offered, ["denon 0.2.1 from mine"]);
+        let seen = feed::Seen {
+            sequence: 10,
+            seen_metadata: true,
+        };
+        assert_eq!(remote.seen("mine"), Some(seen));
+        assert_eq!(
+            fs::read(remote.manager.0.directory.join("feed-state.json")).unwrap(),
+            br#"{"mine":{"sequence":10,"seen_metadata":true}}"#
+        );
+        // The same publication again (a re-read, a weekly re-sign that has not
+        // happened yet) is fine, and a newer one moves the mark.
+        remote.refresh(&[&mine]).0.unwrap();
+        feed.publish("mine", &DENON, &key, Some(&sequence(12)));
+        remote.refresh(&[&mine]).0.unwrap();
+        assert_eq!(remote.seen("mine").unwrap().sequence, 12);
+        // Rolled back: validly signed, consistent with its index, and older.
+        feed.publish("mine", &DENON, &key, Some(&sequence(11)));
+        let (result, offered) = remote.refresh(&[&mine]);
+        assert_eq!(
+            result.unwrap_err().0,
+            format!("Feed mine: {}", feed::OLDER_THAN_SEEN)
+        );
+        assert!(offered.is_empty());
+        assert_eq!(remote.seen("mine").unwrap().sequence, 12);
+        // What is remembered belongs to the repository, not to the address it
+        // was read from: another address for the same repository (as the
+        // official feed has) cannot serve something older either.
+        let elsewhere = Feed::new();
+        elsewhere.publish("mine", &DENON, &key, Some(&sequence(11)));
+        let moved = repository("mine", &elsewhere, &key);
+        assert!(remote.refresh(&[&moved]).0.is_err());
+        elsewhere.publish("mine", &DENON, &key, Some(&sequence(12)));
+        remote.refresh(&[&moved]).0.unwrap();
+        // A restart remembers.
+        let restarted = Manager::with_clock(remote.manager.0.store.clone(), || ISSUED);
+        assert_eq!(restarted.feed_state().get("mine").unwrap().sequence, 12);
+    }
+
+    #[test]
+    fn metadata_is_optional_until_a_repository_has_published_it_once() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let mine = repository("mine", &feed, &key);
+        // A feed that has never published metadata works as it always has.
+        feed.publish("mine", &DENON, &key, None);
+        let (result, offered) = remote.refresh(&[&mine]);
+        result.unwrap();
+        assert_eq!(offered, ["denon 0.2.1 from mine"]);
+        assert_eq!(remote.seen("mine"), None);
+        assert_eq!(feed.requested("/feed.json"), 1);
+        assert_eq!(feed.requested("/feed.json.sig"), 0);
+        // So does one whose host says "forbidden" for a file it does not have.
+        feed.route("/mine/armv7/feed.json", Route::Status(403));
+        remote.refresh(&[&mine]).0.unwrap();
+        // Once it has published, taking the metadata away hides nothing.
+        feed.publish("mine", &DENON, &key, Some(&sequence(10)));
+        remote.refresh(&[&mine]).0.unwrap();
+        feed.publish("mine", &DENON, &key, None);
+        let (result, offered) = remote.refresh(&[&mine]);
+        assert!(result.unwrap_err().0.contains("signed metadata is missing"));
+        assert!(offered.is_empty());
+        // Nor does a server error pass for "not published".
+        feed.route("/mine/armv7/feed.json", Route::Status(500));
+        let error = remote.refresh(&[&mine]).0.unwrap_err();
+        assert!(
+            error
+                .0
+                .contains("cannot download the package feed's signed metadata"),
+            "{error}"
+        );
+        // Removing the repository and adding it again starts over.
+        remote.manager.forget_feed("mine").unwrap();
+        feed.publish("mine", &DENON, &key, None);
+        remote.refresh(&[&mine]).0.unwrap();
+    }
+
+    #[test]
+    fn removing_or_adding_a_repository_forgets_what_its_feed_published() {
+        let remote = Remote::new();
+        let remembered = |id: &str| {
+            let mut state = remote.manager.feed_state();
+            state.insert(
+                id.into(),
+                feed::Seen {
+                    sequence: 99,
+                    seen_metadata: true,
+                },
+            );
+            remote.manager.save_feed_state(&state).unwrap();
+        };
+        remembered("mine");
+        remembered("official-preview");
+        let pending = remote.manager.stage_repository(custom()).unwrap();
+        remote
+            .manager
+            .confirm_repository("mine", &pending.fingerprint)
+            .unwrap();
+        assert_eq!(remote.seen("mine"), None);
+        remembered("mine");
+        remote.manager.remove_repository("mine").unwrap();
+        assert_eq!(remote.seen("mine"), None);
+        assert_eq!(remote.seen("official-preview").unwrap().sequence, 99);
+        // An unreadable record is started again, not an end to all packages.
+        fs::write(remote.manager.0.directory.join("feed-state.json"), b"{").unwrap();
+        assert!(remote.manager.feed_state().is_empty());
+    }
+
+    #[test]
+    fn metadata_that_is_present_has_to_be_right_even_the_first_time() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let mine = repository("mine", &feed, &key);
+        let refused = |why: &str| {
+            let (result, offered) = remote.refresh(&[&mine]);
+            let error = result.unwrap_err();
+            assert!(error.0.contains(why), "{error}");
+            assert!(offered.is_empty(), "{why}");
+            assert_eq!(remote.seen("mine"), None, "{why}");
+        };
+        // Signed by somebody else.
+        feed.publish("mine", &DENON, &TestKey::new(2048), Some(&sequence(10)));
+        refused("metadata signature is not valid");
+        // Edited after signing.
+        let index = feed.publish("mine", &DENON, &key, Some(&sequence(10)));
+        let mut edited = document(10, &index);
+        edited["sequence"] = 11.into();
+        feed.route(
+            "/mine/armv7/feed.json",
+            Route::Body(serde_json::to_vec(&edited).unwrap()),
+        );
+        refused("metadata signature is not valid");
+        // Published without its signature.
+        feed.publish("mine", &DENON, &key, Some(&sequence(10)));
+        feed.remove("/mine/armv7/feed.json.sig");
+        refused("metadata signature is not valid");
+        // Valid metadata beside another index: an old index under new
+        // metadata, or the other way round.
+        feed.publish("mine", &DENON, &key, Some(&sequence(10)));
+        feed.publish("other", &[("denon", "0.2.0-r0")], &key, None);
+        let old = feed.routes.lock().unwrap()["/other/armv7/APKINDEX.tar.gz"].clone();
+        feed.route("/mine/armv7/APKINDEX.tar.gz", old);
+        refused("repository index is not the one");
+        // Larger than metadata may be.
+        feed.publish("mine", &DENON, &key, Some(&sequence(10)));
+        feed.route(
+            "/mine/armv7/feed.json",
+            Route::Body(vec![b' '; feed::MAX_METADATA as usize + 1]),
+        );
+        refused("metadata exceeds its size limit");
+        // And nothing above was remembered, so the honest feed still works.
+        feed.publish("mine", &DENON, &key, Some(&sequence(10)));
+        remote.refresh(&[&mine]).0.unwrap();
+    }
+
+    #[test]
+    fn an_expired_feed_is_refused_unless_the_clock_is_not_set() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let mine = repository("mine", &feed, &key);
+        feed.publish("mine", &DENON, &key, Some(&sequence(10)));
+        // Frozen: a month-old publication served for ever.
+        let expires = feed::timestamp("2026-10-19T21:00:00Z").unwrap();
+        remote.now.store(expires + 1, Ordering::Release);
+        let (result, offered) = remote.refresh(&[&mine]);
+        assert!(result
+            .unwrap_err()
+            .0
+            .contains("expired on 2026-10-19T21:00:00Z"));
+        assert!(offered.is_empty());
+        // A remote that started without the time (1970) reads the same feed,
+        // and still holds it to its sequence.
+        remote.now.store(86_400, Ordering::Release);
+        let (result, offered) = remote.refresh(&[&mine]);
+        result.unwrap();
+        assert_eq!(offered, ["denon 0.2.1 from mine"]);
+        feed.publish("mine", &DENON, &key, Some(&sequence(9)));
+        assert_eq!(
+            remote.refresh(&[&mine]).0.unwrap_err().0,
+            format!("Feed mine: {}", feed::OLDER_THAN_SEEN)
+        );
+    }
+
+    #[test]
+    fn metadata_in_a_later_format_counts_as_none() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let mine = repository("mine", &feed, &key);
+        let later = |index: &[u8]| {
+            let mut later = document(10, index);
+            later["schema"] = 2.into();
+            later
+        };
+        feed.publish("mine", &DENON, &key, Some(&later));
+        let (result, offered) = remote.refresh(&[&mine]);
+        result.unwrap();
+        assert_eq!(offered, ["denon 0.2.1 from mine"]);
+        assert_eq!(remote.seen("mine"), None);
+        feed.publish("mine", &DENON, &key, Some(&sequence(10)));
+        remote.refresh(&[&mine]).0.unwrap();
+        feed.publish("mine", &DENON, &key, Some(&later));
+        let error = remote.refresh(&[&mine]).0.unwrap_err();
+        assert!(error.0.contains("newer format"), "{error}");
+    }
+
+    #[test]
+    fn an_official_repository_has_to_name_its_own_channel() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let mut preview = repository("preview", &feed, &key);
+        preview.official = true;
+        let mut stable = repository("stable", &feed, &key);
+        stable.official = true;
+        // `document` says "preview": the preview feed copied over stable.
+        feed.publish("preview", &DENON, &key, Some(&sequence(10)));
+        feed.publish("stable", &DENON, &key, Some(&sequence(10)));
+        let (result, offered) = remote.refresh(&[&preview, &stable]);
+        assert_eq!(
+            result.unwrap_err().0,
+            "Feed stable: The package feed's metadata belongs to another channel"
+        );
+        assert_eq!(offered, ["denon 0.2.1 from preview"]);
+        // Anybody's own repository calls its channel what it likes.
+        stable.official = false;
+        remote.refresh(&[&preview, &stable]).0.unwrap();
+    }
+
+    #[test]
+    fn an_official_repository_is_refused_without_metadata_from_the_first_refresh() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        // `document` names the channel "preview", so this id, matching the
+        // channel an official repository is held to, is the one that keeps
+        // its otherwise-valid metadata from being refused for the wrong
+        // reason.
+        let (mut official, custom) = (
+            repository("preview", &feed, &key),
+            repository("mine", &feed, &key),
+        );
+        official.official = true;
+        // Official, and this remote has never seen metadata from it: no
+        // trust on first use any more, unlike a custom repository.
+        feed.publish("preview", &DENON, &key, None);
+        // A custom repository is unaffected: still trusted the first time.
+        feed.publish("mine", &DENON, &key, None);
+        let (result, offered) = remote.refresh(&[&official, &custom]);
+        assert_eq!(
+            result.unwrap_err().0,
+            "Feed preview: The package feed's signed metadata is missing"
+        );
+        // The custom repository still loads, with no metadata at all.
+        assert_eq!(offered, ["denon 0.2.1 from mine"]);
+        assert_eq!(remote.seen("preview"), None);
+        assert_eq!(remote.seen("mine"), None);
+        // Invalid metadata (signed by somebody else) is refused the same
+        // way, still on the very first refresh.
+        feed.publish("preview", &DENON, &TestKey::new(2048), Some(&sequence(10)));
+        let error = remote.refresh(&[&official]).0.unwrap_err();
+        assert!(
+            error.0.contains("metadata signature is not valid"),
+            "{error}"
+        );
+        assert_eq!(remote.seen("preview"), None);
+        // Once it publishes something valid, it is accepted like any other.
+        feed.publish("preview", &DENON, &key, Some(&sequence(10)));
+        remote.refresh(&[&official]).0.unwrap();
+        assert_eq!(remote.seen("preview").unwrap().sequence, 10);
+    }
+
+    #[test]
+    fn one_repository_that_cannot_be_used_does_not_empty_the_others() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let (good, bad, gone) = (
+            repository("good", &feed, &key),
+            repository("bad", &feed, &key),
+            repository("gone", &feed, &key),
+        );
+        feed.publish("good", &DENON, &key, Some(&sequence(10)));
+        feed.publish(
+            "bad",
+            &[("kodi", "0.1.0-r0")],
+            &TestKey::new(2048),
+            Some(&sequence(10)),
+        );
+        let (result, offered) = remote.refresh(&[&bad, &good, &gone]);
+        assert_eq!(
+            result.unwrap_err().0,
+            "Feed bad: The package feed's metadata signature is not valid; \
+             Feed gone: cannot download repository index over HTTPS"
+        );
+        assert_eq!(offered, ["denon 0.2.1 from good"]);
+        let catalog = remote.manager.catalog(&[]).unwrap();
+        assert!(catalog["catalog_error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Feed bad: "));
+    }
+
+    #[test]
+    fn a_redirect_to_plain_http_is_a_failed_download() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let (mine, moved) = (
+            repository("mine", &feed, &key),
+            repository("moved", &feed, &key),
+        );
+        feed.publish("mine", &DENON, &key, Some(&sequence(10)));
+        // The whole feed is there, one plain-HTTP redirect away.
+        feed.route(
+            "/moved/armv7/APKINDEX.tar.gz",
+            Route::Redirect(format!("{}/mine/armv7/APKINDEX.tar.gz", feed.address)),
+        );
+        let (result, offered) = remote.refresh(&[&moved]);
+        assert_eq!(
+            result.unwrap_err().0,
+            "Feed moved: cannot download repository index over HTTPS: \
+             the download was redirected to an address that is not HTTPS"
+        );
+        assert!(offered.is_empty());
+        assert_eq!(feed.requested("/mine/armv7/APKINDEX.tar.gz"), 0);
+        // The same for the metadata, by a relative address.
+        feed.route(
+            "/mine/armv7/feed.json",
+            Route::Redirect("/mine/armv7/feed-elsewhere.json".into()),
+        );
+        let error = remote.refresh(&[&mine]).0.unwrap_err();
+        assert!(
+            error
+                .0
+                .contains("signed metadata over HTTPS: the download was redirected"),
+            "{error}"
+        );
+        assert_eq!(feed.requested("/feed-elsewhere.json"), 0);
+        // A redirect with nowhere to go is no download either.
+        feed.route("/mine/armv7/feed.json", Route::Status(302));
+        assert!(remote.refresh(&[&mine]).0.is_err());
+    }
+
+    fn needs(protocol: u32) -> impl Fn(&[u8]) -> serde_json::Value {
+        move |index| {
+            let mut value = document(10, index);
+            value["packages"][0]["protocol_version"] = protocol.into();
+            value["packages"][0]["min_core_protocol_version"] = protocol.into();
+            value
+        }
+    }
+    fn install(id: &str) -> Action {
+        Action {
+            id: id.into(),
+            repository: Some("mine".into()),
+            preserve_connection_config: true,
+        }
+    }
+
+    #[test]
+    fn a_package_that_needs_a_newer_couch_is_refused_before_any_download() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let mine = repository("mine", &feed, &key);
+        feed.publish("mine", &DENON, &key, Some(&needs(PROTOCOL_VERSION + 1)));
+        remote.refresh(&[&mine]).0.unwrap();
+        let catalog = remote.manager.catalog(&[]).unwrap();
+        assert_eq!(catalog["available"][0]["installable"], false);
+        assert_eq!(catalog["available"][0]["reason"], "Needs a newer Couch");
+        let asked = feed.requests.lock().unwrap().len();
+        let error = remote
+            .manager
+            .install("install", install("denon"), std::slice::from_ref(&mine))
+            .unwrap_err();
+        assert!(error.0.starts_with("Needs a newer Couch. "), "{error}");
+        assert_eq!(feed.requests.lock().unwrap().len(), asked);
+        assert_eq!(remote.fetches(), 0);
+        // The feed moved on between browsing and installing: the catalog
+        // still says installable, the index read just before the download
+        // says otherwise, and that is the one believed.
+        feed.publish("mine", &DENON, &key, Some(&needs(PROTOCOL_VERSION)));
+        remote.refresh(&[&mine]).0.unwrap();
+        let catalog = remote.manager.catalog(&[]).unwrap();
+        assert_eq!(catalog["available"][0]["installable"], true);
+        assert!(catalog["available"][0].get("reason").is_none());
+        feed.publish("mine", &DENON, &key, Some(&needs(PROTOCOL_VERSION + 1)));
+        let error = remote
+            .manager
+            .install("install", install("denon"), std::slice::from_ref(&mine))
+            .unwrap_err();
+        assert!(error.0.starts_with("Needs a newer Couch. "), "{error}");
+        assert_eq!(remote.fetches(), 0);
+    }
+
+    /// A package the way `tests/lifecycle.rs` builds one.
+    fn package(path: &Path, version: &str) {
+        let manifest = serde_json::json!({"protocol_version":1,"id":"fixture","label":"Fixture",
+            "version":version,"executable":"bin/plugin","capabilities":[],"settings":[]});
+        let mut frame = Vec::new();
+        couch_plugin::write_frame(
+            &mut frame,
+            &serde_json::json!({"id":1,"body":{"type":"hello","manifest":manifest}}),
+        )
+        .unwrap();
+        let bytes: String = frame.iter().map(|byte| format!("\\{byte:03o}")).collect();
+        let script = format!("#!/bin/sh\nprintf '{bytes}'\nsleep 5\n");
+        let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
+            File::create(path).unwrap(),
+            flate2::Compression::default(),
+        ));
+        for (name, content, mode) in [
+            (
+                "manifest.json",
+                serde_json::to_vec(&manifest).unwrap(),
+                0o644,
+            ),
+            ("bin/plugin", script.into_bytes(), 0o755),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(mode);
+            header.set_size(content.len() as u64);
+            header.set_cksum();
+            let name = format!("usr/lib/couch/integrations/fixture/{name}");
+            archive
+                .append_data(&mut header, name, content.as_slice())
+                .unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap();
+    }
+
+    #[test]
+    fn a_downloaded_package_has_to_be_the_one_the_metadata_describes() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let mine = repository("mine", &feed, &key);
+        let file = remote
+            .fixture
+            .0
+            .join("served/couch-integration-fixture-1.0.0-r0.apk");
+        package(&file, "1.0.0");
+        let bytes = fs::read(&file).unwrap();
+        let described = |size: u64, sha256: String| {
+            move |index: &[u8]| {
+                let mut value = document(10, index);
+                value["packages"] = serde_json::json!([{"id":"fixture","version":"1.0.0",
+                    "apk":"couch-integration-fixture-1.0.0-r0.apk","size":size,"sha256":sha256,
+                    "protocol_version":1,"min_core_protocol_version":1}]);
+                value
+            }
+        };
+        let fixture = [("fixture", "1.0.0-r0")];
+        let attempt = |metadata: Metadata| {
+            feed.publish("mine", &fixture, &key, Some(metadata));
+            remote.refresh(&[&mine]).0.unwrap();
+            remote
+                .manager
+                .install("install", install("fixture"), std::slice::from_ref(&mine))
+        };
+        let mismatch =
+            "The downloaded package is not the one the package feed's signed metadata describes";
+        let wrong_hash = attempt(&described(bytes.len() as u64, feed::sha256_hex(b"another")));
+        assert_eq!(wrong_hash.unwrap_err().0, mismatch);
+        let wrong_size = attempt(&described(bytes.len() as u64 + 1, feed::sha256_hex(&bytes)));
+        assert_eq!(wrong_size.unwrap_err().0, mismatch);
+        assert_eq!(remote.fetches(), 2);
+        assert!(remote.manager.0.store.list().unwrap().is_empty());
+        // Nothing of a refused download is left behind.
+        let left: Vec<_> = fs::read_dir(remote.manager.0.store.root())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".fetch-"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        attempt(&described(
+            bytes.len() as u64,
+            feed::sha256_hex(&bytes).to_uppercase(),
+        ))
+        .unwrap();
+        assert_eq!(remote.manager.0.store.list().unwrap()[0].version, "1.0.0");
+        assert_eq!(remote.manager.origins().unwrap()["fixture"], "mine");
+        // A feed without metadata installs as it always has.
+        let (other, plain) = (
+            Remote::new(),
+            repository("mine", &feed, &TestKey::new(2048)),
+        );
+        fs::copy(
+            &file,
+            other
+                .fixture
+                .0
+                .join("served/couch-integration-fixture-1.0.0-r0.apk"),
+        )
+        .unwrap();
+        feed.publish("mine", &fixture, &key, None);
+        other.refresh(&[&plain]).0.unwrap();
+        other
+            .manager
+            .install("install", install("fixture"), std::slice::from_ref(&plain))
+            .unwrap();
+    }
+
+    #[test]
+    fn an_update_the_core_cannot_run_is_offered_with_its_reason() {
+        let (remote, feed, key) = (Remote::new(), Feed::new(), TestKey::new(2048));
+        let mine = repository("mine", &feed, &key);
+        let file = remote
+            .fixture
+            .0
+            .join("served/couch-integration-fixture-1.0.0-r0.apk");
+        package(&file, "1.0.0");
+        feed.publish("mine", &[("fixture", "1.0.0-r0")], &key, None);
+        remote.refresh(&[&mine]).0.unwrap();
+        remote
+            .manager
+            .install("install", install("fixture"), std::slice::from_ref(&mine))
+            .unwrap();
+        let newer = |index: &[u8]| {
+            let mut value = document(10, index);
+            value["packages"] = serde_json::json!([{"id":"fixture","version":"2.0.0",
+                "apk":"couch-integration-fixture-2.0.0-r0.apk","size":1,"sha256":"00",
+                "protocol_version":PROTOCOL_VERSION + 1,
+                "min_core_protocol_version":PROTOCOL_VERSION + 1}]);
+            value
+        };
+        feed.publish("mine", &[("fixture", "2.0.0-r0")], &key, Some(&newer));
+        remote.refresh(&[&mine]).0.unwrap();
+        let catalog = remote.manager.catalog(&[]).unwrap();
+        let installed = &catalog["installed"][0];
+        assert_eq!(installed["available_version"], "2.0.0");
+        assert_eq!(installed["update_installable"], false);
+        assert_eq!(installed["update_reason"], "Needs a newer Couch");
+        let fetched = remote.fetches();
+        assert!(remote
+            .manager
+            .install("update", install("fixture"), std::slice::from_ref(&mine))
+            .is_err());
+        assert_eq!(remote.fetches(), fetched);
+    }
+
     #[test]
     fn only_one_mutation_runs_and_removal_preserves_config() {
         let fixture = Fixture::new();

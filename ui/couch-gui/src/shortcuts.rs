@@ -96,9 +96,10 @@ fn open_device(config: &Config, id: &Id) -> Dispatch {
     if crate::lights::tv_connection(config, device.id.as_str()).is_some() {
         return Dispatch::OpenTv(resource, name);
     }
-    if config.can_toggle(device) {
-        // Lights and covers have no screen of their own: the room list is
-        // where their brightness and position live.
+    // Lights and covers have no screen of their own: the room list is where
+    // their brightness and position live. A packaged lamp or blind is one of
+    // them even when its kind cannot be toggled from a key.
+    if config.can_toggle(device) || crate::lights::plugin_row(config, device).is_some() {
         let row = crate::lights::row_of_device(config, &room.id, &device.id).unwrap_or(0);
         return Dispatch::OpenRoom(room.id.clone(), row);
     }
@@ -153,11 +154,45 @@ fn toggle(
     hue: &connections::HueFleet,
     matter: &connections::MatterFleet,
 ) -> Result<String, String> {
+    toggle_with(config, id, hue, matter, &mut crate::lights::plugin_socket)
+}
+
+fn toggle_with(
+    config: &Config,
+    id: &Id,
+    hue: &connections::HueFleet,
+    matter: &connections::MatterFleet,
+    ask: crate::lights::Ask,
+) -> Result<String, String> {
     let (_, device) = config
         .devices()
         .find(|(_, d)| &d.id == id)
         .ok_or("That device was removed")?;
     let name = device.name.clone();
+    // A packaged lamp or blind, when its kind says it can be toggled: the
+    // same `toggle` the room row sends, through the same worker-side call.
+    if config.can_toggle(device) {
+        if let Some(row) = crate::lights::plugin_row(config, device) {
+            return match crate::lights::plugin_toggle(&row, &name, ask)? {
+                Some(crate::lights::DeviceState::Cover(cover)) => {
+                    Ok(match cover.state.as_deref() {
+                        Some("closed") => format!("{name} closed"),
+                        Some("open") => format!("{name} open"),
+                        Some(state) => format!("{name} {state}"),
+                        None => name,
+                    })
+                }
+                Some(crate::lights::DeviceState::Light(light)) => Ok(match light.on {
+                    Some(true) => format!("{name} on"),
+                    Some(false) => format!("{name} off"),
+                    None => name,
+                }),
+                // Busy, or a reading that said nothing about this child: the
+                // press was not lost, there is simply nothing to report.
+                _ => Ok(name),
+            };
+        }
+    }
     let state = match config.resolve_integration(&device.integration) {
         Some(Integration::Hue { light_id }) => hue.toggle(&light_id)?.on,
         Some(Integration::Matter { device }) => matter.toggle(&device)?.on,
@@ -215,6 +250,7 @@ mod tests {
             .with_integration(Integration::Connection {
                 connection_id: "ha".into(),
                 resource_id: "climate.living".into(),
+                child: None,
             }),
         );
         // A receiver behind an installed integration package.
@@ -228,6 +264,7 @@ mod tests {
                 supports_inputs: true,
                 presentation: vec![],
                 actions: vec![],
+                children: vec![],
             },
         });
         config
@@ -243,6 +280,7 @@ mod tests {
                 .with_integration(Integration::Connection {
                     connection_id: "avr".into(),
                     resource_id: String::new(),
+                    child: None,
                 }),
             );
         let upstairs = config.areas[1].id.clone();
@@ -345,6 +383,7 @@ mod tests {
                 .resolve_integration(&Integration::Connection {
                     connection_id: "avr".into(),
                     resource_id: String::new(),
+                    child: None,
                 })
                 .unwrap()
         ));
@@ -378,6 +417,147 @@ mod tests {
         assert_eq!(
             open_device(&config, &Id::new("living-avr")),
             Dispatch::Unavailable("Needs the Denon package".into())
+        );
+    }
+
+    /// A packaged lamp: the shortcut key switches it with the child's own
+    /// `toggle`, and a key aimed at its row opens the room list rather than a
+    /// screen it does not have.
+    #[test]
+    fn a_shortcut_to_a_packaged_lamp_toggles_the_child_and_opens_its_room() {
+        let (mut config, _) = house();
+        let bridge = couch_model::Provider::Plugin {
+            id: "hue".into(),
+            label: "Philips Hue".into(),
+            capabilities: vec![],
+            supports_inputs: false,
+            presentation: vec![],
+            actions: vec![],
+            children: vec![couch_model::PluginChildKind {
+                kind: "light".into(),
+                label: "Light".into(),
+                device_kind: couch_model::DeviceKind::Light,
+                component: couch_model::ChildComponent::Light,
+                capabilities: vec![couch_model::PluginCapability {
+                    id: "toggle".into(),
+                    label: "Toggle".into(),
+                }],
+                actions: vec![couch_model::PluginActionSchema::SetLight {}],
+            }],
+        };
+        config.connections.push(couch_model::Connection {
+            id: "bridge".into(),
+            name: "Hue bridge".into(),
+            provider: bridge,
+        });
+        config
+            .room_mut(&Id::new("living-room"))
+            .unwrap()
+            .devices
+            .push(
+                couch_model::Device::new(
+                    Id::new("desk"),
+                    "Desk lamp",
+                    couch_model::DeviceKind::Light,
+                )
+                .with_integration(Integration::Connection {
+                    connection_id: "bridge".into(),
+                    resource_id: "lamp/1".into(),
+                    child: Some(couch_model::ChildSnapshot {
+                        kind: "light".into(),
+                        light: Some(couch_model::LightTraits {
+                            dimmable: true,
+                            mirek: None,
+                            color: false,
+                        }),
+                        cover: None,
+                        climate: None,
+                    }),
+                }),
+            );
+        config.validate().unwrap();
+        let device = config
+            .devices()
+            .find(|(_, d)| d.id.as_str() == "desk")
+            .map(|(_, d)| d)
+            .unwrap();
+        // Its kind declares `toggle`, so a key may switch it.
+        assert!(config.can_toggle(device));
+        // And a key pointed at the device opens its row, not a screen.
+        let row = crate::lights::row_of_device(&config, &Id::new("living-room"), &Id::new("desk"))
+            .unwrap();
+        assert_eq!(
+            open_device(&config, &Id::new("desk")),
+            Dispatch::OpenRoom(Id::new("living-room"), row)
+        );
+        let hue = Arc::new(connections::HueFleet::default());
+        let matter = connections::MatterFleet::default();
+        let mut sent = Vec::new();
+        let said = toggle_with(
+            &config,
+            &Id::new("desk"),
+            &hue,
+            &matter,
+            &mut |connection, request, _| {
+                sent.push((connection.to_owned(), request));
+                Ok(couch_plugin::Response::Status {
+                    status: serde_json::from_value(
+                        serde_json::json!({"light":{"on":true,"brightness":40}}),
+                    )
+                    .unwrap(),
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(said, "Desk lamp on");
+        assert_eq!(
+            sent,
+            [(
+                "bridge".to_string(),
+                couch_plugin::Request::Command {
+                    function: "toggle".into(),
+                    phase: couch_model::KeyPhase::Tap,
+                    resource: Some("lamp/1".into())
+                }
+            )]
+        );
+        // A busy connection is not a failure and says only the lamp's name.
+        let quiet = toggle_with(&config, &Id::new("desk"), &hue, &matter, &mut |_, _, _| {
+            Err(couch_plugin::Error::Busy.into())
+        })
+        .unwrap();
+        assert_eq!(quiet, "Desk lamp");
+        // A kind that does not declare `toggle` is not switched from a key,
+        // and nothing is sent for it.
+        let mut plain = config.clone();
+        let couch_model::Provider::Plugin { children, .. } = &mut plain
+            .connections
+            .iter_mut()
+            .find(|c| c.id.as_str() == "bridge")
+            .unwrap()
+            .provider
+        else {
+            panic!("a packaged connection")
+        };
+        children[0].capabilities.clear();
+        let device = plain
+            .devices()
+            .find(|(_, d)| d.id.as_str() == "desk")
+            .map(|(_, d)| d)
+            .unwrap();
+        assert!(!plain.can_toggle(device));
+        // Its row is still where its brightness lives.
+        assert!(matches!(
+            open_device(&plain, &Id::new("desk")),
+            Dispatch::OpenRoom(..)
+        ));
+        assert_eq!(
+            toggle_with(&plain, &Id::new("desk"), &hue, &matter, &mut |_, _, _| {
+                panic!("nothing may be sent")
+            })
+            .err()
+            .as_deref(),
+            Some("This device cannot be switched from a key")
         );
     }
 

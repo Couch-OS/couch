@@ -40,8 +40,34 @@ const config = {
         supports_inputs: false, presentation: v1Presentation,
       },
     },
+    {
+      id: 'bedroom-tv', name: 'Bedroom TV package',
+      provider: {
+        kind: 'plugin', id: 'tv-settings', label: 'TV package',
+        capabilities: [], actions: [], supports_inputs: false, presentation: [],
+      },
+    },
   ],
 };
+const tvSettings = [
+  {id: 'host', label: 'Device address', kind: 'text', required: true},
+  {id: 'port', label: 'Port', kind: 'integer', default: 8080},
+];
+// What the daemon answers a refused save with. `error` is the sentence every
+// client shows; `code` and `reason` are beside it for a client that can do
+// better. Only a protocol 3 package gives a reason, and no released Couch
+// loads one yet, so the first shape is the only one a remote sends today.
+const refusals = [
+  {status: 400, body: {error: 'Invalid integration settings or package', code: 'invalid'}},
+  {status: 400, body: {
+    error: 'The port must not be 0', code: 'invalid',
+    reason: {kind: 'invalid_setting', field: 'port', text: 'The port must not be 0'},
+  }},
+  {status: 400, body: {
+    error: 'Pair this TV again', code: 'unpaired',
+    reason: {kind: 'message', text: 'Pair this TV again'},
+  }},
+];
 const catalog = {
   integrations: [
     {
@@ -52,6 +78,10 @@ const catalog = {
       id: 'denon-v1', label: 'Denon package v1',
       capabilities: [{id: 'volume-up', label: 'Volume up'}], actions: [],
       settings: [], supports_inputs: false, presentation: v1Presentation,
+    },
+    {
+      id: 'tv-settings', label: 'TV package', capabilities: [], actions: [],
+      settings: tvSettings, supports_inputs: false, presentation: [],
     },
   ],
 };
@@ -85,6 +115,14 @@ async function mockApi(page) {
     if (request.method() === 'GET' && path === '/api/integrations') return json(catalog);
     if (request.method() === 'GET' && /^\/api\/connections\/receiver-v[12]\/plugin\/settings$/.test(path)) {
       return json({configured: true, settings: {}, secrets: []});
+    }
+    if (path === '/api/connections/bedroom-tv/plugin/settings') {
+      if (request.method() === 'GET') return json({configured: true, settings: {host: 'tv.local', port: 8080}, secrets: []});
+      const refusal = refusals.shift();
+      if (!refusal) return json({configured: true, settings: body, secrets: []});
+      return route.fulfill({
+        status: refusal.status, contentType: 'application/json', body: JSON.stringify(refusal.body),
+      });
     }
     if (request.method() === 'GET' && path === '/api/connections/receiver-v2/plugin/status') return json(status());
     if (request.method() === 'POST' && path === '/api/connections/receiver-v2/plugin/typed-action') {
@@ -153,8 +191,63 @@ try {
   assert.equal(await page.getByRole('button', {name: 'Set volume', exact: true}).count(), 0, 'v1 manifests cannot invoke typed dB actions');
   assert.equal(calls.filter(call => call.path.endsWith('/typed-action')).length, 1, 'only the declared v2 action reached the API');
 
+  // A refused save. The form's own line has always shown the sentence; a
+  // reason that names a setting marks that setting and puts the package's
+  // words under it.
+  await page.setViewportSize({width: 390, height: 844});
+  await openConnection(page, 'Bedroom TV package');
+  const port = page.getByLabel('Port', {exact: true});
+  const host = page.getByLabel('Device address · required', {exact: true});
+  const save = page.getByRole('button', {name: 'Save private settings', exact: true});
+  const formLine = page.locator('section.card').filter({hasText: 'Integration settings'}).getByRole('status');
+  assert.equal(await port.inputValue(), '8080');
+  await port.fill('0');
+  await save.click();
+  await page.getByText('Invalid integration settings or package', {exact: true}).waitFor();
+  assert.equal(await page.locator('.field-error').count(), 0, 'a refusal without a reason marks no setting');
+  assert.equal(await port.getAttribute('aria-invalid'), null);
+
+  await save.click();
+  const complaint = page.locator('#plugin-setting-port-error');
+  await complaint.waitFor();
+  assert.equal(await complaint.textContent(), 'The port must not be 0');
+  assert.equal(await complaint.getAttribute('role'), 'alert');
+  assert.equal(await port.getAttribute('aria-invalid'), 'true');
+  assert.equal(await port.getAttribute('aria-describedby'), 'plugin-setting-port-error');
+  assert.equal(await host.getAttribute('aria-invalid'), null, 'only the blamed setting is marked');
+  assert.equal(await page.locator('.field-error').count(), 1);
+  assert.equal(await formLine.textContent(), 'Not saved. Check Port.');
+  // The words sit directly under the control they are about.
+  const [portBox, complaintBox, hostBox] = await Promise.all([port.boundingBox(), complaint.boundingBox(), host.boundingBox()]);
+  assert(complaintBox.y >= portBox.y + portBox.height, 'the reason is under the Port control');
+  assert(complaintBox.y - (portBox.y + portBox.height) < 24, 'the reason is next to the Port control');
+  assert(complaintBox.y > hostBox.y + hostBox.height, 'the reason is not under another setting');
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'a field reason overflows a phone viewport');
+  // The card alone, in a viewport tall enough to hold it: a capture that has
+  // to scroll puts the sticky bars over the form.
+  await page.setViewportSize({width: 390, height: 1400});
+  await page.locator('section.card').filter({hasText: 'Integration settings'}).screenshot({path: process.env.COUCH_COMPONENTS_FIELD_ERROR ?? 'build/webui-review/plugin-components-field-error.png'});
+
+  // Editing the setting takes the words away: they were about the old value.
+  await port.fill('8081');
+  assert.equal(await page.locator('.field-error').count(), 0);
+  assert.equal(await port.getAttribute('aria-invalid'), null);
+
+  // A reason about no setting is the form's line, like any other refusal.
+  await save.click();
+  await page.getByText('Pair this TV again', {exact: true}).waitFor();
+  assert.equal(await page.locator('.field-error').count(), 0);
+
+  await save.click();
+  await page.getByText('Private settings saved.', {exact: true}).waitFor();
+  const saves = calls.filter(call => call.method === 'POST' && call.path === '/api/connections/bedroom-tv/plugin/settings');
+  assert.deepEqual(saves.map(call => call.body), [
+    {host: 'tv.local', port: 0}, {host: 'tv.local', port: 0},
+    {host: 'tv.local', port: 8081}, {host: 'tv.local', port: 8081},
+  ], 'a refused save is never retried by the page');
+
   assert.deepEqual(errors, []);
-  console.log('PASS: v2 dB controls validate declared bounds, post one typed action then refresh status, and preserve v1 controls.');
+  console.log('PASS: v2 dB controls validate declared bounds, post one typed action then refresh status, and preserve v1 controls; a refused save marks the setting its reason names.');
 } finally {
   await browser.close();
 }

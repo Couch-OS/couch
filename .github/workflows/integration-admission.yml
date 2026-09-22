@@ -16,6 +16,8 @@ on:
       - 'integrations/**'
       - 'tools/integrations/**'
       - 'tools/tests/integrations-e2e.py'
+      - 'tools/tests/config-crossload.*'
+      - 'tools/tests/old-package-wire.sh'
       - '.github/workflows/integration-admission.yml'
   workflow_dispatch:
 
@@ -44,7 +46,9 @@ jobs:
           changed=true
           if [ "$EVENT_NAME" = pull_request ] && git diff --quiet "$BASE_SHA"...HEAD -- \
             clients daemon model web integrations tools/integrations \
-            tools/tests/integrations-e2e.py .github/workflows/integration-admission.yml; then
+            tools/tests/integrations-e2e.py tools/tests/config-crossload.sh \
+            tools/tests/config-crossload.rs tools/tests/old-package-wire.sh \
+            .github/workflows/integration-admission.yml; then
               changed=false
           fi
           echo "integration=$changed" >> "$GITHUB_OUTPUT"
@@ -98,8 +102,36 @@ jobs:
           cargo test --locked --manifest-path model/Cargo.toml -p couch-model
           cargo test --locked --manifest-path clients/Cargo.toml -p couch-control
           cargo test --locked --manifest-path daemon/Cargo.toml -p couch-confd
+      # The last release's model source, built beside this one: it has to start
+      # on every file this tree saves, and this tree must not move a byte of
+      # the files it saved. Fetches the release tag itself.
+      - name: Exchange saved configurations with the last release
+        run: tools/tests/config-crossload.sh
+      # The packages already in the feed were built from an older couch-plugin
+      # whose every wire type refuses unknown fields. Build echo and Sonos from
+      # that source and run this tree's admission and subprocess suites against
+      # those executables. This tree's side reuses clients/target, which this
+      # job has already cached; the old side is a cold build of two small
+      # crates in a temporary directory.
+      - name: Drive packages built from the published SDK with this host
+        env:
+          COUCH_OLD_WIRE_REUSE_TARGET: 1
+        run: tools/tests/old-package-wire.sh
       - name: Exercise daemon, package, HTTP, panel, and fake device together
         run: python3 tools/tests/integrations-e2e.py
+      # Protocol 3 is switched off in every build that ships, so the one place
+      # a real pairing package can be driven through the daemon's own routes
+      # is here, with both sides built with the preview feature. The guard
+      # tests above run with the ordinary feature set and stay green.
+      - name: Pair a real protocol 3 package end to end
+        run: |
+          cargo build --locked --manifest-path clients/Cargo.toml -p couch-echo \
+            --bin couch-plugin-echo-pair --features couch-echo/protocol-3-preview
+          cargo build --locked --manifest-path daemon/Cargo.toml -p couch-confd \
+            --features couch-plugin/protocol-3-preview
+          python3 tools/tests/integrations-e2e.py \
+            --confd daemon/target/debug/couch-confd \
+            --echo-pair clients/target/debug/couch-plugin-echo-pair
 
   management-browser:
     needs: changes
@@ -137,6 +169,8 @@ jobs:
           python3 -m http.server 18093 --bind 127.0.0.1 --directory web/couch-web/dist > "$RUNNER_TEMP/couch-web.log" 2>&1 &
           COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/integrations.mjs
           COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/plugin-components.mjs
+          COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/plugin-children.mjs
+          COUCH_TEST_URL=http://127.0.0.1:18093 node web/tests/plugin-pairing.mjs
       # The same bundle and the same browser, for the other screen whose copy
       # is asserted rather than its behaviour: every endpoint is mocked, so no
       # update service and no remote are involved.
@@ -153,8 +187,20 @@ jobs:
             build/webui-review/integrations-desktop.png
             build/webui-review/plugin-components-mobile.png
             build/webui-review/plugin-components-desktop.png
+            build/webui-review/plugin-components-field-error.png
+            build/webui-review/plugin-children-mobile.png
+            build/webui-review/plugin-children-confirm.png
+            build/webui-review/plugin-children-controls.png
+            build/webui-review/plugin-pairing-press-button.png
+            build/webui-review/plugin-pairing-approve.png
+            build/webui-review/plugin-pairing-enter-code.png
+            build/webui-review/plugin-pairing-wrong-code.png
+            build/webui-review/plugin-pairing-done.png
+            build/webui-review/plugin-pairing-warning.png
+            build/webui-review/plugin-pairing-banner.png
             build/webui-review/updates-installed-mobile.png
             build/webui-review/updates-installed-desktop.png
+            build/webui-review/updates-preview-build-mobile.png
             ${{ runner.temp }}/couch-web.log
             ${{ runner.temp }}/couch-web-updates.log
           if-no-files-found: warn

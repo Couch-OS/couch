@@ -29,6 +29,12 @@ export global Theme {
     out property <color> surface-icon-idle: #221F1A;
     out property <color> border-icon-idle: #302B24;
 
+    // The backdrop behind a takeover pop-up (the mic, pairing and
+    // Bluetooth-pairing overlays) - one alpha where three near-black values
+    // (88%, 94%, 96%) were typed out with nobody having chosen three. Not
+    // the tray's #00000088: that is a sheet over a live page, not a takeover.
+    out property <color> scrim: #000000F0;
+
     // --- radii ----------------------------------------------------------------
     out property <length> r-glyph: 3px;
     out property <length> r-meter: 5px;
@@ -43,6 +49,15 @@ export global Theme {
     out property <length> pad-side: 20px;
     out property <length> pad-bottom: 22px;
     out property <length> overlay-inset: 36px;
+
+    // --- type -----------------------------------------------------------------
+    // A device's name, wherever it is shown. A room row's label and the title
+    // of the screen that row opens are the same words about the same thing, so
+    // they are the same size and weight - which is also what lets the lift
+    // transition fly one straight onto the other with nothing to fade
+    // (docs/slint-notes.md).
+    out property <length> device-name: 26px;
+    out property <int> device-name-weight: 600;
 
     // --- focus ----------------------------------------------------------------
     // Slint has no CSS outline, and a border on the element itself would shift

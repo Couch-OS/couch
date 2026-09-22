@@ -14,14 +14,54 @@ One bridge connection is supported per remote.
 3. Open **Rooms & devices**, create or open a room, then choose the saved Hue
    connection under **Add devices to this room**. Search the discovered lights and
    click **Add to this room**. Discovery never assigns devices automatically.
-4. Open that room on the remote. Devices appear in one flat list. Highlight a light
-   and press OK to toggle it. Tapping selects a row, matching room navigation.
-   Physical Back returns home. Use
-   **Show light controls** on an assigned device in the web editor for brightness.
+4. Open that room on the remote. Devices appear in one flat list. Highlight a
+   light and press **Power** to switch it on or off. Press **OK** to open its
+   controls: a tall brightness bar, and beside it a colour temperature bar on a
+   light whose bridge reports a range for it, shown in Kelvin. Both bars fill
+   and read from the bottom, and warm is at the bottom of the colour bar, so up
+   is always the higher number; neither bar carries a highlight, because each
+   has its own key. On the row itself left and right still dim the light in
+   place. A row whose OK opens controls shows a small chevron and keeps
+   its state text ("On · 40%"). A light that can only be switched keeps OK as
+   the switch it was. Tapping selects a row, matching room navigation. Physical
+   Back returns to the room with the same row still highlighted.
    Zero-percent brightness means off.
 
 Unreachable lights display as unavailable. Commands are acknowledged by the
 bridge; refresh to see reported state. This is not proof of physical illumination.
+
+## The keys on a light's or blind's controls
+
+The controls **open out of the row you pressed**: the row's card becomes a
+window onto the screen and grows to fill the panel, with its focus ring riding
+the edge, and Back collapses the same window back onto the same row. Nothing
+is redrawn while it travels, so it costs no more than a page slide.
+
+**Neither bar is ever highlighted.** Each has a key of its own, so there is
+nothing to select between and no ring to move. Only a blind's three buttons
+carry a highlight, because OK has to know which one it presses.
+
+| Key | On a lamp | On a blind |
+| --- | --- | --- |
+| Volume up / down | Brighter / dimmer, 5% a press | More / less open, 5% a press |
+| Up / down | The same as volume | The same as volume |
+| Channel up / down | Cooler / warmer, a twentieth of the lamp's range a press (at least 5 mirek). A lamp with no colour temperature ignores them; a lamp that is showing a colour has none to step from, so the first press turns it to warm white (2700 K) and the next ones step from there | Nothing |
+| Left / right | Nothing | Move along Open, Stop and Close |
+| OK | On / off | Presses the highlighted button - Open to begin with |
+| Power | On / off | Open / close |
+| Back | The room, with the same row highlighted | The same |
+
+The volume and channel keys hold to repeat like everywhere else: a held key
+leaves one target behind rather than a queue of commands, so the lamp follows
+the key instead of trailing it. While these controls are open the volume and
+channel keys are *theirs alone* - a receiver in a running activity does not
+also hear them - and closing the screen hands them straight back. The line
+along the bottom of the screen says the same thing in one line.
+
+The state line at the top keeps saying what the device is - "On · 40%" - and
+moves with the bar as you press, rather than reading "Updating…" for as long
+as the writes take. It says **Updating…** only once one write has been out for
+more than a second and a half, which means something is actually wrong.
 
 ## Connection and credentials
 
@@ -77,8 +117,9 @@ real household-light command testing remains pending.
 
 Room names and devices render from local configuration immediately. Device rows
 match the home room list’s cards, icons, typography and moving focus ring. The room
-name appears in the status bar, with no duplicate heading above the devices. OK
-toggles the focused light; physical Back returns home with a 180 ms slide.
+name appears in the status bar, with no duplicate heading above the devices.
+Power switches the focused light, OK opens its controls, and physical Back
+returns home with a 180 ms slide.
 
 The GUI starts a credential-scoped Hue session in the background. A pinned HTTPS
 connection subscribes to `/eventstream/clip/v2`. Add/update/delete events trigger
@@ -86,7 +127,7 @@ background state snapshots, preserving connectivity information as well as light
 state. This version refreshes snapshots on events rather than merging partial
 resource payloads. Commands use a separate, reusable HTTPS connection.
 
-With a valid cached state, OK sends only a PUT. The row adopts the target after
+With a valid cached state, a switch sends only a PUT. The row adopts the target after
 bridge acknowledgement; this does not prove the bulb has finished fading. Missing
 or expired state falls back to a fresh read; known-unavailable lights are refused.
 Failures invalidate the cache. Snapshot generations prevent an older response from
@@ -114,11 +155,33 @@ were preserved. No household lights were changed by automated fixture tests.
 
 In **Rooms & devices**, open a Couch room and choose the Hue connection. The
 **Hue controls** selector switches between individual lights and **Hue rooms**.
-Adding a Hue room creates one grouped control; OK toggles its grouped-light
-service, and Volume Up/Down adjusts its brightness in 5% steps. Brightness support
-and the current level come from the bridge’s grouped-light dimming state, using
-the same push-maintained cache as individual lights. It does not
-create or rename Couch rooms or duplicate all the bridge room's lights.
+Adding a Hue room creates one grouped control; Power and OK switch its
+grouped-light service, and Volume Up/Down adjusts its brightness in 5% steps.
+Brightness support and the current level come from the bridge’s grouped-light
+dimming state, using the same push-maintained cache as individual lights. It
+does not create or rename Couch rooms or duplicate all the bridge room's lights.
+
+**A Hue room has a colour temperature too**, and the Channel keys set it, the
+same as on a single lamp. The bridge will accept one for a whole room but never
+reports one back, so both the range and the current reading are worked out from
+the room's own lamps:
+
+- The **range** is the part every tunable lamp in the room can reach - the
+  highest of their minimums to the lowest of their maximums. A room with no
+  tunable lamp, or whose lamps share nothing, is offered no colour temperature
+  at all.
+- The **reading** comes only from lamps that are on and showing a white; a lamp
+  showing a colour reports no colour temperature and takes no part. If the
+  coolest and the warmest of them are within 12 mirek they are showing one
+  white, and the room reads their average. Further apart than that, the room
+  shows no reading - the first press of Channel then starts it at a warm white
+  and it steps from there.
+
+Members come from the bridge room's own list of devices, one lamp a device, so
+a multi-head fixture counts once. Hue **zones** are not offered as controls, so
+they have no colour temperature either. The packaged Hue integration derives a
+room's colour temperature by exactly these rules, so a bridge behaves the same
+whichever of the two drives it.
 
 In **Rooms & devices**, open a Couch room, select the Hue connection, and choose
 **Hue scenes** in the same **Hue controls** picker used for lights and Hue rooms.

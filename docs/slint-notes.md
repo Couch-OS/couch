@@ -138,6 +138,13 @@ is an error. Either measure off `root` (its own geometry, set by the caller) or
 take the value as a property. The focus ring takes the box it rings; the volume
 overlay is positioned by its caller.
 
+## `border-radius` does not round a gradient
+
+The software renderer rounds a solid `background`, but a `@linear-gradient` one
+is drawn square whatever the radius says. Put the gradient in a child of a
+`clip: true` rectangle when the shape matters. The light screen's colour
+temperature bar does that; its brightness bar, a solid colour, needs nothing.
+
 ## DirtyRegion holds three rectangles
 
 ```rust
@@ -221,6 +228,80 @@ simpler screen will be optimistic by several times - measure the real thing.
 `COUCH_REGION=1` prints what the renderer marked dirty each frame. A frame that
 costs far more than its content suggests is almost always claiming a larger
 region than it needs, and that is invisible without it.
+
+### What a panel of blending really costs, and what the caps mean
+
+The lift's budget is in "panels of blending": a blend counts 1, a copy 1/8, a
+fill 1/16, and the number is what the compositor touched divided by the panel.
+The conversion to milliseconds was taken from the table above and was **wrong
+by about half**. Against the device:
+
+| | |
+|---|---|
+| light screen lift, 400 ms | 24 frames |
+| device, mean frame | 5.8 - 6.8 ms |
+| device, worst frame | 10.3 - 12.4 ms |
+| model, mean frame | 0.26 panels (before the trims below) |
+| model, worst frame | 0.29 panels |
+
+The mean maps to about **22-26 ms for a whole panel of blending**, not the
+eleven in the table - that row was measured on a different kind of work. Take
+24 ms; a panel copied is then about 3 ms and a panel filled about 1.5.
+
+**The worst frame does not fit the same line.** 0.29 panels against 10-12 ms
+would imply 40 ms a panel. The model's frames span 0.20 to 0.29 - a 45 per
+cent spread - while the device's span mean 5.8 to max 12.4, a 114 per cent
+one. So the worst frame on the device is set by jitter and by whatever else
+the loop is doing (a status poll landing mid-transition), not by what the
+compositor drew. Two honest consequences:
+
+- **the 0.50 worst cap was never headroom.** At a measured 0.29 the device was
+  already reaching 12.4 ms of a 16.7 ms frame. A plan that really did reach
+  0.50 would miss frames.
+- **the caps are now what the code achieves plus a margin**, so a regression
+  shows up in panels before it is felt in milliseconds: mean 0.25 against a
+  measured 0.12-0.19, worst 0.35 against a measured 0.26-0.29.
+
+### A frame sends only the rows that can have changed
+
+Everything the lift draws is a function of `p`, so whether a row can differ
+from the one already on the glass is arithmetic, not a guess: `changed_rows`
+asks the room's fade, the plate, what is in flight and every piece the same
+question at this `p` and at the last one. A row no answer changed in is not
+composed and not sent.
+
+It matters more than the blending the shape is named for. `present` was a
+whole-panel copy every frame - 0.125 panels, the single largest term - and the
+fills for scanlines whose fade had finished were another 0.066, written over
+the colour they already held.
+
+| screen | mean before | mean after |
+|---|---|---|
+| light | 0.26 | 0.19 |
+| television | 0.22 | 0.15 |
+| thermostat | 0.22 | 0.15 |
+| player, waiting page | 0.17 | 0.12 |
+
+About a quarter to a third off the mean, and nothing off the worst frame: at
+the peak the room is still fading and the cards are still arriving, so every
+row really is different and there is nothing to skip. The peak is genuine
+work, which is why the trims do not move it.
+
+The rule the panel needs is unchanged: **every framebuffer pixel is written at
+most once a frame, in one top-to-bottom pass.** Sending fewer rows satisfies
+it. What could go wrong is the opposite - a row skipped that should not have
+been, leaving a stale band on the glass for the rest of the transition - so
+the test composes a whole run incrementally and compares the map against a
+frame drawn from nothing *at every frame*, not only at the end. That test
+caught two wrong versions of this before it was right.
+
+The summary line carries `N rows/frame mean, M max` so the trim can be read
+off the remote's log.
+
+**If it still needs to be cheaper**, the next lever is `LIFT_ROW_WAVE`: a
+bigger stagger means fewer scanlines fading at once and a lower peak, at the
+cost of the room taking longer to leave. It is a change to how the transition
+looks, so it is a decision rather than an optimisation.
 
 ## Dirty regions: what costs a frame, measured on the HA100
 
@@ -334,6 +415,194 @@ of the whole panel is ~1.3ms at any clock. It also removed a prep timer (so
 the incoming page was instantiated before the first moving frame), a settle
 timer, `*-next` models and a `sliding` flag, none of which the copy needs.
 
+### The same two buffers, cut to a rounded window: the iris
+
+A light's or a blind's controls do not arrive from the side. They open out of
+the row that was pressed, as a rounded window onto page B that starts on that
+row's card and grows to the whole panel, with the focus ring riding its edge;
+Back collapses the same window back onto the same row. `Panel::iris` is the
+slide's machinery with the run boundaries worked out per row instead of once:
+
+- **Three runs a scanline instead of two** - page A, page B, page A - so a
+  frame costs what a slide frame costs, about 1.3ms of copying, and nothing is
+  blended or re-rasterised at any point in it. The corner radius is an inset
+  on the `2r` rows at each end, one integer square root each over a radius of
+  a dozen pixels; every other row is two comparisons.
+- **Both ends of the travel are parameters** (`panel::Window`, a rect and a
+  radius), so the same compositor would open a device row into its packaged
+  controls if that is ever wanted. The row's box is read from the list itself
+  (`RoomDevices::ring-position` and its neighbours) at the moment of the
+  press, so a scrolled list, a taller row or a different corner all move the
+  window with them.
+- **The last frame is the page that is arriving, whole.** A close stops on the
+  row, which is still a window full of the page that is leaving, so the final
+  frame puts the page behind it up entire. That is a handover at the smallest
+  the window ever gets, and it keeps the slide's invariant: when a transition
+  returns, RAM and the panel agree again.
+- **Three shapes, and a switch for trying them.** The row curtain is the same
+  window with a different first rect: the row's band across the whole panel,
+  opening up and down (`Transition::from_row`). While the shapes are being
+  judged on the device, `/tmp/couch-transition` chooses: `echo "curtain 220" >
+  /tmp/couch-transition` is the curtain at 220 ms from the next press, `iris
+  300` the iris, `lift` or `lift 400` the lift, and no file is the default.
+  Each shape has its own default time; a number in the file overrides it. It
+  is read once per opening from a RAM disk and is gone at the next boot.
+  Remove the switch when a shape has been chosen.
+- **The ring is not faded.** A fade is a per-pixel blend of two layers, which
+  is the one thing this compositor never does; the ring is filled as a
+  `ring-width` outline on the window's edge and rides it all the way: it sits
+  outside the window, so it leaves the panel by itself as the window reaches
+  the edges (`IRIS_RING_UNTIL` cuts it off earlier if that is ever wanted). `IRIS` is the duration and the three
+  `IRIS_RING_*` constants are the rest: they are there to be turned on the
+  device.
+
+### The lift: sprites, reveals, and blending a quarter of the panel
+
+The lift is the one shape here that is not a window. The room falls away from
+the focused row outwards, that row's card rises into the header band with its
+name and its icon riding on it, and the control screen arrives piece by piece.
+It is still composed from the same two buffers, and it is worth reading how it
+got here, because the obvious version was the wrong trade.
+
+**The first version cross-faded the whole panel** - one blended scanline where
+the other shapes do one `memcpy` - and measured on the HA100 at **9.1 to 10.4
+ms a frame, worst frames 12 to 18 ms, and one frame of 38.5 ms** against a 16.7
+ms budget, where the iris and the curtain hold 60 fps. It also did not look
+like the thing it was copying: in a cross-fade nothing travels and nothing
+grows. Both problems have the same answer - do not touch every pixel.
+
+- **Sprites.** A rectangle cut out of a page once, before the first frame, into
+  a small owned buffer, and put down at an interpolated place on each frame:
+  the row's name and its icon, a few tens of kilobytes between them. `put`
+  clips at all four edges and takes a **colour key** - the card the name was
+  cut from - so that only the glyphs travel and the plate under them stays
+  behind. A compare a pixel over a few tens of thousands of pixels, against a
+  blend over three hundred and eighty thousand.
+- **The rising card** is a filled rounded rectangle in `Theme.surface` with a
+  pixel of `Theme.border` round it, interpolated from the row's rect to the
+  header band's. It is the focus ring's own row-run arithmetic, filled instead
+  of stroked, over a rectangle that is never more than a tenth of the panel.
+- **A card reaches the frame once, as one piece.** A bar card is built up
+  opaque in a buffer of its own first - the page's own card, with the level
+  un-revealed and the marker moved - and only then blended over the frame, at
+  the alpha it has reached. Anything painted straight into the frame at its own
+  strength shows through a card that has barely arrived: the level's track used
+  to be, and cut a dark strip through the room's rows down the width of the
+  bar while the card behind it was still nearly transparent.
+- **Reveals, not redraws.** The level bar's fill and the colour marker are
+  already in the page at their values, so neither is drawn: the fill is
+  un-revealed from the top by painting the empty part of the track in the
+  colour the page gives it, and the marker is moved by painting over it with
+  the gradient from just above and putting it back where it has got to. The
+  geometry - track, fill height, marker - is exported from `light.slint`
+  rather than written down twice.
+- **Blending, banded.** The only real blending is the room falling away, and a
+  band is blended only while it is inside its own short window: before it the
+  band is a copy of the room, after it a fill. One band is one row's pitch, so
+  a card is never caught half faded, and `LIFT_BAND_FADE` is about twice
+  `LIFT_BAND_STEP`, which holds the blended part of the panel to **roughly a
+  quarter** at any instant however many rows there are.
+- **Nothing appears or disappears in one frame.** Every element that is not
+  in both pages fades, over at least a fifth of the transition - five frames
+  at the default time - and the alpha ramp is a smoothstep, flat where it
+  starts and where it stops, so there is no step at either end either.
+  `ease_out` is right for a thing that travels and wrong for a thing that
+  appears: it opens at its fastest. The card that rises fades *in* over the
+  same window the row underneath it fades *out*, so the two cross and the
+  row's second line and chevron are never hidden in a frame, and it fades
+  *out* across its rise, so page B never has to lose a plate it never had -
+  that last one is what the owner saw as "the grey background of the room row
+  popping". The name and the icon travel on a smoothstep too, so they do not
+  separate from the row while the row is still there and read as doubled.
+  `the_control_screen_opens_as_a_window_out_of_its_row` holds the rule: over
+  the frames a default-length lift actually draws, no patch of the panel may
+  do more than 40% of everything it ever does in one frame, unless it is a
+  piece that is on screen in *both* of the two frames and has therefore moved
+  rather than appeared.
+- **A thing that travels leaves its place.** The band the focused row fades
+  away as is a copy of itself with the name and the icon painted out in the
+  colour of the card they sat on - the same colour the sprites are keyed
+  against, so the glyph edges land back on exactly it and leave no halo. Two
+  copies of a name, one flying and one fading where it started, is a ghost,
+  and it is what the row used to leave behind. Its second line and its chevron
+  do not travel, so they stay in the band and fade with it. The first frame is
+  still the room exactly: at that point the sprites sit on their own source and
+  put back precisely what was painted out.
+- **What it costs, and where that went.** The rule that nothing pops cost
+  about twice what the lift cost before it: measured on the HA100 at 500 ms,
+  a mean of 8.6-10.1 ms a frame and worst frames of 12-17, against a 16.7 ms
+  budget. A speed pass took that to a **mean of 0.26 and a worst frame of 0.29
+  panels of blending** in the profile the tests print, from 0.70 and 1.22 -
+  about 3.4 ms a frame on the device's own calibration. Four things did it:
+  a run of one colour fades to one colour, so it is **filled and not blended**
+  (most of a card's height); the header, state line and footer fade only over
+  the part of each row that **has anything on it**; a bar card is **cut once
+  and patched**, not rebuilt every frame; and the frame buffer and the card
+  scratches are **allocated before the clock starts**, which is what made an
+  open cost more than a close and once put a single frame at 34 ms.
+- **The travellers are drawn last**, after every fade, so nothing arriving can
+  clip the name or the icon on its way.
+- **A traveller lands on itself.** The row and the screen draw the device's
+  name at one size (`Theme.device-name`) and its icon with one component
+  (`components/device_disc.slint`), so the hand-over is nothing at all rather
+  than two drawings swapping places. A screen that adopts the lift uses the
+  same two. The test asserts it: at the best offset within a pixel, a
+  traveller's source and its landing may differ by no more than a shade.
+- **Blending only where there is anything to blend.** A room is mostly its
+  background, so one pass before the first frame records where each scanline
+  has content and the fade touches only that span. On a list that is about
+  three quarters of the panel rather than all of it.
+- **Nothing hands over to nothing.** A painter puts its pieces down in order,
+  so it cannot fade the arriving page in *underneath* the one that is leaving
+  the way the preview does. Instead the room is gone by about a quarter of the
+  way through and the screen's cards come in just before the last of it, the
+  state line shortly after, and the name and the disc at the hand-over. The
+  cards deliberately overlap the tail of the fall by a few frames: a card
+  arrives over a band that is most of the way faded already, which is cheaper
+  to look at than a panel with nothing on it.
+- **Nothing reads the framebuffer back.** Every blend writes; the sprites and
+  bands copy. A framebuffer is mapped for writing, and reading it back is far
+  slower than reading RAM - which the first version did, for its travelling
+  card, on every frame.
+- **A whole frame at a time.** The window shapes write every scanline exactly
+  once - three runs of A, B, A - so they can paint straight into the map. The
+  lift cannot: it flattens a band and puts its pieces back in later passes, so
+  a pixel is written up to five times and the *first* of those writes is the
+  flat background. The panel is scanned out continuously and nothing here
+  flips buffers, so painting that in place is seen half done. On the device it
+  showed as a dark bar walking up the screen, several times over a slow lift,
+  and not at all on the iris or the curtain. So a lift composes into a RAM
+  buffer - one, kept, never per frame - and `present` copies it to the map in
+  one pass, top to bottom, one write a pixel. It costs a panel copy, about a
+  millisecond, and it is the price of painting in passes at all.
+- The crossing itself now does **two pixels an iteration**, four channels
+  packed in the halves of a `u64`. Ten milliseconds for a panel where a
+  `memcpy` of the same is 1.3 is far more than a dozen integer operations a
+  pixel should cost, so it was not being widened; halving the iterations is
+  the part of that worth having without reaching for intrinsics.
+
+**The name is the same size in both places.** `Theme.device-name` is what a
+room row gives a device's name and what the control screen gives its title, so
+the sprite lands on the title it is replacing and the hand-over is a cut with
+nothing to fade. The two have different widths available, so a long name can
+elide differently in the two places; the last frame is the page itself, whole,
+so any difference is gone by then.
+
+What the preview has and this still has not: the row's label and the screen's
+title are the same size now, but the **second line** is not - a row shows the
+device's state where the screen shows where it is and what drives it, so those
+words change at the hand-over. The renderer version of the whole thing would
+be 10-29 ms a frame by the measurements above, so it was not written.
+
+Every opening prints what it cost when it is over - frames, the mean work per
+frame and the worst one, in microseconds - and `COUCH_REGION=1` prints each
+frame as it goes, the same for all three shapes.
+
+A press that only switches a row must not arm it (`screen_pending` in
+`lights.rs` asks the row the same question `poll` does), and Home leaves the
+room altogether, so it keeps the room list's own transition rather than
+growing a window onto a page that is no longer there.
+
 Two things the mechanism depends on:
 
 - **The callbacks only record what they want.** `draw_if_needed` cannot be
@@ -383,6 +652,222 @@ saw 20 distinct states of a card row and 3 of the pager band - the band
 changed only when the pager's state did.
 
 
+### A screen says how it lifts: `LiftPlan` and `ScreenHeader`
+
+The lift used to know one screen. `lift_geometry` read eleven `ls_*`
+functions that exist only in `ui/screens/light.slint`, and the rectangle the
+row's card rises to was `LIFT_CARD_TO`, a constant in `panel.rs` that
+corresponded to no `Rectangle` in any layout. A television, a thermostat and a
+packaged device are opened from exactly the same kind of row and got no lift.
+
+A screen now hands over a `panel::LiftPlan`:
+
+- `row` - the rectangle it opens out of, read from the list before the press;
+- `plate` - where the row's own card comes to rest as it rises and fades;
+- `travellers` - the name and the icon, each with the rectangle it is cut
+  from and the one it lands on, both read from the layouts themselves;
+- `pieces` - up to six bands of the arriving page, each with the window of the
+  transition it arrives in and how it arrives: `Fade` where it belongs,
+  `Rise(px)` from a little below, or `Card { .. }` for a bar whose level is
+  revealed out of the page as it settles.
+
+`lift_frame` walks that and nothing else: there is no `if` in the transition
+about what kind of screen it is opening. The choreography every screen shares
+- the room falling away outwards from the row, the card rising into the header,
+the hand-over - is `LiftPlan::out_of(..).carrying(..).header(..)`, so a screen
+supplies only what is its own.
+
+**Where the numbers live.** Not in Rust. `ui/components/screen_header.slint`
+is the band at the top of every screen a row opens - back arrow, name at
+`Theme.device-name`, where the device is and what drives it, the row's own
+`DeviceDisc`, and one line of state - and it exports `title-box-*`,
+`disc-box-*`, `header-h()` and `plate-*()` as `pure` functions that a screen
+forwards through `App`. Six screens used to draw that band themselves, at four
+title sizes, two back-button positions and six second-line placements, and none
+of the differences meant anything.
+
+Note the `pure`: a `public function` called from a binding (here, the
+component's own `height`) must be `pure`, or the compiler refuses with *"Call
+of impure function"*.
+
+**A traveller needs both ends drawn the same way.** The row's label and the
+screen's title are both `Theme.device-name`; the row's disc and the header's
+disc are both `DeviceDisc`, fed the row's own `icon`, `active` and `known`. If
+a screen works those out for itself they will differ, and the hand-over becomes
+two drawings swapping. `checks::lands` holds it.
+
+**The rules are shared too.** `panel::checks` holds the five a lift has to
+pass, whatever it is opening - `profile` (mean = 0.35 panels of blending a
+frame, worst = 0.50), `pops`, `ghosts`, `lands`, `stronger` - so a screen is
+converted by writing its plan and calling the same five over its real pages.
+
+**When a screen has no plan.** It keeps the horizontal slide it always had.
+The television reports none while it is showing artwork: that background is a
+photograph behind everything, and bringing it in would mean cross-fading the
+whole panel, about twenty-four milliseconds a frame on this device, which is
+more than a whole frame, for one piece of one.
+
+**A band with nothing in it is worse than no band.** The television's rows of
+controls are staggered between the moment a light screen's first bar card
+arrives and the moment its footer settles, so neither screen is finished before
+the transition is. A packaged device has no transport row, so it hands over two
+rows rather than three - an empty band only makes the panel look barer for
+longer, and the bareness check (no frame more than 92% background) catches
+exactly that.
+
+
+### The default opening is the lift, at 400 ms
+
+`Transition::default()` is `Opening::Lift` at `LIFT`, and `LIFT` is 400 ms -
+one constant, tuned by eye on the HA100, where 320 ms read rushed. Every phase
+in the transition is a fraction of it, so moving it moves them all together,
+and the checks derive their frame count from it
+(`panel::checks::FRAMES = LIFT / FRAME`, 24 frames at 60 Hz).
+
+A screen that hands over no plan has no lift to run and keeps the horizontal
+slide it always had, so this is the default only for the screens that can
+honour it. `/tmp/couch-transition` still picks any of the three shapes and any
+time between 100 and 1000 ms: `echo "iris 300" > /tmp/couch-transition`.
+
+### A sparse page crosses with the room; a rich one follows it
+
+A control screen full of cards can arrive after the room has left, because
+what arrives is most of the panel. A page that says only "Connecting to
+Sonos…" cannot: the room leaves on the same schedule and between the two there
+is nothing but the name and the icon in flight.
+
+So a screen reports `sparse()`, and `LiftPlan::sooner(LIFT_HASTE)` opens every
+piece `LIFT_HASTE` earlier while leaving each one settling when it always did;
+what travels *lands* that much earlier instead, because the hand-over cannot
+begin until it has; and the room takes the same amount longer to go. Shifting
+the whole schedule earlier only moves the empty part of the transition to the
+end.
+
+**How bare is measured.** Not "no frame is more than 92% background" - that
+says nothing about a page that is 95% background when it has finished
+arriving. `checks::never_bare` counts what is on the panel against **the
+emptier of the two pages**, and holds every frame to a quarter of it. Measured
+on the screens that exist:
+
+| screen | worst share | at |
+|---|---|---|
+| television controls | 0.67 | 0.40 |
+| thermostat | 0.53 | 0.40 |
+| light screen | 0.52 | 0.24 |
+| player, waiting page | 0.29 | 0.48 |
+| player, before `sooner` | **0.17** | 0.40 |
+
+The last row is the frame the owner reported, and the check fails on it.
+
+
+### A page with a photograph behind it crosses band by band
+
+Two screens carry a photograph behind everything: the television while it is
+showing what is playing, and the player once the album art has arrived. There
+is no flat background for the room to fall to, and fading the whole panel at
+once is about twenty-four milliseconds on this device - more than a frame.
+
+So those plans say `Crossing::Banded`, and the rest of the panel goes straight
+from one page to the other: every scanline crosses in its own window,
+staggered, so that only the band that is mid-crossing costs anything. The rows
+before it are still the page they were and the rows after it are already the
+page they are becoming, and `changed_rows` sends neither. `LIFT_BANDED_FADE`
+is 0.20 of the transition - five frames at 400 ms, the floor below which a
+fade reads as a step - and `LIFT_BANDED_WAVE` is 0.74, so the last band lands
+where a falling screen's footer would and about a quarter of the panel is
+crossing at any moment.
+
+Measured, on a speaker with album art up: **mean 0.14 panels a frame, worst
+0.28** - inside the same caps as every other screen, which is the point. The
+arithmetic said a third of the panel would be crossing and about eight
+milliseconds a frame; the measurement is what the constants were set from.
+
+**What does not change.** The name, the icon and the row's card behave exactly
+as they do in a falling lift: cut from the room, flown to the header, handed
+over. Only the way the rest of page A becomes page B is different. A banded
+plan has no pieces at all - the whole page arrives with the bands - so a
+screen does not describe itself twice.
+
+**The page it starts on is the page it ends on.** Both pages are snapshots
+taken before the first frame and the plan is built once, so artwork arriving
+while the transition is running cannot swap page B underneath it; it appears
+afterwards, on a page that is already up, the way it does today.
+
+The log says which shape ran: `player Lift(banded) open`.
+
+**What a ghost is, over a photograph.** The rule that no second copy of the
+name is left behind in the row used to be "nothing here is brighter than
+0x50", which works when the room fades to a background and not at all when
+the page arriving is bright everywhere. It is measured against the page now:
+ink brighter than both the card the name sat on and the pixel arriving
+underneath it belongs to neither.
+
+### Which screens lift, and in which shape
+
+| row opens | shape | why |
+|---|---|---|
+| light / blind | falling | flat background, two bar cards |
+| thermostat | falling | flat background, two cards |
+| television controls | falling | flat background, rows of tiles |
+| television showing what is playing | **banded** | a photograph behind everything |
+| player, waiting to connect | falling, `sooner` | one line and one button |
+| player with album art | **banded** | a photograph behind everything |
+| camera, waiting for a frame | falling, `sooner` | one line on an empty page |
+| camera with a frame up | **banded** | the picture is a photograph |
+| a packaged device's pages of buttons | falling | flat background, rows of tiles |
+
+A screen answers three questions - `lift-ready()`, `banded()`, `sparse()` -
+and the plan follows from them. Measured, mean and worst panels a frame:
+light 0.19/0.29, television 0.15/0.28 and 0.14/0.29 with artwork, thermostat
+0.15/0.28, player 0.12/0.26 waiting and 0.14/0.29 with album art, camera
+0.15/0.26 waiting and 0.14/0.29 live, pages 0.17/0.28. Every one is inside
+the caps of 0.25 and 0.35.
+
+**The title is the device's name on every one of them**, because the lift
+flies the row's own name onto it and two different sets of words cannot be
+the same drawing. The pages of buttons put the page's name on the second line
+for that reason: it used to be the title, and the name coming out of the row
+landed on a different word. The thermostat's and the camera's second lines
+name the room and what drives them; both used to be literals (`"Home
+Assistant"`, `"UniFi Protect"`) that were wrong on any other driver and said
+nothing about where the device is.
+
+**A screen that closes inside a key callback gets no transition.** The frame
+loop reads which device screen is up *before* it reads the keys, so a screen
+that takes itself down in a Slint callback is already gone by the time
+anything notices - it would lift out of its row on the way in and vanish on
+the way out. The camera did exactly that; its Back is queued for the poll now,
+which is where every other device screen closes.
+
+
+### A row that is doing nothing sinks back, and the lift follows it
+
+Room rows on the hub have always recessed when a room is idle; device rows
+never did, so "Reading lamp · Unavailable" had the same card as "Desk lamp ·
+On · 40%" - the strongest state inconsistency the audit found. A device row
+recesses now on the same rule: a lamp that is off, or a light or blind that
+has not answered. A device row with controls behind it does not - it has no
+state to be off in.
+
+**The title stays at full strength.** That is not only the hub's rule: the
+lift flies that word onto the screen's own title, and a dimmer copy in the row
+would land on a brighter one. Only the second line dims, and the disc already
+dimmed itself.
+
+**The lift reads the colour rather than assuming it.** `LiftPlan` carries
+`surface` and `border`, which `room_devices.slint` reports for the focused row
+through `App`, and three things use them: the name and the icon are keyed on
+that colour when they are cut out of the row, the band they are painted out of
+is filled with it, and the card that rises out of the row starts in it. Keying
+a sprite on `Theme.surface` when the row is really `Theme.surface-idle` leaves
+a halo of the wrong grey around every glyph, which is exactly the fault the
+whole keying mechanism exists to avoid.
+
+The five checks run on a recessed row as well as a lit one, and the test
+asserts the row's colour really did change - without which the rest proves
+nothing.
+
+
 ### Whole-row list windows
 
 Room, device and scene lists size cards to fit a whole number of visible rows.
@@ -418,3 +903,59 @@ embeds a 1,196,352-byte alpha atlas (2,077 × 24 × 24); icons.rs expands only
 requested icons into cached RGBA images. Selection never downloads images or
 parses SVG on the remote. tools/build-icon-catalog.py regenerates both the
 catalog and atlas from the pinned, licensed SVGs under assets/lucide.
+
+### A bar travels to a new value, except in the picture an opening is made from
+
+The level fill and the colour marker on a light's or blind's screen animate
+(`animate height` / `animate y`, 220 ms) when their value changes while the
+screen is open: a brightness step, a lamp switched off. Both are sized from a
+number inside a fixed track, so no layout depends on them. The travel is
+switched by the screen's `glide` property, which the controller turns on only
+after the screen's first picture: a transition draws the arriving page once
+and must find it finished, and a bar still travelling there would jump when
+the live screen took over. A switch moves the bar at once, as a brightness
+step does (`toggle_target`: nothing for a lamp going off, the level it kept
+for one coming on, when it has said what that is); it is only ever shown,
+never sent.
+
+## Dumping and comparing screen pictures
+
+`src/screen_pictures.rs` renders the screens that otherwise have no test at
+all - the home hub, the settings menu's root page, the camera, first-run
+setup, "nothing configured yet", and the mic/pair/bt-pair overlays, the
+keyboard and the Wi-Fi setup list - in one test, one process, reusing one
+pixel buffer the way `media_player.rs`'s player test does (a fresh buffer per
+screen would leave `CouchPlatform::install`'s `ReusedBuffer` regions however
+they happened to start).
+
+`COUCH_SCREEN_PICTURES=<dir>` writes each as `<dir>/<screen>.png`:
+
+```sh
+COUCH_SCREEN_PICTURES=/tmp/couch-screens cargo test --locked -p couch-gui \
+  screen_pictures::every_screen_the_audit_found_untested_draws_something_real \
+  -- --exact --nocapture
+```
+
+`COUCH_SCREEN_GOLDENS=<dir>` compares each picture against a PNG of the same
+name already in that directory, pixel for pixel, and fails naming the first
+screen that differs and how many pixels differ - copied from
+`media_player.rs`'s `COUCH_PLAYER_GOLDENS`. Take a "before" set, apply a
+change, take an "after" set, and diff the two directories by eye; nothing
+binary is kept in the tree, and CI never sets this variable, so the pixel
+comparison never gates a build - only the non-blank and text assertions in
+the test itself do.
+
+The room list and the screens a row opens have the same pair.
+`COUCH_ROOM_SCREENSHOTS=<dir>` writes the room and light-screen pictures and
+`COUCH_LIFT_SCREENSHOTS=<dir>` the frames of a transition; running again with
+`COUCH_ROOM_GOLDENS=<that dir>` holds every one of them pixel for pixel. That
+is what a refactor claiming to change nothing should be *checked* against
+rather than asserted to be: moving the light screen onto the shared
+`ScreenHeader` was 28 pictures, byte for byte.
+
+```sh
+out=/tmp/couch-before
+COUCH_ROOM_SCREENSHOTS=$out COUCH_LIFT_SCREENSHOTS=$out cargo test --locked -p couch-gui
+# ... change something ...
+COUCH_ROOM_GOLDENS=$out cargo test --locked -p couch-gui
+```

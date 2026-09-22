@@ -1,0 +1,99 @@
+import { Theme } from "../theme.slint";
+import { MediaBack } from "../widgets/media-back.slint";
+import { DeviceDisc } from "./device_disc.slint";
+
+// The top of every screen a room row opens: the way back, the device's name,
+// where it is and what drives it, its icon, and what it is doing.
+//
+// One component because the lift flies a row's own label and its own disc onto
+// this one, so every screen a row opens has to draw both at the same size, in
+// the same place, or the hand-over is two drawings swapping - which is what
+// made the icon look like it flipped (docs/slint-notes.md). Six screens used
+// to draw this band themselves, at four title sizes and six second-line
+// positions, and none of the differences meant anything.
+//
+// The rectangles it occupies are functions rather than numbers anyone can
+// copy: a screen hands them out through `App` and the transition reads them
+// there, so there is no geometry about any screen written down in Rust.
+export component ScreenHeader inherits Rectangle {
+    in property <string> title;
+    /// "Living room · Philips Hue": where it is and what drives it. Never a
+    /// bare integration name - the screen says which room it belongs to.
+    in property <string> subtitle;
+    /// The device's own icon, and whether it has said what it is doing: this
+    /// is the row's disc, so it is drawn from the row's own facts.
+    in property <image> icon;
+    in property <bool> active;
+    in property <bool> known;
+    /// A screen whose device has no icon to carry can leave the disc out, and
+    /// the band is shorter for it.
+    in property <bool> has-disc: true;
+    /// "On · 40%", "NOW ON YOUR TV", "Heating to 21°": one line under the
+    /// disc, and nothing at all on a screen with no single thing to say.
+    in property <string> state;
+    /// Darken what is behind the band. A screen whose background is artwork
+    /// asks for this: the name and the room are painted straight onto a
+    /// photograph otherwise, and no one tone reads on every frame. With it,
+    /// the second line can be `text-secondary` here as it is everywhere else
+    /// rather than being pushed to full strength to survive the picture.
+    in property <bool> scrim;
+    callback back();
+    height: root.header-h();
+
+    // First, so everything else is over it. Clipped, because a gradient needs
+    // a clipping parent to be drawn (docs/slint-notes.md).
+    if root.scrim: Rectangle {
+        x: 0; y: 0; width: root.width; height: root.height; clip: true;
+        Rectangle {
+            width: parent.width; height: parent.height;
+            background: @linear-gradient(180deg, Theme.scrim 0%, #00000080 55%, transparent 100%);
+        }
+    }
+    MediaBack { x: 24px; y: 26px; activate => { root.back(); } }
+    Text {
+        x: 88px; y: 20px; width: root.width - 112px; height: 34px;
+        vertical-alignment: top;
+        text: root.title;
+        font-size: Theme.device-name; font-weight: Theme.device-name-weight;
+        color: Theme.text; overflow: elide;
+    }
+    Text {
+        x: 88px; y: 56px; width: root.width - 112px; height: 24px;
+        text: root.subtitle; font-size: 16px; color: Theme.text-secondary; overflow: elide;
+    }
+    if root.has-disc: DeviceDisc {
+        x: (root.width - 52px) / 2; y: 94px;
+        icon: root.icon; active: root.active; known: root.known;
+    }
+    if root.state != "": Text {
+        x: 24px; y: 156px; width: root.width - 48px; height: 28px;
+        text: root.state; horizontal-alignment: center;
+        font-size: 20px; color: root.active ? Theme.accent : Theme.text-secondary;
+    }
+
+    // --- what the lift needs to know about this band ------------------------
+    /// Where the name is drawn, for the label that flies onto it.
+    public pure function title-box-x() -> length { return 88px; }
+    public pure function title-box-y() -> length { return 20px; }
+    public pure function title-box-w() -> length { return root.width - 112px; }
+    public pure function title-box-h() -> length { return 34px; }
+    /// Where the icon lands.
+    public pure function disc-box-x() -> length { return (root.width - 52px) / 2; }
+    public pure function disc-box-y() -> length { return 94px; }
+    public pure function disc-box-size() -> length { return 52px; }
+    /// Down to the foot of whatever this band actually holds: the back arrow
+    /// and the two lines of text, the disc if there is one, and the state
+    /// line if there is one. They arrive together.
+    public pure function header-h() -> length {
+        return root.state != "" ? 190px : root.has-disc ? 158px : 96px;
+    }
+    /// Where the row's own card comes to rest as it rises out of the list and
+    /// fades: over the two lines of text, which is where a row keeps them.
+    /// The lift reads it from here so that no rectangle of any screen is
+    /// written down in Rust.
+    public pure function plate-x() -> length { return 20px; }
+    public pure function plate-y() -> length { return 14px; }
+    public pure function plate-w() -> length { return root.width - 40px; }
+    public pure function plate-h() -> length { return 76px; }
+    public pure function plate-r() -> length { return Theme.r-card; }
+}

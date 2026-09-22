@@ -1,6 +1,6 @@
 //! Activity overrides: physical timing on the UI thread, device I/O on a worker.
 use crate::{connections, keypad::Press, App};
-use couch_model::commands::Function as F;
+use couch_model::commands::{Function as F, KeyPhase};
 use couch_model::{
     buttons::{Binding, Button, Gesture},
     Action, Config, Integration,
@@ -14,7 +14,10 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const HOLD: Duration = Duration::from_millis(600);
+/// How long a key has to be down before it counts as a hold. Mapped long
+/// presses use it, and so does the Power key's "hold to end the activity"
+/// (main.rs), so the two feel the same under a thumb.
+pub(crate) const HOLD: Duration = Duration::from_millis(600);
 struct Pending {
     down: Press,
     at: Instant,
@@ -26,6 +29,9 @@ struct Request {
     config: Arc<Config>,
     action: Action,
     repeat: bool,
+    /// The binding that matched, short or long: with `repeat`, how the key was
+    /// pressed, for a package that asked to be told.
+    gesture: Gesture,
     /// Which hold a repeat belongs to. Releasing the key starts a new one, and
     /// a repeat from a hold that has ended is never sent: the queue may still
     /// hold several, and a volume that keeps rising after the finger has left
@@ -73,6 +79,19 @@ const HOLD_UP_TENTHS: i16 = 10;
 const HOLD_DOWN_TENTHS: i16 = 20;
 /// The context prefix of a highlighted room row, as opposed to an activity id.
 const ROW: &str = "row:";
+
+/// The keys a light's or blind's control screen takes for itself while it is
+/// open: volume is its brightness bar and channel its colour temperature.
+/// Nothing else on the remote may hear them meanwhile - a receiver's volume in
+/// a running activity, or the volume binding of whatever row is highlighted
+/// behind the screen - or one press would dim a lamp and turn up the amplifier
+/// at the same time. Everything else, Power included, still goes where it went.
+fn light_screen_key(button: Button) -> bool {
+    matches!(
+        button,
+        Button::VolumeUp | Button::VolumeDown | Button::ChannelUp | Button::ChannelDown
+    )
+}
 
 /// The Kodi player call behind a transport key, and nothing for any other
 /// function: a command Kodi does not have must never become one it does.
@@ -147,9 +166,6 @@ pub struct Controller {
     // way, so without this the remote's primary input disappears in silence;
     // poll turns it into the same toast every other dispatch path raises.
     dropped: bool,
-    // Power ends a running activity (main.rs); a highlighted row takes the key
-    // only when there is none to end.
-    activity_running: bool,
     // Bumped when a key is released; see `Request::hold`.
     hold: Arc<AtomicU64>,
     // The packaged device on the core control screen, which has no activity
@@ -175,15 +191,14 @@ impl Controller {
             tx,
             rx: out,
             dropped: false,
-            activity_running: false,
             hold,
             screen_device: None,
         }
     }
     fn binding(&self, button: Button, gesture: Gesture) -> Option<&Binding> {
-        if button == Button::Power && self.activity_running && self.context.starts_with(ROW) {
-            return None;
-        }
+        // Power is not special here any more. A short press belongs to the
+        // context on screen whether or not an activity is running; ending the
+        // activity is a *hold*, which main.rs times.
         self.bindings
             .iter()
             .find(|b| b.button == button && b.gesture == gesture)
@@ -202,6 +217,7 @@ impl Controller {
                 config: self.config.clone(),
                 action,
                 repeat,
+                gesture,
                 hold: self.hold.load(Ordering::SeqCst),
             });
             // A held key repeats faster than a slow device answers. A repeat
@@ -220,6 +236,11 @@ impl Controller {
             || app.get_pair_shown()
             || app.get_settings_shown()
             || app.get_keyboard_shown()
+        {
+            return false;
+        }
+        if app.get_light_screen_shown()
+            && Button::from_evdev(press.code).is_some_and(light_screen_key)
         {
             return false;
         }
@@ -261,7 +282,6 @@ impl Controller {
         self.screen_device = device;
     }
     fn sync_context(&mut self, app: &App) {
-        self.activity_running = app.get_activity_running();
         let config = connections::config();
         let context = if app.get_player_shown() || app.get_tv_shown() {
             // A device's own screen (`device:<id>`) has no activity bindings to
@@ -444,7 +464,7 @@ fn connection_worker(
     let matter = connections::matter();
     let mut generation = current.load(Ordering::SeqCst);
     // A packaged device whose level is owed a read once its keys stop.
-    let mut settle: Option<(String, String, Option<DbScale>)> = None;
+    let mut settle: Option<(Integration, String, Option<DbScale>)> = None;
     // Its last observed decibel level, in tenths: what a held volume key is
     // predicted from, the way a brightness hold moves its card before the
     // light has answered. Every real reading replaces it.
@@ -465,8 +485,8 @@ fn connection_worker(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // The lane has been quiet for a poll: a held volume key is
                 // over. One read for the card, at the level it ended on.
-                if let Some((connection, target, scale)) = settle.take() {
-                    if let Some((reading, observed)) = plugin_level(&connection, &target, scale) {
+                if let Some((integration, target, scale)) = settle.take() {
+                    if let Some((reading, observed)) = plugin_level(&integration, &target, scale) {
                         level = observed;
                         let _ = reply.try_send((generation, Feedback::Volume(reading)));
                     }
@@ -492,9 +512,10 @@ fn connection_worker(
                 let integration = d.network_integration(&r.config)?;
                 let scale = DbScale::of(&integration);
                 match integration {
-                    Integration::Plugin { connection_id, .. } => {
-                        Some((connection_id.to_string(), d.name.clone(), scale))
-                    }
+                    // The whole integration, not just its connection: the read
+                    // that settles the card has to name the same child the
+                    // keys did.
+                    plugin @ Integration::Plugin { .. } => Some((plugin, d.name.clone(), scale)),
                     _ => None,
                 }
             });
@@ -534,7 +555,7 @@ fn connection_worker(
             &mut streaming,
             &mut sonos,
             &matter,
-            r.repeat,
+            couch_model::buttons::key_phase(r.gesture, r.repeat),
             &|| {
                 current.load(Ordering::SeqCst) == r.generation
                     && r.at.elapsed() <= Duration::from_millis(750)
@@ -584,9 +605,16 @@ pub(crate) fn execute(
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
 ) -> Result<(), String> {
-    execute_with_input(config, action, tv, streaming, sonos, matter, false, &|| {
-        true
-    })
+    execute_with_input(
+        config,
+        action,
+        tv,
+        streaming,
+        sonos,
+        matter,
+        KeyPhase::Tap,
+        &|| true,
+    )
     .map(|_| ())
 }
 
@@ -617,6 +645,10 @@ fn unreachable(e: impl std::fmt::Display) -> Failure {
 
 /// Physical input preserves hold edges; other callers represent distinct presses.
 /// `current` is rechecked after loading a codeset and opening the blaster.
+/// `phase` is how the key was pressed (`buttons::key_phase`): a repeat is a
+/// held key's edge for every transport, and a packaged device is sent the
+/// phase itself, which the daemon's host passes on only to a package that
+/// asked for it.
 ///
 /// The key goes down the device's transport order (`Device::transport_order`:
 /// the preferred transport first) and stops at the first that takes it. Which
@@ -629,12 +661,13 @@ pub(crate) fn execute_with_input(
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
-    repeat: bool,
+    phase: KeyPhase,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, String> {
     if !current() {
         return Ok(Outcome::default());
     }
+    let repeat = phase == KeyPhase::Repeat;
     let device = config
         .devices()
         .find(|(_, d)| d.id == action.device)
@@ -642,32 +675,27 @@ pub(crate) fn execute_with_input(
         .ok_or("Mapped device was removed")?;
     if let Some(tenths) = action.command.strip_prefix(SET_VOLUME_DB) {
         let tenths: i16 = tenths.parse().map_err(|_| "Unsupported button function")?;
-        let Some(Integration::Plugin { connection_id, .. }) = device.network_integration(config)
+        let Some(integration @ Integration::Plugin { .. }) = device.network_integration(config)
         else {
             return Err("Unsupported button function".into());
         };
-        return match couch_plugin::local_request(
-            &crate::home::path("plugin.sock"),
-            connection_id.as_str(),
-            couch_plugin::Request::Action {
-                action: couch_model::TypedAction::SetVolumeDb { tenths },
-            },
-            couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
+        // `ask_device` aims the frame at the child the device is; a device
+        // that is the connection itself sends the bytes it always did.
+        return match crate::tv::plugin::ask_device(
+            &integration,
+            couch_plugin::Request::action(couch_model::TypedAction::SetVolumeDb { tenths }),
         ) {
             // Part of a hold: the lane reads the level once it goes quiet.
             Ok(couch_plugin::Response::Ok) => Ok(Outcome {
                 settle: true,
                 ..Outcome::default()
             }),
-            Ok(couch_plugin::Response::Error { code }) => Err(code.to_string()),
             Ok(_) => Err("The integration returned an invalid response".into()),
-            Err(error) => Err(error.to_string()),
+            Err(failure) => Err(crate::tv::plugin::refusal(&failure)),
         };
     }
     if action.command == POWER_TOGGLE {
-        return power_toggle(
-            config, device, tv, streaming, sonos, matter, repeat, current,
-        );
+        return power_toggle(config, device, tv, streaming, sonos, matter, phase, current);
     }
     let command = F::parse(&action.command).ok_or("Unsupported button function")?;
     let order = device.transport_order(config);
@@ -698,7 +726,7 @@ pub(crate) fn execute_with_input(
             }
             couch_model::Transport::Bluetooth => send_bluetooth(device, &command),
             couch_model::Transport::Ip => send_network(
-                config, device, &command, tv, streaming, sonos, matter, repeat, current,
+                config, device, &command, tv, streaming, sonos, matter, phase, current,
             ),
         };
         match result {
@@ -735,7 +763,7 @@ fn power_toggle(
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
-    repeat: bool,
+    phase: KeyPhase,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, String> {
     let name = device.name.clone();
@@ -758,17 +786,11 @@ fn power_toggle(
         Plan::Toggle
     } else {
         match device.network_integration(config) {
-            Some(Integration::Plugin { connection_id, .. }) => {
-                match couch_plugin::local_request(
-                    &crate::home::path("plugin.sock"),
-                    connection_id.as_str(),
-                    couch_plugin::Request::Status,
-                    couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
-                ) {
+            Some(integration @ Integration::Plugin { .. }) => {
+                match crate::tv::plugin::ask_device(&integration, couch_plugin::Request::status()) {
                     Ok(couch_plugin::Response::Status { status }) => Plan::Observed(status.on),
-                    Ok(couch_plugin::Response::Error { code }) => return Err(code.to_string()),
                     Ok(_) => return Err("The integration returned an invalid status".into()),
-                    Err(error) => return Err(error.to_string()),
+                    Err(failure) => return Err(crate::tv::plugin::refusal(&failure)),
                 }
             }
             Some(Integration::AndroidTv) => {
@@ -802,7 +824,7 @@ fn power_toggle(
             streaming,
             sonos,
             matter,
-            repeat,
+            phase,
             current,
         )
     };
@@ -858,9 +880,10 @@ fn send_network(
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
-    repeat: bool,
+    phase: KeyPhase,
     current: &dyn Fn() -> bool,
 ) -> Result<Outcome, Failure> {
+    let repeat = phase == KeyPhase::Repeat;
     let command = command.clone();
     // A volume or mute press on a device that can report its level gets the
     // level read back for the volume card; everything else reports nothing.
@@ -1182,15 +1205,17 @@ fn send_network(
         }
         .map(|_| Outcome::default())
         .map_err(Failure::Command),
-        Integration::Plugin { connection_id, .. } => {
-            let timeout = couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1);
-            let result = couch_plugin::local_request(
-                &crate::home::path("plugin.sock"),
-                connection_id.as_str(),
-                couch_plugin::Request::Command {
-                    function: command.id(),
-                },
-                timeout,
+        Integration::Plugin { .. } => {
+            // How the key was pressed goes with it, and which child of the
+            // connection it is for. The daemon's host sends a phase only to a
+            // protocol 3 package; every other package is sent the tap it
+            // always was, byte for byte. A level on a child (`dim:30`,
+            // `position:40`, `mode:heat`) goes as the plain command it is:
+            // the one host gate turns it into the typed action the child's
+            // kind declares.
+            let result = crate::tv::plugin::ask_device(
+                &integration,
+                couch_plugin::Request::key(command.id(), phase),
             );
             match result {
                 // The package reports its level only when asked, and asking
@@ -1203,7 +1228,7 @@ fn send_network(
                 }),
                 Ok(couch_plugin::Response::Ok) => {
                     let level = sound
-                        .then(|| plugin_level(connection_id.as_str(), &name, scale))
+                        .then(|| plugin_level(&integration, &name, scale))
                         .flatten();
                     Ok(Outcome {
                         observed_db: level.as_ref().and_then(|(_, tenths)| *tenths),
@@ -1211,13 +1236,10 @@ fn send_network(
                         ..Outcome::default()
                     })
                 }
-                Ok(couch_plugin::Response::Error { code }) => {
-                    Err(plugin_failure(code, code.to_string()))
-                }
                 Ok(_) => Err(Failure::Command(
                     "The external integration returned an invalid command response".into(),
                 )),
-                Err(error) => Err(plugin_failure(error, error.to_string())),
+                Err(failure) => Err(plugin_failure(&failure)),
             }
         }
         _ => Err(Failure::Command(
@@ -1226,18 +1248,14 @@ fn send_network(
     }
 }
 
-/// Ask a packaged device for its level, for the volume card.
+/// Ask a packaged device for its level, for the volume card. The read is
+/// aimed at the child the device is, exactly as the command was.
 fn plugin_level(
-    connection: &str,
+    integration: &Integration,
     target: &str,
     scale: Option<DbScale>,
 ) -> Option<(VolumeReading, Option<i16>)> {
-    match couch_plugin::local_request(
-        &crate::home::path("plugin.sock"),
-        connection,
-        couch_plugin::Request::Status,
-        couch_plugin::REQUEST_TIMEOUT + Duration::from_secs(1),
-    ) {
+    match crate::tv::plugin::ask_device(integration, couch_plugin::Request::status()) {
         Ok(couch_plugin::Response::Status { status }) => {
             let tenths = match (status.muted, status.volume_db.as_ref()) {
                 (Some(true), _) => None,
@@ -1339,8 +1357,11 @@ fn db_reading(target: &str, tenths: i16, muted: bool, scale: Option<DbScale>) ->
     }
 }
 
-fn plugin_failure(error: couch_plugin::Error, message: String) -> Failure {
-    match error {
+/// Whether the next transport gets the key is the code's question alone: a
+/// package's reason changes what is said, never what is done.
+fn plugin_failure(failure: &couch_plugin::Failure) -> Failure {
+    let message = crate::tv::plugin::refusal(failure);
+    match failure.code {
         couch_plugin::Error::Transport
         | couch_plugin::Error::Timeout
         | couch_plugin::Error::Busy
@@ -1470,6 +1491,7 @@ mod tests {
             supports_inputs: true,
             presentation: vec![],
             actions: vec![],
+            children: vec![],
         };
         for (id, provider) in [
             ("avr-package", plugin),
@@ -1499,6 +1521,7 @@ mod tests {
                 .with_integration(Integration::Connection {
                     connection_id: id.into(),
                     resource_id: String::new(),
+                    child: None,
                 }),
             );
         }
@@ -1590,6 +1613,7 @@ mod tests {
             .with_integration(Integration::Connection {
                 connection_id: "box".into(),
                 resource_id: String::new(),
+                child: None,
             }),
         );
         config.validate().unwrap();
@@ -1602,7 +1626,7 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &connections::MatterFleet::default(),
-                false,
+                KeyPhase::Tap,
                 &|| true,
             );
             assert!(
@@ -1674,21 +1698,22 @@ mod tests {
     }
 
     #[test]
-    fn power_on_a_row_yields_to_a_running_activity() {
+    fn power_on_a_row_acts_on_the_row_even_while_an_activity_runs() {
         let config = Arc::new(room());
         let mut controller = Controller::new();
         controller.refresh(format!("{ROW}avr-legacy"), Some(config));
-        assert!(controller.binding(Button::Power, Gesture::Short).is_some());
-        assert!(controller
-            .binding(Button::VolumeUp, Gesture::Short)
-            .is_some());
-        controller.activity_running = true;
-        assert!(controller.binding(Button::Power, Gesture::Short).is_none());
-        assert!(controller
-            .binding(Button::VolumeUp, Gesture::Short)
-            .is_some());
+        // A running activity used to take Power off the row, because a short
+        // press ended the activity. It no longer does: a short press is never
+        // the activity's, so the receiver on the highlighted row switches
+        // while the film is still playing. Ending the activity is a hold,
+        // timed by the key loop (main.rs), and nothing here knows about it.
+        for button in [Button::Power, Button::VolumeUp, Button::VolumeDown] {
+            assert!(
+                controller.binding(button, Gesture::Short).is_some(),
+                "{button:?}"
+            );
+        }
         // A row whose device is gone has no bindings rather than stale ones.
-        controller.activity_running = false;
         controller.refresh(format!("{ROW}no-such-device"), Some(Arc::new(room())));
         assert!(controller.binding(Button::Power, Gesture::Short).is_none());
     }
@@ -1711,7 +1736,7 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &matter,
-                false,
+                KeyPhase::Tap,
                 &|| true,
             )
             .unwrap_err();
@@ -2021,7 +2046,6 @@ mod tests {
                 tx,
                 rx: out,
                 dropped: false,
-                activity_running: false,
                 hold: Arc::new(AtomicU64::new(0)),
                 screen_device: None,
             },
@@ -2130,7 +2154,7 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &matter,
-                false,
+                KeyPhase::Tap,
                 &|| true,
             )
             .unwrap_err();
@@ -2176,6 +2200,7 @@ mod tests {
                         .with_integration(Integration::Connection {
                             connection_id: "lg".into(),
                             resource_id: String::new(),
+                            child: None,
                         })
                 },
             ],
@@ -2189,7 +2214,7 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &matter,
-                false,
+                KeyPhase::Tap,
                 &|| true,
             )
             .unwrap_err()
@@ -2214,6 +2239,475 @@ mod tests {
             "a plain error ends the press"
         );
         assert!(matches!(unreachable("gone"), Failure::Unavailable(m) if m == "gone"));
+    }
+
+    fn said(code: couch_plugin::Error, text: &str) -> couch_plugin::Failure {
+        couch_plugin::Failure {
+            code,
+            reason: Some(couch_plugin::Reason::Message { text: text.into() }),
+        }
+    }
+
+    #[test]
+    fn a_package_reason_changes_what_is_said_and_never_which_transport_is_tried() {
+        use couch_plugin::Error as E;
+        // Exactly the codes that let the next transport have the key, with a
+        // reason or without: a package cannot talk its way into or out of the
+        // infrared and Bluetooth fallback.
+        for code in [
+            E::Invalid,
+            E::Unsupported,
+            E::Incompatible,
+            E::Protocol,
+            E::Transport,
+            E::Timeout,
+            E::Busy,
+            E::Expired,
+            E::Rejected,
+            E::Unpaired,
+        ] {
+            let falls_through = matches!(code, E::Transport | E::Timeout | E::Busy | E::Expired);
+            // Without a reason the words are the ones every build has shown.
+            let plain = plugin_failure(&code.into());
+            let worded = plugin_failure(&said(code, "The TV is locked"));
+            // The panel does no pairing of its own: `Unpaired` keeps its own
+            // second line - the browser hint - never the package's, because
+            // the two together are the most that fits the toast.
+            let text = if code == E::Unpaired {
+                format!("{code}\n{}", crate::tv::plugin::PAIRING_HINT)
+            } else {
+                format!("{code}\nThe TV is locked")
+            };
+            if falls_through {
+                assert_eq!(plain, Failure::Unavailable(code.to_string()));
+                assert_eq!(worded, Failure::Unavailable(text));
+            } else if code == E::Unpaired {
+                assert_eq!(plain, Failure::Command(text.clone()));
+                assert_eq!(worded, Failure::Command(text));
+            } else {
+                assert_eq!(plain, Failure::Command(code.to_string()));
+                assert_eq!(worded, Failure::Command(text));
+            }
+        }
+        // An empty line is no line.
+        assert_eq!(
+            plugin_failure(&said(E::Rejected, "  ")),
+            Failure::Command(E::Rejected.to_string())
+        );
+    }
+
+    #[test]
+    fn a_long_binding_is_remembered_so_the_worker_can_say_how_the_key_was_pressed() {
+        use couch_model::buttons::key_phase;
+        let (mut c, rx) = fixture();
+        c.bindings = vec![
+            Binding {
+                button: Button::VolumeUp,
+                gesture: Gesture::Short,
+                action: Some(Action::new("tv", "volume-up")),
+            },
+            binding(Gesture::Long, "home"),
+        ];
+        let mut p = press(115, false);
+        c.handle_press(&p);
+        let tap = rx.try_recv().unwrap();
+        assert_eq!(key_phase(tap.gesture, tap.repeat), KeyPhase::Tap);
+        p.repeat = true;
+        c.handle_press(&p);
+        let held = rx.try_recv().unwrap();
+        assert_eq!(key_phase(held.gesture, held.repeat), KeyPhase::Repeat);
+        c.fire(Button::Ok, Gesture::Long, false);
+        let long = rx.try_recv().unwrap();
+        assert_eq!(long.action.command, "home");
+        assert_eq!(key_phase(long.gesture, long.repeat), KeyPhase::LongPress);
+    }
+
+    /// What this panel writes to the daemon's socket for a packaged device,
+    /// byte for byte, and what it says when the daemon relays a refusal. A tap
+    /// is the frame every build has written (`local command` in couch-plugin's
+    /// tests/golden/wire-00ab4da.tsv); only a held or long-pressed key carries
+    /// a phase, which the daemon's host drops again for a protocol 1 or 2
+    /// package (couch-confd's plugins.rs has the test with the Denon manifest).
+    #[test]
+    fn the_panel_sends_the_key_phase_to_the_daemon_and_shows_the_reason_it_relays() {
+        const NAME: &str = "activity_buttons::tests::the_panel_sends_the_key_phase_to_the_daemon_and_shows_the_reason_it_relays";
+        if std::env::var_os("COUCH_TEST_PANEL_SOCKET").is_none() {
+            let home =
+                std::env::temp_dir().join(format!("couch-panel-sock-{}", std::process::id()));
+            std::fs::create_dir_all(&home).unwrap();
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env("COUCH_TEST_PANEL_SOCKET", "1")
+                .env("COUCH_HOME_DIR", &home)
+                .output()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(home);
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use std::io::{Read, Write};
+        let listener =
+            std::os::unix::net::UnixListener::bind(crate::home::path("plugin.sock")).unwrap();
+        let ok = r#"{"type":"ok"}"#;
+        let status = r#"{"type":"status","status":{}}"#;
+        // One reply per connection, in the order the presses below ask.
+        let replies = [
+            ok,
+            status,
+            ok,
+            ok,
+            status,
+            r#"{"type":"error","code":"rejected","reason":{"kind":"message","text":"The TV is locked"}}"#,
+            r#"{"type":"error","code":"timeout","reason":{"kind":"message","text":"Still starting up"}}"#,
+            r#"{"type":"error","code":"rejected"}"#,
+        ];
+        let daemon = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            // Kept open to the end: macOS will not set a deadline on a socket
+            // whose peer has gone, which the asking side does before reading.
+            let mut open = Vec::new();
+            for reply in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut length = [0; 4];
+                stream.read_exact(&mut length).unwrap();
+                let mut frame = vec![0; u32::from_be_bytes(length) as usize];
+                stream.read_exact(&mut frame).unwrap();
+                seen.push(String::from_utf8(frame).unwrap());
+                stream
+                    .write_all(&(reply.len() as u32).to_be_bytes())
+                    .unwrap();
+                stream.write_all(reply.as_bytes()).unwrap();
+                open.push(stream);
+            }
+            // Handed back, not dropped here: the last press may still be
+            // reading its answer when this loop ends.
+            (seen, open)
+        });
+        let config = room();
+        let matter = connections::MatterFleet::default();
+        let press = |command: &str, phase: KeyPhase| {
+            execute_with_input(
+                &config,
+                &Action::new("avr-package", command),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &matter,
+                phase,
+                &|| true,
+            )
+        };
+        assert!(press("volume-up", KeyPhase::Tap).is_ok());
+        // A held key is not read back: the lane does that once it goes quiet.
+        assert!(press("volume-up", KeyPhase::Repeat).unwrap().settle);
+        assert!(press("mute", KeyPhase::LongPress).is_ok());
+        assert_eq!(
+            press("power-on", KeyPhase::Tap).unwrap_err(),
+            "The device refused the request\nThe TV is locked"
+        );
+        // No other transport on this device, so what made the network
+        // unavailable is what is said.
+        assert_eq!(
+            press("power-on", KeyPhase::Tap).unwrap_err(),
+            "The integration did not reply before the deadline\nStill starting up"
+        );
+        assert_eq!(
+            press("power-on", KeyPhase::Tap).unwrap_err(),
+            "The device refused the request"
+        );
+        let command = |function: &str, phase: &str| {
+            format!(
+                r#"{{"connection_id":"avr-package","request":{{"method":"command","function":"{function}"{phase}}}}}"#
+            )
+        };
+        let read = r#"{"connection_id":"avr-package","request":{"method":"status"}}"#;
+        let (seen, open) = daemon.join().unwrap();
+        assert_eq!(
+            seen,
+            [
+                command("volume-up", ""),
+                read.into(),
+                command("volume-up", r#","phase":"repeat""#),
+                command("mute", r#","phase":"long_press""#),
+                read.into(),
+                command("power-on", ""),
+                command("power-on", ""),
+                command("power-on", ""),
+            ]
+        );
+        drop(open);
+    }
+
+    /// While a light's control screen is open its volume and channel keys are
+    /// its own, and a running activity hears neither. Anything else on the
+    /// screen, Power included, still goes where it always went, and closing
+    /// the screen hands the keys straight back.
+    #[test]
+    fn the_open_light_screen_takes_volume_and_channel_from_the_running_activity() {
+        const NAME: &str = "activity_buttons::tests::the_open_light_screen_takes_volume_and_channel_from_the_running_activity";
+        if std::env::var_os("COUCH_TEST_SCREEN_CLAIM").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_SCREEN_CLAIM", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let mut config = room();
+        let living = config.rooms.first().unwrap().id.clone();
+        let mut activity: couch_model::Activity = serde_json::from_value(
+            serde_json::json!({"id":"movie","name":"Movie night","room":living}),
+        )
+        .unwrap();
+        activity.buttons = vec![
+            Binding {
+                button: Button::VolumeUp,
+                gesture: Gesture::Short,
+                action: Some(Action::new("avr-package", "volume-up")),
+            },
+            Binding {
+                button: Button::VolumeDown,
+                gesture: Gesture::Short,
+                action: Some(Action::new("avr-package", "volume-down")),
+            },
+            Binding {
+                button: Button::ChannelUp,
+                gesture: Gesture::Short,
+                action: Some(Action::new("lg", "channel-up")),
+            },
+            Binding {
+                button: Button::Power,
+                gesture: Gesture::Short,
+                action: Some(Action::new("avr-package", "power-on")),
+            },
+        ];
+        config.activities.push(activity);
+        config.validate().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "couch-screen-claim-{}-{}.json",
+            std::process::id(),
+            NAME.len()
+        ));
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        crate::config_snapshot::start(path.clone());
+        let _window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        let (mut controller, rx) = fixture();
+        // The activity is running, with its own screen up behind everything.
+        app.set_tv_shown(true);
+        app.set_active_activity("movie".into());
+        let commands = |rx: &mpsc::Receiver<Request>| {
+            rx.try_iter()
+                .map(|r| r.action.command)
+                .collect::<Vec<String>>()
+        };
+        assert!(controller.handle(&app, &press(115, false)));
+        assert_eq!(commands(&rx), ["volume-up"]);
+
+        // A light's controls open over it: its four keys are now the screen's,
+        // and nothing reaches the receiver or the TV.
+        app.set_light_screen_shown(true);
+        for code in [115, 114, 104, 402, 109, 403] {
+            assert!(!controller.handle(&app, &press(code, false)), "{code}");
+            assert!(!controller.handle(&app, &press(code, true)), "{code}");
+        }
+        assert!(commands(&rx).is_empty());
+        // Power is not one of them: the screen's own Power is handled in the
+        // key loop, and a mapped binding still takes the tap.
+        assert!(controller.handle(&app, &press(60, false)));
+        assert_eq!(commands(&rx), ["power-on"]);
+
+        // Back to the room: the activity hears its volume keys again.
+        app.set_light_screen_shown(false);
+        assert!(controller.handle(&app, &press(114, false)));
+        assert!(controller.handle(&app, &press(104, false)));
+        assert_eq!(commands(&rx), ["volume-down", "channel-up"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A refusal with a package's line under it has to read well on the toast
+    /// of the 480-pixel panel, at its longest too. `COUCH_CORE_SCREENSHOTS=<dir>`
+    /// keeps the pictures.
+    #[test]
+    fn a_refusal_and_its_reason_render_on_the_toast() {
+        const NAME: &str = "activity_buttons::tests::a_refusal_and_its_reason_render_on_the_toast";
+        if std::env::var_os("COUCH_TEST_REASON_TOAST").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_REASON_TOAST", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::{platform::WindowEvent, ComponentHandle};
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.set_feedback_enabled(true);
+        app.show().unwrap();
+        window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        // One buffer for every picture: the renderer repaints only what changed.
+        let mut pixels = vec![slint::Rgb8Pixel::default(); 480 * 800];
+        let mut above: Option<Vec<slint::Rgb8Pixel>> = None;
+        let longest = "The receiver is updating its firmware and will not take commands until it has restarted, which can take as long as ten minutes. Try again after that, please. OK";
+        assert_eq!(longest.len(), couch_plugin::Reason::MAX_TEXT);
+        for (name, failure) in [
+            (
+                "reason-toast-1-code-only.png",
+                couch_plugin::Error::Rejected.into(),
+            ),
+            (
+                "reason-toast-2-message.png",
+                said(couch_plugin::Error::Rejected, "The TV is locked"),
+            ),
+            (
+                "reason-toast-3-unpaired.png",
+                said(couch_plugin::Error::Unpaired, "Pair this TV again"),
+            ),
+            (
+                "reason-toast-4-longest.png",
+                said(couch_plugin::Error::Rejected, longest),
+            ),
+        ] {
+            let message = match plugin_failure(&failure) {
+                Failure::Command(message) | Failure::Unavailable(message) => message,
+            };
+            app.set_toast(message.as_str().into());
+            for _ in 0..20 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(&mut pixels, 480);
+            });
+            let band = &pixels[720 * 480..760 * 480];
+            assert!(band.iter().any(|p| *p != band[0]), "the toast drew nothing");
+            // Two lines stay inside the bar one line has: the page above it
+            // is the page the one-line toast left.
+            let page = pixels[..680 * 480].to_vec();
+            assert!(
+                above.get_or_insert(page.clone()) == &page,
+                "{name}: the toast spilled above its bar"
+            );
+            if let Some(dir) = std::env::var_os("COUCH_CORE_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir).join(name),
+                    &bytes,
+                    480,
+                    800,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        app.hide().unwrap();
+    }
+
+    /// `Unpaired` never shows the package's own line on the toast: Couch's
+    /// sentence and [`crate::tv::plugin::PAIRING_HINT`] are the two lines the
+    /// 72px bar keeps, the same pair whether or not the package sent a
+    /// reason. `COUCH_CORE_SCREENSHOTS=<dir>` keeps the picture.
+    #[test]
+    fn an_unpaired_refusal_shows_the_browser_hint_not_the_package_reason() {
+        const NAME: &str = "activity_buttons::tests::an_unpaired_refusal_shows_the_browser_hint_not_the_package_reason";
+        if std::env::var_os("COUCH_TEST_PAIRING_TOAST").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_PAIRING_TOAST", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::{platform::WindowEvent, ComponentHandle};
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.set_feedback_enabled(true);
+        app.show().unwrap();
+        window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        let mut pixels = vec![slint::Rgb8Pixel::default(); 480 * 800];
+        let mut above: Option<Vec<slint::Rgb8Pixel>> = None;
+        for (name, failure) in [
+            (
+                "reason-toast-5-unpaired-no-reason.png",
+                couch_plugin::Error::Unpaired.into(),
+            ),
+            (
+                "reason-toast-6-unpaired-with-reason.png",
+                said(couch_plugin::Error::Unpaired, "Pair this TV again"),
+            ),
+        ] {
+            let message = match plugin_failure(&failure) {
+                Failure::Command(message) | Failure::Unavailable(message) => message,
+            };
+            // The assertion that matters: the package's line ("Pair this TV
+            // again") never reaches the toast, with or without one.
+            assert_eq!(
+                message,
+                format!(
+                    "{}\n{}",
+                    couch_plugin::Error::Unpaired,
+                    crate::tv::plugin::PAIRING_HINT
+                ),
+                "{name}"
+            );
+            app.set_toast(message.as_str().into());
+            for _ in 0..20 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(&mut pixels, 480);
+            });
+            let band = &pixels[720 * 480..760 * 480];
+            assert!(band.iter().any(|p| *p != band[0]), "the toast drew nothing");
+            // Two lines stay inside the bar one line has, the same check
+            // `a_refusal_and_its_reason_render_on_the_toast` makes.
+            let page = pixels[..680 * 480].to_vec();
+            assert!(
+                above.get_or_insert(page.clone()) == &page,
+                "{name}: the toast spilled above its bar"
+            );
+            if let Some(dir) = std::env::var_os("COUCH_CORE_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir).join(name),
+                    &bytes,
+                    480,
+                    800,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        app.hide().unwrap();
     }
 
     #[test]

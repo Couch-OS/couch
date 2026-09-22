@@ -90,22 +90,25 @@ fn execute_steps(
     Ok(())
 }
 /// Whether a device can be an activity's main screen: a built-in or packaged
-/// media/TV integration, or a Bluetooth-only TV (the one-way screen).
+/// media/TV integration, or a Bluetooth-only TV (the one-way screen). A
+/// packaged light or blind is not one: it is a room row, and has no screen
+/// behind it.
 pub(crate) fn has_screen(config: &Config, device: &couch_model::Device) -> bool {
-    config
-        .resolve_integration(&device.integration)
-        .is_some_and(|i| {
-            matches!(
-                i,
-                couch_model::Integration::Sonos { .. }
-                    | couch_model::Integration::Kodi { .. }
-                    | couch_model::Integration::WebOs
-                    | couch_model::Integration::AndroidTv
-                    | couch_model::Integration::AppleTv
-                    | couch_model::Integration::Tizen
-                    | couch_model::Integration::Plugin { .. }
-            )
-        })
+    crate::lights::opens_packaged_screen(config, device)
+        && config
+            .resolve_integration(&device.integration)
+            .is_some_and(|i| {
+                matches!(
+                    i,
+                    couch_model::Integration::Sonos { .. }
+                        | couch_model::Integration::Kodi { .. }
+                        | couch_model::Integration::WebOs
+                        | couch_model::Integration::AndroidTv
+                        | couch_model::Integration::AppleTv
+                        | couch_model::Integration::Tizen
+                        | couch_model::Integration::Plugin { .. }
+                )
+            })
         || (device.network_integration(config).is_none() && device.bluetooth.is_some())
 }
 

@@ -236,7 +236,7 @@ fn room_scenes(app: App, room: StoredValue<Id>) -> AnyView {
     ui::section(view!{"Scenes" <span class="count">{move ||order.with(Vec::len)}</span>},
         Some("Shown in the Scenes button at the bottom of this room on the remote."),
         view!{
-        {move ||order.with(Vec::is_empty).then(||ui::empty("No scenes here yet. Choose Hue scenes below to add one."))}
+        {move ||order.with(Vec::is_empty).then(||ui::empty("No scenes here yet. Choose one from a bridge or an integration below to add it."))}
         <ul class="rows room-scenes"><For each=move ||order.get() key=|id|id.clone() children=move |id|{
             let scene=app.scene(id.clone());let open=id.clone();
             view!{<li class="row"><button class="row-main" on:click=move |_|app.go(Route::Scene(open.clone()))><span class="row-title">{move ||scene.get().map(|s|s.name)}</span></button><button class="ghost" disabled=move ||app.busy.get() on:click=move |_|{let Some(mut next)=scene.get_untracked() else{return};next.rooms.retain(|r|room.with_value(|room|r!=room));app.run(api::put(format!("/api/scenes/{}",next.id),next));}>"Remove from room"</button></li>}

@@ -1,0 +1,127 @@
+{
+  "protocol_version": 3,
+  "min_core_protocol_version": 3,
+  "id": "echo-bridge",
+  "label": "Echo bridge (protocol 3 fixture)",
+  "version": "0.1.0",
+  "executable": "bin/couch-plugin-echo-bridge",
+  "capabilities": [],
+  "settings": [
+    {
+      "id": "hostile",
+      "label": "Misbehave",
+      "kind": "text",
+      "required": false
+    }
+  ],
+  "children": [
+    {
+      "kind": "light",
+      "label": "Lamp",
+      "device_kind": "light",
+      "component": "light",
+      "capabilities": [
+        {
+          "id": "on",
+          "label": "On"
+        },
+        {
+          "id": "off",
+          "label": "Off"
+        },
+        {
+          "id": "toggle",
+          "label": "Toggle"
+        }
+      ],
+      "actions": [
+        {
+          "action": "set_light"
+        }
+      ]
+    },
+    {
+      "kind": "group",
+      "label": "Room group",
+      "device_kind": "light",
+      "component": "light",
+      "capabilities": [
+        {
+          "id": "on",
+          "label": "On"
+        },
+        {
+          "id": "off",
+          "label": "Off"
+        },
+        {
+          "id": "toggle",
+          "label": "Toggle"
+        }
+      ],
+      "actions": [
+        {
+          "action": "set_light"
+        }
+      ]
+    },
+    {
+      "kind": "scene",
+      "label": "Scene",
+      "device_kind": "other",
+      "component": "scene",
+      "capabilities": [
+        {
+          "id": "on",
+          "label": "Recall"
+        }
+      ]
+    },
+    {
+      "kind": "blind",
+      "label": "Blind",
+      "device_kind": "blind",
+      "component": "cover",
+      "capabilities": [
+        {
+          "id": "open",
+          "label": "Open"
+        },
+        {
+          "id": "close",
+          "label": "Close"
+        },
+        {
+          "id": "stop",
+          "label": "Stop"
+        }
+      ],
+      "actions": [
+        {
+          "action": "set_cover"
+        }
+      ]
+    },
+    {
+      "kind": "thermostat",
+      "label": "Thermostat",
+      "device_kind": "thermostat",
+      "component": "climate",
+      "capabilities": [
+        {
+          "id": "on",
+          "label": "On"
+        },
+        {
+          "id": "off",
+          "label": "Off"
+        }
+      ],
+      "actions": [
+        {
+          "action": "set_climate"
+        }
+      ]
+    }
+  ]
+}

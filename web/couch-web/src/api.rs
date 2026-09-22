@@ -17,22 +17,65 @@ use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Why a packaged integration refused, when it said (protocol 3, which no
+/// released Couch lets a package speak yet). The daemon puts it beside `error`
+/// and `code`; `error` already carries the same words for a screen that only
+/// shows a sentence.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Reason {
+    /// One setting is wrong: `field` is its id in the package's form.
+    InvalidSetting {
+        field: String,
+        text: String,
+    },
+    Message {
+        text: String,
+    },
+}
+
+impl Reason {
+    /// A reason this page does not know is no reason: the sentence stands.
+    pub fn from_body(body: &Value) -> Option<Reason> {
+        serde_json::from_value(body.get("reason")?.clone()).ok()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ApiError {
     pub message: String,
+    pub reason: Option<Reason>,
+    /// The HTTP status, for the handful of screens that have something better
+    /// to say about one refusal than about another. Zero when the remote was
+    /// never reached at all.
+    pub status: u16,
+    /// The daemon's machine-readable word for the refusal, beside `error` and
+    /// `reason`. `unpaired` is the one this app acts on: it means a pairing
+    /// is missing rather than that anything was typed wrongly.
+    pub code: Option<String>,
     /// The session is gone - expired, or the daemon restarted. The app drops
     /// back to the pairing screen rather than showing this as an edit failure,
     /// because "not paired" is not something dismissing a banner can fix.
     pub unauthorized: bool,
     pub stale: bool,
+    /// The remote is doing something else with this integration (503). The one
+    /// refusal worth trying again on its own: reading a connection's children
+    /// holds that connection for as long as it takes, and everything else
+    /// aimed at it is told to come back. Nothing was done, so a caller that
+    /// waits and asks again is not repeating a command.
+    pub busy: bool,
 }
 
 impl ApiError {
     fn new(message: impl Into<String>) -> ApiError {
         ApiError {
             message: message.into(),
+            reason: None,
+            status: 0,
+            code: None,
             unauthorized: false,
             stale: false,
+            busy: false,
         }
     }
 }
@@ -193,38 +236,50 @@ async fn parse(response: gloo_net::http::Response) -> Result<Config, ApiError> {
 
     // The daemon's errors carry a message and, for a rejected edit, the list of
     // things wrong with it. Surface those verbatim: they name a field, which is
-    // the only thing that helps a user fix it.
+    // the only thing that helps a user fix it. A write that had to ask a
+    // package - saving one child of a bridge - may also carry that package's
+    // own words, in the same `reason` a live call does.
     let unauthorized = status == 401;
+    let body: Option<Value> = serde_json::from_str(&text).ok();
+    let message = match &body {
+        Some(value) => {
+            let message = value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("the remote refused the change")
+                .to_string();
+            match value.get("problems").and_then(Value::as_array) {
+                Some(problems) if !problems.is_empty() => {
+                    let detail = problems
+                        .iter()
+                        .filter_map(|p| {
+                            Some(format!(
+                                "{}: {}",
+                                p.get("at")?.as_str()?,
+                                p.get("message")?.as_str()?
+                            ))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    format!("{message} ({detail})")
+                }
+                _ => message,
+            }
+        }
+        None => format!("the remote answered {status}"),
+    };
     Err(ApiError {
         unauthorized,
+        status,
+        code: body
+            .as_ref()
+            .and_then(|value| value.get("code"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         stale: status == 409 || status == 404,
-        ..ApiError::new(match serde_json::from_str::<Value>(&text) {
-            Ok(value) => {
-                let message = value
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("the remote refused the change")
-                    .to_string();
-                match value.get("problems").and_then(Value::as_array) {
-                    Some(problems) if !problems.is_empty() => {
-                        let detail = problems
-                            .iter()
-                            .filter_map(|p| {
-                                Some(format!(
-                                    "{}: {}",
-                                    p.get("at")?.as_str()?,
-                                    p.get("message")?.as_str()?
-                                ))
-                            })
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        format!("{message} ({detail})")
-                    }
-                    _ => message,
-                }
-            }
-            Err(_) => format!("the remote answered {status}"),
-        })
+        busy: status == 503,
+        reason: body.as_ref().and_then(Reason::from_body),
+        ..ApiError::new(message)
     })
 }
 
@@ -254,7 +309,11 @@ pub async fn ha(method: &str, path: &str, body: Option<Value>) -> Result<Value, 
     if !(200..300).contains(&status) {
         return Err(ApiError {
             message: value["error"].as_str().unwrap_or("Operation failed").into(),
+            reason: Reason::from_body(&value),
+            status,
+            code: value["code"].as_str().map(str::to_owned),
             unauthorized: status == 401,
+            busy: status == 503,
             // Live endpoints do not carry the config revision header, but a
             // missing object and a temporary operation lock have the same
             // recovery shape: refresh the live view rather than leaving a
@@ -263,4 +322,38 @@ pub async fn ha(method: &str, path: &str, body: Option<Value>) -> Result<Value, 
         });
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_reason_is_read_beside_the_sentence_and_an_unknown_one_is_ignored() {
+        assert_eq!(
+            Reason::from_body(&json!({"error":"The port must not be 0","code":"invalid",
+                "reason":{"kind":"invalid_setting","field":"port","text":"The port must not be 0"}})),
+            Some(Reason::InvalidSetting {
+                field: "port".into(),
+                text: "The port must not be 0".into()
+            })
+        );
+        assert_eq!(
+            Reason::from_body(&json!({"error":"Pair this TV again","code":"unpaired",
+                "reason":{"kind":"message","text":"Pair this TV again"}})),
+            Some(Reason::Message {
+                text: "Pair this TV again".into()
+            })
+        );
+        // What every daemon before this one sends, and a kind from a later one.
+        for body in [
+            json!({"error":"Invalid integration settings or package"}),
+            json!({"error":"x","code":"invalid"}),
+            json!({"error":"x","reason":{"kind":"link","text":"x"}}),
+            json!({"error":"x","reason":"text"}),
+        ] {
+            assert_eq!(Reason::from_body(&body), None, "{body}");
+        }
+    }
 }

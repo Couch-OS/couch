@@ -230,6 +230,137 @@ impl BackHold {
     }
 }
 
+/// The Power key's two meanings, told apart by how long it is held.
+///
+/// A tap belongs to whatever is on screen - a highlighted row, an activity
+/// that maps the key - and a hold ends the running activity, from anywhere.
+/// Until the key comes back up the two are the same press, so nothing is
+/// dispatched on the way down: `hold_due` fires the hold when it comes due,
+/// and `release` hands back the down press to deliver as a tap.
+#[derive(Default)]
+pub struct PowerKey {
+    down: Option<(crate::keypad::Press, u64)>,
+    ended: bool,
+}
+impl PowerKey {
+    /// The same threshold a mapped long press uses, so the two feel the same
+    /// under a thumb.
+    fn hold_us() -> u64 {
+        crate::activity_buttons::HOLD.as_micros() as u64
+    }
+    /// The down edge. A repeat is the key still being held, not a new press.
+    pub fn press(&mut self, press: &crate::keypad::Press, now: u64) {
+        if !press.repeat && self.down.is_none() {
+            self.down = Some((press.clone(), now));
+            self.ended = false;
+        }
+    }
+    /// Whether the hold has come due. Only a running activity has anything to
+    /// end: with none, a hold does nothing and the tap is still delivered when
+    /// the key comes up, which is what the key did before it was timed.
+    pub fn hold_due(&mut self, now: u64, activity_running: bool) -> bool {
+        if self.ended || !activity_running {
+            return false;
+        }
+        let due = self
+            .down
+            .as_ref()
+            .is_some_and(|(_, at)| now.saturating_sub(*at) >= Self::hold_us());
+        self.ended = due;
+        due
+    }
+    /// The up edge: the down press to deliver as a tap, or nothing because the
+    /// hold already took it (or because the press was never armed - the panel
+    /// was dark, or an activity was still starting).
+    pub fn release(&mut self) -> Option<crate::keypad::Press> {
+        let down = self.down.take();
+        let ended = std::mem::take(&mut self.ended);
+        down.map(|(press, _)| press).filter(|_| !ended)
+    }
+}
+
+/// Who gets a short Power press, in the one order the remote uses.
+///
+/// Written down here because it is the rule that changed: a tap is never the
+/// running activity's any more, so a highlighted row keeps the key whether or
+/// not something is playing, and the only thing an activity gets from a tap is
+/// the sentence that teaches the hold.
+#[derive(Debug, PartialEq)]
+pub enum PowerTap {
+    /// A mapped Power: a highlighted row's, or an activity's own binding.
+    Mapped,
+    /// A room row the key switches: a light, a blind, a switch, a plug.
+    Row,
+    /// Nothing on screen wanted it and an activity is running.
+    Hint,
+    Nothing,
+}
+pub fn power_tap(mapped: bool, row: bool, activity_running: bool) -> PowerTap {
+    if mapped {
+        PowerTap::Mapped
+    } else if row {
+        PowerTap::Row
+    } else if activity_running {
+        PowerTap::Hint
+    } else {
+        PowerTap::Nothing
+    }
+}
+
+#[cfg(test)]
+mod power_tests {
+    use super::*;
+    fn press(released: bool, repeat: bool) -> crate::keypad::Press {
+        crate::keypad::Press {
+            code: crate::keypad::KEY_POWER,
+            released,
+            key: None,
+            mic: None,
+            menu: None,
+            latency_us: 0,
+            repeat,
+        }
+    }
+    #[test]
+    fn a_tap_is_delivered_on_release_and_a_hold_ends_the_activity_once() {
+        let mut key = PowerKey::default();
+        key.press(&press(false, false), 0);
+        // Repeats are the same press: they do not restart the clock.
+        key.press(&press(false, true), 300_000);
+        assert!(!key.hold_due(500_000, true));
+        assert!(key.release().is_some_and(|p| !p.released));
+        // Nothing is armed any more, so a stray release delivers nothing.
+        assert!(key.release().is_none());
+
+        key.press(&press(false, false), 1_000_000);
+        assert!(!key.hold_due(1_599_999, true));
+        assert!(key.hold_due(1_600_000, true));
+        // Only once, and the release that follows is not a tap.
+        assert!(!key.hold_due(1_700_000, true));
+        assert!(key.release().is_none());
+    }
+    #[test]
+    fn a_hold_with_no_activity_to_end_still_delivers_the_tap() {
+        let mut key = PowerKey::default();
+        key.press(&press(false, false), 0);
+        assert!(!key.hold_due(5_000_000, false));
+        assert!(key.release().is_some());
+    }
+    #[test]
+    fn the_short_press_goes_to_the_screen_first_and_the_hint_last() {
+        // A mapped Power wins everywhere, activity or not.
+        assert_eq!(power_tap(true, false, true), PowerTap::Mapped);
+        assert_eq!(power_tap(true, false, false), PowerTap::Mapped);
+        // A row the key switches comes next - again, activity or not.
+        assert_eq!(power_tap(false, true, true), PowerTap::Row);
+        assert_eq!(power_tap(false, true, false), PowerTap::Row);
+        // Only with nothing else to take it does a running activity get the
+        // sentence that teaches the hold, and it ends nothing.
+        assert_eq!(power_tap(false, false, true), PowerTap::Hint);
+        assert_eq!(power_tap(false, false, false), PowerTap::Nothing);
+    }
+}
+
 #[cfg(test)]
 mod back_tests {
     use super::*;

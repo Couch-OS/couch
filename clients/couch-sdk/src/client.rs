@@ -13,7 +13,7 @@
 //! [`DeviceClient::command`], which is the boundary.
 
 use couch_model::buttons;
-use couch_model::commands::Function;
+use couch_model::commands::{Function, KeyPhase};
 use couch_model::Integration;
 
 use crate::{ClientSettings, Error, Result, Selectable, Status};
@@ -56,9 +56,11 @@ pub trait DeviceClient: Sized {
         &[]
     }
 
-    /// Refuse unsupported or out-of-range values before transport I/O.
+    /// Refuse unsupported or out-of-range values before transport I/O. The
+    /// schema is found by the action's kind, so a client may declare several.
     fn validate_action(action: crate::TypedAction) -> Result<()> {
-        let schema = Self::actions().first().ok_or(Error::Unsupported)?;
+        let schema = crate::PluginActionSchema::find(Self::actions(), action.kind())
+            .ok_or(Error::Unsupported)?;
         if !schema.accepts(action) {
             return Err(Error::Invalid);
         }
@@ -77,11 +79,60 @@ pub trait DeviceClient: Sized {
     /// Open the transport. Validate settings first; do not retry internally.
     fn connect(settings: &Self::Settings) -> Result<Self>;
 
+    /// [`DeviceClient::connect`] with the key Couch is holding for this
+    /// connection, if it has one. Protocol 3, unreleased: only a package whose
+    /// manifest declares `pairing` is ever given one, so the default - which
+    /// ignores it - is what every client written before pairing existed did.
+    ///
+    /// This is the only way a package sees its key. It is never in the
+    /// settings, never in the environment and never on disk anywhere the
+    /// package can read.
+    fn connect_with(
+        settings: &Self::Settings,
+        _credential: Option<&crate::Credential>,
+    ) -> Result<Self> {
+        Self::connect(settings)
+    }
+
+    /// Begin a pairing conversation for these settings. `existing` is the key
+    /// Couch already holds, for a device that wants it to issue a second one
+    /// (an Apple TV's metadata pairing) - re-pairing otherwise starts clean.
+    ///
+    /// The flow that comes back is stepped by `serve` until it is done, failed
+    /// or cancelled. [`Error::Unsupported`] is the default and is what a
+    /// package that does not pair keeps answering.
+    fn pair_start(
+        _settings: &Self::Settings,
+        _existing: Option<&crate::Credential>,
+    ) -> Result<Box<dyn crate::PairFlow>> {
+        Err(Error::Unsupported)
+    }
+
+    /// A key the device rotated under us, to be stored in place of the one
+    /// Couch holds. Polled by `serve` after every successful command, action,
+    /// status or input request, and never on a handshake, a configure or a
+    /// pairing step.
+    ///
+    /// Return it once: the default never returns one, and a client that does
+    /// must clear it so the same key is not written on every reply.
+    fn take_credential(&mut self) -> Option<crate::Credential> {
+        None
+    }
+
     /// Perform one function. Called only after the capability gate has passed.
     ///
     /// Never retry inside this method. A lost reply does not prove a lost
     /// command, and the broker above deliberately does not retry either.
     fn execute(&mut self, function: &Function) -> Result<()>;
+
+    /// Perform one function, knowing how the key was pressed: a tap, a repeat
+    /// while the key is held, or a long press. Protocol 3, which is unreleased
+    /// and switched off. A package whose manifest says protocol 1 or 2 is only
+    /// ever told [`KeyPhase::Tap`], so the default, which ignores the phase, is
+    /// exactly what such a client did before this method existed.
+    fn execute_phased(&mut self, function: &Function, _phase: KeyPhase) -> Result<()> {
+        self.execute(function)
+    }
 
     /// Observe the device. [`Error::Unsupported`] if it cannot be asked.
     fn status(&mut self) -> Result<Status> {
@@ -135,6 +186,70 @@ pub trait DeviceClient: Sized {
             return Err(Error::Unsupported);
         }
         self.execute(&function)
+    }
+
+    /// [`DeviceClient::command`] with the key phase. A tap is handed to
+    /// `command` itself, so a client that overrides `command` and has never
+    /// heard of phases behaves as it always did. Anything else passes the same
+    /// gate and reaches [`DeviceClient::execute_phased`].
+    fn command_phased(&mut self, command: &str, phase: KeyPhase) -> Result<()> {
+        if phase.is_tap() {
+            return self.command(command);
+        }
+        let function = Function::parse(command).ok_or(Error::Unsupported)?;
+        if !Self::supports(&function) {
+            return Err(Error::Unsupported);
+        }
+        self.execute_phased(&function, phase)
+    }
+
+    // Protocol 3, unreleased: one connection with many children. Every one of
+    // these has a default, so a client written before they existed compiles
+    // unchanged, declares no children, and puts the same bytes on the wire: a
+    // manifest with no `children` is a package the host never asks to list,
+    // and never names a resource to.
+
+    /// The kinds of child this client offers, exactly as its manifest declares
+    /// them. `serve` refuses to start if the two disagree, the way it already
+    /// does for capabilities and actions.
+    fn child_kinds() -> &'static [couch_model::PluginChildKind] {
+        &[]
+    }
+
+    /// One page of the children behind this connection, starting at `cursor`
+    /// (`None` for the first). Build it with
+    /// [`ChildPage::fill`](crate::ChildPage::fill) unless the device pages by
+    /// itself.
+    fn children(&mut self, _cursor: Option<&str>) -> Result<crate::ChildPage> {
+        Err(Error::Unsupported)
+    }
+
+    /// Perform one function on one child. The host has already checked that
+    /// the resource is well spelt and that the child's kind declares this
+    /// function. Answer `Ok(None)`, or `Ok(Some(status))` with the state the
+    /// child is in afterwards, which saves the caller a read.
+    fn child_command(
+        &mut self,
+        _resource: &str,
+        _function: &Function,
+        _phase: KeyPhase,
+    ) -> Result<Option<Status>> {
+        Err(Error::Unsupported)
+    }
+
+    /// [`DeviceClient::child_command`] for a typed action: a brightness, a
+    /// blind's position, a thermostat's set point.
+    fn child_action(
+        &mut self,
+        _resource: &str,
+        _action: crate::TypedAction,
+    ) -> Result<Option<Status>> {
+        Err(Error::Unsupported)
+    }
+
+    /// Observe one child.
+    fn child_status(&mut self, _resource: &str) -> Result<Status> {
+        Err(Error::Unsupported)
     }
 }
 

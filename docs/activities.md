@@ -15,7 +15,7 @@ In **Remote screen → Custom pages**, click **Add page**, name it, then select 
 
 Select **Open custom pages first** to use them as the initial activity view. A custom-only activity needs no Kodi or TV source. If a source is selected, **Media** opens its existing control screen; **Pages** returns to custom controls. Switching views does not replay the On sequence. Deleting the last page resets the initial view to the retained source; choose a source before starting if none remains.
 
-Touch a button or highlight it with the D-pad and press OK. Left/right at a row edge changes pages; the bottom arrows also wrap between pages. Physical activity mappings take precedence over this default navigation. Back returns to Couch, leaving the activity running. End and unmapped Power retain normal activity shutdown behavior.
+Touch a button or highlight it with the D-pad and press OK. Left/right at a row edge changes pages; the bottom arrows also wrap between pages. Physical activity mappings take precedence over this default navigation. Back returns to Couch, leaving the activity running. End, and holding Power, retain normal activity shutdown behavior.
 
 Widget commands execute on a bounded worker using the same validated command dispatcher as physical mappings. One command is accepted at a time; navigation discards late feedback and queued commands from the old page session. A command waiting longer than 750 ms expires instead of firing late. Already dispatched commands cannot be recalled. Editing pages takes effect when the view is reopened.
 
@@ -23,7 +23,11 @@ This first editor supports labeled command buttons and icons, not free-position 
 
 ## Running and ending
 
-Opening an activity runs its On sequence before opening the control screen. Returning to Couch leaves it running; reopening it does not replay On. Tap **End**, or press an unmapped physical Power button, to run Off and return to Couch. An explicit Power mapping takes precedence. **Keep remote awake while running** prevents display standby for the lifetime of that activity, including while viewing another screen.
+Opening an activity runs its On sequence before opening the control screen. Returning to Couch leaves it running; reopening it does not replay On. Tap **End**, or **hold the physical Power button** for about half a second, to run Off and return to Couch. The hold works from anywhere, including a room list or a light's controls.
+
+A *short* press of Power is never taken by the activity any more. It belongs to whatever is on screen: the highlighted room row switches, a receiver or TV row sends its own power command, and an activity that maps Power itself still gets it. If nothing on screen wants the key while an activity is running, the remote says **Hold Power to end <activity>** and ends nothing. This is the one change to muscle memory: a tap used to end the activity, and now a hold does.
+
+**Keep remote awake while running** prevents display standby for the lifetime of that activity, including while viewing another screen.
 
 Commands run in order on a worker, outside the GUI event loop. A failure stops at that step and shows an error. There are no automatic retries or rollback commands. Cancel (or hold Back during a sequence) prevents subsequent steps; an already dispatched command may still finish. Completed commands are never undone automatically. Repeating a failed sequence starts it from the beginning, so prefer explicit on/off commands over toggles.
 

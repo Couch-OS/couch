@@ -39,6 +39,15 @@ struct Installed {
     connection_configured: bool,
     #[serde(default)]
     can_rollback: bool,
+    /// False when the feed says this Couch cannot run the newer version.
+    #[serde(default = "yes")]
+    update_installable: bool,
+    #[serde(default)]
+    update_reason: Option<String>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -52,6 +61,22 @@ struct Available {
     description: String,
     #[serde(default)]
     repository: Option<String>,
+    /// False when the feed's signed metadata says this Couch cannot run the
+    /// package; the daemon refuses the install as well.
+    #[serde(default = "yes")]
+    installable: bool,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// What to say under a package that cannot be installed or updated.
+fn blocked(installable: bool, reason: &Option<String>) -> Option<String> {
+    (!installable).then(|| {
+        reason
+            .clone()
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or_else(|| "This package cannot be installed on this remote".into())
+    })
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -529,6 +554,7 @@ pub fn screen(app: App) -> AnyView {
     view! {
         {ui::page_header(app, "Integrations", None)}
         <p class="lead">"Install signed packages from trusted repositories. Removing or changing a package keeps its saved connection settings so it can be set up again later."</p>
+        {super::updates::preview_notice()}
         {move || recovery.get().recovery.and_then(|snapshot| (!snapshot.integrations_active && snapshot.path.is_some()).then_some(view! {
             <section class="notice" role="alert"><strong>"Saved integration configuration found"</strong><p>"Couch kept configuration from an earlier runtime integration setup. Download a copy before any deliberate import; importing it replaces the current house configuration."</p><a href="/api/integrations/recovery/config" download="couch-integration-recovery.json">"Download saved integration configuration"</a></section>
         }))}
@@ -582,6 +608,9 @@ fn installed_card(
     let update = item.available_version.clone();
     let has_update = update.is_some();
     let update_version = update.unwrap_or_default();
+    let update_blocked =
+        blocked(item.update_installable, &item.update_reason).filter(|_| has_update);
+    let cannot_update = update_blocked.is_some();
     let install = move |action: &'static str| {
         begin_operation(
             app,
@@ -603,8 +632,9 @@ fn installed_card(
         <p class="dim">{status(&item.status)}</p>
         {(!item.description.is_empty()).then(|| view! { <p>{item.description}</p> })}
         {item.connection_configured.then(|| view! { <p class="notice small">"Saved connection settings are retained."</p> })}
+        {update_blocked.map(|reason| view! { <p class="notice small">{format!("Version {update_version} is available. {reason}.")}</p> })}
         <div class="actions">
-            {has_update.then(|| view! { <button class="primary" disabled=move || busy.get() on:click=move |_| update_action("update")>{format!("Update to {update_version}")}</button> })}
+            {has_update.then(|| view! { <button class="primary" disabled=move || cannot_update || busy.get() on:click=move |_| update_action("update")>{format!("Update to {update_version}")}</button> })}
             {item.can_rollback.then(|| view! { <button class="ghost" disabled=move || busy.get() on:click=move |_| rollback_action("rollback")>"Restore previous version"</button> })}
             {ui::danger_button("Remove package", move || remove_action("remove"))}
         </div>
@@ -622,11 +652,14 @@ fn available_card(
 ) -> AnyView {
     let id = item.id.clone();
     let repository = item.repository.unwrap_or_default();
+    let reason = blocked(item.installable, &item.reason);
+    let cannot_install = reason.is_some();
     view! { <article class="card integration-card">
         <h3>{name(&item.name, &item.id)}</h3>
         <p class="mono">{format!("{} · {}", item.id, item.version)}</p>
         {(!item.description.is_empty()).then(|| view! { <p>{item.description}</p> })}
-        <button class="primary" disabled=move || busy.get() on:click=move |_| begin_operation(app, busy, operation, message, error, result, "/api/integrations/install".into(), json!({"id": id, "repository": repository, "preserve_connection_config": true}))>"Install"</button>
+        {reason.map(|reason| view! { <p class="notice small">{format!("{reason}.")}</p> })}
+        <button class="primary" disabled=move || cannot_install || busy.get() on:click=move |_| begin_operation(app, busy, operation, message, error, result, "/api/integrations/install".into(), json!({"id": id, "repository": repository, "preserve_connection_config": true}))>"Install"</button>
     </article> }.into_any()
 }
 
@@ -694,6 +727,27 @@ mod tests {
             catalog_message(&catalog),
             "1 package available from trusted repositories."
         );
+    }
+
+    #[test]
+    fn a_package_the_feed_says_this_couch_cannot_run_carries_its_reason() {
+        // A daemon from before feeds said so sends neither field.
+        let old: Available = serde_json::from_value(json!({"id":"denon"})).unwrap();
+        assert!(old.installable);
+        assert_eq!(blocked(old.installable, &old.reason), None);
+        let newer: Available = serde_json::from_value(
+            json!({"id":"denon","installable":false,"reason":"Needs a newer Couch"}),
+        )
+        .unwrap();
+        assert_eq!(
+            blocked(newer.installable, &newer.reason).as_deref(),
+            Some("Needs a newer Couch")
+        );
+        let silent: Available =
+            serde_json::from_value(json!({"id":"denon","installable":false})).unwrap();
+        assert!(blocked(silent.installable, &silent.reason).is_some());
+        let installed: Installed = serde_json::from_value(json!({"id":"denon"})).unwrap();
+        assert!(installed.update_installable);
     }
 
     #[test]

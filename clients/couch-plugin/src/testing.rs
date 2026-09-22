@@ -398,9 +398,7 @@ pub fn timeout_no_retry(adapter: Adapter<'_>, case: impl Into<TimeoutNoRetry>) {
     let package = Package::new(adapter);
     let endpoint = package.endpoint(device.settings(), Duration::from_millis(600));
     assert_eq!(
-        endpoint.request(Request::Command {
-            function: case.command.into(),
-        }),
+        endpoint.request(Request::command(case.command)),
         Err(Error::Timeout)
     );
     assert_eq!(device.requests(), case.timed_out_requests);
@@ -453,11 +451,7 @@ pub fn spike(adapter: Adapter<'_>, case: impl Into<Spike>) {
     let package = Package::new(adapter);
     let endpoint = package.endpoint(device.settings(), Duration::from_secs(3));
     let first_endpoint = endpoint.clone();
-    let first = std::thread::spawn(move || {
-        first_endpoint.request(Request::Command {
-            function: command.to_owned(),
-        })
-    });
+    let first = std::thread::spawn(move || first_endpoint.request(Request::command(command)));
     let start = Instant::now();
     while device.requests().is_empty() {
         assert!(
@@ -475,9 +469,7 @@ pub fn spike(adapter: Adapter<'_>, case: impl Into<Spike>) {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                endpoint.request(Request::Command {
-                    function: command.to_owned(),
-                })
+                endpoint.request(Request::command(command))
             })
         })
         .collect::<Vec<_>>();

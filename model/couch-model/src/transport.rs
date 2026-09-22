@@ -62,8 +62,13 @@ impl Config {
     /// A receiver named inline on a device, from before named connections,
     /// gets a connection (`integration_migration.rs`), so that it can be handed
     /// to the package that replaced the built-in client.
+    ///
+    /// A step or binding carrying a command word an old release could save
+    /// but the executor never ran (`legacy_commands.rs`, `"bright"`) is
+    /// rewritten to its modern equivalent first.
     pub fn migrate(&mut self) -> bool {
-        let mut changed = self.migrate_legacy_builtins();
+        let mut changed = self.migrate_commands();
+        changed |= self.migrate_legacy_builtins();
         let bluetooth_connections: Vec<crate::Id> = self
             .connections
             .iter()
@@ -128,6 +133,7 @@ mod tests {
                         Integration::Connection {
                             connection_id: "lg".into(),
                             resource_id: String::new(),
+                            child: None,
                         },
                     )
                 },

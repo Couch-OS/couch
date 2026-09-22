@@ -47,6 +47,19 @@ pub enum PluginComponent {
     InputSelector {
         label: String,
     },
+    /// Protocol 3 (unreleased): the connection is itself one lamp, blind or
+    /// thermostat, drawn with the built-in control and driven by the matching
+    /// typed action. A connection with many of them declares `children`
+    /// instead.
+    Light {
+        label: String,
+    },
+    Cover {
+        label: String,
+    },
+    Climate {
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +129,11 @@ pub enum Provider {
         presentation: Vec<PluginComponent>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         actions: Vec<crate::PluginActionSchema>,
+        /// Protocol 3 (unreleased): the kinds of child this connection offers
+        /// (a bridge's lights, rooms and scenes). Empty for a package whose
+        /// connection is the device, and then never written.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        children: Vec<crate::PluginChildKind>,
     },
     Ir,
 }
@@ -163,14 +181,44 @@ impl Config {
     pub fn connection(&self, id: &Id) -> Option<&Connection> {
         self.connections.iter().find(|c| &c.id == id)
     }
+    /// The kind a packaged connection declares under this name.
+    pub fn child_kind(&self, connection: &Id, kind: &str) -> Option<&crate::PluginChildKind> {
+        match &self.connection(connection)?.provider {
+            Provider::Plugin { children, .. } => children.iter().find(|k| k.kind == kind),
+            _ => None,
+        }
+    }
+    /// The declared kind of a device that is a child, in either saved form.
+    pub fn device_child_kind(&self, integration: &Integration) -> Option<&crate::PluginChildKind> {
+        match integration {
+            Integration::Connection {
+                connection_id,
+                child: Some(child),
+                ..
+            }
+            | Integration::Plugin {
+                connection_id,
+                child: Some(child),
+                ..
+            } => self.child_kind(connection_id, &child.kind),
+            _ => None,
+        }
+    }
     /// Legacy inline integrations remain readable. New devices refer to a
     /// connection, so changing a Kodi address updates every referring device.
     /// Resolved Hue/HA IDs are runtime cache keys (connection/resource); strip
     /// the connection prefix before calling the upstream API. Stored IDs stay raw.
+    ///
+    /// A device that is a child of a packaged connection resolves to what its
+    /// *kind* can do, never to what the connection can: the kind's commands
+    /// and typed actions, no inputs, no screen of its own, and the saved
+    /// snapshot. A kind the package no longer declares resolves to nothing it
+    /// can be told.
     pub fn resolve_integration(&self, integration: &Integration) -> Option<Integration> {
         let Integration::Connection {
             connection_id,
             resource_id,
+            child,
         } = integration
         else {
             let legacy = match integration {
@@ -183,6 +231,7 @@ impl Config {
                     return self.resolve_integration(&Integration::Connection {
                         connection_id: c.id.clone(),
                         resource_id: resource.clone(),
+                        child: None,
                     });
                 }
             }
@@ -217,6 +266,21 @@ impl Config {
             Provider::Matter => Integration::Matter {
                 device: alloc::format!("{connection_id}/{resource_id}"),
             },
+            Provider::Plugin { id, children, .. } if child.is_some() => {
+                let kind = child
+                    .as_ref()
+                    .and_then(|child| children.iter().find(|kind| kind.kind == child.kind));
+                Integration::Plugin {
+                    id: id.clone(),
+                    connection_id: connection_id.clone(),
+                    resource_id: resource_id.clone(),
+                    capabilities: kind.map(|k| k.capabilities.clone()).unwrap_or_default(),
+                    supports_inputs: false,
+                    presentation: Vec::new(),
+                    actions: kind.map(|k| k.actions.clone()).unwrap_or_default(),
+                    child: child.clone(),
+                }
+            }
             Provider::Plugin {
                 id,
                 capabilities,
@@ -232,6 +296,7 @@ impl Config {
                 supports_inputs: *supports_inputs,
                 presentation: presentation.clone(),
                 actions: actions.clone(),
+                child: None,
             },
             Provider::Ir => Integration::Ir {
                 codeset: resource_id.clone(),
@@ -260,6 +325,7 @@ mod tests {
                 title: "Volume".into(),
                 commands: vec!["volume-up".into()],
             }],
+            children: vec![],
         };
         let mut config = Config::default();
         config.connections.push(Connection {
@@ -270,6 +336,7 @@ mod tests {
         let stored = Integration::Connection {
             connection_id: "receiver".into(),
             resource_id: "zone-main".into(),
+            child: None,
         };
         let saved = serde_json::to_string(&config).unwrap();
         let restored: Config = serde_json::from_str(&saved).unwrap();
@@ -290,6 +357,7 @@ mod tests {
                     title: "Volume".into(),
                     commands: vec!["volume-up".into()],
                 }],
+                child: None,
             })
         );
         assert!(restored.validate().is_ok());
@@ -315,6 +383,7 @@ mod tests {
                 supports_inputs: false,
                 presentation,
                 actions: vec![],
+                children: vec![],
             },
         };
         for presentation in [
@@ -361,6 +430,7 @@ mod tests {
                 connection_id: "hue".into(),
                 scene_id: "00000000-0000-0000-0000-000000000001".into(),
             }),
+            resource: None,
         });
         assert!(c.validate().is_ok());
         let saved = serde_json::to_string(&c).unwrap();
@@ -387,6 +457,7 @@ mod tests {
         let integration = Integration::Connection {
             connection_id: "player".into(),
             resource_id: String::new(),
+            child: None,
         };
         let mut room = Room {
             id: "room".into(),
@@ -423,6 +494,7 @@ mod tests {
         let integration = Integration::Connection {
             connection_id: "lg".into(),
             resource_id: String::new(),
+            child: None,
         };
         config.rooms.push(Room {
             id: "office".into(),
@@ -469,10 +541,12 @@ mod tests {
             let left = c.resolve_integration(&Integration::Connection {
                 connection_id: a.into(),
                 resource_id: resource.into(),
+                child: None,
             });
             let right = c.resolve_integration(&Integration::Connection {
                 connection_id: b.into(),
                 resource_id: resource.into(),
+                child: None,
             });
             assert_ne!(left, right);
         }
@@ -496,12 +570,14 @@ mod tests {
                     Integration::Connection {
                         connection_id: "ir".into(),
                         resource_id: "lg-tv".into(),
+                        child: None,
                     },
                 ),
                 Device::new("amp".into(), "Amplifier", DeviceKind::Speaker).with_integration(
                     Integration::Connection {
                         connection_id: "ir".into(),
                         resource_id: "denon".into(),
+                        child: None,
                     },
                 ),
             ],
@@ -536,6 +612,7 @@ mod tests {
             .resolve_integration(&Integration::Connection {
                 connection_id: "ce".into(),
                 resource_id: String::new(),
+                child: None,
             })
             .unwrap();
         assert!(matches!(ce, Integration::Kodi { port: 9090, .. }));
@@ -544,6 +621,7 @@ mod tests {
             .resolve_integration(&Integration::Connection {
                 connection_id: "speaker".into(),
                 resource_id: String::new(),
+                child: None,
             })
             .unwrap();
         assert!(crate::commands::Function::Play.supports(&sonos));
@@ -579,6 +657,7 @@ mod tests {
             let saved = Integration::Connection {
                 connection_id: name.into(),
                 resource_id: String::new(),
+                child: None,
             };
             assert_eq!(
                 config.resolve_integration(&saved),
@@ -635,6 +714,7 @@ mod protect_tests {
                     Integration::Connection {
                         connection_id: "protect".into(),
                         resource_id: "camera-123".into(),
+                        child: None,
                     },
                 ),
             ],
@@ -652,6 +732,7 @@ mod protect_tests {
         config.rooms[0].devices[0].integration = Integration::Connection {
             connection_id: "protect".into(),
             resource_id: "../other".into(),
+            child: None,
         };
         assert!(config.validate().is_err());
     }
@@ -679,6 +760,7 @@ mod matter_tests {
                     Integration::Connection {
                         connection_id: "matter".into(),
                         resource_id: "7/1".into(),
+                        child: None,
                     },
                 ),
             ],
@@ -712,6 +794,7 @@ mod matter_tests {
             config.rooms[0].devices[0].integration = Integration::Connection {
                 connection_id: "matter".into(),
                 resource_id: bad.into(),
+                child: None,
             };
             assert!(config.validate().is_err(), "{bad:?} should be rejected");
         }

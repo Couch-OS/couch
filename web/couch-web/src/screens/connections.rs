@@ -35,6 +35,10 @@ struct PluginManifest {
     supports_inputs: bool,
     #[serde(default)]
     presentation: Vec<PluginComponent>,
+    /// Protocol 3 (unreleased): how this package pairs, if it pairs at all.
+    /// Absent from every manifest a shipped build accepts.
+    #[serde(default)]
+    pairing: Option<super::plugin_pairing::Pairing>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -396,6 +400,7 @@ fn create_plugin(app: App, manifest: PluginManifest) -> AnyView {
         actions: manifest.actions,
         supports_inputs: manifest.supports_inputs,
         presentation: manifest.presentation,
+        children: vec![],
     };
     view!{<form on:submit=move |event|{event.prevent_default();let name=name.get_untracked().trim().to_string();if !name.is_empty(){create(app,json!({"name":name,"provider":provider}));}}>
         {field("Connection name",name,"Living room integration")}
@@ -412,6 +417,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
         actions,
         supports_inputs,
         presentation,
+        ..
     } = &connection.provider
     else {
         return ().into_any();
@@ -432,6 +438,10 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
     let configured = RwSignal::new(false);
     let busy = RwSignal::new(true);
     let message = RwSignal::new("Loading integration settings…".to_string());
+    // Protocol 3 (unreleased): what this browser knows about the connection's
+    // pairing, shared with the device panels and with the dialog at the root.
+    let pairing = expect_context::<super::plugin_pairing::State>();
+    let settings_connection = connection_id.clone();
     leptos::task::spawn_local(async move {
         let catalog = api::ha("GET", "/api/integrations", None)
             .await
@@ -450,6 +460,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
             busy.set(false);
             return;
         };
+        super::plugin_pairing::declares(pairing, &settings_connection, installed.pairing);
         match api::ha("GET", &format!("{}/settings", base.get_value()), None).await {
             Ok(redacted) => {
                 let mut loaded = BTreeMap::new();
@@ -458,39 +469,43 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
                         loaded.insert(field.id.clone(), default.clone());
                     }
                 }
-                if let Some(settings) = redacted["settings"].as_object() {
-                    loaded.extend(
-                        settings
-                            .iter()
-                            .map(|(key, value)| (key.clone(), value.clone())),
-                    );
-                }
                 values.set(loaded);
-                saved_secrets.set(
-                    redacted["secrets"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect(),
-                );
-                configured.set(redacted["configured"].as_bool().unwrap_or(false));
-                message.set(if configured.get_untracked() {
-                    "Private settings are configured.".into()
-                } else {
-                    "Enter the required settings to configure this integration.".into()
-                });
+                adopt_plugin_settings(&redacted, values, saved_secrets, configured);
+                super::plugin_pairing::from_settings(pairing, &settings_connection, &redacted);
+                message.set(settings_line(configured.get_untracked()));
                 manifest.set(Some(installed));
             }
             Err(error) => {
                 if error.unauthorized {
                     app.paired.set(Some(false));
                 }
+                super::plugin_pairing::noticed(pairing, &settings_connection, &error);
                 message.set(error.message);
             }
         }
         busy.set(false);
+    });
+
+    // A pairing that finished, or one that was forgotten, changes what the
+    // remote holds for this connection. Read it again rather than showing
+    // what this page happened to have: the package may have corrected the
+    // settings on its way through.
+    let refresh_connection = connection_id.clone();
+    Effect::new(move |seen: Option<u32>| {
+        let now = pairing.refreshed.get();
+        if seen.is_some_and(|seen| seen != now) {
+            let connection = refresh_connection.clone();
+            leptos::task::spawn_local(async move {
+                if let Ok(redacted) =
+                    api::ha("GET", &format!("{}/settings", base.get_value()), None).await
+                {
+                    adopt_plugin_settings(&redacted, values, saved_secrets, configured);
+                    super::plugin_pairing::from_settings(pairing, &connection, &redacted);
+                    message.set(settings_line(configured.get_untracked()));
+                }
+            });
+        }
+        now
     });
 
     let cached = PluginManifest {
@@ -501,21 +516,66 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
         settings: Vec::new(),
         supports_inputs: cached_inputs,
         presentation: cached_presentation,
+        pairing: None,
     };
+    let form_connection = connection_id.clone();
+    let card_connection = connection_id.clone();
     view! {
+        {super::plugin_pairing::banner(app,pairing,&connection_id,base.get_value())}
         <section class="card">
             <h2>"Integration settings"</h2>
             <p class="dim">"Settings are stored in the remote’s private connection store and never appear in the home configuration."</p>
             <p role="status">{move ||message.get()}</p>
-            {move || manifest.get().map(|installed|plugin_form(app,base,installed,values,saved_secrets,clear_secrets,configured,busy,message))}
+            {move || manifest.get().map(|installed|plugin_form(app,pairing,form_connection.clone(),base,installed,values,saved_secrets,clear_secrets,configured,busy,message))}
+            {super::plugin_pairing::settings_card(app,pairing,&card_connection,base.get_value())}
         </section>
-        {plugin_controls(app,connection_id,cached,manifest,busy)}
+        {plugin_controls(app,pairing,connection_id,cached,manifest,busy)}
     }.into_any()
+}
+
+/// Take a redacted settings view as what the form is showing. Never a
+/// replacement: a secret is not in the view, and what is typed for one must
+/// survive a read.
+fn adopt_plugin_settings(
+    view: &Value,
+    values: RwSignal<BTreeMap<String, Value>>,
+    saved_secrets: RwSignal<BTreeSet<String>>,
+    configured: RwSignal<bool>,
+) {
+    if let Some(settings) = view["settings"].as_object() {
+        values.update(|all| {
+            all.extend(
+                settings
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+        });
+    }
+    saved_secrets.set(
+        view["secrets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+    );
+    configured.set(view["configured"].as_bool().unwrap_or(false));
+}
+
+fn settings_line(configured: bool) -> String {
+    if configured {
+        "Private settings are configured.".into()
+    } else {
+        "Enter the required settings to configure this integration.".into()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn plugin_form(
     app: App,
+    pairing: super::plugin_pairing::State,
+    connection: String,
     base: StoredValue<String>,
     manifest: PluginManifest,
     values: RwSignal<BTreeMap<String, Value>>,
@@ -527,37 +587,150 @@ fn plugin_form(
 ) -> AnyView {
     let fields = manifest.settings.clone();
     let submit_fields = fields.clone();
+    let pair_fields = fields.clone();
+    // The setting a package blamed for refusing to save, and its words.
+    let blamed = RwSignal::new(None::<(String, String)>);
+    let pairs = manifest.pairing.is_some();
+    let pair_connection = connection.clone();
+    let label_connection = connection;
     view! {<form on:submit=move |event|{
         event.prevent_default();
-        if busy.get_untracked(){return}
-        let current=values.get_untracked();
-        let cleared=clear_secrets.get_untracked();
-        let mut settings=serde_json::Map::new();
-        for field in &submit_fields {
-            if field.kind==PluginFieldKind::Secret {
-                if cleared.contains(&field.id) { settings.insert(field.id.clone(),Value::Null); }
-                else if let Some(value)=current.get(&field.id).filter(|value|value.as_str().is_some_and(|text|!text.is_empty())) {settings.insert(field.id.clone(),value.clone());}
-            } else if let Some(value)=current.get(&field.id) { settings.insert(field.id.clone(),value.clone()); }
-        }
-        busy.set(true);message.set("Saving private settings…".into());
-        let saved_fields=submit_fields.clone();
-        leptos::task::spawn_local(async move {
-            match api::ha("POST",&format!("{}/settings",base.get_value()),Some(Value::Object(settings))).await {
-                Ok(redacted)=>{
-                    saved_secrets.set(redacted["secrets"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect());
-                    clear_secrets.set(BTreeSet::new());
-                    configured.set(redacted["configured"].as_bool().unwrap_or(true));
-                    values.update(|all|for field in &saved_fields {if field.kind==PluginFieldKind::Secret {all.remove(&field.id);}});
-                    message.set("Private settings saved.".into());
-                }
-                Err(error)=>{if error.unauthorized{app.paired.set(Some(false));}message.set(error.message);}
-            }
-            busy.set(false);
-        });
+        save_plugin_settings(app,base,submit_fields.clone(),values,saved_secrets,clear_secrets,configured,busy,message,blamed,None);
     }>
-        {fields.into_iter().map(|setting|plugin_field(setting,values,saved_secrets,clear_secrets,busy)).collect_view()}
-        <button type="submit" class="primary" disabled=move ||busy.get()>"Save private settings"</button>
+        {fields.into_iter().map(|setting|plugin_field(setting,values,saved_secrets,clear_secrets,busy,blamed)).collect_view()}
+        <div class="actions settings-actions">
+            <button type="submit" class="primary" disabled=move ||busy.get()>"Save private settings"</button>
+            // Protocol 3 (unreleased): the daemon validates the settings a
+            // pairing is started with but does not save them, so what is
+            // typed is saved first and the pairing starts on what the
+            // connection then has.
+            {pairs.then(||{
+                let fields=pair_fields.clone();
+                let connection=pair_connection.clone();
+                view!{<button type="button" class="ghost" disabled=move ||busy.get() on:click=move |_|{
+                    let fields=fields.clone();
+                    let connection=connection.clone();
+                    let started_fields=fields.clone();
+                    save_plugin_settings(app,base,fields,values,saved_secrets,clear_secrets,configured,busy,message,blamed,Some(Box::new(move ||{
+                        let fields=started_fields.clone();
+                        super::plugin_pairing::begin(app,pairing,connection.clone(),base.get_value(),move |error|{
+                            let (field,text)=refused_setting(&error,&fields);
+                            blamed.set(field);
+                            message.set(text);
+                        });
+                    })));
+                }>{move ||super::plugin_pairing::pair_label(pairing,&label_connection)}</button>}
+            })}
+        </div>
     </form>}.into_any()
+}
+
+/// Save what the form is showing.
+///
+/// `then` runs only when the remote accepted it: starting a pairing with
+/// settings the package has already refused would ask a device for something
+/// nobody typed.
+#[allow(clippy::too_many_arguments)]
+fn save_plugin_settings(
+    app: App,
+    base: StoredValue<String>,
+    fields: Vec<PluginSetting>,
+    values: RwSignal<BTreeMap<String, Value>>,
+    saved_secrets: RwSignal<BTreeSet<String>>,
+    clear_secrets: RwSignal<BTreeSet<String>>,
+    configured: RwSignal<bool>,
+    busy: RwSignal<bool>,
+    message: RwSignal<String>,
+    blamed: RwSignal<Option<(String, String)>>,
+    then: Option<Box<dyn Fn()>>,
+) {
+    if busy.get_untracked() {
+        return;
+    }
+    blamed.set(None);
+    let current = values.get_untracked();
+    let cleared = clear_secrets.get_untracked();
+    let mut settings = serde_json::Map::new();
+    for field in &fields {
+        if field.kind == PluginFieldKind::Secret {
+            if cleared.contains(&field.id) {
+                settings.insert(field.id.clone(), Value::Null);
+            } else if let Some(value) = current
+                .get(&field.id)
+                .filter(|value| value.as_str().is_some_and(|text| !text.is_empty()))
+            {
+                settings.insert(field.id.clone(), value.clone());
+            }
+        } else if let Some(value) = current.get(&field.id) {
+            settings.insert(field.id.clone(), value.clone());
+        }
+    }
+    busy.set(true);
+    message.set("Saving private settings…".into());
+    leptos::task::spawn_local(async move {
+        match api::ha(
+            "POST",
+            &format!("{}/settings", base.get_value()),
+            Some(Value::Object(settings)),
+        )
+        .await
+        {
+            Ok(redacted) => {
+                saved_secrets.set(
+                    redacted["secrets"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                );
+                clear_secrets.set(BTreeSet::new());
+                configured.set(redacted["configured"].as_bool().unwrap_or(true));
+                values.update(|all| {
+                    for field in &fields {
+                        if field.kind == PluginFieldKind::Secret {
+                            all.remove(&field.id);
+                        }
+                    }
+                });
+                message.set("Private settings saved.".into());
+                busy.set(false);
+                if let Some(then) = then {
+                    then();
+                }
+                return;
+            }
+            Err(error) => {
+                if error.unauthorized {
+                    app.paired.set(Some(false));
+                }
+                let (field, text) = refused_setting(&error, &fields);
+                blamed.set(field);
+                message.set(text);
+            }
+        }
+        busy.set(false);
+    });
+}
+
+/// Where a refused save is shown. A reason naming a setting of this form marks
+/// that setting and puts the package's words beside it, and the form's own
+/// line says which one to look at; anything else is the form's line alone, as
+/// it always was (`error` already holds a `message` reason's words).
+fn refused_setting(
+    error: &api::ApiError,
+    fields: &[PluginSetting],
+) -> (Option<(String, String)>, String) {
+    if let Some(api::Reason::InvalidSetting { field, text }) = &error.reason {
+        if let Some(setting) = fields.iter().find(|setting| &setting.id == field) {
+            return (
+                Some((field.clone(), text.clone())),
+                format!("Not saved. Check {}.", setting.label),
+            );
+        }
+    }
+    (None, error.message.clone())
 }
 
 fn plugin_field(
@@ -566,16 +739,50 @@ fn plugin_field(
     saved_secrets: RwSignal<BTreeSet<String>>,
     clear_secrets: RwSignal<BTreeSet<String>>,
     busy: RwSignal<bool>,
+    blamed: RwSignal<Option<(String, String)>>,
 ) -> AnyView {
     let id = setting.id.clone();
     let input_id = id.clone();
+    // The package's words about this setting, from the last refused save.
+    // Editing the setting takes them away: they were about the old value.
+    let blame_id = id.clone();
+    let refusal = Memo::new(move |_| {
+        blamed.with(|blamed| {
+            blamed
+                .as_ref()
+                .filter(|(field, _)| *field == blame_id)
+                .map(|(_, text)| text.clone())
+        })
+    });
+    let edited_id = id.clone();
+    let edited = move || {
+        if blamed.with_untracked(|blamed| {
+            blamed
+                .as_ref()
+                .is_some_and(|(field, _)| *field == edited_id)
+        }) {
+            blamed.set(None);
+        }
+    };
+    let edited_toggle = edited.clone();
+    let describes = format!("plugin-setting-{id}-error");
+    let described = describes.clone();
+    let complaint = move || {
+        let describes = describes.clone();
+        refusal
+            .get()
+            .map(|text| view! {<p class="field-error" role="alert" id=describes>{text}</p>})
+    };
     let label = if setting.required {
         format!("{} · required", setting.label)
     } else {
         setting.label
     };
     match setting.kind {
-        PluginFieldKind::Boolean => view! {<label class="field checkbox-field"><input type="checkbox" checked=move ||values.with(|all|all.get(&id).and_then(Value::as_bool).unwrap_or(false)) disabled=move ||busy.get() on:change=move |event|values.update(|all|{all.insert(input_id.clone(),Value::Bool(event_target_checked(&event)));})/><span>{label}</span></label>}.into_any(),
+        PluginFieldKind::Boolean => view! {<div class:field-refused=move ||refusal.get().is_some()>
+            <label class="field checkbox-field"><input type="checkbox" aria-invalid=move ||refusal.get().map(|_|"true") aria-describedby=move ||refusal.get().map(|_|described.clone()) checked=move ||values.with(|all|all.get(&id).and_then(Value::as_bool).unwrap_or(false)) disabled=move ||busy.get() on:change=move |event|{values.update(|all|{all.insert(input_id.clone(),Value::Bool(event_target_checked(&event)));});edited_toggle();}/><span>{label}</span></label>
+            {complaint}
+        </div>}.into_any(),
         kind => {
             let id_for_value=id.clone();
             let id_for_input=id.clone();
@@ -583,8 +790,9 @@ fn plugin_field(
             let clear_id=id.clone();
             let clear_change=id.clone();
             let input_type=if kind==PluginFieldKind::Secret{"password"}else if kind==PluginFieldKind::Integer{"number"}else{"text"};
-            view! {<div>
-                <label class="field">{label}<input type=input_type autocomplete=if kind==PluginFieldKind::Secret{"new-password"}else{"off"} required=setting.required && kind!=PluginFieldKind::Secret prop:value=move ||values.with(|all|all.get(&id_for_value).map(|value|value.as_str().map(str::to_owned).unwrap_or_else(||value.to_string())).unwrap_or_default()) placeholder=move ||if kind==PluginFieldKind::Secret&&saved_secrets.with(|all|all.contains(&saved_id)){"Saved secret · leave blank to keep"}else{""} on:input=move |event|{let text=event_target_value(&event);let value=if kind==PluginFieldKind::Integer{text.parse::<i64>().map(Value::from).unwrap_or(Value::String(text))}else{Value::String(text)};values.update(|all|{all.insert(id_for_input.clone(),value);});clear_secrets.update(|all|{all.remove(&clear_id);});}/></label>
+            view! {<div class:field-refused=move ||refusal.get().is_some()>
+                <label class="field">{label}<input type=input_type aria-invalid=move ||refusal.get().map(|_|"true") aria-describedby=move ||refusal.get().map(|_|described.clone()) autocomplete=if kind==PluginFieldKind::Secret{"new-password"}else{"off"} required=setting.required && kind!=PluginFieldKind::Secret prop:value=move ||values.with(|all|all.get(&id_for_value).map(|value|value.as_str().map(str::to_owned).unwrap_or_else(||value.to_string())).unwrap_or_default()) placeholder=move ||if kind==PluginFieldKind::Secret&&saved_secrets.with(|all|all.contains(&saved_id)){"Saved secret · leave blank to keep"}else{""} on:input=move |event|{let text=event_target_value(&event);let value=if kind==PluginFieldKind::Integer{text.parse::<i64>().map(Value::from).unwrap_or(Value::String(text))}else{Value::String(text)};values.update(|all|{all.insert(id_for_input.clone(),value);});clear_secrets.update(|all|{all.remove(&clear_id);});edited();}/></label>
+                {complaint}
                 {(kind==PluginFieldKind::Secret).then(||view!{<label class="field checkbox-field"><input type="checkbox" checked=move ||clear_secrets.with(|all|all.contains(&id)) disabled=move ||busy.get() on:change=move |event|clear_secrets.update(|all|{if event_target_checked(&event){all.insert(clear_change.clone());}else{all.remove(&clear_change);}})/><span>"Clear the saved value"</span></label>})}
             </div>}.into_any()
         }
@@ -593,6 +801,7 @@ fn plugin_field(
 
 fn plugin_controls(
     app: App,
+    pairing: super::plugin_pairing::State,
     connection_id: String,
     cached: PluginManifest,
     installed: RwSignal<Option<PluginManifest>>,
@@ -603,6 +812,7 @@ fn plugin_controls(
     let status = RwSignal::new(Value::Null);
     let inputs = RwSignal::new(Vec::<(String, String)>::new());
     let base = StoredValue::new(format!("/api/connections/{connection_id}/plugin"));
+    let noticed = StoredValue::new(connection_id.clone());
     let call = move |method: &'static str, body: Option<Value>| {
         if live_busy.get_untracked() || settings_busy.get_untracked() {
             return;
@@ -633,6 +843,7 @@ fn plugin_controls(
                             if error.unauthorized {
                                 app.paired.set(Some(false));
                             }
+                            super::plugin_pairing::noticed(pairing, &noticed.get_value(), &error);
                             format!("Command sent. Status unavailable: {}", error.message)
                         }
                     }
@@ -671,6 +882,7 @@ fn plugin_controls(
                     if error.unauthorized {
                         app.paired.set(Some(false));
                     }
+                    super::plugin_pairing::noticed(pairing, &noticed.get_value(), &error);
                     result.set(error.message);
                 }
             }
@@ -693,6 +905,9 @@ fn plugin_controls(
                 PluginComponent::StatusText{label,field}=>view!{<div class="integration-component integration-reading"><span>{label}</span><strong>{move ||plugin_status_text(&status.get(),field)}</strong></div>}.into_any(),
                 PluginComponent::Toggle{label,state:on_field,on,off}=>view!{<section class="integration-component"><h3>{label}</h3><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none()||plugin_status_bool(&status.get(),on_field).is_none() on:click=move |_|{if let Some(enabled)=plugin_status_bool(&status.get_untracked(),on_field){let command=if enabled{off.clone()}else{on.clone()};call("action",Some(json!({"command":command})));}}>{move ||match plugin_status_bool(&status.get(),on_field){Some(true)=>"Turn off",Some(false)=>"Turn on",None=>"Status unavailable"}}</button></section>}.into_any(),
                 PluginComponent::InputSelector{label}=>view!{<section class="integration-component"><h3>{label}</h3><div class="actions"><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("inputs",None)>"Refresh inputs"</button><select aria-label="Integration input" disabled=move ||live_busy.get()||inputs.with(Vec::is_empty) on:change=move |event|{let id=event_target_value(&event);if !id.is_empty(){call("action",Some(json!({"command":format!("input:{id}")})));}}><option value="">"Choose an input"</option>{move ||inputs.get().into_iter().map(|(id,name)|view!{<option value=id>{name}</option>}).collect_view()}</select></div></section>}.into_any(),
+                // Protocol 3 (unreleased): no manifest this build accepts can
+                // declare one, and the controls come with the web step.
+                PluginComponent::Light{..}|PluginComponent::Cover{..}|PluginComponent::Climate{..}=>().into_any(),
             }).collect_view()
         }}
         </section>}.into_any()
@@ -758,7 +973,9 @@ fn plugin_volume_control(
             max_tenths,
             step_tenths,
         },
-    ) = actions.into_iter().find(|s| s.is_valid())
+    ) = actions
+        .into_iter()
+        .find(|s| s.kind() == couch_model::ActionKind::SetVolumeDb && s.is_valid())
     else {
         return view!{<section class="integration-component"><h3>{label}</h3><p>"Volume control unavailable."</p></section>}.into_any();
     };
@@ -801,6 +1018,60 @@ fn plugin_status_text(status: &Value, field: PluginStatusField) -> String {
 #[cfg(test)]
 mod plugin_tests {
     use super::*;
+
+    #[test]
+    fn a_refused_save_marks_the_setting_a_package_blames_and_nothing_else() {
+        let fields: Vec<PluginSetting> = serde_json::from_value(json!([
+            {"id":"host","label":"Device address","kind":"text","required":true},
+            {"id":"port","label":"Port","kind":"integer","default":23}
+        ]))
+        .unwrap();
+        let refused = |message: &str, reason: Option<api::Reason>| api::ApiError {
+            message: message.into(),
+            reason,
+            status: 400,
+            code: Some("invalid".into()),
+            unauthorized: false,
+            stale: false,
+            busy: false,
+        };
+        // What every daemon says today: the sentence, on the form's own line.
+        assert_eq!(
+            refused_setting(
+                &refused("Invalid integration settings or package", None),
+                &fields
+            ),
+            (None, "Invalid integration settings or package".into())
+        );
+        let port = api::Reason::InvalidSetting {
+            field: "port".into(),
+            text: "The port must not be 0".into(),
+        };
+        assert_eq!(
+            refused_setting(&refused("The port must not be 0", Some(port)), &fields),
+            (
+                Some(("port".into(), "The port must not be 0".into())),
+                "Not saved. Check Port.".into()
+            )
+        );
+        // A setting this form does not have cannot be marked, and words about
+        // no setting belong to the form.
+        let elsewhere = api::Reason::InvalidSetting {
+            field: "token".into(),
+            text: "The token has expired".into(),
+        };
+        assert_eq!(
+            refused_setting(&refused("The token has expired", Some(elsewhere)), &fields),
+            (None, "The token has expired".into())
+        );
+        let message = api::Reason::Message {
+            text: "Pair this TV again".into(),
+        };
+        assert_eq!(
+            refused_setting(&refused("Pair this TV again", Some(message)), &fields),
+            (None, "Pair this TV again".into())
+        );
+    }
 
     #[test]
     fn db_targets_are_exact_tenths_and_obey_declared_bounds() {

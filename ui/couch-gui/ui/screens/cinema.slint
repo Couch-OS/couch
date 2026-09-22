@@ -1,5 +1,5 @@
 import { BottomTray } from "../components/bottom_tray.slint";
-import { MediaBack } from "../widgets/media-back.slint";
+import { ScreenHeader } from "../components/screen_header.slint";
 import { Theme } from "../theme.slint";
 export struct PlayerChoice { title: string, detail: string }
 component Control inherits Rectangle {
@@ -10,12 +10,16 @@ component Control inherits Rectangle {
     in property <bool> enabled: true;
     callback activate();
     border-radius: root.primary ? 44px : 14px;
-    background: root.primary ? Theme.accent : #222623;
+    background: root.primary ? Theme.accent : Theme.surface-raised;
     border-width: root.selected ? 3px : 1px;
-    border-color: root.selected ? (root.primary ? #ffffff : Theme.accent) : #ffffff15;
+    // The primary button is filled with the accent, so both of its edges are the
+    // colour that reads *on* the accent: none at all when idle, and when selected
+    // the same one its glyph uses. The others carry the ordinary raised edge.
+    border-color: root.selected ? (root.primary ? Theme.bg : Theme.accent)
+                                : (root.primary ? transparent : Theme.border-raised);
     opacity: root.enabled ? 1 : 0.35;
-    Image { source:root.icon; width:root.primary ? 36px : 27px; height:self.width; x:(parent.width - self.width)/2; y:root.label=="" ? (parent.height - self.height)/2 : 13px; colorize:root.primary ? #151319 : #f6f6f1; }
-    if root.label!="": Text { text:root.label; y:44px; width:parent.width; horizontal-alignment:center; font-size:17px; color:#eceee8; }
+    Image { source:root.icon; width:root.primary ? 36px : 27px; height:self.width; x:(parent.width - self.width)/2; y:root.label=="" ? (parent.height - self.height)/2 : 13px; colorize:root.primary ? Theme.bg : Theme.text; }
+    if root.label!="": Text { text:root.label; y:44px; width:parent.width; horizontal-alignment:center; font-size:17px; color:Theme.text; }
     TouchArea { enabled:root.enabled; clicked=>{root.activate();} }
 }
 export component Cinema inherits Rectangle {
@@ -30,6 +34,15 @@ export component Cinema inherits Rectangle {
     in property <image> logo;
     in property <string> activity;
     in property <string> room;
+    /// The row's own icon and the row's own reading of it: the disc in the
+    /// header is the one the lift flies here from the room list.
+    in property <image> icon;
+    in property <bool> active;
+    in property <bool> known;
+    /// Whether the progress bar may travel to a new position. Off for the
+    /// first picture of an opening, which is what a transition is made from.
+    in property <bool> glide;
+    property <duration> travel: root.glide ? 220ms : 0ms;
     in property <string> title;
     in property <string> metadata;
     in property <string> elapsed;
@@ -56,23 +69,39 @@ export component Cinema inherits Rectangle {
     changed shown=>{if(!root.music){root.selected=-1;}}
     public function set-choice(i: int){ root.choice-index=max(0,min(root.choices.length - 1,i)); }
     public function take-focus(){ keys.focus(); }
-    background:#111311;
+    background:Theme.bg;
     if root.has-art: Image { source:root.fanart; width:parent.width;height:parent.height;image-fit:cover; }
-    MediaBack {x:24px;y:22px;activate=>{root.action("back",0);}}
-    Text {x:88px;y:24px;width:parent.width - 120px;height:26px;text:root.activity;font-size:19px;font-weight:600;color:#ffffff;overflow:elide;}
-    Text {x:88px;y:52px;width:parent.width - 120px;height:22px;text:root.room;font-size:15px;color:#cbcfc8;overflow:elide;}
+    // The same band every screen a room row opens draws. Over artwork it asks
+    // for the scrim: the second line is the ordinary secondary tone again,
+    // because it is no longer painted straight onto the brightest part of a
+    // photograph.
+    head := ScreenHeader {
+        x:0px;y:0px;width:parent.width;
+        title:root.activity;subtitle:root.room;
+        icon:root.icon;active:root.active;known:root.known;
+        scrim:root.has-art;
+        back=>{root.action("back",0);}
+    }
+    // The track and who it is by. The second line used to start 10px under a
+    // 36px title that is bottom-aligned in its box, so a title with
+    // descenders in it - "Weird Fishes / Arpeggi" - sat on top of the artist.
     if root.ready: Rectangle {
-        background:transparent;x:32px;y:290px;width:parent.width - 64px;height:160px;
+        background:transparent;x:32px;y:284px;width:parent.width - 64px;height:172px;
         if root.has-logo: Image {source:root.logo;width:parent.width;height:125px;image-fit:contain;horizontal-alignment:left;}
-        if !root.has-logo: Text {text:root.title;width:parent.width;height:125px;font-size:36px;font-weight:700;color:#ffffff;wrap:word-wrap;overflow:elide;vertical-alignment:bottom;}
-        Text {text:root.metadata;y:135px;width:parent.width;height:25px;font-size:16px;color:#d2d5ce;overflow:elide;}
+        if !root.has-logo: Text {text:root.title;width:parent.width;height:125px;font-size:36px;font-weight:700;color:Theme.text;wrap:word-wrap;overflow:elide;vertical-alignment:bottom;}
+        Text {text:root.metadata;y:154px;width:parent.width;height:25px;font-size:16px;color:Theme.text-secondary;overflow:elide;}
     }
     if root.ready: Rectangle {
         x:32px;y:parent.height - 330px;width:parent.width - 64px;height:300px;background:transparent;
-        Text {x:0px;y:0px;height:27px;text:root.elapsed;font-size:18px;color:#ffffff;}
-        Text {x:0px;y:0px;height:27px;text:root.remaining;width:parent.width;horizontal-alignment:right;font-size:18px;color:#c7cec3;}
-        Rectangle {y:47px;width:parent.width;height:5px;border-radius:3px;background:#ffffff35;
-            Rectangle {x:0px;width:parent.width*(seek-touch.pressed || root.selected==1 ? root.seek-preview : root.progress)/100;height:parent.height;background:Theme.accent;border-radius:3px;}
+        Text {x:0px;y:0px;height:27px;text:root.elapsed;font-size:18px;color:Theme.text;}
+        Text {x:0px;y:0px;height:27px;text:root.remaining;width:parent.width;horizontal-alignment:right;font-size:18px;color:Theme.text-secondary;}
+        Rectangle {y:47px;width:parent.width;height:5px;border-radius:3px;background:Theme.text-quaternary;
+            Rectangle {x:0px;width:parent.width*(seek-touch.pressed || root.selected==1 ? root.seek-preview : root.progress)/100;height:parent.height;background:Theme.accent;border-radius:3px;
+                // Travels to a new position while the screen is open, and not
+                // at all in the picture an opening is made from. A drag is the
+                // person's own hand, so it is never animated.
+                animate width { duration: seek-touch.pressed ? 0ms : root.travel; easing: ease-out; }
+            }
         }
         Rectangle {visible:root.selected==1;y:30px;width:parent.width;height:38px;border-width:2px;border-color:Theme.accent;border-radius:8px;background:transparent;}
         seek-touch:=TouchArea {y:27px;width:parent.width;height:48px;enabled:root.can-seek;
@@ -90,7 +119,7 @@ export component Cinema inherits Rectangle {
             activate=>{root.action(i==0 ? "chapters" : i==1 ? "audio" : "subtitles",0);}}
     }
     if !root.ready: Rectangle {x:36px;y:220px;width:parent.width - 72px;height:310px;background:transparent;
-        Text {text:root.title;width:parent.width;height:170px;wrap:word-wrap;font-size:27px;color:#f1f2eb;horizontal-alignment:center;vertical-alignment:center;}
+        Text {text:root.title;width:parent.width;height:170px;wrap:word-wrap;font-size:27px;color:Theme.text;horizontal-alignment:center;vertical-alignment:center;}
         if !root.connected: Control {x:60px;y:195px;width:parent.width - 120px;height:78px;label:"Reconnect";selected:root.selected==3;icon:@image-url("../../../../assets/lucide/rotate-cw.svg");activate=>{root.action("retry",0);}}
     }
     tray := BottomTray {
@@ -101,22 +130,62 @@ export component Cinema inherits Rectangle {
         // Explicit bounds keep projected children relative to the inset surface.
         Rectangle { x: Theme.overlay-inset; y: tray.content-y; width: tray.content-width; height: tray.content-height;
             TouchArea { }
-            Text {x:28px;y:26px;text:root.displayed-panel>=1 && root.displayed-panel<=3 ? root.sheets[root.displayed-panel - 1] : "TV controls";font-size:28px;color:#ffffff;}
+            Text {x:28px;y:26px;text:root.displayed-panel>=1 && root.displayed-panel<=3 ? root.sheets[root.displayed-panel - 1] : "TV controls";font-size:28px;color:Theme.text;}
             Control {x:parent.width - 76px;y:18px;width:48px;height:48px;icon:@image-url("../../../../assets/lucide/x.svg");activate=>{root.action("back",0);}}
-            if root.panel-detail!="" && root.displayed-panel<4: Text {x:28px;y:110px;width:parent.width - 56px;height:250px;wrap:word-wrap;font-size:21px;color:#c0c7bc;text:root.panel-detail;}
+            if root.panel-detail!="" && root.displayed-panel<4: Text {x:28px;y:110px;width:parent.width - 56px;height:250px;wrap:word-wrap;font-size:21px;color:Theme.text-secondary;text:root.panel-detail;}
             if root.displayed-panel<4: Rectangle {x:28px;y:105px;width:parent.width - 56px;height:412px;clip:true;background:transparent;
-                for item[i] in root.choices: Rectangle {y:i*84px - root.list-scroll;width:parent.width;height:76px;background:i==root.choice-index ? #35303e : #242823;border-radius:12px;border-width:root.choice-index==i ? 2px : 0px;border-color:Theme.accent;
-                    Text {x:18px;y:12px;width:parent.width - 36px;height:28px;text:item.title;overflow:elide;font-size:22px;color:#ffffff;}
-                    Text {x:18px;y:43px;width:parent.width - 36px;height:22px;text:item.detail;font-size:16px;color:#b7beb2;overflow:elide;}
+                for item[i] in root.choices: Rectangle {y:i*84px - root.list-scroll;width:parent.width;height:76px;background:Theme.surface-raised;border-radius:12px;border-width:root.choice-index==i ? 2px : 0px;border-color:Theme.accent;
+                    Text {x:18px;y:12px;width:parent.width - 36px;height:28px;text:item.title;overflow:elide;font-size:22px;color:Theme.text;}
+                    Text {x:18px;y:43px;width:parent.width - 36px;height:22px;text:item.detail;font-size:16px;color:Theme.text-secondary;overflow:elide;}
                     TouchArea {clicked=>{root.choice-index=i;root.action("choose",i);}}
                 }
             }
 
         }
     }
-    if root.message!="": Rectangle {x:24px;y:parent.height - 150px;width:parent.width - 48px;height:100px;border-radius:16px;background:#30263e;
-        Text {x:16px;y:12px;width:parent.width - 32px;height:parent.height - 24px;text:root.message;wrap:word-wrap;font-size:20px;color:#ffffff;}
+    if root.message!="": Rectangle {x:24px;y:parent.height - 150px;width:parent.width - 48px;height:100px;border-radius:16px;background:Theme.surface-raised;
+        Text {x:16px;y:12px;width:parent.width - 32px;height:parent.height - 24px;text:root.message;wrap:word-wrap;font-size:20px;color:Theme.text;}
     }
+    // --- what the lift needs to know about this page ------------------------
+    public pure function title-box-x() -> length { return head.title-box-x(); }
+    public pure function title-box-y() -> length { return head.title-box-y(); }
+    public pure function title-box-w() -> length { return head.title-box-w(); }
+    public pure function title-box-h() -> length { return head.title-box-h(); }
+    public pure function disc-box-x() -> length { return head.disc-box-x(); }
+    public pure function disc-box-y() -> length { return head.disc-box-y(); }
+    public pure function disc-box-size() -> length { return head.disc-box-size(); }
+    public pure function header-h() -> length { return head.header-h(); }
+    public pure function plate-x() -> length { return head.plate-x(); }
+    public pure function plate-y() -> length { return head.plate-y(); }
+    public pure function plate-w() -> length { return head.plate-w(); }
+    public pure function plate-h() -> length { return head.plate-h(); }
+    public pure function plate-r() -> length { return head.plate-r(); }
+    /// What is playing - the track and who it is by - or, on a page that has
+    /// nothing to play yet, the line that says so.
+    public pure function body-y() -> length { return root.ready ? 284px : 214px; }
+    public pure function body-h() -> length { return root.ready ? 172px : 182px; }
+    /// The rows under it, which arrive one after another: where it is up to,
+    /// the transport and the three sheets on a page that is playing, and the
+    /// one button on a page that is not.
+    public pure function rows() -> int { return root.ready ? 3 : 1; }
+    public pure function row-y(which: int) -> length {
+        return !root.ready
+            ? 408px
+            : root.height - 330px + (which == 0 ? -10px : which == 1 ? 76px : 190px);
+    }
+    public pure function row-h(which: int) -> length {
+        return !root.ready ? 92px : which == 0 ? 86px : which == 1 ? 106px : 92px;
+    }
+    /// Every player page can be lifted out of its row. One with artwork up
+    /// crosses band by band instead of falling to a background it does not
+    /// have; see `banded()`.
+    public pure function lift-ready() -> bool { return true; }
+    /// Whether the page has a photograph behind everything. Re-opening a
+    /// speaker that is already playing is the ordinary case, not an edge one,
+    /// so this is the path most presses take.
+    public pure function banded() -> bool { return root.has-art; }
+    public pure function sparse() -> bool { return !root.ready; }
+
     keys:=FocusScope {enabled:root.shown;
         key-pressed(e)=>{
             // A music player's sheet is a list on this screen: the D-pad
