@@ -27,6 +27,11 @@ chunked pinned-hash transfer, fsync+close and O_DIRECT readback after every
 target, journalling each phase. There is no automatic retry. After the verified
 restore the device should boot stock Android.
 
+A remote reinstalled without a saved enrollment has no Android originals on
+record; Restore refuses it unless the original Android enrollment folder is
+supplied. The Restore picker never offers to continue without one. Restore's Couch
+restart goes through the same readiness check as Reinstall.
+
 ## The restore image set
 
 | Target | Source | Pinning |
