@@ -33,6 +33,18 @@ not-yet-validated Wi-Fi stock-restore feature).
   was, so the worker is reaped and `worker_exit` reports what it did instead of
   BusyBox's 127 for a missing applet.
 
+## Fixed
+
+- **Couch restarts ignored the recovery flag (fixed, couch-installer PR "Reinstall
+  without a saved enrollment").** The Reinstall/Restore retry path restarted Couch
+  seconds after it came back, while init had the recovery flag armed, so the stage
+  was written and the bootloader then started recovery. Every Couch restart now
+  waits for the flag to read clear.
+- **`PROBE_COUCH` does not tell recovery from a normal boot.** Normal Couch mounts
+  the Couch filesystem at `/mnt/alpine` too; only the boot control block says which
+  system starts next. The comment and README now say so; the recovery action's
+  behaviour is unchanged.
+
 ## Deferred (not on the hardware-validated install path)
 
 1. **Restore plan key and older stages.** The host sends `restore: true` only
@@ -98,3 +110,9 @@ not-yet-validated Wi-Fi stock-restore feature).
   bare preloader, and the lab host cannot cut USB port power. Bootstrapping the
   installer's restore/reinstall path also requires a *running* Couch or Android;
   it cannot bootstrap a device stuck in the RAM stage.
+- **`od` is not a required BusyBox applet.** The recovery action and the reinstall
+  flag clear read the boot control block back with `od`. The current BusyBox config
+  builds it (`CONFIG_OD=y`), but `tools/busybox/required-applets.txt` does not list
+  it, so a future config could drop it silently. Adding it changes the BusyBox
+  recipe inputs and needs a rebuilt, re-receipted BusyBox, so it waits for the next
+  BusyBox build.
