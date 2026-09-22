@@ -105,6 +105,8 @@ impl Demo {
                         media: false,
                         activity: false,
                         kind: 0,
+                        // A dimmable lamp: OK opens its control screen.
+                        controls: true,
                         icon: lamp(),
                     },
                 );
