@@ -2,7 +2,7 @@
 
 The integrated native installer prepares the host dependencies, enrolls the
 remote over USB, and uses authenticated Wi-Fi for backups and OS transfer.
-Release `installer-v0.1.1`, published from
+Release `installer-v0.2.0`, published from
 [Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer), is a
 prerelease; it installs the OS payload its release descriptor pins. Its
 launchers passed download, checksum and safe-Cancel tests on Linux, macOS and
@@ -98,13 +98,13 @@ Linux x64 and macOS, from an interactive terminal:
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.1/install.sh | sh
+  https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.2.0/install.sh | sh
 ```
 
 Windows x64, from PowerShell:
 
 ```powershell
-Invoke-RestMethod 'https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.1/install.ps1' | Invoke-Expression
+Invoke-RestMethod 'https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.2.0/install.ps1' | Invoke-Expression
 ```
 
 The release launcher verifies the native host, terminal and release configuration
@@ -150,48 +150,20 @@ Follow the saved restore instructions and [device recovery guide](device-recover
 
 ## What version a fresh install runs
 
-The installer writes a **full OS image**, and that image carries its own bundled
-Couch software - currently the **.24** release, no matter which release the
-install command came from. (The exact tag is in
-[runtime updates](runtime-updates.md#compatibility-floor); it is deliberately
-not spelled out here, because every dated tag in this file is an install command
-a release bump rewrites.) So immediately after installing, the web UI and
-**Settings → Updates** report .24.
+From `installer-v0.2.0` the installer writes an OS image that carries **alpha
+.215**, so a fresh install starts on the current release and Settings → Updates
+reports nothing newer. The image also carries the boot script that clears the
+recovery flag after a rolled-back update, and the D-Bus and BlueZ packages that
+Bluetooth needs, so neither the first-use package download nor the "stuck in
+COUCH RECOVERY" failure of older images applies to a remote installed from it.
 
-That is expected. The version on the remote is the version of the software in
-the image that was written; it is not the version of the installer that wrote
-it. The two are decoupled on purpose: the OS image changes only when the Alpine
-package set or the stable boot scripts change, while application releases are
-cut continuously and the remote installs them itself.
-
-**Finish the install by updating.** Open the paired web UI, or hold Menu on the
-home screen for **Settings → Updates**, set the channel to **Alpha**, **Check
-for updates**, then **Download & verify** and **Install & restart**. The remote
-comes back on the current release, and only then does its reported version match
-the releases page.
-
-### Known task: rebuild the installer OS image
-
-A fresh install should start current rather than weeks behind. The same stale
-image is also what pins the [compatibility
-floor](runtime-updates.md#compatibility-floor): .24's updater is the oldest in
-the field, so no release may contain a file name it does not know. Rebuilding
-the OS image with a current runtime fixes both. Not done yet - it is a full OS
-build (`tools/release/prepare_rootfs.py` and the package closure), not a release
-cut, and it needs its own physical install acceptance.
-
-One thing that blocked it is now cleared. The closure the baseline named,
-`1804ab4b`, no longer existed: the Alpine mirrors had deleted several of its
-package revisions and no copy survived, so `prepare_rootfs.py` refused every
-build with `OS baseline requires the reviewed package closure`. The baseline now
-pins the retained closure `b51d36e9` and its archive, keeping the capability ID
-`ha100-alpine321-ffmpeg612-runtimeboot2` so the image a build produces still
-accepts every published runtime bundle
-([full OS compatibility](runtime-updates.md#full-os-compatibility)). A rebuilt
-image also carries the Bluetooth and D-Bus packages the current one lacks, so
-the [first-use install](bluetooth.md#system-packages-on-first-use) becomes a
-skipped no-op on new installs rather than the way Bluetooth gets its packages.
-The build, its verification and the physical acceptance are still to do.
+The OS image and the application release are still decoupled: the image changes
+only when the Alpine package set, the kernel or the boot scripts change, while
+application releases are cut continuously and the remote installs them itself
+from **Settings → Updates**. A remote installed from an older installer (`.24`
+image) updates itself to the current release the same way; see
+[runtime updates](runtime-updates.md#compatibility-floor) for the floor that keeps
+that working.
 
 ## Troubleshooting
 
