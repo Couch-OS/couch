@@ -18,6 +18,19 @@ from package_closure import restore as restore_closure, verify
 from os_baseline import PIN as BASELINE_PIN, check_archive, seed as seed_os_baseline
 
 
+# Per-device identity that a package hook minted on the build host, dropped from
+# the assembled rootfs rather than refused. The D-Bus install hook writes a
+# machine ID wherever it runs; since D-Bus joined the OS package closure that is
+# the build container, and shipping the result would give every remote installed
+# from the image the same D-Bus identity. It is not a build input, so there is
+# nothing to review or pin - the file simply must not travel.
+# stage2/runtime-boot.sh mints a real one on the remote at first boot.
+#
+# Exactly these two paths, and only as regular files. Every other private-state
+# path, and anything unexpected at these paths, still fails the build.
+PRUNED = ('etc/machine-id', 'var/lib/dbus/machine-id')
+
+
 def normalize(data, epoch, private_files=None):
     """Validate without host extraction and normalize order/times, retaining IDs."""
     private_files = private_files or {}
@@ -32,6 +45,8 @@ def normalize(data, epoch, private_files=None):
         for member in archive:
             name = archive_name(member.name)
             if name == '.':
+                continue
+            if name in PRUNED and member.isreg():
                 continue
             require(name not in entries, 'Duplicate assembled path')
             require(not secret_path(name) or name in private_files or (member.isdir() and name in private_dirs), f'Private runtime state in assembled rootfs: {name}')
