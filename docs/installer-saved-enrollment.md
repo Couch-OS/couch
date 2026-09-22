@@ -71,7 +71,16 @@ full partition map, all five calibration hashes and the retained odmdtbo digest.
 Native records bind the saved odmdtbo original; legacy imports bind its digest
 from the independently trusted retained stock profile.
 Neither a TUI selection nor values copied from the imported record count as live
-observations. A mismatch stops before writes.
+observations. A mismatch stops before writes and leaves the remote in download mode,
+so the error says to hold the side Power button until it turns off. When only
+calibration differs (same chip, encoding, CID and capacity), the error names the
+changed areas, for example `nvdata, protect1, protect2 changed; nvram, proinfo
+unchanged`, which is what starting Android again after the enrollment was saved
+does. It is journaled as `imported_enrollment_rejected`, and the error lists the
+other saved enrollments on this computer for the same storage ID, marked as matching
+the remote now or not. Those are hints read without verification; whichever is
+picked is imported and checked in full. The folder is remembered for the next run
+only after it has bound to the live remote.
 
 Rebind returns a `BoundEnrollment` and journals that boundary. The orchestrator
 still owns the selected USB port/session, current-state backup and write gates.
@@ -80,18 +89,18 @@ imported Android originals remain a separate historical set. Never substitute an
 old Android boot backup for the current boot image expected by a RAM-stage
 transaction. Reverify any retained image again before using it for restoration.
 
-## Without old backups
-
-The current configuration API exposes paired health/configuration access, and
-`build.json`/updater status reports runtime version. These are not an enrolled
-storage identity or proof of original Android partitions. The current hardware
-setup derives a locally administered Wi-Fi address from CID, so its runtime MAC
-cannot substitute for the original Android hardware address. The runtime has no
-persisted, authenticated Android-original enrollment export.
-
-A separate Couch-only enrollment could use read-only selected-USB capture, known
-Couch boot provenance plus reviewed HA100 layout/overlay evidence, and fresh
-calibration/current-system backups. It must record `original_os: Couch`, bind the
-live hardware, and keep Android restoration unavailable unless genuine retained
-Android originals are separately supplied. That admission flow is separate work;
-this importer does not silently promote live Couch into an Android baseline.
+## Reinstall without a saved enrollment
+The orchestrator implements the Couch-only path. It binds the selected USB port and,
+where available, the storage CID read from the running Couch serial shell before its
+restart, and requires the same CID from the download agent, the MT6580 code and
+encoding, and the exact HA100 layout. The captured boot and recovery must both be
+structurally Couch (a gzip cpio ramdisk with exactly one root `init` starting
+`#!/bin/busybox sh`, a root `bin/busybox`, and no Android `init.rc`) and the overlay
+a MediaTek dtbo; a stock Android boot or recovery refuses, including an Android
+remote whose boot holds a half-written installer stage. Fresh calibration and
+current-system backups are made and verified exactly as for any installation. The
+session records `original_os: Couch` and `android_enrollment: none`, keeps Android
+restoration unavailable unless genuine retained Android originals are supplied
+separately, and never promotes live Couch into an Android baseline. It is excluded
+from discovery and fails import on file name, `original_os`, unknown fields, journal
+phase and the structural boot check.
