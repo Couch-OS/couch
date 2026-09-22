@@ -67,6 +67,17 @@ present and skips, the way a second start does today; it needs no change and is
 not removed. It remains the path for every remote installed from the 2026-09-11
 image, which is all of them until a rebuilt image ships and is accepted.
 
+**The machine ID moved with it.** Because a remote installed from a rebuilt
+image already has D-Bus, this step skips and the install hook never runs there,
+so nothing would mint the ID. It cannot travel in the image either: the hook
+runs during the release build, and shipping its file would hand every remote
+installed from that image the same identity. So release staging drops the
+build host's `/etc/machine-id` and `/var/lib/dbus/machine-id`
+(`prepare_rootfs.PRUNED`), and `stage2/runtime-boot.sh` mints a real one with
+`dbus-uuidgen --ensure` on first boot, guarded and idempotent. A fresh install
+and an updated install therefore both have a per-device ID, made on the device
+either way - by the bootstrap on the first, by the install hook on the second.
+
 The OS image pins every package it shipped with, and this step must not move
 any of them: the service first asks `apk add --simulate` for its plan and
 refuses unless every line is a new install. Each step is bounded (a dead
