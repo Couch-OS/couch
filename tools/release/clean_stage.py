@@ -56,6 +56,46 @@ def archive_name(name):
     return str(PurePosixPath(name))
 
 
+# Reviewed set-ID files, by exact path, mode and content.
+#
+# A set-ID program runs with privileges its caller does not have, so staging
+# refuses every one of them and a reviewed file has to be named here
+# individually. `dbus-daemon-launch-helper` is D-Bus's system-bus activation
+# helper: when a client asks the system bus for a service that is not running,
+# this helper starts it under that service's own user account, which is why
+# upstream ships it set-uid root with a group-restricted mode. Couch does not
+# use D-Bus activation - it starts couch-bluetoothd itself, and nothing on the
+# remote registers an activatable system service - so the helper sits unused.
+# It is admitted because excluding it is worse, not because it is needed: it
+# arrived with the Bluetooth packages in the OS closure, and the first-use path
+# already installs this exact file on every remote where Bluetooth has been
+# switched on (docs/bluetooth.md, "System packages on first use"), so refusing
+# it in the image would leave the image's inventory different from every
+# running remote's while changing nothing about what is installed. Pinning the
+# digest means a future package revision of the same file fails this check and
+# comes back for review. Any other set-ID file, and this path with a different
+# mode or different bytes, still fails the build.
+REVIEWED_SET_ID = {
+    'usr/libexec/dbus-daemon-launch-helper': {
+        'package': 'dbus-daemon-launch-helper-1.14.10-r4',
+        'mode': 0o4750,
+        'sha256': '26334163ead6299bdcb3f8b2e72ae3033cd80094ecdf731d7f934aaf623c782a',
+    },
+}
+
+
+def reviewed_set_id(name, member, content):
+    """True only for a reviewed set-ID file: exact path, mode and bytes.
+
+    Callers consult this only when the set-ID bits are actually set, so an
+    unreviewed set-ID file keeps failing and a listed path that carries no
+    set-ID bits is never given a free pass by appearing here.
+    """
+    entry = REVIEWED_SET_ID.get(name)
+    return (entry is not None and member.isreg() and member.mode == entry['mode']
+            and checksum(content) == entry['sha256'])
+
+
 def secret_path(name):
     parts = PurePosixPath(name).parts
     return ('.ssh' in parts or name.startswith(('home/', 'data/nvram/', 'opt/couch/vendor/', 'opt/couch/system/'))
@@ -94,10 +134,11 @@ def build(spec, source_root=REPO):
                 continue
             require(name not in entries, 'Duplicate archive entry')
             require(member.isdir() or member.isreg() or member.issym() or member.islnk(), 'Special filesystem entry in base archive')
-            require(not member.mode & 0o6000, 'Set-ID file requires separate review')
+            content = archive.extractfile(member).read() if member.isreg() else b''
+            require(not member.mode & 0o6000 or reviewed_set_id(name, member, content),
+                    'Set-ID file requires separate review')
             require(not secret_path(name), f'Private/runtime state in clean base: {name}')
             require(not name.startswith('opt/couch/'), 'Base must not contain a preconfigured Couch installation')
-            content = archive.extractfile(member).read() if member.isreg() else b''
             if name == 'etc/shadow':
                 require(all(line.split(b':')[1] in (b'!', b'*', b'!!') for line in content.splitlines() if line), 'Base contains password credentials')
             link = member.linkname
