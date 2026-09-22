@@ -484,6 +484,17 @@ recovery flag on rollback updated `runtime_boot_sha256` and kept
 `ha100-alpine321-ffmpeg612-runtimeboot2`, because nothing a runtime bundle relies
 on changed; only where a rejected candidate's reboot lands.
 
+The package pin moved the same way. The baseline now names the retained closure
+`b51d36e9` (141 packages) instead of `1804ab4b` (134), whose package revisions
+the Alpine mirrors deleted; see [offline packages](offline-packages.md#where-the-archive-is-stored).
+The ID stays `ha100-alpine321-ffmpeg612-runtimeboot2`. The new closure is the old
+one plus seven Bluetooth and D-Bus packages and a `tzdata` revision, with nothing
+removed: Alpine is still 3.21, FFmpeg is still 6.1.2, and the stable bootstrap is
+untouched, so every capability the ID names still holds and no published bundle's
+`required_os_baseline` stops matching. Changing the ID instead would have stranded
+every runtime bundle already published, including the one a fresh image is meant
+to update itself to.
+
 The runtime publisher now requires that generated marker at the root of its
 `CLEAN_RUNTIME` input. It signs the ID without shipping the marker. A clean runtime
 export must preserve the marker from the matching newly built full OS; do not

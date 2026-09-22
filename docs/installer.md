@@ -180,6 +180,19 @@ the OS image with a current runtime fixes both. Not done yet - it is a full OS
 build (`tools/release/prepare_rootfs.py` and the package closure), not a release
 cut, and it needs its own physical install acceptance.
 
+One thing that blocked it is now cleared. The closure the baseline named,
+`1804ab4b`, no longer existed: the Alpine mirrors had deleted several of its
+package revisions and no copy survived, so `prepare_rootfs.py` refused every
+build with `OS baseline requires the reviewed package closure`. The baseline now
+pins the retained closure `b51d36e9` and its archive, keeping the capability ID
+`ha100-alpine321-ffmpeg612-runtimeboot2` so the image a build produces still
+accepts every published runtime bundle
+([full OS compatibility](runtime-updates.md#full-os-compatibility)). A rebuilt
+image also carries the Bluetooth and D-Bus packages the current one lacks, so
+the [first-use install](bluetooth.md#system-packages-on-first-use) becomes a
+skipped no-op on new installs rather than the way Bluetooth gets its packages.
+The build, its verification and the physical acceptance are still to do.
+
 ## Troubleshooting
 
 ### The web UI reports an older version than the installer I used
