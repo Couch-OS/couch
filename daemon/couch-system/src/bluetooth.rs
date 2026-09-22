@@ -25,6 +25,17 @@ const HCI0: &str = "/sys/class/bluetooth/hci0";
 pub const STATE_FILE: &str = "/tmp/couch-bt.state";
 /// The dbus system socket, seen from the outer root.
 const DBUS_SOCKET: &str = "/mnt/alpine/run/dbus/system_bus_socket";
+/// Bring up the system bus inside the Alpine root.
+///
+/// The machine ID identifies this remote, so it is minted here and never
+/// shipped inside an image. D-Bus's install hook writes one when `apk add dbus`
+/// runs on the remote, but a remote whose image already carries D-Bus skips
+/// that step, and dbus-daemon will not start without an ID. `--ensure` is a
+/// no-op once the file exists, so a remote that already has one keeps it.
+const DBUS_START: &str = "[ -s /etc/machine-id ] || dbus-uuidgen --ensure=/etc/machine-id; \
+     [ -s /var/lib/dbus/machine-id ] || { mkdir -p /var/lib/dbus; cp /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null; }; \
+     mkdir -p /run/dbus; \
+     pidof dbus-daemon >/dev/null || { rm -f /run/dbus/dbus.pid; setsid dbus-daemon --system --nopidfile </dev/null >/tmp/dbus.log 2>&1 & }";
 /// bluetoothd's configuration, seen from the outer root. Written before every
 /// start so an OS image's stock file (all comments) never wins.
 const BLUETOOTHD_CONF: &str = "/mnt/alpine/etc/bluetooth/main.conf";
@@ -775,11 +786,7 @@ fn up() -> Result<(), String> {
     }
     // dbus, then bluetoothd, then the HID daemon. The HID daemon waits for
     // bluetoothd's adapter itself, so the three start back to back.
-    alpine_sh(
-        "[ -f /var/lib/dbus/machine-id ] || { mkdir -p /var/lib/dbus; cp /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null; }; \
-         mkdir -p /run/dbus; \
-         pidof dbus-daemon >/dev/null || { rm -f /run/dbus/dbus.pid; setsid dbus-daemon --system --nopidfile </dev/null >/tmp/dbus.log 2>&1 & }",
-    )?;
+    alpine_sh(DBUS_START)?;
     if !wait_for(
         || Path::new(DBUS_SOCKET).exists(),
         30,
@@ -855,6 +862,21 @@ pub fn auto() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_system_bus_mints_a_machine_id_before_anything_needs_one() {
+        // A remote installed from an image that already carries D-Bus never
+        // runs the install hook, so nothing else would create the ID and
+        // dbus-daemon would refuse to start.
+        let mint = DBUS_START.find("dbus-uuidgen --ensure=/etc/machine-id").unwrap();
+        let copy = DBUS_START.find("cp /etc/machine-id").unwrap();
+        let start = DBUS_START.find("dbus-daemon --system").unwrap();
+        assert!(mint < copy && copy < start, "{DBUS_START}");
+        // Both guards test for empty as well as missing: an image may leave a
+        // zero-length file behind, which dbus treats as no ID at all.
+        assert!(DBUS_START.contains("[ -s /etc/machine-id ]"));
+        assert!(DBUS_START.contains("[ -s /var/lib/dbus/machine-id ]"));
+    }
 
     #[test]
     fn only_a_plan_of_new_packages_may_touch_the_os_image() {
