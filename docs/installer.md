@@ -2,7 +2,7 @@
 
 The integrated native installer prepares the host dependencies, enrolls the
 remote over USB, and uses authenticated Wi-Fi for backups and OS transfer.
-Release `installer-v0.1.1`, the first installer published from
+Release `installer-v0.1.1`, published from
 [Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer), is a
 prerelease; it installs the OS payload its release descriptor pins. Its
 launchers passed download, checksum and safe-Cancel tests on Linux, macOS and
