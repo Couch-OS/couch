@@ -13,7 +13,7 @@ import tarfile
 import tempfile
 
 from clean_stage import (GENERATED, StageError, archive_name, build, checksum,
-                         require, secret_path)
+                         require, reviewed_set_id, secret_path)
 from package_closure import restore as restore_closure, verify
 from os_baseline import PIN as BASELINE_PIN, check_archive, seed as seed_os_baseline
 
@@ -37,14 +37,15 @@ def normalize(data, epoch, private_files=None):
             require(not secret_path(name) or name in private_files or (member.isdir() and name in private_dirs), f'Private runtime state in assembled rootfs: {name}')
             require(member.isdir() or member.isreg() or member.issym() or member.islnk(),
                     'Special filesystem entry after package installation')
-            require(not member.mode & 0o6000, 'Set-ID package file requires separate review')
+            content = archive.extractfile(member).read() if member.isreg() else b''
+            require(not member.mode & 0o6000 or reviewed_set_id(name, member, content),
+                    'Set-ID package file requires separate review')
             require(not name.startswith('dev/'), 'Runtime /dev entry in assembled rootfs')
             if member.issym() or member.islnk():
                 require('\\' not in member.linkname, 'Invalid assembled link')
                 target = posixpath.normpath(posixpath.join(
                     posixpath.dirname(name) if member.issym() else '', member.linkname))
                 require(target != '..' and not target.startswith('../'), 'Assembled link escape')
-            content = archive.extractfile(member).read() if member.isreg() else b''
             if name in private_files:
                 require(member.isreg() and checksum(content) == private_files[name], 'Private vendor member mismatch')
             if name == 'etc/shadow':
