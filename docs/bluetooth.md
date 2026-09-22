@@ -61,6 +61,12 @@ image already names and are verified with the Alpine keys it shipped with.
 D-Bus's own install hook creates the `messagebus` user and this remote's machine
 ID, on the remote, which is where a per-device identity belongs.
 
+The closure the OS baseline pins now contains exactly these seven packages, so
+an image built from it ships them already. This step then finds the programs
+present and skips, the way a second start does today; it needs no change and is
+not removed. It remains the path for every remote installed from the 2026-09-11
+image, which is all of them until a rebuilt image ships and is accepted.
+
 The OS image pins every package it shipped with, and this step must not move
 any of them: the service first asks `apk add --simulate` for its plan and
 refuses unless every line is a new install. Each step is bounded (a dead
