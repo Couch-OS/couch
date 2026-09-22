@@ -1005,7 +1005,7 @@ later whose owner chose the Dev channel, and no others: an updater up to `.170`
 lists only the archived `dangerouslaser/couch` repository and accepts only
 assets and signed URLs under it, so it never sees a release published on
 `Couch-OS/couch`
-([Who can see a `.dev` release](../runtime-updates.md#who-can-see-a-dev-release)).
+([Who can see a `.dev` release](https://github.com/Couch-OS/couch/blob/main/docs/runtime-updates.md#who-can-see-a-dev-release)).
 
 ## Source references
 
