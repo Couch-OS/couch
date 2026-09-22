@@ -74,6 +74,18 @@ Step 3 above is still open: the archive bytes are retained on the dedicated buil
 
 `null` in this field means archive input is **refused**; it never means any archive is accepted. A replacement closure needs a newly reviewed inventory, a new baseline pin and the applicable OS assembly and hardware validation; it does not inherit the previous closure's approval.
 
+### Set-ID files
+
+Staging refuses every set-user-ID and set-group-ID file, in the pinned base archive and again in the assembled rootfs, because such a program runs with privileges its caller does not have. One file is admitted by name, in `clean_stage.REVIEWED_SET_ID`, matched on its exact path, mode and content digest:
+
+| Path | Mode | Package | Reviewed |
+|---|---|---|---|
+| `usr/libexec/dbus-daemon-launch-helper` | `04750` | `dbus-daemon-launch-helper-1.14.10-r4` | 2026-09-22 |
+
+This is D-Bus's system-bus activation helper. When a client asks the system bus for a service that is not running, the helper starts it under that service's own user account, which is why upstream ships it set-uid root with a group-restricted mode. Couch does not use D-Bus activation: it starts `couch-bluetoothd` itself and nothing on the remote registers an activatable system service, so the helper is never invoked. It is admitted because excluding it is worse, not because it is needed — it arrives with the Bluetooth packages in the OS closure, and the [first-use install](bluetooth.md#system-packages-on-first-use) already puts this exact file on every remote where Bluetooth has been switched on, so refusing it in the image would leave the image's inventory different from every running remote's while changing nothing about what is installed.
+
+The digest is pinned, so a future package revision of the same file fails the check and comes back for review. Any other set-ID file, and this path with a different mode or different bytes, still fails the build.
+
 ## Remaining assembly work
 
 The clean staging specification and this closure can now be combined with `prepare_rootfs.py`; see [clean release staging](releases.md#assemble-offline-packages). It installs packages/scripts in an isolated ARM-compatible root, then normalizes and rescans the archive. Building and signing partition images remains a separate step. Preserve first-use SSH host-key generation and empty onboarding configuration. Do not use the old provisioning script's `--allow-untrusted` fallback for releases.
