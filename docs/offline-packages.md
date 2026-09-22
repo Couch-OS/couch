@@ -68,7 +68,11 @@ Nothing in this repository publishes the archive. Storing it is a separate publi
 3. Publish those exact bytes as an immutable release asset on a commit- or version-addressed tag, never a mutable one.
 4. Set `package_closure_archive` in `ha100_os_baseline.json` to that `{file, size, sha256}`, together with the matching `package_closure_sha256`, and review it as a baseline change.
 
-`package_closure_archive` is `null` here, because the closure this baseline pins no longer exists anywhere to archive — precisely the failure the retained archive removes. `null` means archive input is **refused**; it never means any archive is accepted. A replacement closure needs a newly reviewed inventory, a new baseline pin and the applicable OS assembly and hardware validation; it does not inherit the previous closure's approval.
+This baseline now pins the retained closure `b51d36e9` (141 armv7 packages) together with its archive `ha100-closure-b51d36e9-141pkg.tar.gz`. It replaces `1804ab4b`, the 134-package closure the baseline named until now: several of that closure's package revisions were deleted from the Alpine mirrors and no copy of it survived anywhere, so it could not be restored, re-solved or re-downloaded, and no OS image could be assembled at all — precisely the failure the retained archive removes. `b51d36e9` was archived with `package_closure.py archive` from a verified directory, and restoring it reproduces that directory byte-for-byte.
+
+Step 3 above is still open: the archive bytes are retained on the dedicated build host, not yet published as an immutable release asset, so a build host needs that file supplied out of band.
+
+`null` in this field means archive input is **refused**; it never means any archive is accepted. A replacement closure needs a newly reviewed inventory, a new baseline pin and the applicable OS assembly and hardware validation; it does not inherit the previous closure's approval.
 
 ## Remaining assembly work
 
