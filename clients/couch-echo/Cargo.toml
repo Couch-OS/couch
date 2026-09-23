@@ -9,10 +9,10 @@ description = "A worked example integration for couch-sdk: copy this crate to st
 # device that does not exist. Its "TV" is couch_sdk::testing::MockHost, so this
 # builds, runs and passes its tests on any machine - no remote, no TV, no
 # credentials, no network beyond loopback.
-# Protocol 3 is unreleased. This builds the fixture in src/v3.rs and turns on
-# couch-plugin's switch so the tests in tests/protocol3.rs can run a protocol 3
-# package end to end. Off by default; the packaged couch-plugin-echo never has
-# it. Run with `cargo test -p couch-echo --features protocol-3-preview`.
+# This feature builds the fixture in src/v3.rs so tests/protocol3.rs can run a
+# protocol 3 package end to end. The normal host accepts protocol 3 with or
+# without the fixture feature. Run with
+# `cargo test -p couch-echo --features protocol-3-preview`.
 [features]
 protocol-3-preview = ["couch-plugin/protocol-3-preview"]
 

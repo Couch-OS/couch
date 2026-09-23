@@ -123,14 +123,14 @@ impl Api {
                 None => Reply::error(404, "CoreELEC connection not found"),
             };
         }
-        if let [id, kind @ ("protect" | "hue" | "ha" | "webos" | "kodi" | "androidtv" | "appletv"
-        | "tizen"), rest @ ..] = path
+        if let [id, kind @ ("protect" | "ha" | "webos" | "kodi" | "androidtv" | "appletv" | "tizen"), rest @ ..] =
+            path
         {
             let file = self.with(|s| {
                 let c = s.config().connection(&Id::new(*id))?;
                 let expected = match c.provider {
                     Provider::UnifiProtect => "protect",
-                    Provider::Hue => "hue",
+                    Provider::LegacyHue => return None,
                     Provider::HomeAssistant => "ha",
                     Provider::WebOs => "webos",
                     Provider::AndroidTv => "androidtv",
@@ -168,7 +168,6 @@ impl Api {
             }
             return match *kind {
                 "protect" => super::protect::route_at(method, rest, body, file),
-                "hue" => super::hue::route_at(method, rest, body, file),
                 "ha" => super::ha::route_at(method, rest, body, file),
                 "androidtv" | "appletv" => {
                     super::streaming_tv::route(method, rest, body, file, *kind == "appletv")
@@ -679,17 +678,10 @@ mod delete_tests {
         assert_eq!(house.ids(), ["tv", "fabric"]);
         // Nothing reserves the name any more, and nothing is inherited.
         assert_eq!(
-            house.create(json!({"name":"Hue Bridge","provider":{"kind":"hue"}})),
+            house.create(json!({"name":"Hue Bridge","provider":{"kind":"home-assistant"}})),
             "hue-bridge"
         );
-        let fresh =
-            house
-                .api
-                .connection_route("GET", &["hue-bridge", "hue", "connection"], b"", None);
-        assert_eq!(
-            serde_json::from_slice::<Value>(&fresh.body).unwrap(),
-            json!({"url":"","token_set":false})
-        );
+        assert!(!house.folder("hue-bridge").exists());
     }
 
     #[test]

@@ -136,8 +136,7 @@ impl SettingField {
 }
 impl Manifest {
     pub fn validate(&self) -> Result<()> {
-        // The one place the protocol 3 switch is read. A release build accepts
-        // 1 and 2; `protocol-3-preview` test builds also accept 3.
+        // A newer host remains compatible with every older package protocol.
         if !(1..=accepted_protocol_version()).contains(&self.protocol_version)
             || self.min_core_protocol_version != self.protocol_version
         {

@@ -288,10 +288,9 @@ not implemented puts a key on screen that silently does nothing, so the test
 harness checks every ID parses, is canonical, is unique, and is accepted by
 your own `supports`.
 
-`x:<id>` ids (a package's own button names) are part of protocol 3, which is
-unreleased and switched off: a protocol 1 or 2 manifest that declares one is
-invalid, and a protocol 3 manifest is refused. See the
-[protocol reference](development/protocol.md#protocol-3-unreleased-and-switched-off).
+`x:<id>` ids (a package's own button names) are part of protocol 3. A protocol
+1 or 2 manifest that declares one is invalid. See the
+[protocol reference](development/protocol.md#protocol-3).
 The same goes for `Error::Unpaired`, `Error::because`,
 `DeviceClient::execute_phased` and everything under
 [One connection, many children](#one-connection-many-children) below: they
@@ -339,7 +338,7 @@ not retryable.
 
 ### One connection, many children
 
-Protocol 3, unreleased and switched off. Most devices are one connection and
+Protocol 3. Most devices are one connection and
 one device. A bridge - a Hue hub, Home Assistant, a Protect controller - is one
 connection and many, and Couch calls those its *children*. A client that has
 none implements nothing here: every method below has a default that refuses,
@@ -391,7 +390,7 @@ read and that a kind never answers for another.
 
 ### Pairing, and the key Couch keeps
 
-Protocol 3, unreleased and switched off. A package that needs a key from the
+Protocol 3. A package that needs a key from the
 device - a Hue hub's application key, a webOS client key, an Android TV
 certificate - never draws a dialog and never stores anything. It describes one
 step at a time; Couch draws its own headline, collects what the person types,

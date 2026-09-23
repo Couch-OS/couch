@@ -10,8 +10,7 @@
 //!
 //! The conversion is one way and keeps the connection's id, so rooms,
 //! activities, shortcuts and button maps that point at it are untouched.
-//! Denon is the first row. The next built-in to leave adds a row, a `Legacy*`
-//! variant and nothing else.
+//! Each departed built-in has one row and a `Legacy*` provider variant.
 use crate::{Config, Connection, Id, Integration, Provider};
 use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
@@ -38,33 +37,49 @@ pub struct LegacyBuiltin {
     pub name: &'static str,
     /// The saved connection's own fields, as the package's settings.
     pub settings: fn(&Provider) -> Option<LegacySettings>,
-    /// Protocol 3 (unreleased): the file the built-in client kept its key in,
+    /// The file the built-in client kept its private settings in,
     /// inside `connections/<id>/` - `"hue-connection.json"`, say. `None` for a
-    /// built-in that stored nothing, which is every row there is today.
+    /// built-in that stored nothing.
     ///
     /// The daemon reads it, maps it with [`LegacyBuiltin::credential`] and
     /// hands the result to the package as its credential. The old file is
     /// **left where it is**: a Couch rolled back to one that still has the
     /// built-in client has to find its pairing.
     pub credential_file: Option<&'static str>,
+    /// Settings derived from that private file, such as Hue's bridge address.
+    pub stored_settings: Option<fn(&serde_json::Value) -> Option<LegacySettings>>,
     /// What that file's contents become as a package credential, or `None` if
     /// this one cannot be handed over (a half-written file, a shape the
     /// built-in never wrote). Pure JSON to JSON: nothing here performs I/O,
     /// and the result must be a JSON object.
     pub credential: Option<fn(&serde_json::Value) -> Option<serde_json::Value>>,
+    /// Rewrite saved resources after the provider has become the package.
+    pub convert: fn(&mut Config, &Id) -> Result<(), &'static str>,
 }
 
 /// Every built-in that has left, in the order they left.
-pub const LEGACY_BUILTINS: &[LegacyBuiltin] = &[LegacyBuiltin {
-    kind: "denon",
-    package: "denon",
-    name: "Denon",
-    settings: denon_settings,
-    // A Denon receiver is told an address and a port and nothing else; the
-    // built-in client never stored a key, so there is nothing to hand over.
-    credential_file: None,
-    credential: None,
-}];
+pub const LEGACY_BUILTINS: &[LegacyBuiltin] = &[
+    LegacyBuiltin {
+        kind: "denon",
+        package: "denon",
+        name: "Denon",
+        settings: denon_settings,
+        credential_file: None,
+        stored_settings: None,
+        credential: None,
+        convert: keep_resources,
+    },
+    LegacyBuiltin {
+        kind: "hue",
+        package: "hue",
+        name: "Philips Hue",
+        settings: hue_settings,
+        credential_file: Some("hue-connection.json"),
+        stored_settings: Some(hue_stored_settings),
+        credential: Some(hue_credential),
+        convert: convert_hue_resources,
+    },
+];
 
 fn denon_settings(provider: &Provider) -> Option<LegacySettings> {
     match provider {
@@ -74,6 +89,132 @@ fn denon_settings(provider: &Provider) -> Option<LegacySettings> {
         ]),
         _ => None,
     }
+}
+
+fn hue_settings(provider: &Provider) -> Option<LegacySettings> {
+    matches!(provider, Provider::LegacyHue).then(Vec::new)
+}
+
+fn hue_stored_settings(stored: &serde_json::Value) -> Option<LegacySettings> {
+    let host = stored.get("url")?.as_str()?.trim();
+    (!host.is_empty()).then(|| alloc::vec![("host", LegacySetting::Text(host.into()))])
+}
+
+fn hue_credential(stored: &serde_json::Value) -> Option<serde_json::Value> {
+    let application_key = stored.get("token")?.as_str()?;
+    if application_key.is_empty() || application_key.len() > 128 {
+        return None;
+    }
+    let certificate = stored.get("certificate")?.as_array()?;
+    // Keep the encoded credential comfortably inside couch-plugin's bounded
+    // credential frame. Hue bridge certificates are ordinarily about 1 KiB.
+    if certificate.is_empty() || certificate.len() > 8 * 1024 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = certificate
+        .iter()
+        .map(|byte| u8::try_from(byte.as_u64()?).ok())
+        .collect();
+    Some(serde_json::json!({
+        "application_key": application_key,
+        "certificate": base64(&bytes?),
+    }))
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let value = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        encoded.push(ALPHABET[((value >> 18) & 63) as usize] as char);
+        encoded.push(ALPHABET[((value >> 12) & 63) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            ALPHABET[((value >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            ALPHABET[(value & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
+fn keep_resources(_: &mut Config, _: &Id) -> Result<(), &'static str> {
+    Ok(())
+}
+
+fn convert_hue_resources(config: &mut Config, connection: &Id) -> Result<(), &'static str> {
+    let children = match &config
+        .connection(connection)
+        .ok_or("That connection no longer exists")?
+        .provider
+    {
+        Provider::Plugin { children, .. } => children.clone(),
+        _ => return Err("The Hue connection did not become a package"),
+    };
+    let light = children
+        .iter()
+        .find(|child| child.kind == "light")
+        .ok_or("The Hue package does not offer lights")?;
+    let group = children
+        .iter()
+        .find(|child| child.kind == "group")
+        .ok_or("The Hue package does not offer rooms")?;
+    let scene = children
+        .iter()
+        .find(|child| child.kind == "scene")
+        .ok_or("The Hue package does not offer scenes")?;
+
+    for device in config.rooms.iter_mut().flat_map(|room| &mut room.devices) {
+        let Integration::Connection {
+            connection_id,
+            resource_id,
+            child,
+        } = &mut device.integration
+        else {
+            continue;
+        };
+        if connection_id != connection {
+            continue;
+        }
+        let kind = if let Some(id) = resource_id.strip_prefix("room:") {
+            *resource_id = alloc::format!("room/{id}");
+            group
+        } else {
+            light
+        };
+        device.kind = kind.device_kind;
+        *child = Some(crate::ChildSnapshot {
+            kind: kind.kind.clone(),
+            light: Some(crate::LightTraits {
+                dimmable: true,
+                mirek: None,
+                color: false,
+            }),
+            cover: None,
+            climate: None,
+        });
+    }
+    for saved in &mut config.scenes {
+        let Some(hue) = saved.hue.as_ref() else {
+            continue;
+        };
+        if &hue.connection_id != connection {
+            continue;
+        }
+        saved.resource = Some(crate::SceneResource {
+            connection_id: connection.clone(),
+            resource_id: alloc::format!("scene/{}", hue.scene_id),
+            kind: scene.kind.clone(),
+        });
+        saved.hue = None;
+    }
+    Ok(())
 }
 
 impl LegacyBuiltin {
@@ -87,7 +228,11 @@ impl LegacyBuiltin {
         (self.settings)(provider)
     }
 
-    /// Protocol 3 (unreleased): what the built-in client's stored file becomes
+    pub fn map_stored_settings(&self, stored: &serde_json::Value) -> Option<LegacySettings> {
+        (self.stored_settings?)(stored)
+    }
+
+    /// What the built-in client's stored file becomes
     /// as the package's credential. `None` when this row hands nothing over,
     /// when the mapping refuses what it was given, or when the result is not a
     /// JSON object. Nothing here reads a file: the daemon does that and passes
@@ -117,7 +262,9 @@ impl Integration {
     /// As [`Provider::legacy_builtin`], for what a device resolves to.
     pub fn legacy_builtin(&self) -> Option<&'static LegacyBuiltin> {
         match self {
-            Integration::LegacyDenon { .. } => LegacyBuiltin::for_kind(self.via()),
+            Integration::LegacyDenon { .. } | Integration::Hue { .. } => {
+                LegacyBuiltin::for_kind(self.via())
+            }
             _ => None,
         }
     }
@@ -192,6 +339,7 @@ impl Config {
             .find(|c| c.id == *id)
             .expect("looked up above")
             .provider = plugin;
+        (row.convert)(&mut next, id)?;
         next.denon_migrations.remove(id);
         next.validate()
             .map_err(|_| "The package does not support every command saved for this connection")?;
@@ -301,6 +449,46 @@ mod tests {
         stored.into_config().unwrap()
     }
 
+    fn hue_package() -> Provider {
+        let light = |kind: &str, label: &str| crate::PluginChildKind {
+            kind: kind.into(),
+            label: label.into(),
+            device_kind: crate::DeviceKind::Light,
+            component: crate::ChildComponent::Light,
+            capabilities: ["on", "off", "toggle"]
+                .into_iter()
+                .map(|id| crate::PluginCapability {
+                    id: id.into(),
+                    label: id.into(),
+                })
+                .collect(),
+            actions: alloc::vec![crate::PluginActionSchema::SetLight {}],
+        };
+        Provider::Plugin {
+            id: "hue".into(),
+            label: "Philips Hue".into(),
+            capabilities: alloc::vec![],
+            supports_inputs: false,
+            presentation: alloc::vec![],
+            actions: alloc::vec![],
+            children: alloc::vec![
+                light("light", "Hue light"),
+                light("group", "Hue room"),
+                crate::PluginChildKind {
+                    kind: "scene".into(),
+                    label: "Hue scene".into(),
+                    device_kind: crate::DeviceKind::Other,
+                    component: crate::ChildComponent::Scene,
+                    capabilities: alloc::vec![crate::PluginCapability {
+                        id: "on".into(),
+                        label: "Recall".into(),
+                    }],
+                    actions: alloc::vec![],
+                },
+            ],
+        }
+    }
+
     #[test]
     fn a_file_from_the_built_in_era_loads_validates_and_says_what_it_needs() {
         let config = built_in_era();
@@ -317,7 +505,7 @@ mod tests {
                 ("port", LegacySetting::Integer(23)),
             ]
         );
-        assert!(Provider::Hue.legacy_builtin().is_none());
+        assert_eq!(Provider::LegacyHue.legacy_builtin().unwrap().package, "hue");
         // The device resolves to something every surface can name.
         let resolved = config
             .resolve_integration(&config.rooms[0].devices[0].integration)
@@ -369,6 +557,108 @@ mod tests {
     }
 
     #[test]
+    fn hue_conversion_carries_private_pairing_and_rewrites_lights_rooms_and_scenes() {
+        const LIGHT: &str = "00000000-0000-0000-0000-000000000001";
+        const ROOM: &str = "00000000-0000-0000-0000-000000000002";
+        const SCENE: &str = "00000000-0000-0000-0000-000000000003";
+        let mut config = Config::default();
+        config.connections.push(Connection {
+            id: "bridge".into(),
+            name: "Hue bridge".into(),
+            provider: Provider::LegacyHue,
+        });
+        config.rooms.push(crate::Room {
+            id: "living".into(),
+            name: "Living room".into(),
+            icon: None,
+            devices: alloc::vec![
+                crate::Device::new("lamp".into(), "Lamp", crate::DeviceKind::Light)
+                    .with_integration(Integration::Connection {
+                        connection_id: "bridge".into(),
+                        resource_id: LIGHT.into(),
+                        child: None,
+                    }),
+                crate::Device::new(
+                    "room-lights".into(),
+                    "Room lights",
+                    crate::DeviceKind::Light
+                )
+                .with_integration(Integration::Connection {
+                    connection_id: "bridge".into(),
+                    resource_id: alloc::format!("room:{ROOM}"),
+                    child: None,
+                }),
+            ],
+        });
+        config.scenes.push(crate::Scene {
+            id: "relax".into(),
+            name: "Relax".into(),
+            icon: None,
+            steps: alloc::vec![],
+            hue: Some(crate::HueScene {
+                connection_id: "bridge".into(),
+                scene_id: SCENE.into(),
+            }),
+            resource: None,
+            rooms: alloc::vec!["living".into()],
+        });
+        config.validate().unwrap();
+
+        let row = Provider::LegacyHue.legacy_builtin().unwrap();
+        let stored = serde_json::json!({
+            "url": "https://192.0.2.20/",
+            "token": "abc-123",
+            "certificate": [1, 2, 3, 4]
+        });
+        assert_eq!(
+            row.map_stored_settings(&stored),
+            Some(alloc::vec![(
+                "host",
+                LegacySetting::Text("https://192.0.2.20/".into())
+            )])
+        );
+        assert_eq!(
+            row.map_credential(&stored),
+            Some(serde_json::json!({
+                "application_key": "abc-123",
+                "certificate": "AQIDBA=="
+            }))
+        );
+
+        assert!(config
+            .convert_legacy(&Id::new("bridge"), hue_package())
+            .unwrap());
+        config.validate().unwrap();
+        let devices = &config.rooms[0].devices;
+        assert_eq!(
+            devices[0].integration,
+            Integration::Connection {
+                connection_id: "bridge".into(),
+                resource_id: LIGHT.into(),
+                child: Some(crate::ChildSnapshot {
+                    kind: "light".into(),
+                    light: Some(crate::LightTraits {
+                        dimmable: true,
+                        mirek: None,
+                        color: false
+                    }),
+                    cover: None,
+                    climate: None
+                })
+            }
+        );
+        assert!(
+            matches!(&devices[1].integration, Integration::Connection { resource_id, child: Some(child), .. }
+            if resource_id == &alloc::format!("room/{ROOM}") && child.kind == "group")
+        );
+        assert!(config.scenes[0].hue.is_none());
+        assert_eq!(
+            config.scenes[0].resource.as_ref().unwrap().resource_id,
+            alloc::format!("scene/{SCENE}")
+        );
+    }
+
+    #[test]
     fn a_refused_conversion_changes_nothing() {
         let mut config = built_in_era();
         let before = config.clone();
@@ -386,7 +676,7 @@ mod tests {
             .convert_legacy(&Id::new("missing"), package())
             .is_err());
         assert!(config
-            .convert_legacy(&Id::new("receiver"), Provider::Hue)
+            .convert_legacy(&Id::new("receiver"), Provider::LegacyHue)
             .is_err());
         assert_eq!(config, before);
     }
@@ -466,9 +756,8 @@ mod tests {
         }
     }
 
-    /// Protocol 3 (unreleased). No row hands a key over yet - Denon never
-    /// stored one - so the hook is proved on a row made here, of the shape a
-    /// built-in that did keep a key would have.
+    /// The generic credential hook remains independent of Hue's concrete
+    /// mapping, and Denon proves the no-credential path.
     #[test]
     fn a_row_that_names_a_stored_key_maps_it_and_one_that_does_not_hands_nothing_over() {
         fn mapped(stored: &serde_json::Value) -> Option<serde_json::Value> {
@@ -481,7 +770,9 @@ mod tests {
             name: "Hue",
             settings: denon_settings,
             credential_file: Some("hue-connection.json"),
+            stored_settings: None,
             credential: Some(mapped),
+            convert: keep_resources,
         };
         assert_eq!(row.credential_file, Some("hue-connection.json"));
         assert_eq!(
@@ -510,6 +801,7 @@ mod tests {
         // The shipped row stores nothing, and says so.
         let denon = LegacyBuiltin::for_kind("denon").unwrap();
         assert_eq!(denon.credential_file, None);
+        assert!(denon.stored_settings.is_none());
         assert!(denon.credential.is_none());
         assert_eq!(denon.map_credential(&serde_json::json!({"a": 1})), None);
     }

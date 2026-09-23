@@ -105,7 +105,10 @@ pub enum Provider {
         port: u16,
     },
     HomeAssistant,
-    Hue,
+    /// A Hue connection saved while the bridge client was built into the OS.
+    /// The `hue` package takes it over through [`crate::LEGACY_BUILTINS`].
+    #[serde(rename = "hue")]
+    LegacyHue,
     WebOs,
     AndroidTv,
     AppleTv,
@@ -145,7 +148,7 @@ impl Provider {
             Self::Sonos { .. } => "sonos",
             Self::LegacyDenon { .. } => "denon",
             Self::HomeAssistant => "home-assistant",
-            Self::Hue => "hue",
+            Self::LegacyHue => "hue",
             Self::WebOs => "web-os",
             Self::AndroidTv => "android-tv",
             Self::AppleTv => "apple-tv",
@@ -164,7 +167,7 @@ impl Provider {
             Self::Sonos { .. } => "Sonos",
             Self::LegacyDenon { .. } => "Denon AVR",
             Self::HomeAssistant => "Home Assistant",
-            Self::Hue => "Philips Hue",
+            Self::LegacyHue => "Philips Hue",
             Self::WebOs => "LG webOS",
             Self::AndroidTv => "Android / Google TV",
             Self::AppleTv => "Apple TV",
@@ -252,7 +255,7 @@ impl Config {
             Provider::HomeAssistant => Integration::HomeAssistant {
                 entity_id: alloc::format!("{connection_id}/{resource_id}"),
             },
-            Provider::Hue => Integration::Hue {
+            Provider::LegacyHue => Integration::Hue {
                 light_id: alloc::format!("{connection_id}/{resource_id}"),
             },
             Provider::WebOs => Integration::WebOs,
@@ -412,7 +415,7 @@ mod tests {
         c.connections.push(Connection {
             id: "hue".into(),
             name: "Hue".into(),
-            provider: Provider::Hue,
+            provider: Provider::LegacyHue,
         });
         c.rooms.push(Room {
             id: "office".into(),
@@ -524,8 +527,8 @@ mod tests {
         for (id, provider) in [
             ("ha-a", Provider::HomeAssistant),
             ("ha-b", Provider::HomeAssistant),
-            ("hue-a", Provider::Hue),
-            ("hue-b", Provider::Hue),
+            ("hue-a", Provider::LegacyHue),
+            ("hue-b", Provider::LegacyHue),
         ] {
             c.connections.push(Connection {
                 id: id.into(),

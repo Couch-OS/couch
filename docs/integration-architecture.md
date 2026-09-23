@@ -124,10 +124,9 @@ prior state. Missing packages leave saved connection and activity configuration
 intact, with execution unavailable. A v2 package remains incompatible with an
 older host; existing v1 previous-slot fallback is unchanged.
 
-### Protocol 3 layer: unreleased
+### Protocol 3 layer
 
-Protocol 3 is unreleased and switched off; this describes groundwork that may
-change until it is switched on. The envelope gains one more optional layer,
+Protocol 3 is the current package contract. The envelope has one more optional layer,
 `integration_config_v3`, written only when the configuration holds something a
 protocol 2 core cannot read. The first such thing is a package-named button
 (`x:<id>`): as a declared capability, inside a command group or switch, or bound

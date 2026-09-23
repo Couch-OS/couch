@@ -180,21 +180,12 @@ v1 host: the hello exchange selects the manifest's version and requires the
 same manifest in response. Existing v1 manifests retain their byte shape and
 default to a minimum core protocol version of 1.
 
-## Protocol 3: unreleased and switched off
+## Protocol 3
 
-Protocol 3 is being built in steps on `dev`. It is **switched off**: the host
-accepts protocol 1 and 2 manifests only, the feed accepts only those, and no
-released or ordinary development build can install a protocol 3 package. The
-one exception is a preview build made on purpose for a single development
-remote, which is labelled, signed and refused as described under
-[A preview build for one development remote](#a-preview-build-for-one-development-remote).
-Everything in this section may change until the step that switches it on. Do
-not write a package against it yet.
-
-What exists so far is vocabulary in `couch-model`, so that a Couch which later
-saves protocol 3 content can always be rolled back, and the wire types and host
-gate in `couch-plugin` and `couch-sdk`, described under
-[On the wire](#on-the-wire) below. The vocabulary:
+Protocol 3 is the current package contract. The host accepts protocol 1, 2,
+and 3 manifests, so existing packages retain their wire shape while bridge
+packages can declare children, typed actions, pairing, host-owned credentials,
+and keep-alive behavior. The vocabulary:
 
 - **Package-named buttons.** A capability id of the form `x:<id>`, where `<id>`
   is 1 to 48 bytes of lowercase letters, digits, `-` and `_`
@@ -861,22 +852,20 @@ the configuration from inside the registry would take them the other way round,
 and one sweep and one delete would wait on each other for good while every
 configuration read on the remote queued behind them.
 
-### The switch
+### Compatibility feature
 
-`couch-plugin` has one Cargo feature, `protocol-3-preview`. It is off by
-default, adds no dependency, and changes one function:
+`couch-plugin` retains the Cargo feature name `protocol-3-preview` so packages
+developed during the preview remain source-compatible. It is now a no-op:
 
 ```rust
-pub const PROTOCOL_VERSION: u32 = 2;          // what a release supports
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const NEXT_PROTOCOL_VERSION: u32 = 3;
-pub const fn accepted_protocol_version() -> u32; // 2, or 3 with the feature
+pub const fn accepted_protocol_version() -> u32; // 3
 ```
 
-`Manifest::validate` accepts `1..=accepted_protocol_version()`. With the feature
-off, which is every build that ships, a manifest that says 3 is `incompatible`
-(a package that needs a newer Couch) on the host and in `serve`, and nothing is
-executed. Tests turn it on, and so does the one deliberate preview build
-described below:
+`Manifest::validate` accepts `1..=accepted_protocol_version()`. The Echo
+protocol 3 fixtures remain behind their own compatibility feature so ordinary
+client builds do not package test binaries:
 
 ```sh
 cd clients
@@ -913,10 +902,9 @@ use.
 Cargo unifies features across a build, so a single dependency that enabled the
 feature, even a dev-dependency, would enable it for everything built with it.
 Two tests keep that from reaching a remote: `couch-confd` and
-`couch-integrations` each assert
-`accepted_protocol_version() == PROTOCOL_VERSION`, run with the `daemon`
-workspace's own feature set in the `daemon` and `product-flow` CI jobs, and fail
-the moment anything in that workspace turns the feature on. To look by hand:
+`couch-integrations` and the daemon each assert
+`accepted_protocol_version() == PROTOCOL_VERSION` with the ordinary workspace
+feature set. To look for the retained compatibility feature by hand:
 
 ```sh
 cargo tree --manifest-path daemon/Cargo.toml -e features -i couch-plugin | grep protocol-3
@@ -925,7 +913,11 @@ cargo tree --manifest-path ui/Cargo.toml -e features -i couch-plugin | grep prot
 
 Both print nothing.
 
-### A preview build for one development remote
+### Historical preview build record
+
+The rest of this section records the safeguards used before protocol 3 became
+the released contract. The preview build script and marker were removed when
+the default host moved to protocol 3; these commands are no longer available.
 
 A real protocol 3 package can only be tried on hardware by a daemon that admits
 protocol 3. There is one way to make such a daemon, and every step after it is

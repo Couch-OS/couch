@@ -12,10 +12,8 @@ mod protocol;
 mod server;
 #[cfg(feature = "testing")]
 pub mod testing;
-/// Protocol 3 (unreleased): the harness for a package with children. It moves
-/// into `testing` when the protocol ships; until then it is behind the same
-/// switch as everything else protocol 3.
-#[cfg(all(feature = "testing", feature = "protocol-3-preview"))]
+/// Admission harness for a protocol 3 package with children or pairing.
+#[cfg(feature = "testing")]
 pub mod testing_v3;
 #[cfg(test)]
 mod wire_golden;

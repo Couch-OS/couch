@@ -132,70 +132,27 @@ pub fn ha_room_states() -> Vec<crate::lights::DeviceState> {
     }
     result
 }
+/// Compatibility seam for a saved Hue connection while the daemon installs
+/// and adopts the external package. It deliberately contains no Hue client.
 #[derive(Default)]
-pub struct HueFleet {
-    clients: Mutex<HashMap<String, Arc<couch_hue::live::Live>>>,
-}
+pub struct HueFleet;
 impl HueFleet {
-    fn get(&self, id: &str) -> Result<Arc<couch_hue::live::Live>, String> {
-        if !valid(id, Provider::Hue) {
-            return Err("Hue connection was removed".into());
-        }
-        let mut clients = self.clients.lock().unwrap();
-        Ok(clients
-            .entry(id.into())
-            .or_insert_with(|| Arc::new(couch_hue::live::Live::new(file(id, "hue"))))
-            .clone())
-    }
-    /// Also which bridges failed their last read, for the same reason
-    /// `ha_power` reports them: an unreachable bridge is not an off room.
     pub fn states(&self) -> (Vec<couch_ha::Light>, Vec<String>) {
-        let ids = ids(Provider::Hue);
-        self.clients
-            .lock()
-            .unwrap()
-            .retain(|id, _| ids.contains(id));
-        let (mut lights, mut failed) = (vec![], vec![]);
-        for id in ids {
-            let Ok(list) = self
-                .get(&id)
-                .and_then(|c| c.lights().map_err(|e| e.to_string()))
-            else {
-                failed.push(id);
-                continue;
-            };
-            for mut light in list {
-                if !id.is_empty() {
-                    light.entity_id = format!("{id}/{}", light.entity_id);
-                }
-                lights.push(light);
-            }
-        }
-        (lights, failed)
+        (Vec::new(), ids(Provider::LegacyHue))
     }
     pub fn lights(&self) -> Result<Vec<couch_ha::Light>, String> {
-        Ok(self.states().0)
+        Ok(Vec::new())
     }
-    pub fn toggle(&self, resource: &str) -> Result<couch_ha::Light, String> {
-        let (id, raw) = split(resource);
-        self.get(id)?.toggle(raw).map_err(|e| e.to_string())
+    pub fn toggle(&self, _: &str) -> Result<couch_ha::Light, String> {
+        Err("Needs the Philips Hue package".into())
     }
-    pub fn brightness(&self, resource: &str, level: u8) -> Result<couch_ha::Light, String> {
-        let (id, raw) = split(resource);
-        self.get(id)?
-            .brightness(raw, level)
-            .map_err(|e| e.to_string())
+    pub fn brightness(&self, _: &str, _: u8) -> Result<couch_ha::Light, String> {
+        Err("Needs the Philips Hue package".into())
     }
-    /// Colour temperature, in mirek, for a Hue light that declares a range.
-    pub fn mirek(&self, resource: &str, mirek: u16) -> Result<couch_ha::Light, String> {
-        let (id, raw) = split(resource);
-        self.get(id)?.mirek(raw, mirek).map_err(|e| e.to_string())
+    pub fn mirek(&self, _: &str, _: u16) -> Result<couch_ha::Light, String> {
+        Err("Needs the Philips Hue package".into())
     }
-    pub fn reset(&self) {
-        for client in self.clients.lock().unwrap().values() {
-            client.reset();
-        }
-    }
+    pub fn reset(&self) {}
 }
 
 /// The one fleet in the process. Opening a fabric twice would open a second

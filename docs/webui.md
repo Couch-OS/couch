@@ -84,7 +84,6 @@ node web/tests/icons.mjs           # the icon catalog and room activities
 node web/tests/room-order.mjs      # the device reorder arrows
 node web/tests/area-shortcuts.mjs  # the area quick-access keys
 node web/tests/home-assistant.mjs  # an HA fixture, loopback only
-node web/tests/hue.mjs             # an HTTPS bridge fixture, loopback only
 ```
 
 `integrations.mjs`, `plugin-components.mjs`, `plugin-children.mjs`,
@@ -687,7 +686,7 @@ status text, boolean toggles and input selectors. The browser and panel use
 their existing native controls and styles, and refresh status or inputs through
 the package protocol. No package markup, JavaScript or Slint is loaded.
 
-Tests: `node web/tests/hue.mjs`, `node web/tests/home-assistant.mjs`, and
+Tests: `node web/tests/home-assistant.mjs` and
 `COUCH_TEST_URL=http://127.0.0.1:PORT node web/tests/browser.mjs` against disposable
 host daemons. The latter covers Kodi/IR setup, room assignment, shared settings,
 removal protection, drafts, screen ordering and stale edits. See

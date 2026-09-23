@@ -60,23 +60,11 @@ fn recall(cfg: &Config, id: &Id, ask: Ask) -> Result<(), String> {
             Err(failure) => Err(crate::tv::plugin::refusal(&failure)),
         };
     }
-    let hue = scene
-        .hue
-        .as_ref()
-        .ok_or("Device-step scenes are not supported yet")?;
-    if !cfg
-        .connection(&hue.connection_id)
-        .is_some_and(|c| c.provider == Provider::Hue)
-    {
-        return Err("Hue connection was removed".into());
+    if scene.hue.is_some() {
+        Err("Needs the Philips Hue package".into())
+    } else {
+        Err("Device-step scenes are not supported yet".into())
     }
-    couch_hue::settings::Settings::load(&crate::connections::file(
-        hue.connection_id.as_str(),
-        "hue",
-    ))
-    .and_then(|s| s.client())
-    .and_then(|c| c.recall_scene(&hue.scene_id))
-    .map_err(|e| e.to_string())
 }
 
 fn next_scene(ids: &[Id], current: Option<&Id>, delta: i32) -> Option<Id> {
@@ -330,7 +318,7 @@ mod tests {
             .iter_mut()
             .find(|c| c.id.as_str() == "bridge")
             .unwrap()
-            .provider = Provider::Hue;
+            .provider = Provider::LegacyHue;
         assert_eq!(
             recall(&moved, &Id::new("relax"), never).err().as_deref(),
             Some("The integration this scene belongs to was removed")
