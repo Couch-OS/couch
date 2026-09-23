@@ -6,20 +6,22 @@
     "shared_transport_ownership": "passed",
     "signed_package_lifecycle": "passed",
     "v1_handshake": "passed",
-    "v2_action_refused_for_v1": "passed"
+    "v2_action_refused_for_v1": "passed",
+    "v3_protocol_probe": "passed"
   },
   "core": {
-    "binary_sha256": "a45701b5000287b745a2d90b41fd49772cf9f3a53c8cf6722338466682257c12",
-    "source_commit": "9f453d53e9bae55e5dbcb88d638200137ba8e353",
+    "binary_sha256": "0a07ce98ace50479b3e3074121d771b5513ed7c88dd56c8cd86b4a2fc9c64506",
+    "source_commit": "f943d4063efd95b50cb1141a513bc4d6c87b857a",
     "supported_protocol_versions": [
       1,
-      2
+      2,
+      3
     ],
     "target": "armv7-unknown-linux-musleabihf"
   },
   "evidence_level": "host-protocol-compatibility",
   "hardware_validation": false,
-  "harness_sha256": "d8762cc9a2a60e92a17f000690c30bffe4178c87cc76135bcb2d617501df570d",
+  "harness_sha256": "3fb7cdd44078d6ba8ec4b29e76abd8fb75a5973ef3324b606f253fc3fda88364",
   "integrations": [
     {
       "apk_sha256": "61e135854816bd4f996e46d918386937913860e583ccdb3bda7eac739252b270",
@@ -32,6 +34,6 @@
     }
   ],
   "kind": "couch-integration-host-compatibility",
-  "report_sha256": "a9abb3f16528563d8bc3e1121d5062790e321517b235959cabd859acb294d67e",
+  "report_sha256": "ba3fea37db03870ce1ff101c2fb1bba6caae961211f392a0796821ecf9bf2757",
   "schema": 1
 }
