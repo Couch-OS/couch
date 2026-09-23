@@ -24,7 +24,6 @@ pub(crate) mod connections;
 mod coreelec;
 mod device_ir;
 mod ha;
-mod hue;
 mod integration_migrations;
 mod integration_packages;
 mod ir;
@@ -378,9 +377,6 @@ impl Api {
         }
         if rest.first() == Some(&"webos") {
             return webos::route(&method, &rest[1..], &body);
-        }
-        if rest.first() == Some(&"hue") {
-            return hue::route(&method, &rest[1..], &body);
         }
         if rest.first() == Some(&"ha") {
             return ha::route(&method, &rest[1..], &body);

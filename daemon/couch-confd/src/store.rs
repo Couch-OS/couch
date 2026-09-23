@@ -109,7 +109,7 @@ impl Store {
                         (
                             "hue-connection.json",
                             "Philips Hue",
-                            couch_model::Provider::Hue,
+                            couch_model::Provider::LegacyHue,
                         ),
                     ] {
                         if parent.join(file).is_file() {
@@ -624,7 +624,7 @@ mod scoped_credentials_tests {
         config.connections.push(couch_model::Connection {
             id: "bridge".into(),
             name: "Philips Hue".into(),
-            provider: couch_model::Provider::Hue,
+            provider: couch_model::Provider::LegacyHue,
         });
         fs::write(
             dir.join("config.json"),

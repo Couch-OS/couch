@@ -28,7 +28,7 @@ class CatalogPolicyTests(unittest.TestCase):
         self.assertEqual(ids, sorted(ids))
         self.assertTrue({"echo", "sonos"}.issubset(ids))
 
-    def test_a_v2_core_admits_v1_and_v2_packages_but_a_v1_core_refuses_v2(self):
+    def test_a_newer_core_admits_older_packages_and_known_versions_are_bounded(self):
         # No in-tree integration speaks protocol 2 since Denon moved to its own
         # repository, so one is declared here: Sonos's manifest as it would
         # read after moving to protocol 2.
@@ -42,6 +42,7 @@ class CatalogPolicyTests(unittest.TestCase):
 
         with mock.patch.object(validate_catalog.json, "loads", loads):
             self.validate_copy()
+            self.validate_copy(lambda catalog: catalog.update(protocol_version=2))
             with self.assertRaisesRegex(validate_catalog.InvalidCatalog, "manifest protocol is incompatible"):
                 self.validate_copy(lambda catalog: catalog.update(protocol_version=1))
         # Every manifest in the tree today is protocol 1, which either core admits.
@@ -49,7 +50,7 @@ class CatalogPolicyTests(unittest.TestCase):
         protocols = {json.loads((validate_catalog.ROOT / entry["manifest"]).read_text())["protocol_version"]
                      for entry in loaded["integrations"]}
         self.assertEqual(protocols, {1})
-        for invalid in (True, 0, 3, "2"):
+        for invalid in (True, 0, 4, "3"):
             with self.subTest(invalid=invalid), self.assertRaises(validate_catalog.InvalidCatalog):
                 self.validate_copy(lambda catalog: catalog.update(protocol_version=invalid))
 

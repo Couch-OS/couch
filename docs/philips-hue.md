@@ -1,279 +1,87 @@
-# Philips Hue lights, rooms and scenes
+# Philips Hue package
 
-`clients/couch-hue` is a Rust client for direct local Hue API v2 control. It does
-not require Home Assistant, a Hue cloud account, or a kernel change. Start with
-light on/off and brightness, grouped room on/off and brightness, and recall of scenes saved on
-the bridge. Color editing, scene creation and Hue zones as controls are deferred.
-One bridge connection is supported per remote.
+Philips Hue is an independently installed protocol 3 integration package. The
+core image contains the package host and native light/scene controls, but no
+Hue client or Hue-specific HTTP API. Package source and releases live in
+`Couch-OS/couch-integration-hue`; the official integration repository offers
+it on the preview channel.
 
-## Connect and add lights
+One connection represents one local Hue bridge. The package pairs through the
+standard Couch pairing dialog and exposes three child kinds:
 
-1. Open the remote's web editor, pair with its on-screen PIN, and open **Connections → Philips Hue**.
-2. Enter the bridge IP address (for example, `$BRIDGE_IP`). Press the bridge's
-   round link button, then **Pair bridge**. A failed pairing leaves saved settings intact.
-3. Open **Rooms & devices**, create or open a room, then choose the saved Hue
-   connection under **Add devices to this room**. Search the discovered lights and
-   click **Add to this room**. Discovery never assigns devices automatically.
-4. Open that room on the remote. Devices appear in one flat list. Highlight a
-   light and press **Power** to switch it on or off. Press **OK** to open its
-   controls: a tall brightness bar, and beside it a colour temperature bar on a
-   light whose bridge reports a range for it, shown in Kelvin. Both bars fill
-   and read from the bottom, and warm is at the bottom of the colour bar, so up
-   is always the higher number; neither bar carries a highlight, because each
-   has its own key. On the row itself left and right still dim the light in
-   place. A row whose OK opens controls shows a small chevron and keeps
-   its state text ("On · 40%"). A light that can only be switched keeps OK as
-   the switch it was. Tapping selects a row, matching room navigation. Physical
-   Back returns to the room with the same row still highlighted.
-   Zero-percent brightness means off.
-
-Unreachable lights display as unavailable. Commands are acknowledged by the
-bridge; refresh to see reported state. This is not proof of physical illumination.
-
-## The keys on a light's or blind's controls
-
-The controls **open out of the row you pressed**: the row's card becomes a
-window onto the screen and grows to fill the panel, with its focus ring riding
-the edge, and Back collapses the same window back onto the same row. Nothing
-is redrawn while it travels, so it costs no more than a page slide.
-
-**Neither bar is ever highlighted.** Each has a key of its own, so there is
-nothing to select between and no ring to move. Only a blind's three buttons
-carry a highlight, because OK has to know which one it presses.
-
-| Key | On a lamp | On a blind |
+| Kind | Resource ID | Couch control |
 | --- | --- | --- |
-| Volume up / down | Brighter / dimmer, 5% a press | More / less open, 5% a press |
-| Up / down | The same as volume | The same as volume |
-| Channel up / down | Cooler / warmer, a twentieth of the lamp's range a press (at least 5 mirek). A lamp with no colour temperature ignores them; a lamp that is showing a colour has none to step from, so the first press turns it to warm white (2700 K) and the next ones step from there | Nothing |
-| Left / right | Nothing | Move along Open, Stop and Close |
-| OK | On / off | Presses the highlighted button - Open to begin with |
-| Power | On / off | Open / close |
-| Back | The room, with the same row highlighted | The same |
+| Hue light | `<light uuid>` | light |
+| Hue room | `room/<grouped-light uuid>` | light |
+| Hue scene | `scene/<scene uuid>` | scene |
 
-The volume and channel keys hold to repeat like everywhere else: a held key
-leaves one target behind rather than a queue of commands, so the lamp follows
-the key instead of trailing it. While these controls are open the volume and
-channel keys are *theirs alone* - a receiver in a running activity does not
-also hear them - and closing the screen hands them straight back. The line
-along the bottom of the screen says the same thing in one line.
+The only public setting is the bridge address. Couch stores the Hue application
+key and the exact TLS certificate separately in
+`connections/<id>/plugin-credential.json`, mode `0600`, and passes them to the
+package during configuration. They never enter the exportable house document,
+process arguments, or environment.
 
-The state line at the top keeps saying what the device is - "On · 40%" - and
-moves with the bar as you press, rather than reading "Updating…" for as long
-as the writes take. It says **Updating…** only once one write has been out for
-more than a second and a half, which means something is actually wrong.
+## Adding a bridge
 
-## Connection and credentials
+Open **Integrations**, install **Philips Hue** from the preview repository, and
+then open **Connections**. Add the installed Philips Hue integration, enter the
+bridge address, start pairing, and press the bridge link button while the Couch
+dialog is waiting. After pairing, add its lights and rooms from **Rooms &
+devices**; add bridge scenes from the same child picker.
 
-Requests use HTTPS with a five-second per-request deadline, no redirects or
-proxies, and a 4 MiB response cap. Pairing trusts the selected LAN bridge on first
-use and saves its exact certificate. Later requests require the same certificate
-and a valid TLS handshake signature. This is certificate pinning, not public-CA
-or hostname validation. Pair only on your trusted LAN; deliberate re-pairing is
-required after the bridge changes its certificate. Pairing has no certificate
-bypass setting for normal control requests.
+The package trusts the selected bridge certificate during that physical
+link-button pairing and pins the exact DER certificate. A changed certificate
+requires pairing again. The package proves the issued application key with an
+authenticated request before completing the dialog.
 
-The application key and certificate are saved atomically with mode `0600` in
-`/opt/couch/hue-connection.json`, separate from the exportable house configuration.
-The API never returns the key. `COUCH_HUE_CONNECTION` overrides the daemon's path.
-New house devices store `{"via":"connection","connection_id":"philips-hue",
-"resource_id":"<v2 light UUID>"}`. Existing inline Hue definitions remain readable.
-Adding this integration requires updated readers of the shared configuration.
+## Upgrade from the built-in integration
 
-## CLI and validation
+A saved provider with JSON kind `hue` loads as `Provider::LegacyHue`. Shortly
+after startup, the daemon installs the official `hue` package if needed and
+prepares the existing connection against it. Conversion is atomic: if the
+package, settings, credential, or saved resources cannot be validated, the
+legacy record remains intact and every surface says **Needs the Philips Hue
+package**.
 
-```sh
-(cd clients && cargo test -p couch-hue)
-BRIDGE_IP=bridge.local
-couch-hue pair "$BRIDGE_IP"
-couch-hue lights
-couch-hue on LIGHT_UUID
-couch-hue brightness LIGHT_UUID 40
-```
+Successful conversion preserves the connection ID and name and performs these
+rewrites in one configuration commit:
 
-Use `--settings PATH` before a command to override the private settings file.
-`node web/tests/hue.mjs` uses an isolated HTTPS fixture and disposable host daemon;
-first build with `tools/build-webui.sh --host`. It tests pairing, private storage,
-certificate mismatch rejection, discovery, controls, unreachable lights, Hue
-error envelopes, room import and mobile layout. No household lights are touched.
+- the private built-in `hue-connection.json` supplies package setting `host`,
+  credential `application_key`, and the base64-encoded pinned certificate;
+- a light UUID remains unchanged and receives a saved `light` child snapshot;
+- `room:<uuid>` becomes package resource `room/<uuid>` with a `group` child
+  snapshot;
+- a legacy `Scene.hue` becomes `Scene.resource` at `scene/<uuid>` of kind
+  `scene`.
 
-Protocol references: [Hue getting started](https://developers.meethue.com/develop/get-started-2/),
-[API v2](https://developers.meethue.com/new-hue-api/), and
-[HTTPS guidance](https://developers.meethue.com/develop/application-design-guidance/using-https/).
-Hue advises against continuous rapid updates through its REST API; Couch sends
-explicit user commands and refreshes on demand.
+The old private file is left in place for rollback. Package settings and the
+new credential are written before the configuration changes provider, so the
+connection is never committed in an unpaired state. A fresh child listing then
+heals conservative migrated light traits with the bridge's exact dimming,
+colour-temperature, and colour capabilities.
 
-## Device validation (2026-09-08)
+## Package behavior and limits
 
-Deployed ARMv7 CLI, daemon/browser bundle and Slint GUI. All affected workspace
-unit tests passed, as did the isolated Hue browser test and existing Home Assistant
-browser regression. On the physical remote, D-pad discovery, on and 40% brightness
-passed against an isolated HTTPS bridge fixture; production configuration was
-restored afterward. The physical BSB002 responds over HTTPS with 48 discovered
-lights (42 reachable). Pairing and read-only discovery succeeded;
-real household-light command testing remains pending.
+The package uses the local Hue CLIP v2 API over pinned HTTPS. It lists lights,
+Hue rooms, and scenes; zones are not group controls, though their scenes are
+listed with the zone name as a room hint. Light power, brightness, and colour
+temperature are supported when the light reports the corresponding traits.
+XY colour writes remain unsupported.
 
-## Remote state cache and response time
+State is maintained from the bridge event stream with polling recovery. A
+status request reads the package cache rather than contacting the bridge.
+Grouped-light writes are coalesced to Hue's one-command-per-second room rate;
+single-light writes are sent directly.
 
-Room names and devices render from local configuration immediately. Device rows
-match the home room list’s cards, icons, typography and moving focus ring. The room
-name appears in the status bar, with no duplicate heading above the devices.
-Power switches the focused light, OK opens its controls, and physical Back
-returns home with a 180 ms slide.
+## Validation
 
-The GUI starts a credential-scoped Hue session in the background. A pinned HTTPS
-connection subscribes to `/eventstream/clip/v2`. Add/update/delete events trigger
-background state snapshots, preserving connectivity information as well as light
-state. This version refreshes snapshots on events rather than merging partial
-resource payloads. Commands use a separate, reusable HTTPS connection.
+The package repository runs the shared protocol 3 children and pairing
+admission harnesses against a real package subprocess and a loopback TLS bridge
+fixture containing 48 lights, 14 rooms, and 181 scenes. It also builds the
+static ARMv7 package binary with Couch's pinned toolchain.
 
-With a valid cached state, a switch sends only a PUT. The row adopts the target after
-bridge acknowledgement; this does not prove the bulb has finished fading. Missing
-or expired state falls back to a fresh read; known-unavailable lights are refused.
-Failures invalidate the cache. Snapshot generations prevent an older response from
-overwriting a command, and overlapping updates schedule another refresh.
-
-Streaming connections reconcile every 60 seconds. On stream failure, cache validity
-is revoked, snapshots poll every five seconds, and stream reconnects back off from
-one to 30 seconds. An idle stream has a 45-second read timeout so dead connections
-recover. Reconnect, credential replacement, and wake from full standby refresh state.
-The GUI checks the local cache every 500 ms in Hue-only rooms (five seconds in mixed
-rooms); these checks do not normally query the bridge. A short race remains if
-another controller changes a light before its push-triggered snapshot completes.
-
-Validation: 32 GUI tests and eight Hue tests pass, including SSE framing/limits,
-cache expiry, disconnected state, and stale snapshot/command ordering. On the
-physical remote, an isolated HTTPS/SSE fixture verified one-PUT cached toggles,
-external changes via push, stream failure with polling, and reconnect recovery.
-Fixture cached acknowledgements took 34–55 ms while streaming; these are not
-real-bridge/bulb latency measurements. Production credentials and configuration
-were preserved. No household lights were changed by automated fixture tests.
-
-[Hue v2 push support](https://developers.meethue.com/new-hue-api/).
-
-## Hue rooms and scenes
-
-In **Rooms & devices**, open a Couch room and choose the Hue connection. The
-**Hue controls** selector switches between individual lights and **Hue rooms**.
-Adding a Hue room creates one grouped control; Power and OK switch its
-grouped-light service, and Volume Up/Down adjusts its brightness in 5% steps.
-Brightness support and the current level come from the bridge’s grouped-light
-dimming state, using the same push-maintained cache as individual lights. It
-does not create or rename Couch rooms or duplicate all the bridge room's lights.
-
-**A Hue room has a colour temperature too**, and the Channel keys set it, the
-same as on a single lamp. The bridge will accept one for a whole room but never
-reports one back, so both the range and the current reading are worked out from
-the room's own lamps:
-
-- The **range** is the part every tunable lamp in the room can reach - the
-  highest of their minimums to the lowest of their maximums. A room with no
-  tunable lamp, or whose lamps share nothing, is offered no colour temperature
-  at all.
-- The **reading** comes only from lamps that are on and showing a white; a lamp
-  showing a colour reports no colour temperature and takes no part. If the
-  coolest and the warmest of them are within 12 mirek they are showing one
-  white, and the room reads their average. Further apart than that, the room
-  shows no reading - the first press of Channel then starts it at a warm white
-  and it steps from there.
-
-Members come from the bridge room's own list of devices, one lamp a device, so
-a multi-head fixture counts once. Hue **zones** are not offered as controls, so
-they have no colour temperature either. The packaged Hue integration derives a
-room's colour temperature by exactly these rules, so a bridge behaves the same
-whichever of the two drives it.
-
-In **Rooms & devices**, open a Couch room, select the Hue connection, and choose
-**Hue scenes** in the same **Hue controls** picker used for lights and Hue rooms.
-Search by scene or bridge room name, optionally filter by Hue room/zone, and click
-**Add to this room**. The scene immediately appears in the room's **Scenes** list
-and is assigned to its bottom Scenes button on the remote. Adding an already
-imported scene to another room reuses it; **Remove from room** only removes that
-assignment. The picker keeps its selected category and search after adding items.
-
-Scenes are managed from **Rooms & devices**; there is no standalone Scenes tab.
-Open a scene in a room to rename it or edit its assignments. Older /scenes
-bookmarks open the rooms list. **Areas** controls scene membership on
-custom home pages; ALL ROOMS exposes every saved scene.
-
-The home and room views each have a bottom **Scenes** button. The room picker
-contains only scenes assigned to that room. OK recalls the selected scene and
-returns to the previous view with acknowledgement or error feedback. Scenes are
-not device rows or on/off toggles. Custom device-step scene execution remains
-unimplemented and reports that explicitly.
-
-Bridge room controls retain connection references using `room:GROUPED_LIGHT_UUID`;
-old bare light UUIDs remain valid. Scenes save an optional `hue` connection/scene
-reference and `rooms` list in the existing Scene model. Invalid references and
-removing a connection still used by a scene are rejected. Removing a Couch room
-removes its scene assignments without deleting the scenes or changing the bridge.
-
-CLI: `couch-hue rooms`, `couch-hue scenes`, `couch-hue on room:UUID`,
-`couch-hue off room:UUID`, and `couch-hue recall SCENE_UUID`.
-API: GET `/api/hue/rooms` and `/api/hue/scenes`; POST
-`/api/hue/scenes/SCENE_UUID/recall`. Room power uses the existing light command
-route with a `room:UUID` identifier.
-
-Validation: resource/payload and configuration tests, mobile browser import and
-room-assignment checks, and physical-device HTTPS/SSE fixture tests for grouped
-power, room-filtered scene selection, home scene selection, recall and Back.
-The fixture's room list contained one assigned scene while the home list contained
-two. Tests do not send commands to household lights.
-
-Read-only discovery on the paired BSB002 returned 14 Hue rooms and 181 scenes.
-
-## Brightness from the remote
-
-With a dimmable light selected in a room, Volume Up/Down changes brightness by
-5 percentage points. Holding a button repeats. A transient brightness meter
-shows the light name and requested percentage, then dismisses after one second.
-Zero switches the light off; increasing an off light starts at 5%.
-
-Hue uses the same fresh cache and command connection as instant toggles, without
-a preflight GET when cached state is valid. Rapid presses replace the unsent
-target for that light, with at most one send per 100ms and one command in flight.
-Acknowledgements update the row; failed commands hide the meter and show an
-error. Non-light rows ignore volume keys, except a Sonos speaker, whose volume
-they set (see `sonos.md`); unavailable and non-dimmable lights reject
-brightness changes. Home Assistant lights use its existing service API.
-
-## Live room and device icons
-
-Room icons use the accent color when any configured device is known to be on,
-and fade when every device is known to be off. Empty rooms, unsupported devices,
-and unavailable states stay neutral unless another device is known to be on.
-Device icons use the same on/off/unknown colors. Changes animate over 180ms.
-
-The room observer shares the existing Hue push cache and samples it every 500ms;
-Home Assistant light status is polled every five seconds. Network work stays off
-the GUI thread, and individual model rows update without resetting focus or
-scroll position. Integrations without power feedback are treated as unknown.
-
-## Room scene shortcuts and feedback
-
-In a room, Channel Up recalls the next assigned scene and Channel Down recalls
-the previous one, wrapping at either end (with a Sonos speaker highlighted the
-same keys skip tracks instead). The first forward press starts with
-the first scene; the first backward press starts with the last. The cursor
-remembers scenes chosen on the remote, including selections from the scene
-picker. Rapid presses retain the latest unsent scene while a recall completes.
-Only scenes assigned to that room participate.
-
-Brightness and scene feedback share a large card with 22px labels, 26px names,
-and a 30px brightness percentage. Cards slide in and out over 200ms without
-moving focus. Brightness feedback dwells for one second; scene feedback dwells
-for 1.5 seconds. Scene feedback distinguishes applying, activated and failed.
-
-Toggle feedback preserves Hue’s saved brightness while a light is off, so an
-acknowledged power-on immediately displays its known level. For up to two seconds
-after a successful command, older bridge power/brightness snapshots cannot undo
-that target. Background reconciliation continues; unavailable/deleted devices
-remain authoritative, and external changes are accepted after this settling
-window. Failed commands invalidate the cache for a fresh read.
-
-Toast feedback is scoped to the current screen. Navigation dismisses brightness,
-scene and system toasts immediately; delayed scene acknowledgements cannot reopen
-feedback on a different screen. Normal timed dismissal still slides out.
-Device regression check: Back during brightness and scene feedback leaves the
-home screen clear, including after a simulated 2.5-second scene reply; selecting
-a new scene from the chooser still displays its feedback.
+The package was installed and exercised on an HA100 against a BSB002 bridge on
+2026-09-19. The trial covered pairing, certificate pinning, discovery of all
+243 children, light and room control, scene recall, event updates, restart,
+replacement, uninstall, and rollback. The detailed trial receipt remains in
+`docs/plans/hue-package-hardware-trial.md`.

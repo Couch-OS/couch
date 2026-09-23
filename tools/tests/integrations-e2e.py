@@ -7,13 +7,12 @@ Build couch-confd and couch-plugin-echo in their respective workspaces first.
 
 With --echo-pair, and only then, this runs the protocol 3 pairing leg instead:
 a real couch-plugin-echo-pair package paired through the daemon's own routes
-over HTTP. Both binaries have to be built with the preview feature, which no
-shipped build enables:
+over HTTP. The Echo fixture retains its compatibility feature; protocol 3 is
+accepted by an ordinary daemon build:
 
     cargo build --manifest-path clients/Cargo.toml -p couch-echo \
         --bin couch-plugin-echo-pair --features couch-echo/protocol-3-preview
-    cargo build --manifest-path daemon/Cargo.toml -p couch-confd \
-        --features couch-plugin/protocol-3-preview
+    cargo build --manifest-path daemon/Cargo.toml -p couch-confd
 """
 import argparse
 import json
@@ -186,9 +185,8 @@ def install(confd, home, executable, manifest, package_id):
 def run_pairing(confd, echo_pair, keep):
     """A real protocol 3 package, paired through the daemon's own routes.
 
-    Everything here needs the preview feature, which no shipped build enables:
-    with it off the manifest below is refused as needing a newer Couch and
-    every route answers "This integration does not pair".
+    The package fixture needs its compatibility feature so Cargo builds the
+    dedicated binary. The daemon accepts protocol 3 without a feature.
     """
     manifest = ROOT / "clients/couch-echo/tests/fixtures/plugin-pair-v3.json"
     with tempfile.TemporaryDirectory(prefix="couch-pair-e2e-", dir="/tmp") as temporary:
@@ -462,8 +460,8 @@ if __name__ == "__main__":
     parser.add_argument("--confd",type=Path,default=ROOT/"daemon/target/debug/couch-confd")
     parser.add_argument("--echo",type=Path,default=ROOT/"clients/target/debug/couch-plugin-echo")
     parser.add_argument("--echo-pair",type=Path,
-        help="run the protocol 3 pairing leg with this package instead; both it and --confd "
-             "must be built with the preview feature")
+        help="run the protocol 3 pairing leg with this package instead; build the Echo "
+             "fixture with couch-echo/protocol-3-preview")
     parser.add_argument("--logs",type=Path)
     args = parser.parse_args()
     if args.echo_pair:

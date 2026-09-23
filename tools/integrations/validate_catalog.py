@@ -136,8 +136,8 @@ def validate(path: Path = DEFAULT_CATALOG) -> dict:
     _exact_keys(catalog, {"schema", "protocol_version", "integrations"}, "catalog")
     # This is the catalog's maximum core protocol. Each package selects one
     # supported generation; a newer core must still admit older packages.
-    if catalog["schema"] != 1 or type(catalog["protocol_version"]) is not int or catalog["protocol_version"] not in (1, 2):
-        raise InvalidCatalog("catalog supports schema 1 and integration protocols 1 or 2")
+    if catalog["schema"] != 1 or type(catalog["protocol_version"]) is not int or catalog["protocol_version"] not in (1, 2, 3):
+        raise InvalidCatalog("catalog supports schema 1 and integration protocols 1, 2, or 3")
     entries = catalog["integrations"]
     if not isinstance(entries, list) or not entries:
         raise InvalidCatalog("catalog.integrations must be a nonempty list")

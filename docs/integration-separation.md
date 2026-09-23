@@ -95,7 +95,7 @@ integration and `Plugin` (the package escape hatch) is a variant of it.
 | Apple TV | `clients/couch-appletv` | Companion protocol, encrypted | PIN pairing, stored session keys, app catalog (`clients/couch-appletv/src/lib.rs`, `src/crypto.rs`) | Needs pairing, credential write-back, apps. |
 | Android TV | `clients/couch-androidtv` | pinned mutual TLS | PIN pairing, stored identity, deep-link launch but no app *list* (`clients/couch-androidtv/src/lib.rs:1,234,521-533`) | Needs pairing, credential write-back; launch exists, list does not. |
 | Home Assistant | `clients/couch-ha` | REST/WebSocket | many entities per connection (`clients/couch-ha/src/entities.rs`) | Needs multi-resource connections and typed actions. |
-| Hue | `clients/couch-hue` | HTTPS, local bridge | rooms, scenes, lights per connection (`clients/couch-hue/src/resources.rs`) | Needs multi-resource connections and typed actions. |
+| Hue | external `couch-integration-hue` package | HTTPS, local bridge | light, group, and scene children | Protocol 3 package in the official preview feed. |
 | Matter | `clients/couch-matter` | Matter/CHIP | one fabric hosting many nodes/endpoints, pairing-code commissioning (`model/couch-model/src/connection.rs:93-94`, `clients/couch-matter/src/pairing.rs`) | Needs multi-resource connections, typed actions, and commissioning (a pairing variant). |
 | UniFi Protect | `clients/couch-unifi-protect` | RTSPS/SRTP video, REST | live video stream decode (`clients/couch-unifi-protect/src/media.rs`, `src/player.rs`) | Needs multi-resource connections, typed actions, and media delivery. |
 | IR | `clients/couch-ir` | remote's own IR blaster | privileged hardware | Stays in core. |

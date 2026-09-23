@@ -6,9 +6,10 @@
     "shared_transport_ownership": "passed",
     "signed_package_lifecycle": "passed",
     "v1_handshake": "passed",
-    "v2_action_refused_for_v1": "passed"
+    "v2_action_refused_for_v1": "passed",
+    "v3_protocol_probe": "passed"
   },
-  "core_commit": "9f453d53e9bae55e5dbcb88d638200137ba8e353",
+  "core_commit": "f943d4063efd95b50cb1141a513bc4d6c87b857a",
   "hardware_validation": false,
   "http_panel_device_connections": 1,
   "kind": "couch-integration-host-test-report",
