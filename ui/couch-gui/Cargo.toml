@@ -35,7 +35,6 @@ slint = { version = "1.17", default-features = false, features = [
 libc = "0.2"
 serde_json = "1"
 couch-ha = { path = "../../clients/couch-ha" }
-couch-hue = { path = "../../clients/couch-hue" }
 couch-matter = { path = "../../clients/couch-matter" }
 couch-model = { path = "../../model/couch-model" }
 # The setup screen's QR. LVGL had one built in; Slint does not, and qrcodegen is

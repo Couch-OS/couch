@@ -3,21 +3,14 @@ use couch_sdk::{Credential, KeyPhase, PairInput, PairStep, Reason, Selectable, S
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const PROTOCOL_VERSION: u32 = 2;
-/// Protocol 3 is unreleased. Its wire types are compiled in so that one host
-/// can be tested against both, but nothing accepts a protocol 3 manifest
-/// unless the `protocol-3-preview` feature is on, and no shipped crate turns
-/// it on.
+pub const PROTOCOL_VERSION: u32 = 3;
+/// The protocol generation that introduced children, typed actions, pairing,
+/// and host-owned credentials. Keep this name for source compatibility with
+/// packages developed while protocol 3 was in preview.
 pub const NEXT_PROTOCOL_VERSION: u32 = 3;
-/// The newest manifest protocol this build admits. The only thing the
-/// `protocol-3-preview` feature changes. [`PROTOCOL_VERSION`] is what a release
-/// supports and is deliberately not feature-dependent.
+/// The newest manifest protocol this build admits.
 pub const fn accepted_protocol_version() -> u32 {
-    if cfg!(feature = "protocol-3-preview") {
-        NEXT_PROTOCOL_VERSION
-    } else {
-        PROTOCOL_VERSION
-    }
+    PROTOCOL_VERSION
 }
 pub const MAX_FRAME: usize = 64 * 1024;
 

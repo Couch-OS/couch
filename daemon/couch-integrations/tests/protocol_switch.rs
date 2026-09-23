@@ -1,11 +1,8 @@
-//! Protocol 3 is unreleased. Its only switch is couch-plugin's
-//! `protocol-3-preview` feature, and Cargo unifies features across a build, so
-//! one dependency (or dev-dependency) anywhere in this workspace that enabled
-//! it would switch it on in the package manager that ships. This runs with
-//! this workspace's own feature set and fails if that ever happens.
+//! The package manager and protocol crate must agree on the released host
+//! contract without relying on an optional Cargo feature.
 
 #[test]
-fn the_package_manager_is_never_built_with_the_protocol_3_preview() {
+fn the_package_manager_accepts_the_released_protocol_3_contract() {
     assert_eq!(
         couch_plugin::accepted_protocol_version(),
         couch_plugin::PROTOCOL_VERSION
@@ -19,9 +16,5 @@ fn the_package_manager_is_never_built_with_the_protocol_3_preview() {
             "version":"1","executable":"bin/e","capabilities":[],"settings":[]}"#,
     )
     .unwrap();
-    assert_eq!(
-        manifest.validate(),
-        Err(couch_plugin::Error::Incompatible),
-        "a protocol 3 package must still be one that needs a newer Couch"
-    );
+    assert_eq!(manifest.validate(), Ok(()));
 }

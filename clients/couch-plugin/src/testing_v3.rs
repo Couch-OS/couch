@@ -1,9 +1,7 @@
 //! Admission checks for a package whose connection has children.
 //!
-//! Protocol 3 is unreleased, so this is a second file rather than more cases
-//! in [`crate::testing`]: that one is digest-pinned as part of the release
-//! evidence, and nothing in the protocol 3 train may move it. It becomes part
-//! of `testing` at the step that switches protocol 3 on.
+//! This stays in a separate module so packages developed during the protocol
+//! 3 preview retain their source-compatible admission imports.
 //!
 //! What it asserts is the part a bridge gets wrong: a listing that ends, ids
 //! that mean the same thing the second time they are asked for, a resource
@@ -19,6 +17,7 @@
 //!     adapter(),
 //!     ChildrenCase {
 //!         device: device(),
+//!         credential: None,
 //!         expect: 79,
 //!         kind: "light",
 //!         write: TypedAction::SetLight { on: Some(true), brightness: Some(40), mirek: None, xy: None },
@@ -30,7 +29,7 @@
 use crate::{
     list_children,
     testing::{Adapter, FakeDevice, Package},
-    Child, Endpoint, Error, Host, Request, Response, Status, TypedAction, MAX_PAGE,
+    Child, Credential, Endpoint, Error, Host, Request, Response, Status, TypedAction, MAX_PAGE,
 };
 use std::time::Duration;
 
@@ -40,6 +39,8 @@ pub struct ChildrenCase {
     /// gets here: unlike [`crate::testing::failure`] nothing here wants a
     /// second device with a fresh log.
     pub device: Box<dyn FakeDevice>,
+    /// The host-owned key for a bridge that requires pairing.
+    pub credential: Option<Credential>,
     /// How many children it offers. The case knows; the harness does not.
     pub expect: usize,
     /// The kind whose first child the write is aimed at.
@@ -77,7 +78,11 @@ pub fn children(adapter: Adapter<'_>, case: ChildrenCase) {
         !package.manifest.children.is_empty(),
         "a package with children declares their kinds in its manifest"
     );
-    let endpoint = package.endpoint(case.device.settings(), Duration::from_secs(5));
+    let endpoint = package.endpoint_with_credential(
+        case.device.settings(),
+        case.credential.as_ref(),
+        Duration::from_secs(5),
+    );
 
     let listed = |endpoint: &Endpoint| -> (Vec<Child>, usize) {
         let mut pages = 0;
@@ -200,8 +205,8 @@ pub fn children(adapter: Adapter<'_>, case: ChildrenCase) {
 // ---------------------------------------------------------------------------
 
 use crate::{
-    host::accept, Credential, Error as WireError, PairFailure, PairInput, PairPrompt, PairStep,
-    Response as R, MAX_CODE_LENGTH, MAX_PAIR_TEXT, MAX_POLL_MS, MIN_POLL_MS,
+    host::accept, Error as WireError, PairFailure, PairInput, PairPrompt, PairStep, Response as R,
+    MAX_CODE_LENGTH, MAX_PAIR_TEXT, MAX_POLL_MS, MIN_POLL_MS,
 };
 
 /// The most steps one conversation may take before the harness gives up. A

@@ -55,7 +55,10 @@
 //! adapter pays a real per-exec cost and a number chosen for a small one turns
 //! the case into a timing test.
 
-use crate::{Endpoint, Error, Host, Manifest, Request, Selectable, Status, QUEUE_CAPACITY};
+use crate::{
+    Credential, Endpoint, Error, Host, HostPolicy, Manifest, Request, Selectable, Status,
+    QUEUE_CAPACITY,
+};
 use couch_sdk::testing::{MockHost, Reply, Script};
 use serde_json::Value;
 use std::{
@@ -126,8 +129,25 @@ impl Package {
     }
 
     pub fn endpoint(&self, settings: Value, timeout: Duration) -> Endpoint {
-        Endpoint::start_with_timeout(&self.root, self.manifest.clone(), settings, timeout)
-            .expect("configured plugin endpoint")
+        self.endpoint_with_credential(settings, None, timeout)
+    }
+
+    /// Start the real package with an optional host-owned credential.
+    pub fn endpoint_with_credential(
+        &self,
+        settings: Value,
+        credential: Option<&Credential>,
+        timeout: Duration,
+    ) -> Endpoint {
+        Endpoint::start_paired(
+            &self.root,
+            self.manifest.clone(),
+            settings,
+            credential,
+            timeout,
+            HostPolicy::default(),
+        )
+        .expect("configured plugin endpoint")
     }
 }
 

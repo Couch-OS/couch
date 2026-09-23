@@ -3593,7 +3593,7 @@ mod tests {
     /// A built-in Hue room is a lamp as far as this screen is concerned.
     ///
     /// The bridge never reports a grouped light's colour temperature, so
-    /// `couch_hue` works the range and the value out from the room's lamps;
+    /// The Hue package works the range and value out from the room's lamps;
     /// from here on nothing is special about a room, which is the point. The
     /// write goes out through the one queue a level uses, so a held Channel key
     /// is paced exactly as a held Volume key on the same room.

@@ -40,7 +40,7 @@ pub fn picker(app: App, config: &Config, room: &Id) -> AnyView {
     let connections: Vec<_> = config
         .connections
         .iter()
-        .filter(|c| c.provider != Provider::Ir)
+        .filter(|c| c.provider != Provider::Ir && c.provider.legacy_builtin().is_none())
         .cloned()
         .collect();
     let room = StoredValue::new(room.clone());
@@ -63,10 +63,7 @@ pub fn picker(app: App, config: &Config, room: &Id) -> AnyView {
         </select></label>
         {move ||if picking.source.get()=="manual-ir" {super::infrared::device_setup(app,room.get_value(),None)}else{
             connections.iter().find(|c|c.id.as_str()==picking.source.get()).map(|c|match c.provider{
-                Provider::UnifiProtect|Provider::Hue|Provider::HomeAssistant|Provider::Matter=>discover(app,house.clone(),c.clone(),room.get_value()),
-                // Protocol 3 (unreleased): a package that lists devices of its
-                // own. No manifest a shipped build accepts declares any, so
-                // this arm is never taken and the picker is what it was.
+                Provider::UnifiProtect|Provider::HomeAssistant|Provider::Matter=>discover(app,house.clone(),c.clone(),room.get_value()),
                 Provider::Plugin{ref children,..} if !children.is_empty()=>super::plugin_children::picker(app,house.clone(),c.clone(),room.get_value()),
                 _=>manual(app,&house,c.clone(),room.get_value())}).unwrap_or_else(||view!{<p class="dim">"Need a server or bridge first?" <button class="ghost" on:click=move |_|app.go(Route::Connections)>"Manage connections"</button></p>}.into_any())
         }}
@@ -76,7 +73,7 @@ pub fn picker(app: App, config: &Config, room: &Id) -> AnyView {
 fn assigned(cfg: &Config, connection: &Connection, resource: &str) -> Option<String> {
     cfg.devices().find_map(|(r,d)|{
         let same=matches!(&d.integration,Integration::Connection{connection_id,resource_id,..} if connection_id==&connection.id && resource_id==resource)
-            || match cfg.resolve_integration(&d.integration){Some(Integration::Hue{light_id})=>connection.provider==Provider::Hue && light_id==format!("{}/{resource}",connection.id),Some(Integration::HomeAssistant{entity_id})=>connection.provider==Provider::HomeAssistant && entity_id==format!("{}/{resource}",connection.id),Some(Integration::Matter{device})=>connection.provider==Provider::Matter && device==format!("{}/{resource}",connection.id),Some(Integration::Kodi{host,port})=>connection.provider==Provider::Kodi{host,port},_=>false};
+            || match cfg.resolve_integration(&d.integration){Some(Integration::Hue{light_id})=>connection.provider==Provider::LegacyHue && light_id==format!("{}/{resource}",connection.id),Some(Integration::HomeAssistant{entity_id})=>connection.provider==Provider::HomeAssistant && entity_id==format!("{}/{resource}",connection.id),Some(Integration::Matter{device})=>connection.provider==Provider::Matter && device==format!("{}/{resource}",connection.id),Some(Integration::Kodi{host,port})=>connection.provider==Provider::Kodi{host,port},_=>false};
         same.then(||r.name.clone())
     })
 }
@@ -87,7 +84,7 @@ fn discover(app: App, house: Arc<Config>, connection: Connection, room: Id) -> A
     let message = RwSignal::new(String::new());
     let prefix = if connection.provider == Provider::UnifiProtect {
         "protect"
-    } else if connection.provider == Provider::Hue {
+    } else if connection.provider == Provider::LegacyHue {
         "hue"
     } else if connection.provider == Provider::Matter {
         "matter"
@@ -372,5 +369,5 @@ pub fn controls(app: App, config: &Config, device: &Device) -> AnyView {
     let value = RwSignal::new(None::<Value>);
     let message = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
-    view!{<button class="ghost" disabled=move ||busy.get() on:click=move |_|{let id=id.clone();busy.set(true);spawn_local(async move{match api::ha("GET",&format!("{}/{category}/{id}",base.get_value()),None).await{Ok(v)=>value.set(Some(v)),Err(e)=>{if e.unauthorized{app.paired.set(Some(false));}message.set(e.message);}}busy.set(false);});}>"Show device controls"</button><p role="status">{move ||message.get()}</p>{move ||value.get().map(|v|if prefix=="hue"{super::hue::controls(app,v,base.get_value())}else{super::home_assistant::controls(app,v,base.get_value())})}}.into_any()
+    view!{<button class="ghost" disabled=move ||busy.get() on:click=move |_|{let id=id.clone();busy.set(true);spawn_local(async move{match api::ha("GET",&format!("{}/{category}/{id}",base.get_value()),None).await{Ok(v)=>value.set(Some(v)),Err(e)=>{if e.unauthorized{app.paired.set(Some(false));}message.set(e.message);}}busy.set(false);});}>"Show device controls"</button><p role="status">{move ||message.get()}</p>{move ||value.get().map(|v|super::home_assistant::controls(app,v,base.get_value()))}}.into_any()
 }

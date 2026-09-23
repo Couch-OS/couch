@@ -12,8 +12,8 @@ use couch_sdk::{ClientSettings, Credential, DeviceClient, KeyPhase, PairFlow};
 /// the package was built with. A protocol 1 or 2 package built with this SDK
 /// sends the bytes it always sent: a reason its client attaches is dropped,
 /// `Unpaired` leaves as `rejected`, and its client is only ever told of taps.
-/// A protocol 3 manifest is refused here, as it is by the host, unless the
-/// `protocol-3-preview` feature is on.
+/// Protocol 3 adds the detailed failures, key phases, children, and pairing
+/// frames described below while preserving the older wire shapes.
 pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
     hide_from_other_users();
     manifest.validate()?;

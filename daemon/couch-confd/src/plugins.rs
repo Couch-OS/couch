@@ -906,8 +906,19 @@ impl Runtime {
         })
     }
 
-    /// Protocol 3 (unreleased): the key a departed built-in stored for this
-    /// connection, as its package's credential.
+    /// The private file a departed built-in stored for this connection.
+    pub fn legacy_private(
+        &self,
+        connection: &str,
+        row: &couch_model::LegacyBuiltin,
+    ) -> Option<Value> {
+        let file = row.credential_file?;
+        let path = self.settings_path(connection).ok()?.with_file_name(file);
+        couch_sdk::load_private(&path).ok()
+    }
+
+    /// The key a departed built-in stored for this connection, mapped to its
+    /// package credential.
     ///
     /// The old file is read and **left where it is**: a Couch rolled back to
     /// one that still has the built-in client has to find its pairing, and
@@ -919,9 +930,7 @@ impl Runtime {
         connection: &str,
         row: &couch_model::LegacyBuiltin,
     ) -> Option<Credential> {
-        let file = row.credential_file?;
-        let path = self.settings_path(connection).ok()?.with_file_name(file);
-        let stored: Value = couch_sdk::load_private(&path).ok()?;
+        let stored = self.legacy_private(connection, row)?;
         Credential::new(row.map_credential(&stored)?).ok()
     }
 
@@ -2328,13 +2337,9 @@ mod tests {
         let _ = fs::remove_dir_all(home);
     }
 
-    /// Protocol 3 is unreleased. Its only switch is couch-plugin's
-    /// `protocol-3-preview` feature, and Cargo unifies features across a
-    /// build, so one dependency (or dev-dependency) anywhere in this workspace
-    /// that enabled it would switch it on in the daemon that ships. This runs
-    /// with the daemon's own feature set and fails if that ever happens.
+    /// The daemon's ordinary feature set admits the released protocol 3.
     #[test]
-    fn the_daemon_is_never_built_with_the_protocol_3_preview() {
+    fn the_daemon_accepts_the_released_protocol_3_contract() {
         assert_eq!(
             couch_plugin::accepted_protocol_version(),
             couch_plugin::PROTOCOL_VERSION
@@ -2342,7 +2347,7 @@ mod tests {
         let mut next = manifest();
         next.protocol_version = couch_plugin::NEXT_PROTOCOL_VERSION;
         next.min_core_protocol_version = couch_plugin::NEXT_PROTOCOL_VERSION;
-        assert_eq!(next.validate(), Err(Error::Incompatible));
+        assert_eq!(next.validate(), Ok(()));
     }
 
     /// A package that answers the handshake and then says `reply` to
@@ -4401,11 +4406,7 @@ mod keep_alive_tests {
     }
 }
 
-/// Protocol 3 (unreleased): handing a departed built-in's stored key to its
-/// package.
-///
-/// No row does this yet - Denon never stored a key - so the hook is driven
-/// here by a row of the shape a built-in that did keep one would have.
+/// Handing a departed built-in's stored key to its package.
 #[cfg(test)]
 mod legacy_credential_tests {
     use super::*;
@@ -4413,7 +4414,7 @@ mod legacy_credential_tests {
 
     fn carried(provider: &Provider) -> Option<Vec<(&'static str, LegacySetting)>> {
         match provider {
-            Provider::Hue => Some(vec![
+            Provider::LegacyHue => Some(vec![
                 ("host", LegacySetting::Text("bridge.local".into())),
                 ("port", LegacySetting::Integer(443)),
             ]),
@@ -4424,6 +4425,9 @@ mod legacy_credential_tests {
         let key = stored.get("application_key")?.as_str()?;
         (!key.is_empty()).then(|| json!({ "key": key }))
     }
+    fn keep(_: &mut couch_model::Config, _: &couch_model::Id) -> Result<(), &'static str> {
+        Ok(())
+    }
     fn row() -> LegacyBuiltin {
         LegacyBuiltin {
             kind: "hue",
@@ -4431,7 +4435,9 @@ mod legacy_credential_tests {
             name: "Hue",
             settings: carried,
             credential_file: Some("hue-connection.json"),
+            stored_settings: None,
             credential: Some(mapped),
+            convert: keep,
         }
     }
 

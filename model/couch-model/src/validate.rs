@@ -309,7 +309,7 @@ impl Config {
                             crate::Provider::UnifiProtect=>device.kind==crate::DeviceKind::Camera && !resource_id.is_empty() && resource_id.len()<=128 && resource_id.bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-' || b==b'_'),
                             crate::Provider::HomeAssistant=>valid_ha_resource(resource_id, device.kind),
                             crate::Provider::Matter=>valid_matter_resource(resource_id),
-                            crate::Provider::Hue=>{ let id=resource_id.strip_prefix("room:").unwrap_or(resource_id); id.len()==36 && id.bytes().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){b==b'-'}else{b.is_ascii_hexdigit()}) },
+                            crate::Provider::LegacyHue=>{ let id=resource_id.strip_prefix("room:").unwrap_or(resource_id); id.len()==36 && id.bytes().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){b==b'-'}else{b.is_ascii_hexdigit()}) },
                             crate::Provider::Plugin{..}=>resource_id.len()<=128 && resource_id.bytes().all(|b|b.is_ascii_alphanumeric()||b"._/-+".contains(&b)),
                             crate::Provider::Ir=>!resource_id.is_empty() && resource_id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'||b==b'-'),
                         };
@@ -332,7 +332,7 @@ impl Config {
                 let id = &hue.scene_id;
                 let valid = self
                     .connection(&hue.connection_id)
-                    .is_some_and(|c| c.provider == crate::Provider::Hue)
+                    .is_some_and(|c| c.provider == crate::Provider::LegacyHue)
                     && id.len() == 36
                     && id.bytes().enumerate().all(|(i, b)| {
                         if [8, 13, 18, 23].contains(&i) {

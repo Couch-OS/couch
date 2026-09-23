@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "protocol_version": 2,
+  "protocol_version": 3,
   "integrations": [
     {
       "id": "echo",

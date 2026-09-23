@@ -1108,28 +1108,8 @@ fn send_network(
             })
         }
         Integration::Hue { light_id } => {
-            let (id, raw) = connections::split(&light_id);
-            let c = couch_hue::settings::Settings::load(&connections::file(id, "hue"))
-                .and_then(|s| s.client())
-                .map_err(|e| e.to_string())?;
-            if let F::Dim(percent) = command {
-                return c
-                    .command(raw, couch_hue::Command::Brightness(percent))
-                    .map(|_| Outcome::default())
-                    .map_err(|e| Failure::Command(e.to_string()));
-            }
-            let on = match command {
-                F::On => true,
-                F::Off => false,
-                _ => !c
-                    .control_state(raw)
-                    .map_err(|e| e.to_string())?
-                    .on
-                    .ok_or("Hue light is unavailable")?,
-            };
-            c.set_power(raw, on)
-                .map(|_| Outcome::default())
-                .map_err(|e| Failure::Command(e.to_string()))
+            let _ = (light_id, command);
+            Err(Failure::Command("Needs the Philips Hue package".into()))
         }
         Integration::HomeAssistant { entity_id } => {
             let (c, raw) = connections::ha(&entity_id)?;

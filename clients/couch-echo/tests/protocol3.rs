@@ -274,6 +274,7 @@ fn the_bridge_lists_its_children_pages_them_and_answers_for_one_at_a_time() {
         bridge(),
         ChildrenCase {
             device: Box::new(NoDevice(hostile("none"))),
+            credential: None,
             expect: CHILDREN,
             kind: "light",
             write: TypedAction::SetLight {

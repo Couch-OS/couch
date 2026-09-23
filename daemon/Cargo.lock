@@ -380,7 +380,6 @@ dependencies = [
  "couch-control",
  "couch-coreelec",
  "couch-ha",
- "couch-hue",
  "couch-integrations",
  "couch-ir",
  "couch-kodi",
@@ -432,19 +431,6 @@ name = "couch-ha"
 version = "0.1.0"
 dependencies = [
  "couch-sdk",
- "serde",
- "serde_json",
- "ureq",
- "url",
-]
-
-[[package]]
-name = "couch-hue"
-version = "0.1.0"
-dependencies = [
- "couch-ha",
- "couch-sdk",
- "rustls",
  "serde",
  "serde_json",
  "ureq",

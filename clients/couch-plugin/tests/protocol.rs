@@ -323,47 +323,22 @@ fn light_cover_and_climate_are_in_no_manifest_an_older_package_could_send() {
     );
 }
 
-/// Protocol 3 is unreleased. Without the `protocol-3-preview` feature, which
-/// no shipped crate enables, its manifest is a package that needs a newer
-/// Couch, whatever else it says, and nothing is executed.
-#[cfg(not(feature = "protocol-3-preview"))]
+/// The released host accepts protocol 3 and refuses anything newer.
 #[test]
-fn a_protocol_3_manifest_is_refused_as_needing_a_newer_couch() {
+fn protocol_3_is_the_current_contract() {
     assert_eq!(
         couch_plugin::accepted_protocol_version(),
         couch_plugin::PROTOCOL_VERSION
     );
-    assert_eq!(couch_plugin::PROTOCOL_VERSION, 2);
-    let mut p = Package::new();
-    p.manifest = v3_manifest(p.manifest.clone());
-    assert_eq!(p.manifest.validate(), Err(Error::Incompatible));
-    let mut plain = v2_manifest(p.manifest.clone());
-    plain.capabilities.pop();
-    plain.protocol_version = 3;
-    plain.min_core_protocol_version = 3;
-    assert_eq!(plain.validate(), Err(Error::Incompatible));
-    let marker = p.root.join("ran");
-    p.script(&format!(": > {}\nexec /bin/sleep 10", marker.display()));
-    assert!(matches!(
-        Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)),
-        Err(Error::Incompatible)
-    ));
-    assert!(matches!(
-        couch_plugin::Endpoint::start(&p.root, p.manifest.clone(), json!({"host":"example"})),
-        Err(Error::Incompatible)
-    ));
-    assert!(!marker.exists(), "a refused package was executed");
+    assert_eq!(couch_plugin::PROTOCOL_VERSION, 3);
+    let p = Package::new();
+    assert_eq!(v3_manifest(p.manifest.clone()).validate(), Ok(()));
 }
 
-#[cfg(feature = "protocol-3-preview")]
 #[test]
-fn the_preview_switch_admits_protocol_3_and_nothing_newer() {
+fn protocol_3_admits_its_contract_and_nothing_newer() {
     assert_eq!(couch_plugin::accepted_protocol_version(), 3);
-    assert_eq!(
-        couch_plugin::PROTOCOL_VERSION,
-        2,
-        "the release constant never moves"
-    );
+    assert_eq!(couch_plugin::PROTOCOL_VERSION, 3);
     let p = Package::new();
     let manifest = v3_manifest(p.manifest.clone());
     assert_eq!(manifest.validate(), Ok(()));
@@ -1001,8 +976,7 @@ fn v2_is_explicit_and_headless_actions_do_not_depend_on_presentation() {
         Err(Error::Invalid),
         "no v2 controls in v1"
     );
-    // (3, 3) unless the protocol 3 preview is switched on, which no shipped
-    // build does; then (4, 4).
+    // The generation after the current released contract is incompatible.
     let next = couch_plugin::accepted_protocol_version() + 1;
     for (version, minimum) in [(0, 0), (1, 2), (2, 1), (2, 3), (next, next)] {
         let mut manifest = v2_manifest(v1.clone());
