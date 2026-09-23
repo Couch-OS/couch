@@ -216,40 +216,13 @@ fn a_held_or_long_pressed_key_reaches_a_protocol_1_package_as_a_tap() {
     );
 }
 
-/// The protocol 3 fixture's manifest, with the switch off, which is how every
-/// shipped Couch is built: the host refuses it as needing a newer Couch
-/// without running anything, and the SDK's `serve` refuses to speak it.
-#[cfg(not(feature = "protocol-3-preview"))]
+/// Protocol 3 is part of the normal host contract even when the example's
+/// optional protocol 3 subprocess fixtures are not being built.
 #[test]
-fn the_protocol_3_fixture_manifest_is_refused_while_the_switch_is_off() {
+fn the_protocol_3_fixture_manifest_is_accepted_without_fixture_features() {
     let manifest: Manifest = serde_json::from_str(include_str!("fixtures/plugin-v3.json")).unwrap();
     assert_eq!(manifest.protocol_version, 3);
-    assert_eq!(manifest.validate(), Err(Error::Incompatible));
-    let mut p = Package::new();
-    p.manifest = manifest.clone();
-    // The executable exists and would answer; it must not be asked.
-    std::fs::rename(
-        p.root.join("bin/couch-plugin-echo"),
-        p.root.join("bin/couch-plugin-echo-v3"),
-    )
-    .unwrap();
-    assert!(matches!(
-        Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)),
-        Err(Error::Incompatible)
-    ));
-    assert!(matches!(
-        Endpoint::start(
-            &p.root,
-            manifest.clone(),
-            json!({"host":"127.0.0.1","port":1})
-        ),
-        Err(Error::Incompatible)
-    ));
-    // Child side: returns before reading a byte of stdin.
-    assert_eq!(
-        couch_plugin::serve::<couch_echo::EchoTv>(manifest),
-        Err(Error::Incompatible)
-    );
+    assert_eq!(manifest.validate(), Ok(()));
 }
 
 /// The host is holding a key for this connection and the package is a
