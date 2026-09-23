@@ -2,7 +2,7 @@
 
 The integrated native installer prepares the host dependencies, enrolls the
 remote over USB, and uses authenticated Wi-Fi for backups and OS transfer.
-Release `installer-v0.2.1`, published from
+Release `installer-v0.2.2`, published from
 [Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer), is a
 prerelease; it installs the OS payload its release descriptor pins. Its
 launchers passed download, checksum and safe-Cancel tests on Linux, macOS and
@@ -98,13 +98,13 @@ Linux x64 and macOS, from an interactive terminal:
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.2.1/install.sh | sh
+  https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.2.2/install.sh | sh
 ```
 
 Windows x64, from PowerShell:
 
 ```powershell
-Invoke-RestMethod 'https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.2.1/install.ps1' | Invoke-Expression
+Invoke-RestMethod 'https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.2.2/install.ps1' | Invoke-Expression
 ```
 
 The release launcher verifies the native host, terminal and release configuration
@@ -151,7 +151,7 @@ Follow the saved restore instructions and [device recovery guide](device-recover
 
 ## What version a fresh install runs
 
-From `installer-v0.2.1` the installer writes an OS image that carries **alpha
+From `installer-v0.2.2` the installer writes an OS image that carries **alpha
 .215**, so a fresh install starts on the current release and Settings → Updates
 reports nothing newer. The image also carries the boot script that clears the
 recovery flag after a rolled-back update, and the D-Bus and BlueZ packages that
