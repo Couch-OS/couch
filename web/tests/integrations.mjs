@@ -28,6 +28,11 @@ const catalog = {
     id: 'future-tv', name: 'Future TV', version: '1.0.0',
     description: 'Built for the next Couch.', repository: 'official-preview',
     installable: false, reason: 'Needs a newer Couch',
+  }, {
+    // Older daemons returned the whole feed here, including installed IDs.
+    // The browser must not turn that duplicate into a second Install action.
+    id: 'denon', name: 'Denon AVR', version: '1.5.0',
+    description: 'Controls a network receiver.', repository: 'official-preview',
   }],
   repositories: [{
     id: 'official-preview', name: 'Couch preview', url: 'https://packages.couch.example/preview',
@@ -125,7 +130,10 @@ try {
   await page.getByRole('link', {name: 'Download saved integration configuration', exact: true}).waitFor();
   await page.getByText('Package operation complete.').waitFor();
   assert(catalogReads >= 2, 'a transient catalog lock reloads after the resumed operation completes');
+  const card = name => page.locator('article.integration-card').filter({has: page.getByRole('heading', {name, exact: true})});
   await page.getByRole('heading', {name: 'Denon AVR', exact: true}).waitFor();
+  assert.equal(await card('Denon AVR').count(), 1, 'an installed package is not repeated in Available packages');
+  assert.equal(await card('Denon AVR').getByRole('button', {name: 'Install', exact: true}).count(), 0, 'an installed package is never offered as a fresh install');
   await page.getByText('Removing this package will keep its connections and saved settings.').waitFor();
   // The reversible pilot is gone: nothing offers to switch a connection by
   // hand, in either direction.
@@ -147,7 +155,6 @@ try {
   // A package this Couch cannot run says so and cannot be asked for; the
   // daemon would refuse it before downloading anything. The rows beside it
   // are untouched.
-  const card = name => page.locator('article.integration-card').filter({has: page.getByRole('heading', {name, exact: true})});
   await card('Future TV').getByText('Needs a newer Couch.', {exact: true}).waitFor();
   assert(await card('Future TV').getByRole('button', {name: 'Install', exact: true}).isDisabled(), 'a package that needs a newer Couch cannot be installed');
   assert(await card('Example TV').getByRole('button', {name: 'Install', exact: true}).isEnabled(), 'an installable package beside it still can');
