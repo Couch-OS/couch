@@ -61,7 +61,9 @@ pub use domain::{
     valid_resource, ChildComponent, ChildSnapshot, ClimateMode, ClimateState, ClimateTraits,
     CoverState, CoverTraits, LightState, LightTraits, PluginChildKind, SceneResource, TempUnit,
 };
-pub use volume::{ActionKind, PluginActionSchema, TypedAction, VolumeDb};
+pub use volume::{
+    ActionKind, PlayMode, PlayModeSet, PluginActionSchema, TypedAction, VolumeDb, ALL_PLAY_MODES,
+};
 mod shortcuts;
 pub use shortcuts::{Shortcut, ShortcutAction, SHORTCUT_BUTTONS};
 mod app_shortcuts;
@@ -73,7 +75,11 @@ mod connection;
 mod device;
 mod remote;
 pub use appearance::Appearance;
-pub use connection::{Connection, PluginCapability, PluginComponent, PluginStatusField, Provider};
+pub use connection::{
+    ArtRole, ColourKey, Connection, MediaKey, MediaLayout, MediaList, PluginCapability,
+    PluginComponent, PluginStatusField, Provider, DEFAULT_REFRESH_MS, MAX_MEDIA_KEYS,
+    MAX_REFRESH_MS, MIN_REFRESH_MS,
+};
 pub use remote::RemoteSettings;
 mod icon;
 mod id;

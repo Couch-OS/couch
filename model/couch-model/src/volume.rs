@@ -2,14 +2,102 @@
 //! intentionally a separate quantity; minimum is not a fabricated reading.
 //!
 //! Protocol 3 (unreleased) adds three typed actions for the children of a
-//! connection: a light, a cover and a thermostat ([`crate::domain`]).
+//! connection: a light, a cover and a thermostat ([`crate::domain`]), and five
+//! more for a packaged media player: percentage volume, seeking, and the way
+//! it plays through what it holds.
 use crate::domain::{
     ClimateMode, MAX_CLIMATE_TENTHS, MAX_MIREK, MAX_PERCENT, MAX_XY, MIN_CLIMATE_TENTHS, MIN_MIREK,
 };
+use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 pub const MIN_VOLUME_TENTHS: i16 = -1000;
 pub const MAX_VOLUME_TENTHS: i16 = 300;
+
+/// The furthest a position or a duration may reach: seven days. Anything
+/// beyond it is a package's arithmetic, not a recording.
+pub const MAX_MEDIA_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+/// A relative seek moves at least a second and at most an hour.
+pub const MIN_SEEK_DELTA_MS: u32 = 1_000;
+pub const MAX_SEEK_DELTA_MS: u32 = 3_600_000;
+/// One press of a percentage volume key moves at most this many points.
+pub const MAX_VOLUME_STEP: u8 = 50;
+
+/// One way a player may be told to play through what it holds (protocol 3,
+/// unreleased). Serialized as its own name, so a set reads as a list of words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayMode {
+    Shuffle,
+    Repeat,
+    RepeatOne,
+    Crossfade,
+}
+/// The order a [`PlayModeSet`] is always written in, whatever order it was
+/// built in: two packages declaring the same modes produce the same bytes.
+pub const ALL_PLAY_MODES: [PlayMode; 4] = [
+    PlayMode::Shuffle,
+    PlayMode::Repeat,
+    PlayMode::RepeatOne,
+    PlayMode::Crossfade,
+];
+impl PlayMode {
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Shuffle => 1,
+            Self::Repeat => 2,
+            Self::RepeatOne => 4,
+            Self::Crossfade => 8,
+        }
+    }
+}
+
+/// Which modes a player offers. A bit set, so [`PluginActionSchema`] stays
+/// `Copy + Eq` with integers in it; on the wire and on disk it is an ordered
+/// list of names, and a name given twice is refused rather than merged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(into = "Vec<PlayMode>", try_from = "Vec<PlayMode>")]
+pub struct PlayModeSet(u8);
+impl PlayModeSet {
+    pub const fn new() -> Self {
+        Self(0)
+    }
+    pub const fn with(self, mode: PlayMode) -> Self {
+        Self(self.0 | mode.bit())
+    }
+    pub const fn contains(self, mode: PlayMode) -> bool {
+        self.0 & mode.bit() != 0
+    }
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+    pub const fn len(self) -> usize {
+        self.0.count_ones() as usize
+    }
+    pub fn iter(self) -> impl Iterator<Item = PlayMode> {
+        ALL_PLAY_MODES
+            .into_iter()
+            .filter(move |mode| self.contains(*mode))
+    }
+}
+impl From<PlayModeSet> for Vec<PlayMode> {
+    fn from(set: PlayModeSet) -> Self {
+        set.iter().collect()
+    }
+}
+impl TryFrom<Vec<PlayMode>> for PlayModeSet {
+    type Error = &'static str;
+    fn try_from(modes: Vec<PlayMode>) -> Result<Self, Self::Error> {
+        let mut set = Self::new();
+        for mode in modes {
+            if set.contains(mode) {
+                return Err("a play mode is named twice");
+            }
+            set = set.with(mode);
+        }
+        Ok(set)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -82,6 +170,36 @@ pub enum TypedAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<ClimateMode>,
     },
+    /// Protocol 3 (unreleased): a packaged media player. A player that reports
+    /// a percentage takes one of the two volume actions, never the decibel
+    /// one; a percentage is not a decibel reading and neither is derivable
+    /// from the other.
+    SetVolumePercent {
+        percent: u8,
+    },
+    /// Never 0: a step that moves nothing is a mistake, not a no-op.
+    StepVolumePercent {
+        delta: i8,
+    },
+    Seek {
+        position_ms: u64,
+    },
+    SeekBy {
+        delta_ms: i64,
+    },
+    /// A partial set, as [`Self::SetLight`] is: leaving "repeat one" has to
+    /// clear two modes in one write, so an absent field is left alone and at
+    /// least one has to be there.
+    SetMode {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shuffle: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeat: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeat_one: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        crossfade: Option<bool>,
+    },
 }
 
 /// Which typed action a request or a declaration is, without its numbers. A
@@ -93,6 +211,11 @@ pub enum ActionKind {
     SetLight,
     SetCover,
     SetClimate,
+    SetVolumePercent,
+    StepVolumePercent,
+    Seek,
+    SeekBy,
+    SetMode,
 }
 /// How many typed actions one package may declare (protocol 3, unreleased;
 /// protocols 1 and 2 stay at none and one).
@@ -104,6 +227,11 @@ impl TypedAction {
             Self::SetLight { .. } => ActionKind::SetLight,
             Self::SetCover { .. } => ActionKind::SetCover,
             Self::SetClimate { .. } => ActionKind::SetClimate,
+            Self::SetVolumePercent { .. } => ActionKind::SetVolumePercent,
+            Self::StepVolumePercent { .. } => ActionKind::StepVolumePercent,
+            Self::Seek { .. } => ActionKind::Seek,
+            Self::SeekBy { .. } => ActionKind::SeekBy,
+            Self::SetMode { .. } => ActionKind::SetMode,
         }
     }
     /// Within the bounds that hold for every device, and saying something.
@@ -145,7 +273,48 @@ impl TypedAction {
                     && degrees(high_tenths)
                     && !matches!((low_tenths, high_tenths), (Some(low), Some(high)) if low >= high)
             }
+            Self::SetVolumePercent { percent } => percent <= MAX_PERCENT,
+            Self::StepVolumePercent { delta } => {
+                delta != 0 && delta.unsigned_abs() <= MAX_VOLUME_STEP
+            }
+            Self::Seek { position_ms } => position_ms <= MAX_MEDIA_MS,
+            Self::SeekBy { delta_ms } => {
+                delta_ms != 0 && delta_ms.unsigned_abs() <= u64::from(MAX_SEEK_DELTA_MS)
+            }
+            Self::SetMode {
+                shuffle,
+                repeat,
+                repeat_one,
+                crossfade,
+            } => {
+                shuffle.is_some() || repeat.is_some() || repeat_one.is_some() || crossfade.is_some()
+            }
         }
+    }
+    /// Which modes a [`Self::SetMode`] names, whatever it sets them to. A
+    /// player is only ever told about a mode it declared.
+    pub fn modes(self) -> PlayModeSet {
+        let Self::SetMode {
+            shuffle,
+            repeat,
+            repeat_one,
+            crossfade,
+        } = self
+        else {
+            return PlayModeSet::new();
+        };
+        let mut set = PlayModeSet::new();
+        for (named, mode) in [
+            (shuffle.is_some(), PlayMode::Shuffle),
+            (repeat.is_some(), PlayMode::Repeat),
+            (repeat_one.is_some(), PlayMode::RepeatOne),
+            (crossfade.is_some(), PlayMode::Crossfade),
+        ] {
+            if named {
+                set = set.with(mode);
+            }
+        }
+        set
     }
 }
 
@@ -181,6 +350,26 @@ pub enum PluginActionSchema {
     SetLight {},
     SetCover {},
     SetClimate {},
+    /// Protocol 3 (unreleased): the media actions. What a player accepts is a
+    /// trait of the player, so each of these carries the one bound Couch has
+    /// to respect before it sends anything.
+    SetVolumePercent {
+        /// 1 to 100. A speaker whose scale stops short says so here.
+        max_percent: u8,
+    },
+    StepVolumePercent {
+        /// 1 to [`MAX_VOLUME_STEP`].
+        max_delta: u8,
+    },
+    Seek {},
+    SeekBy {
+        /// [`MIN_SEEK_DELTA_MS`] to [`MAX_SEEK_DELTA_MS`].
+        max_delta_ms: u32,
+    },
+    SetMode {
+        /// Non-empty: a player that offers no mode declares no schema.
+        modes: PlayModeSet,
+    },
 }
 impl PluginActionSchema {
     pub fn kind(self) -> ActionKind {
@@ -189,6 +378,11 @@ impl PluginActionSchema {
             Self::SetLight {} => ActionKind::SetLight,
             Self::SetCover {} => ActionKind::SetCover,
             Self::SetClimate {} => ActionKind::SetClimate,
+            Self::SetVolumePercent { .. } => ActionKind::SetVolumePercent,
+            Self::StepVolumePercent { .. } => ActionKind::StepVolumePercent,
+            Self::Seek {} => ActionKind::Seek,
+            Self::SeekBy { .. } => ActionKind::SeekBy,
+            Self::SetMode { .. } => ActionKind::SetMode,
         }
     }
     /// The declaration a request of this kind is checked against.
@@ -212,7 +406,13 @@ impl PluginActionSchema {
                 max_tenths,
                 step_tenths,
             } => valid_volume_bounds(min_tenths, max_tenths, step_tenths),
-            Self::SetLight {} | Self::SetCover {} | Self::SetClimate {} => true,
+            Self::SetLight {} | Self::SetCover {} | Self::SetClimate {} | Self::Seek {} => true,
+            Self::SetVolumePercent { max_percent } => (1..=MAX_PERCENT).contains(&max_percent),
+            Self::StepVolumePercent { max_delta } => (1..=MAX_VOLUME_STEP).contains(&max_delta),
+            Self::SeekBy { max_delta_ms } => {
+                (MIN_SEEK_DELTA_MS..=MAX_SEEK_DELTA_MS).contains(&max_delta_ms)
+            }
+            Self::SetMode { modes } => !modes.is_empty(),
         }
     }
     /// An action of this schema's kind, within its bounds. For the three child
@@ -230,7 +430,26 @@ impl PluginActionSchema {
             ) => volume_in_bounds(tenths, min_tenths, max_tenths, step_tenths),
             (Self::SetLight {}, TypedAction::SetLight { .. })
             | (Self::SetCover {}, TypedAction::SetCover { .. })
-            | (Self::SetClimate {}, TypedAction::SetClimate { .. }) => action.is_valid(),
+            | (Self::SetClimate {}, TypedAction::SetClimate { .. })
+            | (Self::Seek {}, TypedAction::Seek { .. }) => action.is_valid(),
+            (Self::SetVolumePercent { max_percent }, TypedAction::SetVolumePercent { percent }) => {
+                self.is_valid() && action.is_valid() && percent <= max_percent
+            }
+            (Self::StepVolumePercent { max_delta }, TypedAction::StepVolumePercent { delta }) => {
+                self.is_valid() && action.is_valid() && delta.unsigned_abs() <= max_delta
+            }
+            (Self::SeekBy { max_delta_ms }, TypedAction::SeekBy { delta_ms }) => {
+                self.is_valid()
+                    && action.is_valid()
+                    && delta_ms.unsigned_abs() <= u64::from(max_delta_ms)
+            }
+            // Only the modes the player declared, and only ever a mode it has:
+            // `set_mode` names one field per mode, so this is the whole check.
+            (Self::SetMode { modes }, TypedAction::SetMode { .. }) => {
+                self.is_valid()
+                    && action.is_valid()
+                    && action.modes().iter().all(|mode| modes.contains(mode))
+            }
             _ => false,
         }
     }
@@ -542,6 +761,279 @@ mod tests {
             PluginActionSchema::find(&all, ActionKind::SetCover),
             Some(PluginActionSchema::SetCover {})
         );
+    }
+
+    #[test]
+    fn a_set_of_play_modes_is_written_in_one_order_and_never_holds_a_name_twice() {
+        fn assert_copy_eq<T: Copy + Eq>() {}
+        assert_copy_eq::<PlayModeSet>();
+        let set = PlayModeSet::new()
+            .with(PlayMode::Crossfade)
+            .with(PlayMode::Repeat)
+            .with(PlayMode::Shuffle);
+        assert_eq!(set.len(), 3);
+        assert!(!set.is_empty());
+        assert!(PlayModeSet::new().is_empty());
+        assert!(set.contains(PlayMode::Repeat));
+        assert!(!set.contains(PlayMode::RepeatOne));
+        // Built in one order, written in the declared one.
+        assert_eq!(
+            serde_json::to_value(set).unwrap(),
+            json!(["shuffle", "repeat", "crossfade"])
+        );
+        assert_eq!(
+            serde_json::from_value::<PlayModeSet>(json!(["crossfade", "shuffle", "repeat"]))
+                .unwrap(),
+            set
+        );
+        assert_eq!(serde_json::to_value(PlayModeSet::new()).unwrap(), json!([]));
+        for value in [
+            json!(["shuffle", "shuffle"]),
+            json!(["repeat", "repeat_one", "repeat"]),
+            json!(["gapless"]),
+            json!("shuffle"),
+            json!({"shuffle": true}),
+        ] {
+            assert!(
+                serde_json::from_value::<PlayModeSet>(value.clone()).is_err(),
+                "{value}"
+            );
+        }
+        // Every declared mode is reachable, and its own name.
+        for mode in ALL_PLAY_MODES {
+            let one = PlayModeSet::new().with(mode);
+            assert_eq!(one.len(), 1);
+            assert_eq!(one.iter().next(), Some(mode));
+            assert_eq!(
+                serde_json::to_value(one).unwrap(),
+                json!([serde_json::to_value(mode).unwrap()])
+            );
+        }
+    }
+
+    #[test]
+    fn media_actions_are_integers_say_something_and_stay_within_global_bounds() {
+        fn assert_copy_eq<T: Copy + Eq>() {}
+        assert_copy_eq::<TypedAction>();
+        assert_copy_eq::<PluginActionSchema>();
+        let mode = |shuffle, repeat, repeat_one, crossfade| TypedAction::SetMode {
+            shuffle,
+            repeat,
+            repeat_one,
+            crossfade,
+        };
+        // An absent field is never written, so the frame is as small as the
+        // change it asks for.
+        assert_eq!(
+            serde_json::to_value(TypedAction::SetVolumePercent { percent: 30 }).unwrap(),
+            json!({"action":"set_volume_percent","percent":30})
+        );
+        assert_eq!(
+            serde_json::to_value(TypedAction::StepVolumePercent { delta: -5 }).unwrap(),
+            json!({"action":"step_volume_percent","delta":-5})
+        );
+        assert_eq!(
+            serde_json::to_value(TypedAction::Seek {
+                position_ms: 125_000
+            })
+            .unwrap(),
+            json!({"action":"seek","position_ms":125000})
+        );
+        assert_eq!(
+            serde_json::to_value(TypedAction::SeekBy { delta_ms: -30_000 }).unwrap(),
+            json!({"action":"seek_by","delta_ms":-30000})
+        );
+        assert_eq!(
+            serde_json::to_value(mode(None, Some(true), Some(false), None)).unwrap(),
+            json!({"action":"set_mode","repeat":true,"repeat_one":false})
+        );
+        for action in [
+            TypedAction::SetVolumePercent { percent: 0 },
+            TypedAction::SetVolumePercent { percent: 100 },
+            TypedAction::StepVolumePercent { delta: 50 },
+            TypedAction::StepVolumePercent { delta: -50 },
+            TypedAction::Seek { position_ms: 0 },
+            TypedAction::Seek {
+                position_ms: MAX_MEDIA_MS,
+            },
+            TypedAction::SeekBy { delta_ms: 1 },
+            TypedAction::SeekBy {
+                delta_ms: -(MAX_SEEK_DELTA_MS as i64),
+            },
+            mode(Some(true), None, None, None),
+            mode(None, None, None, Some(false)),
+        ] {
+            let text = serde_json::to_string(&action).unwrap();
+            assert_eq!(serde_json::from_str::<TypedAction>(&text).unwrap(), action);
+            assert!(action.is_valid(), "{text}");
+        }
+        for action in [
+            TypedAction::SetVolumePercent { percent: 101 },
+            // Never 0: a step or a jump that moves nothing is a mistake.
+            TypedAction::StepVolumePercent { delta: 0 },
+            TypedAction::StepVolumePercent { delta: 51 },
+            TypedAction::StepVolumePercent { delta: -51 },
+            TypedAction::Seek {
+                position_ms: MAX_MEDIA_MS + 1,
+            },
+            TypedAction::SeekBy { delta_ms: 0 },
+            TypedAction::SeekBy {
+                delta_ms: MAX_SEEK_DELTA_MS as i64 + 1,
+            },
+            TypedAction::SeekBy { delta_ms: i64::MIN },
+            mode(None, None, None, None),
+        ] {
+            assert!(!action.is_valid(), "{action:?}");
+        }
+        for value in [
+            json!({"action":"set_volume_percent","percent":30.5}),
+            json!({"action":"set_volume_percent","percent":"30"}),
+            json!({"action":"set_volume_percent","percent":256}),
+            json!({"action":"set_volume_percent","percent":30,"resource":"a"}),
+            json!({"action":"set_volume_percent"}),
+            json!({"action":"step_volume_percent","delta":128}),
+            json!({"action":"seek","position_ms":-1}),
+            json!({"action":"seek","position_ms":1000,"item":"a"}),
+            json!({"action":"seek_by","delta_ms":1.5}),
+            json!({"action":"set_mode","shuffle":"yes"}),
+            json!({"action":"set_mode","gapless":true}),
+        ] {
+            assert!(
+                serde_json::from_value::<TypedAction>(value.clone()).is_err(),
+                "{value}"
+            );
+        }
+        // `seek` declares nothing but that it exists, so it is an empty struct
+        // variant: a unit variant would let a bound through unnoticed.
+        assert_eq!(
+            serde_json::to_value(PluginActionSchema::Seek {}).unwrap(),
+            json!({"action":"seek"})
+        );
+        for extra in [
+            json!({"action":"seek","max_delta_ms":1000}),
+            json!({"action":"seek","position_ms":0}),
+        ] {
+            assert!(
+                serde_json::from_value::<PluginActionSchema>(extra.clone()).is_err(),
+                "{extra}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(PluginActionSchema::SetMode {
+                modes: PlayModeSet::new().with(PlayMode::Shuffle),
+            })
+            .unwrap(),
+            json!({"action":"set_mode","modes":["shuffle"]})
+        );
+        for schema in [
+            PluginActionSchema::SetVolumePercent { max_percent: 0 },
+            PluginActionSchema::SetVolumePercent { max_percent: 101 },
+            PluginActionSchema::StepVolumePercent { max_delta: 0 },
+            PluginActionSchema::StepVolumePercent { max_delta: 51 },
+            PluginActionSchema::SeekBy { max_delta_ms: 999 },
+            PluginActionSchema::SeekBy {
+                max_delta_ms: 3_600_001,
+            },
+            PluginActionSchema::SetMode {
+                modes: PlayModeSet::new(),
+            },
+        ] {
+            assert!(!schema.is_valid(), "{schema:?}");
+            assert!(!PluginActionSchema::valid_set(&[schema]), "{schema:?}");
+        }
+    }
+
+    #[test]
+    fn a_media_schema_answers_only_for_its_own_kind_and_its_own_bounds() {
+        let percent = PluginActionSchema::SetVolumePercent { max_percent: 60 };
+        let step = PluginActionSchema::StepVolumePercent { max_delta: 5 };
+        let seek = PluginActionSchema::Seek {};
+        let seek_by = PluginActionSchema::SeekBy {
+            max_delta_ms: 30_000,
+        };
+        let modes = PluginActionSchema::SetMode {
+            modes: PlayModeSet::new()
+                .with(PlayMode::Shuffle)
+                .with(PlayMode::Repeat),
+        };
+        let mode = |shuffle, repeat, repeat_one| TypedAction::SetMode {
+            shuffle,
+            repeat,
+            repeat_one,
+            crossfade: None,
+        };
+        for (schema, action, accepted) in [
+            (percent, TypedAction::SetVolumePercent { percent: 60 }, true),
+            (percent, TypedAction::SetVolumePercent { percent: 0 }, true),
+            (
+                percent,
+                TypedAction::SetVolumePercent { percent: 61 },
+                false,
+            ),
+            (
+                PluginActionSchema::SetVolumePercent { max_percent: 0 },
+                TypedAction::SetVolumePercent { percent: 0 },
+                false,
+            ),
+            (step, TypedAction::StepVolumePercent { delta: 5 }, true),
+            (step, TypedAction::StepVolumePercent { delta: -5 }, true),
+            (step, TypedAction::StepVolumePercent { delta: 6 }, false),
+            (step, TypedAction::StepVolumePercent { delta: 0 }, false),
+            (seek, TypedAction::Seek { position_ms: 0 }, true),
+            (
+                seek,
+                TypedAction::Seek {
+                    position_ms: MAX_MEDIA_MS + 1,
+                },
+                false,
+            ),
+            (seek_by, TypedAction::SeekBy { delta_ms: -30_000 }, true),
+            (seek_by, TypedAction::SeekBy { delta_ms: 30_001 }, false),
+            (modes, mode(Some(true), None, None), true),
+            (modes, mode(Some(false), Some(true), None), true),
+            // A mode the player never declared is refused before any I/O.
+            (modes, mode(None, None, Some(true)), false),
+            (modes, mode(None, None, None), false),
+            // Each schema answers for one kind only.
+            (percent, TypedAction::StepVolumePercent { delta: 5 }, false),
+            (seek, TypedAction::SeekBy { delta_ms: 1_000 }, false),
+            (seek_by, TypedAction::Seek { position_ms: 0 }, false),
+            (modes, TypedAction::SetVolumePercent { percent: 1 }, false),
+            (
+                PluginActionSchema::SetVolumeDb {
+                    min_tenths: -800,
+                    max_tenths: 180,
+                    step_tenths: 5,
+                },
+                TypedAction::SetVolumePercent { percent: 30 },
+                false,
+            ),
+            (percent, TypedAction::SetVolumeDb { tenths: -345 }, false),
+        ] {
+            assert_eq!(schema.accepts(action), accepted, "{schema:?} {action:?}");
+            assert_eq!(schema.kind(), schema.kind());
+        }
+        // Nine kinds now exist and one package may declare eight of them.
+        let all = [
+            percent,
+            step,
+            seek,
+            seek_by,
+            modes,
+            PluginActionSchema::SetLight {},
+            PluginActionSchema::SetCover {},
+            PluginActionSchema::SetClimate {},
+        ];
+        assert_eq!(all.len(), MAX_ACTIONS);
+        assert!(PluginActionSchema::valid_set(&all));
+        for schema in all {
+            assert_eq!(
+                PluginActionSchema::find(&all, schema.kind()),
+                Some(schema),
+                "{schema:?}"
+            );
+        }
+        assert!(!PluginActionSchema::valid_set(&[percent, percent]));
     }
 
     #[test]

@@ -282,6 +282,14 @@ impl Manifest {
                 PluginComponent::Climate { label: text } => {
                     self.composes(text, ActionKind::SetClimate)
                 }
+                // A packaged media player and its percentage volume control
+                // land with the model first (T4 PR-A), so the saved snapshot
+                // and the rollback projection can be proved before anything
+                // can be admitted with one. The wire step gives these the
+                // manifest rules the model already mirrors; until then no
+                // manifest declaring either is accepted.
+                PluginComponent::MediaPlayer { .. }
+                | PluginComponent::VolumePercentControl { .. } => false,
             };
             if !valid {
                 return Err(Error::Invalid);

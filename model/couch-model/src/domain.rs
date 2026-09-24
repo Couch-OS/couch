@@ -366,7 +366,14 @@ impl ChildSnapshot {
             return false;
         }
         match action {
-            TypedAction::SetVolumeDb { .. } => false,
+            // A child is a lamp, a blind or a thermostat. Neither a receiver's
+            // decibels nor a player's media actions are ever aimed at one.
+            TypedAction::SetVolumeDb { .. }
+            | TypedAction::SetVolumePercent { .. }
+            | TypedAction::StepVolumePercent { .. }
+            | TypedAction::Seek { .. }
+            | TypedAction::SeekBy { .. }
+            | TypedAction::SetMode { .. } => false,
             TypedAction::SetLight {
                 brightness,
                 mirek,
