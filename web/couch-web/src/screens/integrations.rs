@@ -631,7 +631,7 @@ fn installed_card(
         <p class="mono">{format!("{} · {}", item.id, item.version)}</p>
         <p class="dim">{status(&item.status)}</p>
         {(!item.description.is_empty()).then(|| view! { <p>{item.description}</p> })}
-        {item.connection_configured.then(|| view! { <p class="notice small">"Saved connection settings are retained."</p> })}
+        {item.connection_configured.then(|| view! { <p class="notice small">"Removing this package will keep its connections and saved settings."</p> })}
         {update_blocked.map(|reason| view! { <p class="notice small">{format!("Version {update_version} is available. {reason}.")}</p> })}
         <div class="actions">
             {has_update.then(|| view! { <button class="primary" disabled=move || cannot_update || busy.get() on:click=move |_| update_action("update")>{format!("Update to {update_version}")}</button> })}

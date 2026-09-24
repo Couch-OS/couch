@@ -126,7 +126,7 @@ try {
   await page.getByText('Package operation complete.').waitFor();
   assert(catalogReads >= 2, 'a transient catalog lock reloads after the resumed operation completes');
   await page.getByRole('heading', {name: 'Denon AVR', exact: true}).waitFor();
-  await page.getByText('Saved connection settings are retained.').waitFor();
+  await page.getByText('Removing this package will keep its connections and saved settings.').waitFor();
   // The reversible pilot is gone: nothing offers to switch a connection by
   // hand, in either direction.
   assert.equal(await page.getByRole('heading', {name: 'Denon migration pilot', exact: true}).count(), 0);
