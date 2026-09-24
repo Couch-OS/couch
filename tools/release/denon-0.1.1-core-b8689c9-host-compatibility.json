@@ -1,0 +1,40 @@
+{
+  "checks": {
+    "fake_receiver_command": "passed",
+    "fake_receiver_inputs": "passed",
+    "fake_receiver_status": "passed",
+    "shared_transport_ownership": "passed",
+    "signed_package_lifecycle": "passed",
+    "v1_handshake": "passed",
+    "v2_action_refused_for_v1": "passed",
+    "v4_protocol_probe": "passed"
+  },
+  "core": {
+    "binary_sha256": "68724812d48325bf0ce023cd3ef02faff9f07ddf5c0f7504bc1d494797c7bf43",
+    "source_commit": "b8689c9bac1a03727a4855945cbda74b39fc47c6",
+    "supported_protocol_versions": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "target": "armv7-unknown-linux-musleabihf"
+  },
+  "evidence_level": "host-protocol-compatibility",
+  "hardware_validation": false,
+  "harness_sha256": "ac4c253c6ae72b5cf14f2a6e7417c458cfd806c5429ed9ea7f97f6f2a990fefe",
+  "integrations": [
+    {
+      "apk_sha256": "61e135854816bd4f996e46d918386937913860e583ccdb3bda7eac739252b270",
+      "binary_sha256": "f9d5bc52c7e0a8a77d0f456aaf876a47be5586c0e996e172119ac1efd084a24d",
+      "id": "denon",
+      "manifest_sha256": "3abd01c3863b1e540d2d1317614c844071e3fd0900e1dcc403ba16680d4df540",
+      "protocol_version": 1,
+      "provenance_sha256": "528e0142a024575f34980d1f7c899de99f5493e43d2d1c4278d7a17db0a8a2a0",
+      "version": "0.1.1"
+    }
+  ],
+  "kind": "couch-integration-host-compatibility",
+  "report_sha256": "590ba54a34908e8393ef516c1c934261f8fea3710cb4409fc25d52440a1378e3",
+  "schema": 1
+}
