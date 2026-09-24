@@ -43,6 +43,48 @@ fn ssh_available() -> bool {
     )
 }
 
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum SshEnrollment {
+    Key { credential: String },
+    Password { credential: String },
+}
+
+/// Enroll access from the already-paired configuration UI. couch-system owns
+/// validation and requires a new physical keypad press before it writes the
+/// credential. A successful enrollment also turns SSH on and persists that
+/// preference, so the previously disabled checkbox has a complete path.
+pub(super) fn ssh(body: &[u8]) -> Reply {
+    let Ok(enrollment) = serde_json::from_slice::<SshEnrollment>(body) else {
+        return Reply::error(400, "Send one SSH public key or password");
+    };
+    let current = ui_settings::load(Settings::defaults(ssh_available()));
+    let request = match enrollment {
+        SshEnrollment::Key { credential } => Request::EnrollKeyAuthenticated { key: credential },
+        SshEnrollment::Password { credential } => Request::SetPasswordAuthenticated {
+            password: credential,
+        },
+    };
+    if let Err(error) = client::action(request) {
+        return Reply::error(409, &error);
+    }
+    if let Err(error) = client::action(Request::Ssh { enabled: true }) {
+        return Reply::error(409, &error);
+    }
+    let mut wanted = current.clone();
+    wanted.ssh = true;
+    if let Err(error) = ui_settings::save(&wanted) {
+        if !current.ssh {
+            let _ = client::action(Request::Ssh { enabled: false });
+        }
+        return Reply::error(
+            500,
+            format!("SSH was enrolled but its enabled setting could not be saved: {error}"),
+        );
+    }
+    Reply::json(200, &device_view(&wanted, true))
+}
+
 /// The page's picture of the device settings, choices included so the page
 /// needs no copy of the tables.
 fn device_view(settings: &Settings, ssh_available: bool) -> serde_json::Value {
@@ -304,6 +346,19 @@ mod device_tests {
                 "{}",
                 String::from_utf8_lossy(body)
             );
+        }
+    }
+
+    #[test]
+    fn ssh_enrollment_rejects_ambiguous_or_unbounded_shapes_before_system_access() {
+        for body in [
+            br#"{}"#.as_slice(),
+            br#"{"kind":"key"}"#,
+            br#"{"kind":"password","credential":"password","extra":true}"#,
+            br#"{"kind":"unknown","credential":"value"}"#,
+            b"{",
+        ] {
+            assert_eq!(ssh(body).status, 400, "{}", String::from_utf8_lossy(body));
         }
     }
 }

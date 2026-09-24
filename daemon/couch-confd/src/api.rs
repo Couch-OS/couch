@@ -394,6 +394,7 @@ impl Api {
             ("GET", ["config"]) => self.with(|s| Reply::json(200, s.config()).at(s.revision())),
             ("GET", ["remote", "timezones"]) => Reply::json(200, &remote::timezones()),
             ("GET" | "PUT", ["remote", "device"]) => remote::device(&method, &body),
+            ("POST", ["remote", "ssh"]) => remote::ssh(&body),
             ("GET", ["remote", "network"]) => remote::network(),
             ("POST", ["remote", "power"]) => remote::power(&body),
             ("POST", ["remote", "bluetooth"]) => remote::bluetooth(&body, |id| {

@@ -95,6 +95,11 @@ pub fn sections(app: App) -> AnyView {
     let error = RwSignal::new(String::new());
     let power_note = RwSignal::new(String::new());
     let bt_note = RwSignal::new(String::new());
+    let ssh_key = RwSignal::new(String::new());
+    let ssh_password = RwSignal::new(String::new());
+    let ssh_confirmation = RwSignal::new(String::new());
+    let ssh_busy = RwSignal::new(false);
+    let ssh_note = RwSignal::new(String::new());
     // Re-read the device view: every second while a pairing window is open,
     // so the status line follows the TV's steps, and every few seconds while
     // Bluetooth is on, so the toggle settles and the link line stays true.
@@ -190,6 +195,39 @@ pub fn sections(app: App) -> AnyView {
             }
         });
     };
+    let enroll_ssh = move |kind: &'static str, credential: String| {
+        if ssh_busy.get_untracked() {
+            return;
+        }
+        ssh_busy.set(true);
+        ssh_note.set("Press any physical button on the remote to approve SSH access…".into());
+        spawn_local(async move {
+            match api::ha(
+                "POST",
+                "/api/remote/ssh",
+                Some(serde_json::json!({"kind":kind,"credential":credential})),
+            )
+            .await
+            {
+                Ok(v) => {
+                    if let Ok(v) = serde_json::from_value::<Device>(v) {
+                        device.set(v);
+                    }
+                    ssh_key.set(String::new());
+                    ssh_password.set(String::new());
+                    ssh_confirmation.set(String::new());
+                    ssh_note.set("SSH access enrolled and enabled.".into());
+                }
+                Err(e) => {
+                    if e.unauthorized {
+                        app.paired.set(Some(false));
+                    }
+                    ssh_note.set(e.message);
+                }
+            }
+            ssh_busy.set(false);
+        });
+    };
     let power = move |action: &'static str| {
         power_note.set(String::new());
         spawn_local(async move {
@@ -239,9 +277,42 @@ pub fn sections(app: App) -> AnyView {
             <p role="alert">{move || error.get()}</p>
             </div>
         }.into_any())}
-        {ui::section("SSH", Some("Enrol a key or password from the remote's setup page first; without one there is nobody to let in."), view! {
+        {ui::section("SSH", Some("SSH needs an enrolled public key or password. Adding a key or changing the password requires a new physical button press on the remote."), view! {
             <label><input type="checkbox" disabled=move || !device.get().ssh.available prop:checked=move || device.get().ssh.enabled on:change=move |e| { let mut d = device.get_untracked(); d.ssh.enabled = event_target_checked(&e); save(d); }/>"SSH access"</label>
             <p class="dim">{move || { let s = device.get().ssh; if !s.available { "Nothing enrolled".to_string() } else if s.running { "sshd is running".into() } else { "sshd is stopped".into() } }}</p>
+            <details open=move || !device.get().ssh.available>
+                <summary>{move || if device.get().ssh.available { "Add or change SSH credential" } else { "Enroll SSH access" }}</summary>
+                <p class="dim">"Choose one method. After selecting its button, press any physical button on the remote within 25 seconds. Successful enrollment enables SSH immediately."</p>
+                <label class="field">"Public key"
+                    <textarea aria-label="SSH public key" autocomplete="off" spellcheck="false" placeholder="ssh-ed25519 AAAA…" prop:value=move || ssh_key.get() disabled=move || ssh_busy.get() on:input=move |e|ssh_key.set(event_target_value(&e))></textarea>
+                </label>
+                <button type="button" disabled=move || ssh_busy.get() on:click=move |_| {
+                    let key = ssh_key.get_untracked().trim().to_string();
+                    if key.is_empty() {
+                        ssh_note.set("Paste an SSH public key first.".into());
+                    } else {
+                        enroll_ssh("key", key);
+                    }
+                }>"Enroll key & enable SSH"</button>
+                <p class="dim">"Or set a root password (8–256 printable characters)."</p>
+                <label class="field">"Password"
+                    <input type="password" autocomplete="new-password" prop:value=move || ssh_password.get() disabled=move || ssh_busy.get() on:input=move |e|ssh_password.set(event_target_value(&e))/>
+                </label>
+                <label class="field">"Confirm password"
+                    <input type="password" autocomplete="new-password" prop:value=move || ssh_confirmation.get() disabled=move || ssh_busy.get() on:input=move |e|ssh_confirmation.set(event_target_value(&e))/>
+                </label>
+                <button type="button" disabled=move || ssh_busy.get() on:click=move |_| {
+                    let password = ssh_password.get_untracked();
+                    if password.is_empty() {
+                        ssh_note.set("Enter a password first.".into());
+                    } else if password != ssh_confirmation.get_untracked() {
+                        ssh_note.set("The passwords do not match.".into());
+                    } else {
+                        enroll_ssh("password", password);
+                    }
+                }>"Set password & enable SSH"</button>
+                <p role="status">{move || ssh_note.get()}</p>
+            </details>
         }.into_any())}
         {ui::section("Bluetooth · experimental", Some("Pair each TV from its device in Rooms & devices, so the bond is stored on that device. Pair with TV here pairs a TV without attaching it to a device (useful before the device exists); Forget pairings drops every bond the remote holds, devices included. Needs the current boot image; older kernels have no Bluetooth."), view! {
             <p class="notice">"Experimental. While a Bluetooth device is connected the remote's Wi-Fi can slow badly, so Home Assistant control, this page and update downloads may be slow or fail. Turning Bluetooth off restores them. The first switch-on downloads about 2 MB of system packages, so it needs Wi-Fi and takes a little longer."</p>
