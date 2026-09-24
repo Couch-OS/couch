@@ -1096,6 +1096,7 @@ impl Controller {
                 });
                 app.set_tv_generic(declared.is_some());
                 let declared = declared.unwrap_or_default();
+                app.set_tv_native(declared.television);
                 app.set_tv_kind_label(declared.kind.as_str().into());
                 app.set_tv_can_power(declared.power);
                 app.set_tv_can_input(declared.inputs);
