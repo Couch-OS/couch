@@ -178,20 +178,15 @@ change. There is no automatic retry or audio playback.
 
 ## Packaging boundary
 
-Protect remains a built-in integration while the protocol 4 camera boundary is
-built. Protocol 3 supports packaged child devices, but not a live media data
-plane. The first two extraction steps are complete in source: `couch-camera`
-owns the provider-neutral bounded H264/FFmpeg decoder, and the model/protocol
-now define a rollback-safe camera child plus bounded snapshot/open/close frames.
-Protocol-4 manifests are still refused, so none of this changes the installed
-package contract yet. The Protect crate still supplies its verified RTSPS/SRTP
-bytes.
-
-For development, `couch-plugin`'s `protocol-4-preview` feature admits v4 and
-gives only that package an inherited fd 3. Its host verifies bounded Annex-B
-records, deadlines and write-before-open violations. Normal core builds leave
-the feature off; package-side SDK serving and daemon/GUI forwarding are still
-to be connected.
+The standalone package lives at
+[`Couch-OS/couch-integration-unifi-protect`](https://github.com/Couch-OS/couch-integration-unifi-protect)
+and uses the normal protocol-4 host. Only a protocol-4 camera package receives
+the inherited fd 3 media socket. The host verifies bounded Annex-B records,
+deadlines and write-before-open violations; `couch-confd` relays one record at
+a time over its owner-only local socket, and the GUI feeds those records to
+the provider-neutral `couch-camera` decoder. The built-in Protect path remains
+temporarily for rollback and migration acceptance, but new package connections
+do not expose its certificates or provider transport to the core.
 
 The settled boundary keeps the Protect API, certificate pins, stream URLs,
 RTSP and SRTP inside the unprivileged package. A second bounded local socket
@@ -200,7 +195,7 @@ material do not cross into the GUI. Snapshots use bounded chunked control
 responses. Do not send decoded RGB frames or live video through the existing
 64 KiB JSON request/response channel, and do not let a package inject UI. See
 [the camera package data-plane plan](plans/camera-package-data-plane.md).
-The shared record codec is now `couch_sdk::camera`, and the Protect crate's
+The shared record codec is `couch_sdk::camera`, and the standalone package's
 `media-transport` feature builds RTSPS/SRTP ingest without the core decoder.
 
 These are software decoder bounds, not demonstrated HA100 performance figures.

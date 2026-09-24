@@ -13,7 +13,7 @@ signed APK against core `8a168faba79e4090f691032f053c6db2cf0354bf` under
 ARM emulation with a simulated receiver. The machine-readable identity is
 `tools/release/tested-integrations.json`. Its schema 2 separates:
 
-- the core's supported protocol versions `[1, 2, 3]`, the package's protocol
+- the core's supported protocol versions `[1, 2, 3, 4]`, the package's protocol
   version `1`, the core files whose host behavior was tested, and the
   digest-pinned admission harness carved out of that freeze;
 - the immutable preview feed release snapshot, official public key and Denon

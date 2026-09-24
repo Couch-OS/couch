@@ -1,10 +1,14 @@
 use couch_plugin::{
-    read_frame, write_frame, Error, Host, HostPolicy, Manifest, Request, Response, MAX_FRAME,
+    read_frame, write_frame, Error, Host, HostPolicy, LocalCamera, LocalRequest, Manifest, Request,
+    Response, MAX_FRAME,
 };
 use serde_json::json;
 use std::{
     io::{Cursor, Write},
-    os::unix::fs::{symlink, PermissionsExt},
+    os::unix::{
+        fs::{symlink, PermissionsExt},
+        net::UnixListener,
+    },
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
@@ -120,6 +124,49 @@ fn frames_are_bounded_before_allocating_and_validate_json() {
         read_frame::<_, serde_json::Value>(&mut Cursor::new(data)).unwrap(),
         json!({"ok":true})
     );
+}
+
+#[test]
+fn local_camera_keeps_json_control_and_bounded_h264_on_separate_phases() {
+    // macOS limits sockaddr_un paths to 104 bytes; its TMPDIR is already
+    // longer than that before the fixture name is appended.
+    let socket = PathBuf::from("/tmp").join(format!(
+        "couch-camera-{}-{}.sock",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).unwrap();
+    let (done, keep_open) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let request: LocalRequest =
+            couch_plugin::read_frame_timeout(&mut stream, Duration::from_secs(1)).unwrap();
+        assert_eq!(request.connection_id, "front-nvr");
+        assert_eq!(request.request, Request::camera_open("front-yard"));
+        couch_plugin::write_frame_timeout(
+            &mut stream,
+            &Response::CameraOpen {
+                codec: couch_plugin::CameraCodec::H264AnnexB,
+                seconds: 5,
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        couch_sdk::camera::write_h264_record(&mut stream, &[0, 0, 0, 1, 0x65, 0x88]).unwrap();
+        couch_sdk::camera::write_camera_end(&mut stream).unwrap();
+        let _ = keep_open.recv_timeout(Duration::from_secs(1));
+    });
+    let mut camera =
+        LocalCamera::open(&socket, "front-nvr", "front-yard", Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        camera.next_record().unwrap(),
+        Some(vec![0, 0, 0, 1, 0x65, 0x88])
+    );
+    assert_eq!(camera.next_record().unwrap(), None);
+    done.send(()).unwrap();
+    server.join().unwrap();
+    let _ = std::fs::remove_file(socket);
 }
 
 #[test]
@@ -346,21 +393,14 @@ fn light_cover_and_climate_are_in_no_manifest_an_older_package_could_send() {
     );
 }
 
-/// The default host is protocol 3; the explicit camera-preview build is 4.
+/// Protocol 4 is the normal host and retains protocol 3 packages.
 #[test]
 fn the_selected_protocol_is_current_and_protocol_3_stays_accepted() {
     assert_eq!(
         couch_plugin::accepted_protocol_version(),
         couch_plugin::PROTOCOL_VERSION
     );
-    assert_eq!(
-        couch_plugin::PROTOCOL_VERSION,
-        if cfg!(feature = "protocol-4-preview") {
-            4
-        } else {
-            3
-        }
-    );
+    assert_eq!(couch_plugin::PROTOCOL_VERSION, 4);
     let p = Package::new();
     assert_eq!(v3_manifest(p.manifest.clone()).validate(), Ok(()));
 }
@@ -1161,15 +1201,11 @@ fn camera_children_are_protocol_4_vocabulary() {
         })
     );
 
-    #[cfg(feature = "protocol-4-preview")]
-    {
-        manifest.protocol_version = 4;
-        manifest.min_core_protocol_version = 4;
-        assert_eq!(manifest.validate(), Ok(()));
-    }
+    manifest.protocol_version = 4;
+    manifest.min_core_protocol_version = 4;
+    assert_eq!(manifest.validate(), Ok(()));
 }
 
-#[cfg(feature = "protocol-4-preview")]
 #[test]
 fn protocol_4_inherits_only_bounded_h264_records_on_fd_3() {
     use couch_plugin::{CameraCodec, ChildComponent, PluginChildKind};
@@ -1238,7 +1274,6 @@ fn protocol_4_inherits_only_bounded_h264_records_on_fd_3() {
     assert_eq!(host.read_camera_record(), Err(Error::Invalid));
 }
 
-#[cfg(feature = "protocol-4-preview")]
 #[test]
 fn protocol_4_retires_a_package_that_writes_media_before_open() {
     use couch_plugin::{ChildComponent, PluginChildKind};

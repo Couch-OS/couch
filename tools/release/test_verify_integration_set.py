@@ -29,7 +29,7 @@ class TestedIntegrationSetTests(unittest.TestCase):
         self.manifest = json.loads(verify.DEFAULT.read_text())
         self.manifest["schema"] = 2
         self.manifest["core"].pop("protocol_version", None)
-        self.manifest["core"]["supported_protocol_versions"] = [1, 2, 3]
+        self.manifest["core"]["supported_protocol_versions"] = [1, 2, 3, 4]
         self.manifest["core"]["tested_commit"] = verify.git("rev-parse", "HEAD").stdout.strip()
         self.manifest["core"]["contract_paths"] = list(verify.CONTRACT_PATHS)
         self.manifest["core"]["harness_paths"] = {
@@ -55,7 +55,7 @@ class TestedIntegrationSetTests(unittest.TestCase):
             "harness_sha256": verify.digest(self.harness.read_bytes()),
             "report_sha256": verify.digest(self.report_bytes),
             "core": {"source_commit": self.manifest["core"]["tested_commit"],
-                     "supported_protocol_versions": [1, 2, 3],
+                     "supported_protocol_versions": [1, 2, 3, 4],
                      "target": "armv7-unknown-linux-musleabihf", "binary_sha256": "c" * 64},
             "checks": {name: "passed" for name in verify.HOST_CHECKS},
             "integrations": [{
@@ -122,7 +122,7 @@ class TestedIntegrationSetTests(unittest.TestCase):
             receipt = verify.receipt(self.write_manifest(Path(directory)))
         self.assertEqual(receipt["schema"], 2)
         self.assertNotIn("protocol_version", receipt)
-        self.assertEqual(receipt["core_supported_protocol_versions"], [1, 2, 3])
+        self.assertEqual(receipt["core_supported_protocol_versions"], [1, 2, 3, 4])
         self.assertEqual(receipt["integration_protocol_versions"], {"denon": 1})
         self.assertEqual(receipt["hardware_evidence_core_commits"], {"denon": verify.LEGACY_EVIDENCE_COMMIT})
         self.assertFalse(receipt["artifact_bytes_verified"])

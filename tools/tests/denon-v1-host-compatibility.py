@@ -130,7 +130,8 @@ def run(args):
     command([args.confd, "--supports-integration-protocol=1"])
     command([args.confd, "--supports-integration-protocol=2"])
     command([args.confd, "--supports-integration-protocol=3"])
-    checks = {"v3_protocol_probe": "passed"}
+    command([args.confd, "--supports-integration-protocol=4"])
+    checks = {"v4_protocol_probe": "passed"}
     with tempfile.TemporaryDirectory(prefix="couch-v1-compat-", dir="/tmp") as temporary:
         home = Path(temporary)
         home.chmod(0o755)  # subprocess is deliberately dropped to nobody

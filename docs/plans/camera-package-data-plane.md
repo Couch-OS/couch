@@ -1,11 +1,10 @@
 # Camera package data plane
 
-Status: implementation started 2026-09-23. The provider-neutral decoder,
-protocol-4 storage projection, camera child model, bounded control-frame types
-and binary record codec now exist in source. A `protocol-4-preview` build of
-`couch-plugin` also installs and validates the inherited fd 3 media socket;
-default package admission remains protocol 3. SDK serving, daemon/GUI
-forwarding and migration remain disabled.
+Status: package data plane complete in source 2026-09-24. Protocol 4 is the
+normal host contract; package SDK serving, inherited fd 3, daemon forwarding,
+native GUI decoding and the standalone UniFi package are connected. Automatic
+migration from the retained built-in integration and physical HA100 acceptance
+remain.
 
 ## Outcome
 
@@ -183,23 +182,22 @@ release has shipped without a regression.
    feature composes that decoder with a separate `media-transport` feature, so
    the future package can take RTSPS/SRTP without pulling FFmpeg ownership back
    out of core.
-2. Add protocol 4 camera model/control types switched off, with byte-for-byte
-   protocol 1-3 golden tests. **Complete in source.** The v4 storage layer
-   projects camera kinds and snapshots out for a protocol-3 rollback; camera
-   manifests remain inadmissible because the accepted package protocol is
-   still 3. Snapshot chunks, view duration and camera-child routing are bounded
-   at the host gate, and `couch_sdk::camera` owns the binary record codec.
+2. Add protocol 4 camera model/control types with byte-for-byte protocol 1-3
+   golden tests. **Complete in source.** The v4 storage layer projects camera
+   kinds and snapshots out for a protocol-3 rollback. Snapshot chunks, view
+   duration and camera-child routing are bounded at the host gate, and
+   `couch_sdk::camera` owns the binary record codec.
 3. Add the inherited side channel, bounds, cancellation and hostile-package
-   tests to `couch-plugin` and `couch-confd`. **Host half complete behind
-   `protocol-4-preview`.** Only a v4 child receives fd 3; the host enforces the
-   open/view deadline, bounded Annex-B records, the clean terminal marker and
-   retires a child that writes before open. The generic SDK server, daemon
-   forwarding socket, close cancellation and daemon hostile-client tests
-   remain.
+   tests to `couch-plugin` and `couch-confd`. **Complete in source.** Only a v4
+   child receives fd 3; the host enforces the open/view deadline, bounded
+   Annex-B records, the clean terminal marker and retires a child that writes
+   before open. The daemon forwards one record at a time and a closed local
+   view closes the package view.
 4. Make the GUI camera controller use the local camera socket and
-   `couch-camera`, with no UniFi dependency.
+   `couch-camera`, with no UniFi dependency. **Complete in source.**
 5. Cut `couch-integration-unifi-protect` from the API/RTSPS code, add package
    admission tests, and keep the core copy until migration acceptance passes.
+   **Published in the preview feed.**
 6. Add the converter, install the preview package on the development remote,
    and validate discovery, snapshot, live view, close, screen-off cancellation,
    certificate change and rollback.

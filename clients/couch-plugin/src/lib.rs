@@ -5,8 +5,8 @@
 //! complete requests have deadlines even when a child dribbles partial frames.
 //! stdout is exclusively protocol traffic. Settings travel over the socket,
 //! never argv or environment. Handshake and configuration do not contact devices.
-//! A build with `protocol-4-preview` gives only a protocol-4 package a second
-//! socket as fd 3; that socket carries bounded H264 records and nothing else.
+//! Only a protocol-4 package receives a second socket as fd 3; that socket
+//! carries bounded H264 records and nothing else.
 
 mod host;
 mod manifest;
@@ -33,8 +33,8 @@ pub use couch_sdk::{
 };
 pub use host::{
     is_non_dumpable, list_children, local_request, local_request_detailed, read_frame_timeout,
-    requires, write_frame_timeout, Endpoint, Host, HostPolicy, LocalRequest,
-    CHILD_LISTING_DEADLINE, MAX_CHILDREN, MAX_CHILD_PAGES, QUEUE_CAPACITY, QUEUE_TTL,
+    requires, write_frame_timeout, Endpoint, Host, HostPolicy, LocalCamera, LocalCameraInterrupt,
+    LocalRequest, CHILD_LISTING_DEADLINE, MAX_CHILDREN, MAX_CHILD_PAGES, QUEUE_CAPACITY, QUEUE_TTL,
     REQUEST_TIMEOUT, STARTUP_TIMEOUT,
 };
 pub use manifest::{Capability, FieldKind, Manifest, Pairing, SettingField};

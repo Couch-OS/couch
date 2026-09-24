@@ -1859,8 +1859,7 @@ impl Controller {
                         let camera = cfg.as_ref().is_some_and(|c| {
                             c.devices()
                                 .find(|(_, d)| d.id.as_str() == e.id.trim_start_matches("device:"))
-                                .and_then(|(_, d)| c.resolve_integration(&d.integration))
-                                .is_some_and(|i| matches!(i, Integration::UnifiProtect { .. }))
+                                .is_some_and(|(_, d)| crate::camera::target(c, d).is_some())
                         });
                         if camera {
                             app.invoke_open_camera(e.id.as_str().into(), e.name.as_str().into());
@@ -2149,13 +2148,11 @@ fn opens_tv(entry: &Entry) -> bool {
     let Some(config) = crate::connections::config() else {
         return false;
     };
-    let integration = config
-        .devices()
-        .find(|(_, d)| d.id.as_str() == device)
-        .and_then(|(_, d)| config.resolve_integration(&d.integration));
-    if integration
-        .as_ref()
-        .is_some_and(|i| matches!(i, Integration::UnifiProtect { .. }))
+    let Some((_, selected)) = config.devices().find(|(_, d)| d.id.as_str() == device) else {
+        return false;
+    };
+    let integration = config.resolve_integration(&selected.integration);
+    if crate::camera::target(&config, selected).is_some()
         || integration
             .as_ref()
             .is_some_and(crate::shortcuts::opens_player)
@@ -2172,11 +2169,11 @@ fn opens_camera(entry: &Entry) -> bool {
     let Some(config) = crate::connections::config() else {
         return false;
     };
-    let integration = config
+    let opens = config
         .devices()
         .find(|(_, d)| d.id.as_str() == device)
-        .and_then(|(_, d)| config.resolve_integration(&d.integration));
-    integration.is_some_and(|i| matches!(i, Integration::UnifiProtect { .. }))
+        .is_some_and(|(_, d)| crate::camera::target(&config, d).is_some());
+    opens
 }
 /// Whether a pick on this row opens the media player: a configured device the
 /// player knows how to drive, which today is Sonos and Kodi.

@@ -179,6 +179,18 @@ impl Api {
             .execute(connection, &id, kind.as_deref(), request)
     }
 
+    fn plugin_camera_open(
+        &self,
+        connection: &str,
+        resource: &str,
+    ) -> Result<(Response, crate::plugins::CameraRelay), Failure> {
+        let id = self.plugin_id(connection).ok_or(Error::Invalid)?;
+        let kind = self
+            .child_kind(connection, resource)
+            .ok_or(Error::Invalid)?;
+        self.plugins.camera_open(connection, &id, &kind, resource)
+    }
+
     /// The children of a connection, healing whatever a rollback stripped
     /// whenever the package is asked afresh.
     fn listing(
@@ -736,9 +748,7 @@ impl Api {
                     let spawned = std::thread::Builder::new()
                         .name("integration-request".into())
                         .spawn(move || {
-                            relay(&mut stream, |request| {
-                                api.plugin_request(&request.connection_id, request.request)
-                            });
+                            relay_api(&mut stream, &api);
                             count.fetch_sub(1, Ordering::SeqCst);
                         });
                     if spawned.is_err() {
@@ -921,6 +931,66 @@ fn refused(status: u16, failure: &Failure) -> Reply {
 
 /// One request from the panel, answered on its own stream. A refusal goes back
 /// whole: the code and, when a protocol 3 package gave one, its reason.
+fn relay_api(stream: &mut UnixStream, api: &Api) {
+    let request =
+        match couch_plugin::read_frame_timeout::<LocalRequest>(stream, Duration::from_secs(2)) {
+            Ok(request) => request,
+            Err(code) => {
+                let _ = couch_plugin::write_frame_timeout(
+                    stream,
+                    &Response::error(code),
+                    Duration::from_secs(2),
+                );
+                return;
+            }
+        };
+    let LocalRequest {
+        connection_id,
+        request,
+    } = request;
+    let resource = match request {
+        Request::CameraOpen { resource } => resource,
+        request => {
+            let response = api
+                .plugin_request(&connection_id, request)
+                .unwrap_or_else(Response::error);
+            let _ = couch_plugin::write_frame_timeout(stream, &response, Duration::from_secs(2));
+            return;
+        }
+    };
+    let (response, relay) = match api.plugin_camera_open(&connection_id, &resource) {
+        Ok(opened) => opened,
+        Err(error) => {
+            let _ = couch_plugin::write_frame_timeout(
+                stream,
+                &Response::error(error),
+                Duration::from_secs(2),
+            );
+            return;
+        }
+    };
+    if couch_plugin::write_frame_timeout(stream, &response, Duration::from_secs(2)).is_err() {
+        relay.close();
+        return;
+    }
+    loop {
+        match relay.next_record() {
+            Ok(Some(record)) => {
+                if couch_sdk::camera::write_h264_record(stream, &record).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => {
+                let _ = couch_sdk::camera::write_camera_end(stream);
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+    relay.close();
+}
+
+#[cfg(test)]
 fn relay(stream: &mut UnixStream, execute: impl FnOnce(LocalRequest) -> Result<Response, Failure>) {
     let response =
         match couch_plugin::read_frame_timeout::<LocalRequest>(stream, Duration::from_secs(2)) {
