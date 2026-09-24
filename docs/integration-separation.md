@@ -21,8 +21,8 @@ source to its own repository, publishing it in the feed, and then removing the
 built-in client, with every saved connection converting by itself
 ([Built-in integrations that became packages](integration-migration.md)).
 
-Denon was retired this way first. Sonos stays built in until a package can
-drive the full player screen (artwork, track, seek, groups); its package ships
+Denon, Hue, and LG webOS were retired this way. Sonos stays built in until a
+package can drive the full player screen (artwork, track, seek, groups); its package ships
 as a preview beside it. The rest of this document is the assessment that led
 here, kept because the capability gaps and the retirement rules it lists still
 decide the order of what follows. Where it describes built-in Denon or the
@@ -91,7 +91,7 @@ integration and `Plugin` (the package escape hatch) is a variant of it.
 | Kodi | `clients/couch-kodi` | line-oriented TCP, holds the socket open | unsolicited push notifications (`next_notification`, `clients/couch-kodi/src/lib.rs:150-162`) | Needs an events capability first. |
 | CoreELEC | `clients/couch-coreelec` | wraps Kodi's TCP plus SSH, host-key verified | privileged OS management over SSH (`clients/couch-coreelec/src/lib.rs:1-2`) | Not assessed by the source material; flagged here because its filename is one of the two hard-pinned entries in the deployed-updater allowlist (see Retirement below). Needs pairing/credential write-back for host-key trust at minimum. |
 | Tizen | `clients/couch-tizen` | WebSocket + REST | pairing, saved token/cert, app list/launch (`clients/couch-tizen/src/lib.rs:316-535`) | Needs pairing, credential write-back, apps. |
-| webOS | `clients/couch-webos` | WebSocket | pairing, saved key, app list/launch (`clients/couch-webos/src/lib.rs:151-392`) | Needs pairing, credential write-back, apps. |
+| webOS | external `couch-integration-webos` package | WebSocket | pairing, saved key, app list/launch | **Retired from the OS.** Protocol-3 package in the official preview feed; saved built-in connections convert automatically. |
 | Apple TV | `clients/couch-appletv` | Companion protocol, encrypted | PIN pairing, stored session keys, app catalog (`clients/couch-appletv/src/lib.rs`, `src/crypto.rs`) | Needs pairing, credential write-back, apps. |
 | Android TV | `clients/couch-androidtv` | pinned mutual TLS | PIN pairing, stored identity, deep-link launch but no app *list* (`clients/couch-androidtv/src/lib.rs:1,234,521-533`) | Needs pairing, credential write-back; launch exists, list does not. |
 | Home Assistant | `clients/couch-ha` | REST/WebSocket | many entities per connection (`clients/couch-ha/src/entities.rs`) | Needs multi-resource connections and typed actions. |
@@ -111,7 +111,7 @@ can work around:
 - **Interactive pairing.** Tizen, webOS, Apple TV, Android TV and Matter all
   drive a user-facing approve/PIN/code flow before a connection works. There
   is no `Request`/`Response` pair for it.
-- **Credential write-back.** Built-in integrations persist what pairing
+- **Credential write-back.** Built-in and legacy integrations persist what pairing
   produces — a token, a pinned certificate, session keys — into their own
   file beside `config.json` (`docs/connections.md`: `hue-connection.json`,
   `ha-connection.json`, `webos-connection.json`, `androidtv-connection.json`,

@@ -18,7 +18,7 @@ use std::{
 };
 mod proxies;
 mod streaming;
-pub use proxies::{Kodi, WebOs};
+pub use proxies::Kodi;
 pub use streaming::{StreamingConnection, StreamingTv};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Error {
@@ -48,16 +48,6 @@ impl From<serde_json::Error> for Error {
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Self::Remote(format!("Control service: {e}"))
-    }
-}
-impl From<couch_webos::Error> for Error {
-    fn from(e: couch_webos::Error) -> Self {
-        match e {
-            couch_webos::Error::Transport => Self::Transport,
-            couch_webos::Error::Timeout => Self::Timeout,
-            couch_webos::Error::Rejected => Self::Rejected,
-            _ => Self::Remote(e.to_string()),
-        }
     }
 }
 impl From<couch_tizen::Error> for Error {
@@ -90,14 +80,12 @@ enum Spec {
         password: String,
         timeout_ms: u64,
     },
-    WebOs(couch_webos::Settings),
     Streaming(StreamingConnection),
 }
 impl Spec {
     fn key(&self) -> String {
         match self {
             Self::Kodi { host, port, .. } => format!("kodi:{host}:{port}"),
-            Self::WebOs(s) => format!("webos:{}", s.url),
             Self::Streaming(s) => format!("{}:{}:{}", s.kind(), s.address(), s.port()),
         }
     }
@@ -112,13 +100,6 @@ enum Op {
     KodiVolumeStep(i64),
     KodiChapters(i64),
     KodiNotification(u64),
-    TvRequest(String, Value),
-    TvButton(couch_webos::Button),
-    TvPrepare,
-    TvToggleMute,
-    TvSubscribe(String),
-    TvUnsubscribe(String),
-    TvUpdate(u64),
     StreamingStatus,
     StreamingApps,
     StreamingCommand(String),
@@ -238,7 +219,6 @@ pub fn metrics() -> Value {
 }
 enum Client {
     Kodi(couch_kodi::Kodi),
-    Tv(couch_webos::Client),
     Streaming(streaming::Client),
 }
 impl Client {
@@ -259,7 +239,6 @@ impl Client {
                 }
                 .with_timeout(Duration::from_millis(*timeout_ms)),
             ),
-            Spec::WebOs(s) => Self::Tv(couch_webos::Client::connect(s)?),
             Spec::Streaming(s) => Self::Streaming(streaming::Client::open(s)?),
         })
     }
@@ -287,27 +266,6 @@ impl Client {
             (Self::Kodi(c), Op::KodiChapters(p)) => encode!(c.chapters(p)),
             (Self::Kodi(c), Op::KodiNotification(ms)) => {
                 encode!(c.next_notification(Duration::from_millis(ms.min(20))))
-            }
-            (Self::Tv(c), Op::TvRequest(uri, p)) => c.request(&uri, p).map_err(Into::into),
-            (Self::Tv(c), Op::TvButton(b)) => encode!(c.button(b)),
-            (Self::Tv(c), Op::TvPrepare) => encode!(c.prepare_input()),
-            (Self::Tv(c), Op::TvToggleMute) => {
-                let state = c.volume()?;
-                let state = if state["volumeStatus"].is_object() {
-                    &state["volumeStatus"]
-                } else {
-                    &state
-                };
-                let muted = state["muteStatus"]
-                    .as_bool()
-                    .or(state["muted"].as_bool())
-                    .ok_or(Error::Protocol)?;
-                encode!(c.mute(!muted))
-            }
-            (Self::Tv(c), Op::TvSubscribe(uri)) => encode!(c.subscribe(&uri)),
-            (Self::Tv(c), Op::TvUnsubscribe(id)) => encode!(c.unsubscribe(&id)),
-            (Self::Tv(c), Op::TvUpdate(ms)) => {
-                encode!(c.next_update(Duration::from_millis(ms.min(20))))
             }
             _ => Err(Error::Protocol),
         }

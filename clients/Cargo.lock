@@ -547,7 +547,6 @@ dependencies = [
  "couch-kodi",
  "couch-sdk",
  "couch-tizen",
- "couch-webos",
  "libc",
  "prost",
  "rustls",
@@ -695,19 +694,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "serde_json",
-]
-
-[[package]]
-name = "couch-webos"
-version = "0.1.0"
-dependencies = [
- "couch-ir",
- "couch-sdk",
- "rustls",
- "serde",
- "serde_json",
- "tungstenite",
- "url",
 ]
 
 [[package]]

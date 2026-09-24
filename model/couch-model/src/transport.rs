@@ -117,7 +117,7 @@ mod tests {
         c.connections.push(Connection {
             id: "lg".into(),
             name: "LG".into(),
-            provider: Provider::WebOs,
+            provider: Provider::LegacyWebOs,
         });
         c.rooms.push(Room {
             id: "den".into(),

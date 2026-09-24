@@ -253,11 +253,7 @@ fn manual(app: App, cfg: &Config, connection: Connection, room: Id) -> AnyView {
     }
     let television = matches!(
         &connection.provider,
-        Provider::WebOs
-            | Provider::AndroidTv
-            | Provider::AppleTv
-            | Provider::Tizen
-            | Provider::BluetoothTv
+        Provider::AndroidTv | Provider::AppleTv | Provider::Tizen | Provider::BluetoothTv
     ) || matches!(&connection.provider,Provider::Plugin{capabilities,..} if capabilities.iter().any(|capability|matches!(capability.id.as_str(),"up"|"down"|"left"|"right"|"ok"|"home")));
     let receiver = matches!(
         &connection.provider,
@@ -323,19 +319,6 @@ pub fn controls(app: App, config: &Config, device: &Device) -> AnyView {
                 }
                 _ => ().into_any(),
             };
-        }
-        Some(Integration::WebOs) => {
-            let id = match &device.integration {
-                Integration::Connection { connection_id, .. } => Some(connection_id.clone()),
-                _ => config
-                    .connections
-                    .iter()
-                    .find(|c| c.provider == Provider::WebOs)
-                    .map(|c| c.id.clone()),
-            };
-            return id
-                .map(|id| super::webos::controls(app, format!("/api/connections/{id}/webos")))
-                .unwrap_or_else(|| ().into_any());
         }
         Some(Integration::Hue { light_id }) => ("hue", light_id),
         Some(Integration::HomeAssistant { entity_id })

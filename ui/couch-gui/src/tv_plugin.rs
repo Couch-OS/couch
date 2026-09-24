@@ -5,10 +5,9 @@
 //! its status, its inputs and its commands. This module only asks the package
 //! and says what it answered; like `tv_sonos`, all I/O runs on the bounded TV
 //! worker, never on the UI thread.
-use super::{Command, Details, Event, Work};
+use super::{Button, Command, Details, Event, Work};
 use couch_model::{Integration, PluginComponent, PluginStatusField};
 use couch_plugin::{Request, Response, Status, VolumeDb};
-use couch_webos::Button;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 

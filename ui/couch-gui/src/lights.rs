@@ -2240,7 +2240,6 @@ pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Op
             return Some(format!("plugin:{device_id}"))
         }
         Integration::Plugin { .. } => return None,
-        Integration::WebOs => couch_model::Provider::WebOs,
         Integration::AndroidTv => couch_model::Provider::AndroidTv,
         Integration::AppleTv => couch_model::Provider::AppleTv,
         Integration::Tizen => couch_model::Provider::Tizen,

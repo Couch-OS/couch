@@ -23,7 +23,6 @@ couch-bt-hid = { path = "../../clients/couch-bt-hid", default-features = false }
 couch-ir = { path = "../../clients/couch-ir" }
 couch-control = { path = "../../clients/couch-control" }
 couch-plugin = { path = "../../clients/couch-plugin" }
-couch-webos = { path = "../../clients/couch-webos" }
 couch-tizen = { path = "../../clients/couch-tizen" }
 base64 = "0.22"
 couch-kodi = { path = "../../clients/couch-kodi" }

@@ -938,14 +938,8 @@ impl Runtime {
         couch_sdk::load_private(&path).ok()
     }
 
-    /// The key a departed built-in stored for this connection, mapped to its
-    /// package credential.
-    ///
-    /// The old file is read and **left where it is**: a Couch rolled back to
-    /// one that still has the built-in client has to find its pairing, and
-    /// deleting the connection removes both anyway. `None` whenever this row
-    /// hands nothing over (which is every row there is today), the file is not
-    /// there, or the mapping refuses what it finds.
+    /// Test the same private-file mapping the conversion coordinator performs.
+    #[cfg(test)]
     pub fn legacy_credential(
         &self,
         connection: &str,

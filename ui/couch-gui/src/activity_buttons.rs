@@ -456,7 +456,6 @@ fn connection_worker(
     current: Arc<AtomicU64>,
     hold: Arc<AtomicU64>,
 ) {
-    let mut tv = HashMap::new();
     let mut streaming = HashMap::new();
     let mut sonos = HashMap::new();
     // Not cleared with the other caches on a generation change: the fabrics are
@@ -475,7 +474,6 @@ fn connection_worker(
         if now != generation {
             settle = None;
             level = None;
-            tv.clear();
             streaming.clear();
             sonos.clear();
             generation = now;
@@ -551,7 +549,6 @@ fn connection_worker(
         match execute_with_input(
             &r.config,
             &r.action,
-            &mut tv,
             &mut streaming,
             &mut sonos,
             &matter,
@@ -600,7 +597,6 @@ fn session_is_suspect(error: &couch_sonos::Error) -> bool {
 pub(crate) fn execute(
     config: &Config,
     action: &Action,
-    tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
@@ -608,7 +604,6 @@ pub(crate) fn execute(
     execute_with_input(
         config,
         action,
-        tv,
         streaming,
         sonos,
         matter,
@@ -657,7 +652,6 @@ fn unreachable(e: impl std::fmt::Display) -> Failure {
 pub(crate) fn execute_with_input(
     config: &Config,
     action: &Action,
-    tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
@@ -695,7 +689,7 @@ pub(crate) fn execute_with_input(
         };
     }
     if action.command == POWER_TOGGLE {
-        return power_toggle(config, device, tv, streaming, sonos, matter, phase, current);
+        return power_toggle(config, device, streaming, sonos, matter, phase, current);
     }
     let command = F::parse(&action.command).ok_or("Unsupported button function")?;
     let order = device.transport_order(config);
@@ -726,7 +720,7 @@ pub(crate) fn execute_with_input(
             }
             couch_model::Transport::Bluetooth => send_bluetooth(device, &command),
             couch_model::Transport::Ip => send_network(
-                config, device, &command, tv, streaming, sonos, matter, phase, current,
+                config, device, &command, streaming, sonos, matter, phase, current,
             ),
         };
         match result {
@@ -748,7 +742,7 @@ pub(crate) fn execute_with_input(
     Err(skipped.unwrap_or_else(|| "Unsupported button function".into()))
 }
 
-/// A row's Power key. A device with a real toggle (an IR power code, webOS)
+/// A row's Power key. A device with a real toggle (such as an IR power code)
 /// gets it; one with only power-on and power-off gets whichever its observed
 /// state calls for. Observed, never assumed: a receiver that will not say
 /// whether it is on is an error, not a guess that could switch it the wrong
@@ -759,7 +753,6 @@ pub(crate) fn execute_with_input(
 fn power_toggle(
     config: &Config,
     device: &couch_model::Device,
-    tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
@@ -820,7 +813,6 @@ fn power_toggle(
         execute_with_input(
             config,
             &Action::new(device.id.clone(), command),
-            tv,
             streaming,
             sonos,
             matter,
@@ -876,7 +868,6 @@ fn send_network(
     config: &Config,
     device: &couch_model::Device,
     command: &F,
-    tv: &mut HashMap<String, couch_control::WebOs>,
     streaming: &mut HashMap<String, couch_control::StreamingTv>,
     sonos: &mut HashMap<String, couch_sonos::Client>,
     matter: &connections::MatterFleet,
@@ -1035,70 +1026,6 @@ fn send_network(
                 c.volume()
                     .ok()
                     .and_then(|v| volume_reading(&name, Some(v.volume), v.muted))
-            } else {
-                None
-            };
-            Ok(Outcome {
-                volume,
-                ..Outcome::default()
-            })
-        }
-        Integration::WebOs => {
-            if matches!(command, F::PowerOn | F::PowerOff | F::Toggle) {
-                let path = connections::file(connection, "webos");
-                let settings = couch_webos::Settings::load(&path).map_err(|e| e.to_string())?;
-                let preference = couch_webos::power::PowerSettings::load(&path, &settings.url)?;
-                if preference.method == couch_webos::power::Method::Ir {
-                    return preference
-                        .transmit(match command {
-                            F::PowerOn => "power-on",
-                            F::PowerOff => "power-off",
-                            _ => "power",
-                        })
-                        .map(|_| Outcome::default())
-                        .map_err(Failure::Command);
-                }
-                if command == F::Toggle {
-                    return crate::tv::toggle_power(&settings, &path)
-                        .map(|_| Outcome::default())
-                        .map_err(Failure::Command);
-                }
-            }
-            if command == F::PowerOn {
-                let path = connections::file(connection, "webos");
-                let settings = couch_webos::Settings::load(&path).map_err(|e| e.to_string())?;
-                return crate::tv::wake_tv(&settings, &path)
-                    .map(|_| Outcome::default())
-                    .map_err(Failure::Command);
-            }
-            if !tv.contains_key(connection) {
-                let settings = couch_webos::Settings::load(&connections::file(connection, "webos"))
-                    .map_err(|e| e.to_string())?;
-                tv.insert(
-                    connection.into(),
-                    couch_control::WebOs::connect(&settings).map_err(unreachable)?,
-                );
-            }
-            let result = crate::tv::mapped_command(tv.get_mut(connection).unwrap(), &command);
-            if result.is_err() {
-                tv.remove(connection);
-            }
-            result.map_err(|e| e.to_string())?;
-            let volume = if sound {
-                tv.get_mut(connection)
-                    .and_then(|c| c.volume().ok())
-                    .and_then(|v| {
-                        let v = if v["volumeStatus"].is_object() {
-                            &v["volumeStatus"]
-                        } else {
-                            &v
-                        };
-                        volume_reading(
-                            &name,
-                            v["volume"].as_i64(),
-                            v["muteStatus"] == true || v["muted"] == true,
-                        )
-                    })
             } else {
                 None
             };
@@ -1482,7 +1409,7 @@ mod tests {
                     port: 23,
                 },
             ),
-            ("lg", couch_model::Provider::WebOs),
+            ("lg", couch_model::Provider::LegacyWebOs),
         ] {
             config.connections.push(couch_model::Connection {
                 id: id.into(),
@@ -1604,7 +1531,6 @@ mod tests {
                 &function,
                 &mut HashMap::new(),
                 &mut HashMap::new(),
-                &mut HashMap::new(),
                 &connections::MatterFleet::default(),
                 KeyPhase::Tap,
                 &|| true,
@@ -1712,7 +1638,6 @@ mod tests {
             let error = execute_with_input(
                 &config,
                 &Action::new("avr-legacy", command.as_str()),
-                &mut HashMap::new(),
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &matter,
@@ -2132,7 +2057,6 @@ mod tests {
                 &Action::new("lamp", command),
                 &mut HashMap::new(),
                 &mut HashMap::new(),
-                &mut HashMap::new(),
                 &matter,
                 KeyPhase::Tap,
                 &|| true,
@@ -2154,7 +2078,7 @@ mod tests {
         config.connections.push(couch_model::Connection {
             id: "lg".into(),
             name: "LG".into(),
-            provider: couch_model::Provider::WebOs,
+            provider: couch_model::Provider::LegacyWebOs,
         });
         let bond = couch_model::DeviceBluetooth {
             address: "44:27:45:4E:33:25".into(),
@@ -2190,7 +2114,6 @@ mod tests {
             execute_with_input(
                 &config,
                 &Action::new(device, command),
-                &mut HashMap::new(),
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &matter,
@@ -2374,7 +2297,6 @@ mod tests {
             execute_with_input(
                 &config,
                 &Action::new("avr-package", command),
-                &mut HashMap::new(),
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &matter,

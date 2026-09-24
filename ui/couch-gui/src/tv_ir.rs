@@ -1,9 +1,8 @@
 //! One-way device controls: infrared, and Bluetooth HID (the remote is the
 //! peripheral, the TV paired to it gets consumer-control keys). All
 //! filesystem and transmitter I/O stays on the worker.
-use super::{Command, Details, Event, Work};
+use super::{Button, Command, Details, Event, Work};
 use couch_model::{commands::Function, Action, Integration};
-use couch_webos::Button;
 use std::sync::atomic::AtomicU64;
 
 pub(super) fn function(action: &Command) -> Result<Option<String>, String> {
@@ -23,7 +22,6 @@ pub(super) fn function(action: &Command) -> Result<Option<String>, String> {
             Button::Green => "green",
             Button::Blue => "blue",
             Button::Yellow => "yellow",
-            _ => return Err("This key has no infrared function".into()),
         }
         .into(),
         Command::Volume(true) => "volume-up".into(),
@@ -115,7 +113,6 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         crate::activity_buttons::execute_with_input(
             &config,
             &Action::new(device.id.clone(), command),
-            &mut Default::default(),
             &mut Default::default(),
             &mut Default::default(),
             &crate::connections::matter(),

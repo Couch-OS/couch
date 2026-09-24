@@ -305,7 +305,7 @@ impl Config {
                     None=>problems.push(Problem{at,message:"This device refers to a missing connection; remove its devices before deleting the connection".into()}),
                     Some(c)=>{
                         let valid=match c.provider {
-                            crate::Provider::Kodi{..}|crate::Provider::CoreElec{..}|crate::Provider::Sonos{..}|crate::Provider::LegacyDenon{..}|crate::Provider::WebOs|crate::Provider::AndroidTv|crate::Provider::AppleTv|crate::Provider::Tizen|crate::Provider::BluetoothTv=>resource_id.is_empty(),
+                            crate::Provider::Kodi{..}|crate::Provider::CoreElec{..}|crate::Provider::Sonos{..}|crate::Provider::LegacyDenon{..}|crate::Provider::LegacyWebOs|crate::Provider::AndroidTv|crate::Provider::AppleTv|crate::Provider::Tizen|crate::Provider::BluetoothTv=>resource_id.is_empty(),
                             crate::Provider::UnifiProtect=>device.kind==crate::DeviceKind::Camera && !resource_id.is_empty() && resource_id.len()<=128 && resource_id.bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-' || b==b'_'),
                             crate::Provider::HomeAssistant=>valid_ha_resource(resource_id, device.kind),
                             crate::Provider::Matter=>valid_matter_resource(resource_id),
