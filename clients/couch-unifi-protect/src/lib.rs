@@ -2,9 +2,9 @@
 //!
 //! Discovers existing RTSPS streams; it never creates/deletes globally shared
 //! camera streams. Descriptors are not video players. See docs/unifi-protect.md.
-#[cfg(feature = "media")]
+#[cfg(any(feature = "media", feature = "media-transport"))]
 pub mod media;
-#[cfg(feature = "media")]
+#[cfg(any(feature = "media", feature = "media-transport"))]
 mod media_io;
 mod pinning;
 #[cfg(feature = "media")]
@@ -35,6 +35,15 @@ pub enum Error {
     Response,
     StreamNotEnabled,
     Expired,
+    MediaResolve,
+    MediaConnect,
+    MediaTls,
+    MediaWrite,
+    MediaRead,
+    MediaOptions,
+    MediaDescribe,
+    MediaSetup,
+    MediaPlay,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -128,8 +137,23 @@ impl LiveView {
             Ok(&self.url)
         }
     }
+    pub fn media_origin(&self) -> Result<String> {
+        let mut url = Url::parse(self.url()?).map_err(|_| Error::Response)?;
+        url.set_path("/");
+        url.set_query(None);
+        Ok(url.into())
+    }
     /// Clear this local descriptor. Does not disable shared RTSPS configuration.
     pub fn close(self) {}
+}
+
+pub fn observe_certificate_sha256(
+    origin: &str,
+    server_name: Option<&str>,
+    timeout: Duration,
+) -> Result<String> {
+    let origin = Url::parse(origin).map_err(|_| Error::Configuration)?;
+    pinning::observe(&origin, server_name, timeout)
 }
 
 pub struct Client {

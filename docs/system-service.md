@@ -112,13 +112,18 @@ it; `portal.sh` records its pid in `/tmp/portal-httpd.pid` and `station.sh`
 stops it, which is what takes the setup CGI surface off the home LAN after a
 join.
 
-Enrollment is accepted only while recovery setup is active. The service
-serializes approval requests, drains pre-request events and accepts only a new
-keypad EV_KEY press. Key releases, repeats, synchronization and touch events do
-not approve access. A bounded physical approval precedes any key/password write;
-SSH public keys are checked with ssh-keygen. Enabling Wi-Fi alone does not enroll
-anyone or enable SSH password authentication. Automatic SSH startup honors the
-saved off setting and requires an enrolled key or usable root password.
+Recovery-portal enrollment is accepted only while recovery setup is active. The
+paired configuration UI has a separately typed enrollment request, allowing an
+owner who is already on the LAN to recover from an empty SSH credential without
+re-entering hotspot mode. Both paths serialize approval requests, drain
+pre-request events and accept only a new keypad EV_KEY press. Key releases,
+repeats, synchronization and touch events do not approve access. A bounded
+physical approval precedes any key/password write; SSH public keys are checked
+with ssh-keygen. The browser route is behind Couch's normal PIN/session gate and
+successful enrollment enables SSH and saves that preference. Enabling Wi-Fi
+alone does not enroll anyone or enable SSH password authentication. Automatic
+SSH startup honors the saved off setting and requires an enrolled key or usable
+root password.
 
 ## Validation
 

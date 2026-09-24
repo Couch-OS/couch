@@ -251,6 +251,23 @@ pub trait DeviceClient: Sized {
     fn child_status(&mut self, _resource: &str) -> Result<Status> {
         Err(Error::Unsupported)
     }
+
+    /// Return a complete bounded JPEG snapshot for one camera child.
+    ///
+    /// Protocol 4 only. `couch-plugin` validates and chunks the bytes; a
+    /// provider adapter never handles base64 or control-frame offsets.
+    fn camera_snapshot(&mut self, _resource: &str) -> Result<Vec<u8>> {
+        Err(Error::Unsupported)
+    }
+
+    /// Open one short H264 live view for a camera child.
+    ///
+    /// Protocol 4 only. The returned source runs on the package media worker,
+    /// while its cancellation callback stays on the control thread so a close
+    /// request can interrupt device I/O immediately.
+    fn camera_open(&mut self, _resource: &str) -> Result<crate::CameraView> {
+        Err(Error::Unsupported)
+    }
 }
 
 /// Compare a client's declared capabilities with the catalog `couch-model`

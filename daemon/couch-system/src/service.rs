@@ -191,11 +191,7 @@ fn handle_updates(
     if matches!(request, Request::SshAvailable) {
         return protocol::write(&Reply::Available(crate::access::available()), &mut stream);
     }
-    if matches!(
-        request,
-        Request::EnrollKey { .. } | Request::SetPassword { .. } | Request::PortalJoin { .. }
-    ) && !std::path::Path::new("/tmp/couch.setup").exists()
-    {
+    if setup_only(&request) && !std::path::Path::new("/tmp/couch.setup").exists() {
         return protocol::write(
             &Reply::Done(Err("Open the recovery hotspot on the remote first".into())),
             &mut stream,
@@ -287,13 +283,15 @@ fn handle_updates(
         Request::Ssh { enabled } => {
             protocol::write(&Reply::Done(crate::access::ssh(enabled)), &mut stream)
         }
-        Request::EnrollKey { key } => {
+        Request::EnrollKey { key } | Request::EnrollKeyAuthenticated { key } => {
             protocol::write(&Reply::Done(crate::access::enroll(&key)), &mut stream)
         }
-        Request::SetPassword { password } => protocol::write(
-            &Reply::Done(crate::access::password(&password)),
-            &mut stream,
-        ),
+        Request::SetPassword { password } | Request::SetPasswordAuthenticated { password } => {
+            protocol::write(
+                &Reply::Done(crate::access::password(&password)),
+                &mut stream,
+            )
+        }
         Request::Scan => {
             let result = fs::read_to_string("/tmp/scan.raw")
                 .map(|s| network::parse_scan(&s))
@@ -318,6 +316,14 @@ fn handle_updates(
         Request::SshAvailable | Request::Health | Request::UpdateStatus => unreachable!(),
     }
 }
+
+fn setup_only(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::EnrollKey { .. } | Request::SetPassword { .. } | Request::PortalJoin { .. }
+    )
+}
+
 fn network_session(mut stream: UnixStream) -> io::Result<()> {
     protocol::write(&Reply::Ready, &mut stream)?;
     let mut reader = stream.try_clone()?;
@@ -412,5 +418,19 @@ mod tests {
         let (mut client, server) = UnixStream::pair().unwrap();
         client.write_all(&u32::MAX.to_be_bytes()).unwrap();
         assert!(handle(server, &Mutex::new(())).is_err());
+    }
+
+    #[test]
+    fn only_the_recovery_portal_enrollment_variants_require_setup_mode() {
+        assert!(setup_only(&Request::EnrollKey { key: String::new() }));
+        assert!(setup_only(&Request::SetPassword {
+            password: String::new()
+        }));
+        assert!(!setup_only(&Request::EnrollKeyAuthenticated {
+            key: String::new()
+        }));
+        assert!(!setup_only(&Request::SetPasswordAuthenticated {
+            password: String::new()
+        }));
     }
 }

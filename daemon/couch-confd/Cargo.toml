@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "Config server for Couch: the REST API and the web UI it serves"
 
+[features]
+default = []
+# Feed admission can exercise protocol-4 camera packages before the full OS
+# release enables their daemon/UI forwarding path.
+protocol-4-preview = ["couch-plugin/protocol-4-preview"]
+
 # tiny_http rather than axum. axum is the better library for a service; it is
 # the wrong one for this device. It arrives with tokio, hyper, tower and their
 # transitive halves - a reactor, a work-stealing scheduler and a connection

@@ -1,8 +1,10 @@
 //! Native camera view. One decoder and one latest frame, scoped to the screen.
 use crate::App;
+use couch_camera::{HEIGHT, WIDTH};
 use couch_unifi_protect::{
-    player::{Player, Status, HEIGHT, WIDTH},
+    player::{Failure, Player, Status},
     settings::Settings,
+    Error,
 };
 use slint::ComponentHandle;
 use std::{cell::RefCell, rc::Rc};
@@ -104,11 +106,47 @@ impl Cameras {
                 );
                 app.set_camera_image(slint::Image::from_rgb8(buffer));
             }
-            app.set_camera_message(match player.status(){
-                Status::Connecting=>"Connecting securely…",Status::Playing=>"LIVE · Low quality · View closes after 60 seconds",
-                Status::Ended=>"View ended. Go back and open the camera to watch again.",
-                Status::Unavailable=>"Camera unavailable. Check its low-quality stream, certificate trust and connection.",
-            }.into());
+            app.set_camera_message(
+                match player.status() {
+                    Status::Connecting => "Connecting securely…",
+                    Status::Playing => "LIVE · Low quality · View closes after 60 seconds",
+                    Status::Ended => "View ended. Go back and open the camera to watch again.",
+                    Status::Unavailable => unavailable_message(player.failure()),
+                }
+                .into(),
+            );
         }
+    }
+}
+
+fn unavailable_message(failure: Option<Failure>) -> &'static str {
+    match failure {
+        Some(Failure::Descriptor(Error::StreamNotEnabled)) => {
+            "Enable this camera's low-quality RTSPS stream in Protect."
+        }
+        Some(Failure::Setup(_)) => "Reconnect this NVR in the Couch web app.",
+        Some(Failure::Descriptor(_)) => "Could not get this camera stream from the NVR.",
+        Some(Failure::Media(_)) => "Could not open the NVR's secure camera stream.",
+        Some(Failure::Decoder(_)) => "The camera decoder is unavailable.",
+        Some(Failure::Stream(_)) => "The camera stream stopped.",
+        None => "Camera unavailable.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camera_failures_name_the_actionable_stage_without_secrets() {
+        assert!(
+            unavailable_message(Some(Failure::Descriptor(Error::StreamNotEnabled)))
+                .contains("low-quality")
+        );
+        assert!(unavailable_message(Some(Failure::Decoder(
+            couch_camera::DecoderFailure::MissingPipe
+        )))
+        .contains("decoder"));
+        assert!(unavailable_message(Some(Failure::Media(Error::MediaTls))).contains("secure"));
     }
 }

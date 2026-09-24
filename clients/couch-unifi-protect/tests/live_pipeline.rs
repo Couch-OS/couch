@@ -112,24 +112,28 @@ fn pinned_srtps_to_bounded_rgb_frames_and_cancellation() {
         let mut stream = StreamOwned::new(ServerConnection::new(tls).unwrap(), accept(media));
         let key = [8; 30];
         let encoded = STANDARD.encode(key);
-        for sequence in 1..=3 {
+        for sequence in 1..=4 {
             let input = request(&mut stream);
             assert!(!input.contains("fixture-api-key"));
             assert!(!input.to_lowercase().contains("x-api-key"));
             let response = match sequence {
                 1 => {
+                    assert!(input.starts_with("OPTIONS "));
+                    "RTSP/1.0 200 OK\r\nCSeq: 1\r\nPublic: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n\r\n".into()
+                }
+                2 => {
                     assert!(input.starts_with("DESCRIBE "));
                     let body=format!("v=0\r\nm=video 0 RTP/SAVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track0\r\na=fmtp:96 packetization-mode=1\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:{encoded}\r\n");
                     format!(
-                        "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: {}\r\n\r\n{body}",
+                        "RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: {}\r\n\r\n{body}",
                         body.len()
                     )
                 }
-                2 => {
+                3 => {
                     assert!(input.contains("Transport: RTP/SAVP/TCP;unicast;interleaved=0-1"));
-                    "RTSP/1.0 200 OK\r\nCSeq: 2\r\nSession: test-session\r\nTransport: RTP/SAVP/TCP;unicast;interleaved=0-1\r\n\r\n".into()
+                    "RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: test-session\r\nTransport: RTP/SAVP/TCP;unicast;interleaved=0-1\r\n\r\n".into()
                 }
-                _ => "RTSP/1.0 200 OK\r\nCSeq: 3\r\n\r\n".into(),
+                _ => "RTSP/1.0 200 OK\r\nCSeq: 4\r\n\r\n".into(),
             };
             stream.write_all(response.as_bytes()).unwrap();
             stream.flush().unwrap();

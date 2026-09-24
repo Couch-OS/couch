@@ -15,6 +15,7 @@ couch-appletv = { path = "../../clients/couch-appletv" }
 couch-sonos = { path = "../../clients/couch-sonos" }
 couch-system = { path = "../../daemon/couch-system" }
 couch-updates = { path = "../../daemon/couch-updates" }
+couch-camera = { path = "../../clients/couch-camera" }
 couch-unifi-protect = { path = "../../clients/couch-unifi-protect", features = ["media"] }
 couch-androidtv = { path = "../../clients/couch-androidtv" }
 # The socket path and key words only; `daemon` off keeps zbus out of the GUI.

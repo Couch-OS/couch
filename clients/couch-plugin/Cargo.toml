@@ -10,6 +10,9 @@ testing = ["couch-sdk/testing"]
 # Kept as a no-op compatibility feature for packages developed against the
 # protocol 3 preview. Protocol 3 is now the normal host contract.
 protocol-3-preview = []
+# Builds the protocol-4 camera transport for development and admission tests.
+# Production core builds leave this off until daemon/GUI forwarding lands.
+protocol-4-preview = []
 
 # The package `tests/isolation.rs` starts as two different users. It is a real
 # package and not a shell script, so that it goes through `serve`, which is
@@ -26,6 +29,7 @@ path = "tests/isolation.rs"
 required-features = ["testing"]
 
 [dependencies]
+base64 = "0.22"
 couch-sdk = { path = "../couch-sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

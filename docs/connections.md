@@ -22,6 +22,8 @@ sending/learning remains unavailable on the current kernel.
 Private files are beside `config.json`, under `connections/<connection-id>/`:
 
 - `hue-connection.json`: URL, application key, pinned certificate.
+- `protect-connection.json`: NVR address, Integration API key, and exact API and
+  media certificate pins recorded during enrollment.
 - `ha-connection.json`: server URL and access token.
 - `webos-connection.json` and `webos-wake.json`: TV pairing and wake address.
 - `androidtv-connection.json`, `appletv-connection.json`, `tizen-connection.json`: streaming TV pairings (Samsung's holds its token, pinned certificate and MAC).

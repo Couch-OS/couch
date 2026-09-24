@@ -1,20 +1,22 @@
 use crate::{
     protocol::{Envelope, ReplyEnvelope},
     read_frame, write_frame, Error, Failure, Manifest, Request, Response, Result,
+    MAX_CAMERA_SECONDS, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_CHUNK_BASE64, MAX_SNAPSHOT_CHUNK_BYTES,
     NEXT_PROTOCOL_VERSION,
 };
+use base64::Engine;
 use couch_sdk::{
     children::valid_cursor,
     couch_model::{commands::Function, valid_resource, ChildComponent, PluginChildKind},
     pairing::valid_session,
     ActionKind, Credential, KeyPhase, PairInput, PairPrompt, PairStep, PluginActionSchema,
-    TypedAction, MAX_PAGE,
+    TypedAction, CAMERA_PROTOCOL_VERSION, MAX_PAGE,
 };
 use std::{
     collections::HashSet,
     io::{Read, Write},
     os::{
-        fd::OwnedFd,
+        fd::{AsRawFd, OwnedFd},
         unix::{
             fs::{MetadataExt, PermissionsExt},
             net::UnixStream,
@@ -174,11 +176,18 @@ pub(crate) struct PairSession {
 pub struct Host {
     child: Child,
     stream: UnixStream,
+    media: Option<UnixStream>,
     manifest: Manifest,
     timeout: Duration,
     next_id: u64,
     alive: bool,
     pairing: Option<PairSession>,
+    camera: Option<CameraView>,
+}
+
+struct CameraView {
+    resource: String,
+    deadline: Instant,
 }
 impl Host {
     pub fn spawn(package_dir: &Path, manifest: &Manifest, timeout: Duration) -> Result<Self> {
@@ -221,6 +230,13 @@ impl Host {
             }
         }
         let (stream, child_stream) = UnixStream::pair()?;
+        let (media, child_media): (Option<UnixStream>, Option<OwnedFd>) =
+            if manifest.protocol_version >= CAMERA_PROTOCOL_VERSION {
+                let (host, child) = UnixStream::pair()?;
+                (Some(host), Some(child.into()))
+            } else {
+                (None, None)
+            };
         let input: OwnedFd = child_stream.try_clone()?.into();
         let output: OwnedFd = child_stream.into();
         let mut command = Command::new(executable);
@@ -234,6 +250,18 @@ impl Host {
         // work in pre_exec is async-signal-safe; never allocate or lock there.
         unsafe {
             command.pre_exec(move || {
+                if let Some(media) = child_media.as_ref() {
+                    let source = media.as_raw_fd();
+                    if source == 3 {
+                        let flags = libc::fcntl(3, libc::F_GETFD);
+                        if flags < 0 || libc::fcntl(3, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    } else if libc::dup2(source, 3) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
                 if libc::setpgid(0, 0) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -274,14 +302,19 @@ impl Host {
             });
         }
         let child = command.spawn()?;
+        // In particular, close the parent's copy of the package media end so
+        // fd 3 EOF means the package really closed or exited.
+        drop(command);
         let mut host = Self {
             child,
             stream,
+            media,
             manifest: manifest.clone(),
             timeout,
             next_id: 0,
             alive: true,
             pairing: None,
+            camera: None,
         };
         match host.request(Request::Hello {
             protocol_version: manifest.protocol_version,
@@ -411,6 +444,24 @@ impl Host {
             return Err(Error::Transport.into());
         }
         let request = admit(&self.manifest, kind, self.pairing.as_ref(), request)?;
+        match &request {
+            Request::CameraOpen { .. } if self.camera.is_some() => return Err(Error::Busy.into()),
+            Request::CameraOpen { .. } => {
+                if let Err(error) = self.camera_channel_idle() {
+                    self.terminate();
+                    return Err(error.into());
+                }
+            }
+            Request::CameraClose { resource }
+                if self
+                    .camera
+                    .as_ref()
+                    .is_none_or(|view| view.resource != *resource) =>
+            {
+                return Err(Error::Invalid.into());
+            }
+            _ => (),
+        }
         self.next_id = self.next_id.checked_add(1).ok_or(Error::Protocol)?;
         let result = (|| {
             let mut stream = DeadlineStream {
@@ -444,6 +495,71 @@ impl Host {
         }
     }
 
+    /// Read one bounded Annex-B record from the protocol-4 media socket.
+    /// `None` is the package's clean terminal record. A malformed record,
+    /// closed descriptor or missed view deadline retires the package so bytes
+    /// from one session can never be mistaken for the next.
+    pub fn read_camera_record(&mut self) -> Result<Option<Vec<u8>>> {
+        let deadline = self.camera.as_ref().ok_or(Error::Invalid)?.deadline;
+        let result = {
+            let media = self.media.as_mut().ok_or(Error::Unsupported)?;
+            let deadline = core::cmp::min(deadline, Instant::now() + self.timeout);
+            couch_sdk::camera::read_h264_record(&mut DeadlineStream {
+                stream: media,
+                deadline,
+            })
+        };
+        match result {
+            Ok(Some(record)) => Ok(Some(record)),
+            Ok(None) => match self.camera_channel_idle() {
+                Ok(()) => {
+                    self.camera = None;
+                    Ok(None)
+                }
+                Err(error) => {
+                    self.terminate();
+                    Err(error)
+                }
+            },
+            Err(error) => {
+                let error = match error {
+                    couch_sdk::camera::CameraWireError::Protocol => Error::Protocol,
+                    couch_sdk::camera::CameraWireError::Io(
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock,
+                    ) => Error::Timeout,
+                    couch_sdk::camera::CameraWireError::Io(_) => Error::Transport,
+                };
+                self.terminate();
+                Err(error)
+            }
+        }
+    }
+
+    fn camera_channel_idle(&self) -> Result<()> {
+        let media = self.media.as_ref().ok_or(Error::Unsupported)?;
+        let mut byte = 0_u8;
+        let read = unsafe {
+            libc::recv(
+                media.as_raw_fd(),
+                (&mut byte as *mut u8).cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        if read > 0 {
+            Err(Error::Protocol)
+        } else if read == 0 {
+            Err(Error::Transport)
+        } else {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                Ok(())
+            } else {
+                Err(error.into())
+            }
+        }
+    }
+
     /// Keep the pairing conversation's state in step with what just happened.
     /// The reply has already been accepted, so a session here is one the gate
     /// agreed to.
@@ -471,6 +587,13 @@ impl Host {
             (Request::PairStart { .. }, _) | (Request::PairCancel { .. }, _) => {
                 self.pairing = None;
             }
+            (Request::CameraOpen { resource }, Response::CameraOpen { seconds, .. }) => {
+                self.camera = Some(CameraView {
+                    resource: resource.clone(),
+                    deadline: Instant::now() + Duration::from_secs(u64::from(*seconds)),
+                });
+            }
+            (Request::CameraClose { .. }, Response::Ok) => self.camera = None,
             _ => (),
         }
     }
@@ -529,6 +652,7 @@ impl Host {
     fn terminate(&mut self) {
         if self.alive {
             self.alive = false;
+            self.camera = None;
             // Child remains unreaped until wait below, so its group id cannot
             // have been reused even if it has already exited.
             unsafe {
@@ -703,6 +827,19 @@ fn admit_child(manifest: &Manifest, kind: Option<&str>, request: Request) -> Res
             }
         }
         Request::Status { .. } => (),
+        Request::CameraSnapshot { offset, .. } => {
+            if *offset as usize >= MAX_SNAPSHOT_BYTES {
+                return Err(Error::Invalid);
+            }
+            if kind.component != ChildComponent::Camera {
+                return Err(Error::Unsupported);
+            }
+        }
+        Request::CameraOpen { .. } | Request::CameraClose { .. } => {
+            if kind.component != ChildComponent::Camera {
+                return Err(Error::Unsupported);
+            }
+        }
         _ => return Err(Error::Unsupported),
     }
     Ok(request)
@@ -790,7 +927,10 @@ fn accept_credential(
         | Request::Action { .. }
         | Request::Status { .. }
         | Request::Inputs
-        | Request::Children { .. } => Ok(()),
+        | Request::Children { .. }
+        | Request::CameraSnapshot { .. }
+        | Request::CameraOpen { .. }
+        | Request::CameraClose { .. } => Ok(()),
         Request::Hello { .. }
         | Request::Configure { .. }
         | Request::PairStart { .. }
@@ -819,6 +959,14 @@ pub(crate) fn accept(manifest: &Manifest, request: &Request, response: &Response
             Response::Status { status } => status.is_child_state(),
             _ => false,
         }
+    {
+        return Err(Error::Protocol);
+    }
+    if version < CAMERA_PROTOCOL_VERSION
+        && matches!(
+            response,
+            Response::CameraSnapshot { .. } | Response::CameraOpen { .. }
+        )
     {
         return Err(Error::Protocol);
     }
@@ -872,6 +1020,12 @@ pub(crate) fn accept(manifest: &Manifest, request: &Request, response: &Response
 /// phase is not counted: the host drops it for an older package instead of
 /// refusing the key.
 pub fn requires(request: &Request) -> u32 {
+    if matches!(
+        request,
+        Request::CameraSnapshot { .. } | Request::CameraOpen { .. } | Request::CameraClose { .. }
+    ) {
+        return CAMERA_PROTOCOL_VERSION;
+    }
     // Naming a child of a connection is protocol 3, whatever is being asked.
     if request.resource().is_some() {
         return NEXT_PROTOCOL_VERSION;
@@ -946,6 +1100,41 @@ fn validate_response(request: &Request, response: &Response) -> Result<()> {
             Ok(())
         }
         (Request::PairCancel { .. }, Response::Ok) => Ok(()),
+        (
+            Request::CameraSnapshot {
+                offset: requested, ..
+            },
+            Response::CameraSnapshot {
+                data,
+                offset,
+                total,
+            },
+        ) => {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|_| Error::Protocol)?;
+            let end = (*offset as usize)
+                .checked_add(decoded.len())
+                .ok_or(Error::Protocol)?;
+            if offset != requested
+                || !(4..=MAX_SNAPSHOT_BYTES).contains(&(*total as usize))
+                || data.len() > MAX_SNAPSHOT_CHUNK_BASE64
+                || decoded.is_empty()
+                || decoded.len() > MAX_SNAPSHOT_CHUNK_BYTES
+                || end > *total as usize
+                || (*offset == 0 && !decoded.starts_with(&[0xff, 0xd8]))
+                || (end == *total as usize && !decoded.ends_with(&[0xff, 0xd9]))
+            {
+                return Err(Error::Protocol);
+            }
+            Ok(())
+        }
+        (Request::CameraOpen { .. }, Response::CameraOpen { seconds, .. })
+            if (1..=MAX_CAMERA_SECONDS).contains(seconds) =>
+        {
+            Ok(())
+        }
+        (Request::CameraClose { .. }, Response::Ok) => Ok(()),
         (Request::Children { .. }, Response::Children { children, next }) => {
             let mut seen = HashSet::new();
             if children.len() > MAX_PAGE
@@ -1291,8 +1480,10 @@ pub fn local_request_detailed(
 mod tests {
     use super::{accept, admit};
     use crate::{
-        Capability, Child, ChildComponent, Error, LightState, LightTraits, Manifest,
+        CameraCodec, Capability, Child, ChildComponent, Error, LightState, LightTraits, Manifest,
         PluginActionSchema, PluginChildKind, Request, Response, Status, TypedAction,
+        MAX_CAMERA_SECONDS, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_CHUNK_BASE64,
+        MAX_SNAPSHOT_CHUNK_BYTES,
     };
     use couch_sdk::couch_model::{DeviceKind, PluginCapability};
     use serde_json::json;
@@ -1345,6 +1536,138 @@ mod tests {
             },
         ];
         manifest
+    }
+
+    fn camera_bridge() -> Manifest {
+        let mut manifest = manifest(4);
+        manifest.children = vec![PluginChildKind {
+            kind: "camera".into(),
+            label: "Camera".into(),
+            device_kind: DeviceKind::Camera,
+            component: ChildComponent::Camera,
+            capabilities: vec![],
+            actions: vec![],
+        }];
+        manifest
+    }
+
+    #[test]
+    fn protocol_4_camera_controls_are_bounded_and_remain_switched_off() {
+        use base64::Engine;
+
+        let camera = camera_bridge();
+        let open = Request::camera_open("front-yard");
+        let close = Request::camera_close("front-yard");
+        let snapshot = Request::camera_snapshot("front-yard", 0);
+        for request in [&open, &close, &snapshot] {
+            assert_eq!(super::requires(request), 4);
+            assert_eq!(
+                admit(&manifest(3), Some("camera"), None, request.clone()),
+                Err(Error::Unsupported),
+                "the shipping protocol-3 host performs no I/O"
+            );
+            assert_eq!(
+                admit(&camera, Some("camera"), None, request.clone()),
+                Ok(request.clone())
+            );
+        }
+        assert_eq!(
+            admit(
+                &camera,
+                Some("camera"),
+                None,
+                Request::camera_snapshot("front-yard", MAX_SNAPSHOT_BYTES as u32)
+            ),
+            Err(Error::Invalid)
+        );
+        assert_eq!(
+            admit(&bridge(), Some("light"), None, open.clone()),
+            Err(Error::Unsupported)
+        );
+
+        let jpeg = [0xff, 0xd8, 1, 2, 0xff, 0xd9];
+        let data = base64::engine::general_purpose::STANDARD.encode(jpeg);
+        assert_eq!(
+            accept(
+                &camera,
+                &snapshot,
+                &Response::CameraSnapshot {
+                    data: data.clone(),
+                    offset: 0,
+                    total: jpeg.len() as u32,
+                }
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            accept(
+                &camera,
+                &open,
+                &Response::CameraOpen {
+                    codec: CameraCodec::H264AnnexB,
+                    seconds: MAX_CAMERA_SECONDS,
+                }
+            ),
+            Ok(())
+        );
+        assert_eq!(accept(&camera, &close, &Response::Ok), Ok(()));
+
+        let mut largest = vec![0; MAX_SNAPSHOT_CHUNK_BYTES];
+        largest[..2].copy_from_slice(&[0xff, 0xd8]);
+        largest[MAX_SNAPSHOT_CHUNK_BYTES - 2..].copy_from_slice(&[0xff, 0xd9]);
+        let largest = base64::engine::general_purpose::STANDARD.encode(largest);
+        assert_eq!(largest.len(), MAX_SNAPSHOT_CHUNK_BASE64);
+        let largest_response = Response::CameraSnapshot {
+            data: largest,
+            offset: 0,
+            total: MAX_SNAPSHOT_CHUNK_BYTES as u32,
+        };
+        assert_eq!(accept(&camera, &snapshot, &largest_response), Ok(()));
+        assert!(crate::write_frame(&mut Vec::new(), &largest_response).is_ok());
+
+        for response in [
+            Response::CameraSnapshot {
+                data: "not base64".into(),
+                offset: 0,
+                total: jpeg.len() as u32,
+            },
+            Response::CameraSnapshot {
+                data: data.clone(),
+                offset: 1,
+                total: jpeg.len() as u32 + 1,
+            },
+            Response::CameraSnapshot {
+                data,
+                offset: 0,
+                total: MAX_SNAPSHOT_BYTES as u32 + 1,
+            },
+        ] {
+            assert_eq!(accept(&camera, &snapshot, &response), Err(Error::Protocol));
+        }
+        assert_eq!(
+            accept(
+                &camera,
+                &open,
+                &Response::CameraOpen {
+                    codec: CameraCodec::H264AnnexB,
+                    seconds: 0,
+                }
+            ),
+            Err(Error::Protocol)
+        );
+        assert_eq!(
+            accept(
+                &manifest(3),
+                &snapshot,
+                &Response::CameraSnapshot {
+                    data: base64::engine::general_purpose::STANDARD.encode(jpeg),
+                    offset: 0,
+                    total: jpeg.len() as u32,
+                }
+            ),
+            Err(Error::Protocol),
+            "a protocol-3 package cannot answer with protocol-4 vocabulary"
+        );
     }
 
     fn lamp(on: bool) -> Response {
