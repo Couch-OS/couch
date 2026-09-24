@@ -2,7 +2,7 @@
 //! browsing authenticates APKINDEX with the same native verifier as installation.
 use super::*;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -328,7 +328,9 @@ impl Manager {
         let origins = self.origins()?;
         let cache = self.0.cache.lock().unwrap_or_else(|e| e.into_inner());
         let mut installed = Vec::new();
+        let mut healthy_installed = BTreeSet::new();
         for manifest in manifests {
+            healthy_installed.insert(manifest.id.clone());
             let state = self.0.store.selection(&manifest.id)?;
             let repo = origins.get(&manifest.id).cloned();
             let available = cache
@@ -382,11 +384,22 @@ impl Manager {
             if !installed.iter().any(|p| p["id"] == *id) {
                 installed.push(serde_json::json!({"id":id,"name":id,"version":"", "available_version":null,
                     "status":{"kind":"missing","message":"Connection settings are retained. Reinstall this integration to use it."},
-                    "connection_configured":true,"can_rollback":false,"repository":origins.get(id)}));
+                "connection_configured":true,"can_rollback":false,"repository":origins.get(id)}));
             }
         }
+        // The feed cache must retain installed packages so update and install
+        // operations can resolve the selected artifact. The public `available`
+        // list is an install picker, though: a healthy package already has its
+        // update action in `installed`, and repeating it here would offer the
+        // misleading action "Install". Invalid and missing selections are not
+        // in this set, so their feed entries remain available for repair.
+        let available = cache
+            .available
+            .iter()
+            .filter(|package| !healthy_installed.contains(&package.id))
+            .collect::<Vec<_>>();
         Ok(
-            serde_json::json!({"installed":installed,"available":cache.available,"repositories":repositories,
+            serde_json::json!({"installed":installed,"available":available,"repositories":repositories,
             "catalog_error":cache.error,"refreshed":cache.refreshed,"busy":self.0.busy.load(Ordering::Acquire),
             "operation":self.0.operation.lock().unwrap_or_else(|e| e.into_inner()).clone()}),
         )
@@ -1958,6 +1971,11 @@ esac
         assert_eq!(installed["available_version"], "2.0.0");
         assert_eq!(installed["update_installable"], false);
         assert_eq!(installed["update_reason"], "Needs a newer Couch");
+        assert_eq!(
+            catalog["available"].as_array().unwrap().len(),
+            0,
+            "an installed package is offered only through its update action"
+        );
         let fetched = remote.fetches();
         assert!(remote
             .manager
@@ -2023,6 +2041,17 @@ esac
         let fixture = Fixture::new();
         let manager = fixture.manager();
         manager.layout().unwrap();
+        manager.0.cache.lock().unwrap().available.push(Available {
+            id: "example".into(),
+            name: "Example".into(),
+            version: "3.0.0".into(),
+            description: String::new(),
+            repository: "mine".into(),
+            apk_version: "3.0.0-r0".into(),
+            installable: true,
+            reason: None,
+            expected: None,
+        });
         let store = &manager.0.store;
         let mut slots = Vec::new();
         for version in ["1.0.0", "2.0.0"] {
@@ -2063,6 +2092,7 @@ esac
         assert_eq!(catalog["installed"][0]["version"], "1.0.0");
         assert_eq!(catalog["installed"][0]["status"]["kind"], "fallback");
         assert_eq!(catalog["installed"][0]["can_rollback"], false);
+        assert!(catalog["available"].as_array().unwrap().is_empty());
         fs::write(
             store.slot_path("example", "1.0.0").join("bin/plugin"),
             "corrupted",
@@ -2071,5 +2101,6 @@ esac
         let catalog = manager.catalog(&[]).unwrap();
         assert_eq!(catalog["installed"][0]["status"]["kind"], "invalid");
         assert_eq!(catalog["installed"][0]["can_rollback"], false);
+        assert_eq!(catalog["available"][0]["id"], "example");
     }
 }

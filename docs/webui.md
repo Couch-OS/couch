@@ -661,6 +661,12 @@ Leptos; it does not load package scripts. A
 secret is never echoed to the browser. Blank secret input preserves a saved
 value and the adjacent clear control sends an explicit `null`.
 
+The **Integrations** catalog lists a healthy package only under **Installed
+packages**, where a newer feed version appears as an update action. **Available
+packages** contains only additional packages. If an installed selection is
+missing or failed validation, its feed entry remains there with **Reinstall**
+instead of the misleading fresh-install action.
+
 **Rooms & devices** creates rooms and assigns devices from saved connections.
 Open a room, select **From connection**, then search discovered HA/Hue lights or
 name a Kodi/infrared device. Infrared codesets belong to devices. Light controls
