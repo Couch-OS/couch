@@ -441,10 +441,11 @@ made reliable and extraction was explicitly requested. The settled design uses
 a second inherited socket carrying bounded length-prefixed H264 access units;
 `ffmpeg` stays core-owned, while SRTP, stream URLs and certificate pins remain
 inside the package. The provider-neutral decoder, rollback-safe camera child,
-bounded control frames and record codec now exist in source, still behind
-protocol-4 admission. The host-side inherited socket also works behind the
-explicit `protocol-4-preview` feature; SDK serving, daemon/GUI forwarding, the
-package adapter and migration are the remaining large pieces. See
+bounded control frames, record codec, SDK server, daemon/GUI forwarding and
+package adapter now exist in source, and protocol 4 is the normal host
+contract. The standalone UniFi package is published in the preview feed.
+Automatic migration from the retained built-in connection and physical
+package acceptance remain. See
 `docs/plans/camera-package-data-plane.md`.
 
 ### What should not become a package

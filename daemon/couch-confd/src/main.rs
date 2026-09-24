@@ -49,6 +49,7 @@ fn main() {
     if early == ["--supports-integration-protocol=1"]
         || early == ["--supports-integration-protocol=2"]
         || early == ["--supports-integration-protocol=3"]
+        || early == ["--supports-integration-protocol=4"]
     {
         return;
     }

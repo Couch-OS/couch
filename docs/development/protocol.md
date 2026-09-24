@@ -831,10 +831,14 @@ stale**, so the next request starts one configured from the file. It has to be:
 the endpoint keeps its own copy of the key for the replacement child it launches
 after a failure, and that copy is the one from before the rotation.
 
-**`plugin.sock` is untouched.** `Runtime::execute` is the whole of what the
-panel's socket and the HTTP command routes reach, and it has only ever accepted
-`command`, `action`, `status` and `inputs`; every pairing request and
-`configure` are `unsupported` there, as they were.
+**`plugin.sock` has one camera phase.** Ordinary panel requests still end after
+one bounded JSON response and `Runtime::execute` still accepts only `command`,
+`action`, `status` and `inputs`. A protocol-4 `camera_open` is the one separate
+path: after the bounded opening response, that same owner-only local socket
+carries only length-prefixed H264 records until a terminal record or socket
+close. `couch-confd` reads each record from the exact persistent package child
+that opened it and never buffers more than one. Pairing and `configure` remain
+unsupported on the panel socket.
 
 **`keep_alive`.** A manifest that declares it exempts that connection's child
 from the two idle retains, and from nothing else. It is honoured only while a
@@ -854,13 +858,14 @@ configuration read on the remote queued behind them.
 
 ### Compatibility feature
 
-`couch-plugin` retains the Cargo feature name `protocol-3-preview` so packages
-developed during the preview remain source-compatible. It is now a no-op:
+`couch-plugin` retains the Cargo feature names `protocol-3-preview` and
+`protocol-4-preview` so packages developed during either preview remain
+source-compatible. Both are now no-ops:
 
 ```rust
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const NEXT_PROTOCOL_VERSION: u32 = 3;
-pub const fn accepted_protocol_version() -> u32; // 3
+pub const fn accepted_protocol_version() -> u32; // 4
 ```
 
 `Manifest::validate` accepts `1..=accepted_protocol_version()`. The Echo
@@ -899,19 +904,18 @@ knows the key can.
 are the admission cases a real package with children, or with pairing, will
 use.
 
-Cargo unifies features across a build, so a single dependency that enabled the
-feature, even a dev-dependency, would enable it for everything built with it.
-Two tests keep that from reaching a remote: `couch-confd` and
-`couch-integrations` and the daemon each assert
+Cargo still accepts the retained feature names, but neither changes the
+contract selected by a build. `couch-confd` and `couch-integrations` assert
 `accepted_protocol_version() == PROTOCOL_VERSION` with the ordinary workspace
-feature set. To look for the retained compatibility feature by hand:
+feature set. To find an obsolete package or build command that still names one:
 
 ```sh
 cargo tree --manifest-path daemon/Cargo.toml -e features -i couch-plugin | grep protocol-3
 cargo tree --manifest-path ui/Cargo.toml -e features -i couch-plugin | grep protocol-3
 ```
 
-Both print nothing.
+An ordinary core dependency tree prints nothing; an older package may still
+print either name and remains source-compatible.
 
 ### Historical preview build record
 

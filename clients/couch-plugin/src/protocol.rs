@@ -3,10 +3,9 @@ use couch_sdk::{Credential, KeyPhase, PairInput, PairStep, Reason, Selectable, S
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{Read, Write};
 
-#[cfg(not(feature = "protocol-4-preview"))]
-pub const PROTOCOL_VERSION: u32 = 3;
-#[cfg(feature = "protocol-4-preview")]
-pub const PROTOCOL_VERSION: u32 = couch_sdk::CAMERA_PROTOCOL_VERSION;
+/// The current package contract. Protocol 4 adds camera children and their
+/// bounded H264 side channel while preserving protocols 1-3 byte for byte.
+pub const PROTOCOL_VERSION: u32 = 4;
 /// The protocol generation that introduced children, typed actions, pairing,
 /// and host-owned credentials. Keep this name for source compatibility with
 /// packages developed while protocol 3 was in preview.

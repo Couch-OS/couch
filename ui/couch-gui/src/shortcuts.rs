@@ -77,11 +77,13 @@ fn open_device(config: &Config, id: &Id) -> Dispatch {
     let resource = format!("device:{}", device.id);
     let name = device.name.clone();
     let integration = config.resolve_integration(&device.integration);
+    if crate::camera::target(config, device).is_some() {
+        return Dispatch::OpenCamera(resource, name);
+    }
     match &integration {
         Some(Integration::HomeAssistant { entity_id }) if ha_domain(entity_id) == "climate" => {
             return Dispatch::OpenThermostat(resource, name);
         }
-        Some(Integration::UnifiProtect { .. }) => return Dispatch::OpenCamera(resource, name),
         Some(integration) if opens_player(integration) => {
             return Dispatch::OpenActivity(resource);
         }

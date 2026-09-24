@@ -7,8 +7,8 @@ description = "Config server for Couch: the REST API and the web UI it serves"
 
 [features]
 default = []
-# Feed admission can exercise protocol-4 camera packages before the full OS
-# release enables their daemon/UI forwarding path.
+# No-op compatibility feature retained for preview build commands. The
+# couch-plugin dependency now exposes protocol 4 in every normal core build.
 protocol-4-preview = ["couch-plugin/protocol-4-preview"]
 
 # tiny_http rather than axum. axum is the better library for a service; it is

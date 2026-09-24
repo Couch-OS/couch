@@ -1205,14 +1205,29 @@ pub fn list_children(
     Err(Error::Protocol)
 }
 
+enum PendingWork {
+    Request {
+        request: Request,
+        /// The kind of child the request names, if it names one. Carried here
+        /// rather than on the wire: the gate on the worker's side needs it,
+        /// the package never does.
+        kind: Option<String>,
+    },
+    /// Read one record from the camera side channel already opened on this
+    /// exact child. A read never starts a replacement process: a replacement
+    /// has no open view and bytes from it would belong to no request.
+    CameraRecord,
+}
+
+enum PendingReply {
+    Response(Response, Option<Credential>),
+    CameraRecord(Option<Vec<u8>>),
+}
+
 struct Pending {
-    request: Request,
-    /// The kind of child the request names, if it names one. Carried here
-    /// rather than on the wire: the gate on the worker's side needs it, the
-    /// package never does.
-    kind: Option<String>,
+    work: PendingWork,
     queued: Instant,
-    reply: SyncSender<std::result::Result<(Response, Option<Credential>), Failure>>,
+    reply: SyncSender<std::result::Result<PendingReply, Failure>>,
 }
 /// Cloneable handle to one persistent endpoint owner and a bounded queue.
 /// A failed request is never replayed. Only a subsequent explicit request may
@@ -1293,6 +1308,11 @@ impl Endpoint {
                         let _ = pending.reply.send(Err(Error::Expired.into()));
                         continue;
                     }
+                    let may_restart = matches!(&pending.work, PendingWork::Request { .. });
+                    if !host.is_alive() && !may_restart {
+                        let _ = pending.reply.send(Err(Error::Transport.into()));
+                        continue;
+                    }
                     if !host.is_alive() {
                         let replacement = Host::spawn_with_policy(
                             &package_dir,
@@ -1317,7 +1337,17 @@ impl Endpoint {
                             continue;
                         }
                     }
-                    let result = host.request_child_full(pending.kind.as_deref(), pending.request);
+                    let result = match pending.work {
+                        PendingWork::Request { request, kind } => host
+                            .request_child_full(kind.as_deref(), request)
+                            .map(|(response, credential)| {
+                                PendingReply::Response(response, credential)
+                            }),
+                        PendingWork::CameraRecord => host
+                            .read_camera_record()
+                            .map(PendingReply::CameraRecord)
+                            .map_err(Failure::from),
+                    };
                     let _ = pending.reply.send(result);
                 }
             })
@@ -1373,8 +1403,10 @@ impl Endpoint {
             .as_ref()
             .ok_or(Failure::from(Error::Transport))?
             .try_send(Pending {
-                request,
-                kind: kind.map(str::to_owned),
+                work: PendingWork::Request {
+                    request,
+                    kind: kind.map(str::to_owned),
+                },
                 queued: Instant::now(),
                 reply,
             }) {
@@ -1382,9 +1414,42 @@ impl Endpoint {
             Err(TrySendError::Full(_)) => return Err(Error::Busy.into()),
             Err(TrySendError::Disconnected(_)) => return Err(Error::Transport.into()),
         }
-        receiver
+        match receiver
             .recv()
-            .map_err(|_| Failure::from(Error::Transport))?
+            .map_err(|_| Failure::from(Error::Transport))??
+        {
+            PendingReply::Response(response, credential) => Ok((response, credential)),
+            PendingReply::CameraRecord(_) => Err(Error::Protocol.into()),
+        }
+    }
+
+    /// Read one bounded record from the live camera view previously opened on
+    /// this endpoint. Reads share the endpoint's single owner with control
+    /// requests, so package stdout and the media descriptor can never be
+    /// consumed by different host instances.
+    pub fn read_camera_record(&self) -> std::result::Result<Option<Vec<u8>>, Failure> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        match self
+            .inner
+            .sender
+            .as_ref()
+            .ok_or(Failure::from(Error::Transport))?
+            .try_send(Pending {
+                work: PendingWork::CameraRecord,
+                queued: Instant::now(),
+                reply,
+            }) {
+            Ok(()) => (),
+            Err(TrySendError::Full(_)) => return Err(Error::Busy.into()),
+            Err(TrySendError::Disconnected(_)) => return Err(Error::Transport.into()),
+        }
+        match receiver
+            .recv()
+            .map_err(|_| Failure::from(Error::Transport))??
+        {
+            PendingReply::CameraRecord(record) => Ok(record),
+            PendingReply::Response(_, _) => Err(Error::Protocol.into()),
+        }
     }
 }
 
@@ -1473,6 +1538,101 @@ pub fn local_request_detailed(
         } if !reason.is_well_formed() => Err(Error::Protocol.into()),
         Response::Error { code, reason } => Err(Failure { code, reason }),
         response => Ok(response),
+    }
+}
+
+/// One live camera stream relayed by the local Couch daemon. The opening
+/// response uses the ordinary bounded JSON frame; everything after it is the
+/// protocol-4 H264 record codec. Dropping either handle closes the local
+/// socket, which makes the daemon close the package view.
+pub struct LocalCamera {
+    stream: UnixStream,
+    deadline: Instant,
+}
+
+pub struct LocalCameraInterrupt {
+    stream: UnixStream,
+}
+
+impl LocalCameraInterrupt {
+    pub fn cancel(&self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+impl LocalCamera {
+    pub fn open(
+        socket: &Path,
+        connection_id: &str,
+        resource: &str,
+        timeout: Duration,
+    ) -> std::result::Result<Self, Failure> {
+        if connection_id.is_empty()
+            || connection_id.len() > 128
+            || connection_id.chars().any(char::is_control)
+            || !valid_resource(resource)
+            || timeout.is_zero()
+        {
+            return Err(Error::Invalid.into());
+        }
+        let request = Request::camera_open(resource);
+        let mut stream = UnixStream::connect(socket).map_err(Error::from)?;
+        let response = {
+            let mut bounded = DeadlineStream {
+                stream: &mut stream,
+                deadline: Instant::now() + timeout,
+            };
+            write_frame(
+                &mut bounded,
+                &LocalRequest {
+                    connection_id: connection_id.into(),
+                    request: request.clone(),
+                },
+            )?;
+            read_frame(&mut bounded)?
+        };
+        validate_response(&request, &response)?;
+        match response {
+            Response::CameraOpen {
+                codec: crate::CameraCodec::H264AnnexB,
+                seconds,
+            } => Ok(Self {
+                stream,
+                deadline: Instant::now() + Duration::from_secs(u64::from(seconds)),
+            }),
+            Response::Error {
+                reason: Some(reason),
+                ..
+            } if !reason.is_well_formed() => Err(Error::Protocol.into()),
+            Response::Error { code, reason } => Err(Failure { code, reason }),
+            _ => Err(Error::Protocol.into()),
+        }
+    }
+
+    pub fn interrupter(&self) -> Result<LocalCameraInterrupt> {
+        Ok(LocalCameraInterrupt {
+            stream: self.stream.try_clone()?,
+        })
+    }
+
+    pub fn next_record(&mut self) -> Result<Option<Vec<u8>>> {
+        couch_sdk::camera::read_h264_record(&mut DeadlineStream {
+            stream: &mut self.stream,
+            deadline: self.deadline,
+        })
+        .map_err(|error| match error {
+            couch_sdk::camera::CameraWireError::Protocol => Error::Protocol,
+            couch_sdk::camera::CameraWireError::Io(
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock,
+            ) => Error::Timeout,
+            couch_sdk::camera::CameraWireError::Io(_) => Error::Transport,
+        })
+    }
+}
+
+impl Drop for LocalCamera {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
     }
 }
 

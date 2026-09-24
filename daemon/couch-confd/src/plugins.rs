@@ -551,6 +551,27 @@ pub struct Runtime {
     scripted_pairing: Mutex<Option<ScriptedPairing>>,
 }
 
+/// One package camera view after its ordinary control-plane open succeeded.
+/// The endpoint handle pins the exact child for the view's lifetime even if a
+/// package update concurrently replaces the registry entry.
+pub struct CameraRelay {
+    endpoint: Arc<Endpoint>,
+    kind: String,
+    resource: String,
+}
+
+impl CameraRelay {
+    pub fn next_record(&self) -> Result<Option<Vec<u8>>, Failure> {
+        self.endpoint.read_camera_record()
+    }
+
+    pub fn close(self) {
+        let _ = self
+            .endpoint
+            .request_child_detailed(Some(&self.kind), Request::camera_close(self.resource));
+    }
+}
+
 impl Runtime {
     pub fn new(home: PathBuf) -> Self {
         let directory = std::env::var_os("COUCH_INTEGRATIONS_DIR")
@@ -1049,6 +1070,58 @@ impl Runtime {
             self.store_rotated(connection, paired, queued, rotated);
         }
         Ok(response)
+    }
+
+    /// Open one protocol-4 camera view and return the exact endpoint that owns
+    /// its binary side channel. This is deliberately separate from `execute`:
+    /// an ordinary panel request ends after one JSON response, while a camera
+    /// keeps relaying bounded binary records until the view or local client
+    /// closes.
+    pub fn camera_open(
+        &self,
+        connection: &str,
+        plugin: &str,
+        kind: &str,
+        resource: &str,
+    ) -> Result<(Response, CameraRelay), Failure> {
+        let queued = Instant::now();
+        let path = self.settings_path(connection)?;
+        let lock = crate::api::connections::lock_for(&path);
+        let _guard =
+            crate::api::connections::patiently(queued + REQUEST_LOCK_WAIT, || lock.try_lock().ok())
+                .ok_or(Error::Busy)?;
+        let generation = self
+            .packages
+            .generation(plugin)
+            .map_err(|_| Error::Invalid)?;
+        let settings = load_settings(&path)?.ok_or(Error::Invalid)?;
+        let credential = self.credential(connection, plugin);
+        let paired = credential.is_some();
+        let endpoint = self.endpoint_for(
+            connection,
+            plugin,
+            &generation,
+            settings,
+            credential,
+            queued,
+        )?;
+        if queued.elapsed() >= couch_plugin::QUEUE_TTL {
+            return Err(Error::Expired.into());
+        }
+        lock_order::calling_out("a package camera is opened");
+        let (response, rotated) =
+            endpoint.request_child_full(Some(kind), Request::camera_open(resource.to_owned()))?;
+        if let Some(rotated) = rotated {
+            self.store_rotated(connection, paired, queued, rotated);
+        }
+        Ok((
+            response,
+            CameraRelay {
+                endpoint,
+                kind: kind.to_owned(),
+                resource: resource.to_owned(),
+            },
+        ))
     }
 
     /// Protocol 3 (unreleased): keep a key the device rotated under us.
