@@ -59,7 +59,7 @@ fn protocol_1_to_3_packages_do_not_inherit_the_camera_descriptor() {
     }));
     p.script(&format!(
         "dd bs=1 count={hello_request} of=/dev/null 2>/dev/null\n\
-         if : >&3 2>/dev/null; then\n{unexpected}else\n{}fi\n\
+         if [ -e /proc/self/fd/3 ] || [ -e /dev/fd/3 ]; then\n{unexpected}else\n{}fi\n\
          exec /bin/sleep 10",
         p.hello()
     ));
