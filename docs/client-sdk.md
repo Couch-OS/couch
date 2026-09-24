@@ -122,6 +122,15 @@ omitted array remains compatible with the basic command list.
 | `toggle` | `label`, `state`, `on`, `off` | Boolean status field plus two distinct declared commands |
 | `input_selector` | `label` | Enumerated inputs; requires `supports_inputs: true` |
 
+On the remote, Couch recognizes a native television profile without adding a
+vendor-specific manifest field. A package qualifies when it declares an input
+selector, supports enumerated inputs, and advertises the complete standard TV
+set: power off, volume up/down, mute, D-pad/OK/Back/Home, and
+play/pause/stop/rewind/fast-forward. The screen then uses Couch's TV hero and
+transport row and sends physical navigation keys to the package. A package
+missing any of that contract keeps the generic tile navigator, so a receiver
+with a few cursor commands is never mistaken for a television.
+
 For example, a receiver can declare:
 
 ```json

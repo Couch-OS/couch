@@ -165,12 +165,12 @@ Read from `clients/couch-plugin/src/{protocol,manifest,host}.rs`,
   or private key has nowhere to live.
 - **Screen**: five declarative components (`command_group`, `status_text`,
   `toggle`, `input_selector`, `volume_db_control`). On the remote a packaged
-  device opens the TV-style core control screen (`ui/couch-gui/src/tv_plugin.rs`):
-  power tile, current source, source list, command tiles; the volume, mute and
-  power keys work from the room row (`activity_buttons.rs`). That screen
-  spends the D-pad on its own tiles (a package never receives `up`/`down`/`ok`
-  from it), follows every command with a `status` read, and does not show the
-  `title` or `playing` a package reports.
+  device opens the core control screen (`ui/couch-gui/src/tv_plugin.rs`): power
+  tile, current source, source list and command tiles. A package with the full
+  standard television capability profile uses the native TV hero and transport
+  row and receives the physical D-pad; incomplete profiles retain the generic
+  tile navigator. The volume, mute and power keys work from the room row
+  (`activity_buttons.rs`), and each command is followed by a `status` read.
 - **One connection is one device.** `Integration::Plugin` has a `resource_id`
   field, but no request carries it.
 - **The sandbox** (`Host::spawn_with_policy`): environment cleared, cwd `/`,
