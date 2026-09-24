@@ -122,6 +122,15 @@ omitted array remains compatible with the basic command list.
 | `toggle` | `label`, `state`, `on`, `off` | Boolean status field plus two distinct declared commands |
 | `input_selector` | `label` | Enumerated inputs; requires `supports_inputs: true` |
 
+On the remote, Couch recognizes a native television profile without adding a
+vendor-specific manifest field. A package qualifies when it declares an input
+selector, supports enumerated inputs, and advertises the complete standard TV
+set: power off, volume up/down, mute, D-pad/OK/Back/Home, and
+play/pause/stop/rewind/fast-forward. The screen then uses Couch's TV hero and
+transport row and sends physical navigation keys to the package. A package
+missing any of that contract keeps the generic tile navigator, so a receiver
+with a few cursor commands is never mistaken for a television.
+
 For example, a receiver can declare:
 
 ```json
@@ -162,8 +171,8 @@ config.json ──────────► model/couch-model ◄────�
         Private Unix socket, mode 0600, beside config.json.
                    │
                    ▼
-   clients/couch-kodi   couch-webos   couch-sonos   couch-ha   couch-hue
-   couch-androidtv      couch-appletv couch-tizen   couch-ir     couch-voice
+   clients/couch-kodi   couch-sonos   couch-ha      couch-tizen
+   couch-androidtv      couch-appletv couch-ir      couch-voice
                    ▲
                    └── clients/couch-sdk: the contract they share
 ```
@@ -288,10 +297,9 @@ not implemented puts a key on screen that silently does nothing, so the test
 harness checks every ID parses, is canonical, is unique, and is accepted by
 your own `supports`.
 
-`x:<id>` ids (a package's own button names) are part of protocol 3, which is
-unreleased and switched off: a protocol 1 or 2 manifest that declares one is
-invalid, and a protocol 3 manifest is refused. See the
-[protocol reference](development/protocol.md#protocol-3-unreleased-and-switched-off).
+`x:<id>` ids (a package's own button names) are part of protocol 3. A protocol
+1 or 2 manifest that declares one is invalid. See the
+[protocol reference](development/protocol.md#protocol-3).
 The same goes for `Error::Unpaired`, `Error::because`,
 `DeviceClient::execute_phased` and everything under
 [One connection, many children](#one-connection-many-children) below: they
@@ -339,7 +347,7 @@ not retryable.
 
 ### One connection, many children
 
-Protocol 3, unreleased and switched off. Most devices are one connection and
+Protocol 3. Most devices are one connection and
 one device. A bridge - a Hue hub, Home Assistant, a Protect controller - is one
 connection and many, and Couch calls those its *children*. A client that has
 none implements nothing here: every method below has a default that refuses,
@@ -391,7 +399,7 @@ read and that a kind never answers for another.
 
 ### Pairing, and the key Couch keeps
 
-Protocol 3, unreleased and switched off. A package that needs a key from the
+Protocol 3. A package that needs a key from the
 device - a Hue hub's application key, a webOS client key, an Android TV
 certificate - never draws a dialog and never stores anything. It describes one
 step at a time; Couch draws its own headline, collects what the person types,
@@ -659,10 +667,10 @@ Notes that will save you a day:
 - **Two existing clients have been adapted.** `couch-denon` uses the shared
   settings helper and implements `DeviceClient`; `couch-sonos` implements both
   over its HTTPS Control API transport, and shows what a client does when the
-  mock host cannot speak its protocol (`docs/sonos.md`). The other eight keep
+  mock host cannot speak its protocol (`docs/sonos.md`). The other clients keep
   their own shapes; there is no migration in progress and none is required.
-- **No streaming or subscription API.** `couch-webos` and `couch-kodi` receive
-  pushed updates, and those paths stay in the client and the broker. The SDK
+- **No streaming or subscription API.** `couch-kodi` receives pushed updates,
+  and that path stays in the client and the broker. The SDK
   covers request/response, status and enumeration only.
 - **No async.** Everything is blocking with explicit deadlines, matching the
   rest of the repository.

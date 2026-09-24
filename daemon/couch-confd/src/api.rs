@@ -24,7 +24,6 @@ pub(crate) mod connections;
 mod coreelec;
 mod device_ir;
 mod ha;
-mod hue;
 mod integration_migrations;
 mod integration_packages;
 mod ir;
@@ -37,7 +36,6 @@ mod sonos;
 mod streaming_tv;
 mod tizen;
 mod updates;
-mod webos;
 
 use std::io::Read;
 use std::sync::Arc;
@@ -332,10 +330,9 @@ impl Api {
             );
         }
 
-        if let Some(kind @ ("hue" | "ha" | "webos")) = rest.first().copied() {
+        if let Some(kind @ ("hue" | "ha")) = rest.first().copied() {
             let provider = match kind {
                 "ha" => "home-assistant",
-                "webos" => "web-os",
                 _ => "hue",
             };
             let ids = self.with(|s| {
@@ -376,12 +373,6 @@ impl Api {
         if rest.first() == Some(&"integrations") {
             return self.integration_route(&method, &rest[1..], &body);
         }
-        if rest.first() == Some(&"webos") {
-            return webos::route(&method, &rest[1..], &body);
-        }
-        if rest.first() == Some(&"hue") {
-            return hue::route(&method, &rest[1..], &body);
-        }
         if rest.first() == Some(&"ha") {
             return ha::route(&method, &rest[1..], &body);
         }
@@ -398,6 +389,7 @@ impl Api {
             ("GET", ["config"]) => self.with(|s| Reply::json(200, s.config()).at(s.revision())),
             ("GET", ["remote", "timezones"]) => Reply::json(200, &remote::timezones()),
             ("GET" | "PUT", ["remote", "device"]) => remote::device(&method, &body),
+            ("POST", ["remote", "ssh"]) => remote::ssh(&body),
             ("GET", ["remote", "network"]) => remote::network(),
             ("POST", ["remote", "power"]) => remote::power(&body),
             ("POST", ["remote", "bluetooth"]) => remote::bluetooth(&body, |id| {

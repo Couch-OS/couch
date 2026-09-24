@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "Config server for Couch: the REST API and the web UI it serves"
 
+[features]
+default = []
+# No-op compatibility feature retained for preview build commands. The
+# couch-plugin dependency now exposes protocol 4 in every normal core build.
+protocol-4-preview = ["couch-plugin/protocol-4-preview"]
+
 # tiny_http rather than axum. axum is the better library for a service; it is
 # the wrong one for this device. It arrives with tokio, hyper, tower and their
 # transitive halves - a reactor, a work-stealing scheduler and a connection
@@ -34,10 +40,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 couch-ha = { path = "../../clients/couch-ha" }
-couch-hue = { path = "../../clients/couch-hue" }
 couch-matter = { path = "../../clients/couch-matter" }
-
-couch-webos = { path = "../../clients/couch-webos" }
 
 couch-kodi = { path = "../../clients/couch-kodi" }
 

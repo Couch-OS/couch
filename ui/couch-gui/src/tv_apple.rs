@@ -1,8 +1,7 @@
 //! Companion controls on the shared TV screen. No inferred playback or power state.
-use super::{android::current, Command, Details, Event, Work};
+use super::{android::current, Button, Command, Details, Event, Work};
 use couch_control::{StreamingConnection, StreamingTv};
 use couch_model::{commands::Function, Integration};
-use couch_webos::Button;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn function(action: &Command) -> Result<Option<String>, String> {

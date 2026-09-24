@@ -814,9 +814,20 @@ underneath it belongs to neither.
 | player with album art | **banded** | a photograph behind everything |
 | camera, waiting for a frame | falling, `sooner` | one line on an empty page |
 | camera with a frame up | **banded** | the picture is a photograph |
+| a packaged device's pages of buttons | falling | flat background, rows of tiles |
 
 A screen answers three questions - `lift-ready()`, `banded()`, `sparse()` -
-and the plan follows from them. The thermostat's and the camera's second lines
+and the plan follows from them. Measured, mean and worst panels a frame:
+light 0.19/0.29, television 0.15/0.28 and 0.14/0.29 with artwork, thermostat
+0.15/0.28, player 0.12/0.26 waiting and 0.14/0.29 with album art, camera
+0.15/0.26 waiting and 0.14/0.29 live, pages 0.17/0.28. Every one is inside
+the caps of 0.25 and 0.35.
+
+**The title is the device's name on every one of them**, because the lift
+flies the row's own name onto it and two different sets of words cannot be
+the same drawing. The pages of buttons put the page's name on the second line
+for that reason: it used to be the title, and the name coming out of the row
+landed on a different word. The thermostat's and the camera's second lines
 name the room and what drives them; both used to be literals (`"Home
 Assistant"`, `"UniFi Protect"`) that were wrong on any other driver and said
 nothing about where the device is.
@@ -827,6 +838,34 @@ that takes itself down in a Slint callback is already gone by the time
 anything notices - it would lift out of its row on the way in and vanish on
 the way out. The camera did exactly that; its Back is queued for the poll now,
 which is where every other device screen closes.
+
+
+### A row that is doing nothing sinks back, and the lift follows it
+
+Room rows on the hub have always recessed when a room is idle; device rows
+never did, so "Reading lamp · Unavailable" had the same card as "Desk lamp ·
+On · 40%" - the strongest state inconsistency the audit found. A device row
+recesses now on the same rule: a lamp that is off, or a light or blind that
+has not answered. A device row with controls behind it does not - it has no
+state to be off in.
+
+**The title stays at full strength.** That is not only the hub's rule: the
+lift flies that word onto the screen's own title, and a dimmer copy in the row
+would land on a brighter one. Only the second line dims, and the disc already
+dimmed itself.
+
+**The lift reads the colour rather than assuming it.** `LiftPlan` carries
+`surface` and `border`, which `room_devices.slint` reports for the focused row
+through `App`, and three things use them: the name and the icon are keyed on
+that colour when they are cut out of the row, the band they are painted out of
+is filled with it, and the card that rises out of the row starts in it. Keying
+a sprite on `Theme.surface` when the row is really `Theme.surface-idle` leaves
+a halo of the wrong grey around every glyph, which is exactly the fault the
+whole keying mechanism exists to avoid.
+
+The five checks run on a recessed row as well as a lit one, and the test
+asserts the row's colour really did change - without which the rest proves
+nothing.
 
 
 ### Whole-row list windows

@@ -165,12 +165,12 @@ Read from `clients/couch-plugin/src/{protocol,manifest,host}.rs`,
   or private key has nowhere to live.
 - **Screen**: five declarative components (`command_group`, `status_text`,
   `toggle`, `input_selector`, `volume_db_control`). On the remote a packaged
-  device opens the TV-style core control screen (`ui/couch-gui/src/tv_plugin.rs`):
-  power tile, current source, source list, command tiles; the volume, mute and
-  power keys work from the room row (`activity_buttons.rs`). That screen
-  spends the D-pad on its own tiles (a package never receives `up`/`down`/`ok`
-  from it), follows every command with a `status` read, and does not show the
-  `title` or `playing` a package reports.
+  device opens the core control screen (`ui/couch-gui/src/tv_plugin.rs`): power
+  tile, current source, source list and command tiles. A package with the full
+  standard television capability profile uses the native TV hero and transport
+  row and receives the physical D-pad; incomplete profiles retain the generic
+  tile navigator. The volume, mute and power keys work from the room row
+  (`activity_buttons.rs`), and each command is followed by a `status` read.
 - **One connection is one device.** `Integration::Plugin` has a `resource_id`
   field, but no request carries it.
 - **The sandbox** (`Host::spawn_with_policy`): environment cleared, cwd `/`,
@@ -204,7 +204,7 @@ its own socket to the device; "broker" means it goes through `couch-control`
 | **Sonos** `couch-sonos` | Full player screen (`sonos_player.rs`): art, track, seek, sources, shuffle/repeat/crossfade, up next, group awareness. Room-row keys (`room_sonos.rs`): volume with held-key coalescing, mute, skip, source picker. Web: address form + test controls. | HTTPS to the player on 1443 (certificate not verifiable: Sonos' device CA is in no trust store). Artwork over plain HTTP 1400 or the music service. mDNS `_sonos._tcp` discovery exists but only the CLI calls it. **GUI direct.** | None. One household **API key**: env, per-connection setting, `/opt/couch/sonos-api-key`, or the **build-time key**. Decided: packages get it baked in at publish time from a feed secret. | Polled: every 3 s while the player is open and after each command. No events. | 3026; `ureq`, `rustls`. Already has `DeviceClient`, `plugin.json`, package binary and a fake Control API. Preview package: `couch-integration-sonos` (protocol 1, simple remote). | **Client validated on real players** (four-player household, firmware 97.1; re-validated 2026-09-13). The *package* has never run on one. |
 | **Kodi** `couch-kodi` | Full player screen (`activity.rs`, "Cinema"): backdrop and logo art, title, seek, chapters / audio / subtitle sheets, D-pad passthrough with contextual OK. Activities name a Kodi source. Web: address + optional web-server credentials. | JSON-RPC over TCP 9090 (persistent, pushes notifications) or HTTP 8080; artwork from the web port with Basic auth. No TLS. **Broker.** | None on TCP. Optional web user/password in `kodi-connection.json`; legacy `kodi-web.json`. | **Push** notifications plus a 5 s poll; HTTP mode polls only. | 1980; serde only. No `DeviceClient` in the main repository; the preview package `couch-integration-kodi` (protocol 1, simple remote) has one. | Built-in validated against a physical CoreELEC player (playback, art, chapters, volume). Preview package checked read-only against two real Kodi 22 boxes. |
 | **CoreELEC** `couch-coreelec` | No GUI screen of its own: on the remote it *is* Kodi. Web only: SSH enrolment, OS status, reboot / power off / restart Kodi. | Kodi as above, plus **spawns the system `ssh` program** with a private key and `known_hosts` file; SSDP discovery (CLI only). Daemon only. | Pasted SSH private key + verified host key under `connections/<id>/coreelec-ssh-*/`. | On demand. | 632. **`couch-coreelec` is a required file name in the deployed updater.** | "No physical CoreELEC device has been contacted" for the OS half. |
-| **LG webOS** `couch-webos` | The shared TV screen (`tv.rs`): D-pad, volume, inputs, apps, picture and sound cards, power. | `wss://` 3001 with a pinned (trust-on-first-use) certificate, plus a second pointer socket for D-pad. Wake-on-LAN (UDP 9), MAC learned from `/proc/net/arp`. **Power defaults to infrared: opens `/dev/irtx`** (that is why it depends on `couch-ir`). **Broker.** | Approve a prompt on the TV; stores client key + certificate in `webos-connection.json`, plus `webos-power.json`, `webos-wake.json`. No discovery: address typed in. | Client supports subscriptions but nothing consumes them; GUI polls volume and app every 5 s. | 1013; `tungstenite`, `rustls`. | **Validated on a physical TV** (pairing, status, inputs, apps, power off, network wake). IR power not validated. |
+| **LG webOS** external `couch-integration-webos` package | Native package TV screen: D-pad, volume, inputs, apps and playback. | `wss://` 3001 with a pinned certificate; package-owned SSAP/pointer transport. Core IR remains available as a device transport. | Approve a prompt on the TV; package credential stores client key + certificate. Old `webos-connection.json` converts automatically and remains for rollback. | Package status/inputs/apps through the protocol host. | Removed from the core image. | **Extracted and validated on a physical TV** (pairing, status, inputs, apps, physical and touchscreen controls, power off). |
 | **Android / Google TV** `couch-androidtv` | Shared TV screen (`tv_android.rs`); now-playing text, art and timeline from Cast (`tv_media.rs`); app tray from *configured* shortcuts (no app list). | Mutual TLS 6466/6467 with its own RSA identity, protobuf; **must answer keep-alives at least once a second**. Separate read-only Cast connection on 8009 (**GUI direct**). mDNS `_androidtvremote2._tcp` browsed by the daemon. **Broker** for control. | Six-character code shown on the TV, two-step (`pair-start`, `pair-finish`); stores TV certificate + own certificate and private key in `androidtv-connection.json`. | Remote state polled every 4 s; Cast status is a true push stream. | 1973; `prost`, `rustls`, `rcgen`, `rsa`, `x509-parser` (largest dependency set of the TVs). | Partly validated (Xiaomi MiTV: pairing, status, a few keys; Cast metadata seen live). Long-running keep-alive not proven. |
 | **Apple TV** `couch-appletv` | Shared TV screen (`tv_apple.rs`), app launch by bundle id, sleep/wake; now-playing text from AirPlay metadata (`tv_media.rs`, no artwork). | Companion protocol (HAP: SRP + X25519/Ed25519 + ChaCha20, no TLS) on an advertised port; a second AirPlay 2 connection with three encrypted channels (**GUI direct**). mDNS `_companion-link._tcp`, `_airplay._tcp` via the daemon. **Broker** for control. | Four-digit PIN on the TV, **twice** (control and metadata); two credential files. | Control polled every 4 s; metadata is a real subscription. | 3404; nine crypto crates, `plist`, `prost`. | **Never paired with a real Apple TV.** |
 | **Samsung Tizen** `couch-tizen` | Shared TV screen (`tv_tizen.rs`): keys, six fixed inputs, app list and launch, Frame TV power. | `wss://` 8002 pinned, legacy `ws://` 8001; plain REST on 8001; SSDP discovery (daemon calls it); Wake-on-LAN. **Broker.** | Allow/Deny prompt on the TV; stores token, certificate, MAC, model in `tizen-connection.json`. | No events; polled every 4 s. | 1422; `tungstenite`, `rustls`. | **Written without a Samsung TV; never paired.** |
@@ -293,7 +293,7 @@ union, and the designs are referenced rather than repeated:
 | Kodi | X | X | X | X | o | X | - | - | o | - | o | - | - | - | - | o (per-key IR override stays in core) |
 | CoreELEC (Kodi half) | as Kodi | | | | | | | | o | | | | | | | - |
 | CoreELEC (SSH half) | - | - | - | - | - | - | - | X | - | - | - | - | - | - | - | **X** (`ssh` program, key files) |
-| LG webOS | - | - | o | o | o | o | X | X | - | X | X | - | - | - | - | **X for IR power** (move above the package) |
+| LG webOS | - | - | o | o | o | o | X | X | - | X | X | - | - | - | - | o (core device IR remains independent of the package) |
 | Android TV | o | o | - | - | o | X | X | X | X | o (launch only) | **X** | - | - | - | - | - |
 | Apple TV | o | - | - | - | o | X | X (twice) | X | X | X | X | - | - | - | - | - |
 | Samsung Tizen | - | - | - | o | o | - | X | X | X | X | X | - | - | - | - | - |
@@ -407,10 +407,10 @@ The GUI half of wave 1 is the larger half: `sonos_player.rs`, `activity.rs`,
 Uses T3 (and T6 where it exists). Order by how much is already proven:
 
 1. **LG webOS** - validated on a real TV, simplest pairing (`ApproveOnDevice`),
-   no discovery. Needs decision 7: infrared power and the learned wake address
-   (`webos-power.json`, `webos-wake.json`) become core device settings above the
-   package. Its picture and sound cards are dropped from parity with a note unless
-   someone asks for them.
+   no discovery. Core per-device IR remains available independently. The legacy
+   `webos-power.json` and `webos-wake.json` files are retained only for rollback;
+   they are not migrated or used by the package. Its picture and sound cards are
+   dropped from parity with a note unless someone asks for them.
 2. **Android TV** - partly validated; exercises `EnterCode` pairing, the largest
    credential, and `keep_alive` with sub-second keep-alives through the serve
    loop's idle hook (T5). App shortcuts stay in core configuration. Cast
@@ -436,10 +436,17 @@ test-only trust bypass is needed.
 
 ### 4.6 Later - live camera video (protocol 4, size XL)
 
-Needs a byte stream beside the JSON frames (a second inherited socket carrying
-length-prefixed H.264 access units), a decision about where `ffmpeg` runs and
-whether SRTP keys may live in a package. Do not start until a second camera
-integration is wanted; UniFi Protect can stay built in with no harm.
+Work began for UniFi Protect on 2026-09-23 after its physical-remote path was
+made reliable and extraction was explicitly requested. The settled design uses
+a second inherited socket carrying bounded length-prefixed H264 access units;
+`ffmpeg` stays core-owned, while SRTP, stream URLs and certificate pins remain
+inside the package. The provider-neutral decoder, rollback-safe camera child,
+bounded control frames, record codec, SDK server, daemon/GUI forwarding and
+package adapter now exist in source, and protocol 4 is the normal host
+contract. The standalone UniFi package is published in the preview feed.
+Automatic migration from the retained built-in connection and physical
+package acceptance remain. See
+`docs/plans/camera-package-data-plane.md`.
 
 ### What should not become a package
 
@@ -489,9 +496,9 @@ The same nine steps every time; `couch-integration-denon` is the model.
    becomes the package" converter (being built for Denon now): the `Provider`
    variant it matches, the package id, how its fields and its private credential
    file map to package settings (for example `webos-connection.json`
-   `{url, client_key, certificate}` -> settings `host`, credentials `client_key`,
-   `certificate`), and the sidecar files to fold in (`webos-power.json`,
-   `webos-wake.json`, `kodi-web.json`). With no internet the connection stays
+   `{url, client_key, certificate}` -> settings `url`, credentials `client_key`,
+   `certificate`), and any sidecar files that are actually part of the migration
+   (for example `kodi-web.json`). With no internet the connection stays
    listed as "needs the <name> package" and retries. Rooms, activities and button
    maps keep pointing at the same connection id.
 7. **Retire the built-in** one release after hands-on validation (decision 5):
@@ -521,13 +528,13 @@ the bar is raised in one place, and a **template repository** cut from Echo.
 | Denon | `couch-integration-denon` (exists) | 2 | host, port | auto-convert in progress |
 | Sonos | `couch-integration-sonos` (exists, preview) | 1 now, then 3 | host; key comes from the build | keep `couch-sonos` file name as a stub |
 | Kodi | `couch-integration-kodi` (exists, preview) | 1 now, then 3 | host, port; from `kodi-connection.json`: `http_control` -> `http`, `web_port`, `username`, `password`; legacy `kodi-web.json` | also absorbs `Provider::CoreElec`'s Kodi half; keep `couch-coreelec` file name |
-| LG webOS | `couch-integration-webos` | 3 | `webos-connection.json`; power and wake sidecars move to core device settings | |
+| LG webOS | `couch-integration-webos` | 3 | `webos-connection.json`; legacy power and wake sidecars remain only for rollback | removed from core after physical-TV validation |
 | Android TV | `couch-integration-androidtv` | 3 | `androidtv-connection.json`; `config.app_shortcuts` stays in core config | |
 | Samsung Tizen | `couch-integration-tizen` | 3 | `tizen-connection.json` | preview, never validated |
 | Apple TV | `couch-integration-appletv` | 3 | both credential files | preview, never validated |
 | Philips Hue | `couch-integration-hue` (exists, client only) | 3 | `hue-connection.json` -> package credential; `light_id` -> resource id, `room:`/`scene:` -> `room/`/`scene/`; `Scene.hue` -> `Scene.resource` | |
 | Home Assistant | `couch-integration-home-assistant` | 3 | `ha-connection.json`; `entity_id` -> resource id | after the voice decision |
-| UniFi Protect | `couch-integration-unifi-protect` | 3 (stills) | credentials; `camera_id` -> resource id | live video stays built in until protocol 4 |
+| UniFi Protect | `couch-integration-unifi-protect` | 4 | address/API key -> package settings; pins -> credential; `camera_id` -> resource id | Extract once as a complete camera package; the provider-neutral decoder and protocol 4 data-plane plan are in `docs/plans/camera-package-data-plane.md`. |
 
 ## 6. Cross-cutting work
 

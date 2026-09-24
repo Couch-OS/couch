@@ -4,7 +4,7 @@
 # require rebuilding the daemon or either UI.
 [workspace]
 resolver = "2"
-members = ["couch-plugin", "couch-sdk", "couch-echo", "couch-kodi", "couch-voice", "couch-ir", "couch-ha", "couch-hue", "couch-webos", "couch-control", "couch-androidtv", "couch-appletv", "couch-sonos", "couch-coreelec", "couch-unifi-protect", "couch-matter", "couch-tizen", "couch-bt", "couch-bt-hid"]
+members = ["couch-plugin", "couch-sdk", "couch-camera", "couch-echo", "couch-kodi", "couch-voice", "couch-ir", "couch-ha", "couch-control", "couch-androidtv", "couch-appletv", "couch-sonos", "couch-coreelec", "couch-unifi-protect", "couch-matter", "couch-tizen", "couch-bt", "couch-bt-hid"]
 
 [workspace.package]
 version = "0.1.0"

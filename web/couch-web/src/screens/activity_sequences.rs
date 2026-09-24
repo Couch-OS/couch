@@ -68,7 +68,6 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
         };
         let Some(connection) = connection else { return };
         let prefix = match &connection.provider {
-            Provider::WebOs => "webos",
             Provider::AppleTv => "appletv",
             Provider::Tizen => "tizen",
             Provider::Plugin {
@@ -113,7 +112,7 @@ pub fn editor(app: App, config: &Config, activity: &Activity) -> AnyView {
                 }
             }
             let mut discovery_failed = inputs.is_err();
-            if matches!(prefix, "webos" | "appletv" | "tizen") {
+            if matches!(prefix, "appletv" | "tizen") {
                 let app_result = api::ha("GET", &format!("{path}/apps"), None).await;
                 discovery_failed |= app_result.is_err();
                 if let Ok(value) = app_result {

@@ -22,8 +22,13 @@ sending/learning remains unavailable on the current kernel.
 Private files are beside `config.json`, under `connections/<connection-id>/`:
 
 - `hue-connection.json`: URL, application key, pinned certificate.
+- `protect-connection.json`: NVR address, Integration API key, and exact API and
+  media certificate pins recorded during enrollment.
 - `ha-connection.json`: server URL and access token.
-- `webos-connection.json` and `webos-wake.json`: TV pairing and wake address.
+- `webos-connection.json`, `webos-power.json`, and `webos-wake.json`: legacy
+  built-in webOS state retained only for rollback. The migration coordinator
+  copies the pairing into the `webos` package's files; current core code does
+  not use the sidecars.
 - `androidtv-connection.json`, `appletv-connection.json`, `tizen-connection.json`: streaming TV pairings (Samsung's holds its token, pinned certificate and MAC).
 - `kodi-connection.json`: bound host, HTTP port, username/password, control mode.
 - `matter/`: the remote's own Matter fabric: CA and controller keys, node

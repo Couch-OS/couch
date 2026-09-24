@@ -1,8 +1,8 @@
 //! Wake-on-LAN, the only way to reach a TV that took its network interface
 //! down with the rest of itself.
 //!
-//! Copied verbatim into `couch-webos` and `couch-tizen` before this; they keep
-//! their own error types and call through here.
+//! Shared by LAN clients that wake a sleeping device without duplicating the
+//! packet encoder.
 
 use std::net::{Ipv4Addr, UdpSocket};
 

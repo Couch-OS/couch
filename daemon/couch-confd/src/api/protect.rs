@@ -1,8 +1,16 @@
 //! Camera API proxy. The browser never receives NVR keys or stream tokens.
 use super::Reply;
-use couch_unifi_protect::{settings::Settings, SnapshotChannel};
+use couch_unifi_protect::{observe_certificate_sha256, settings::Settings, SnapshotChannel};
+use serde::Deserialize;
 use serde_json::json;
-use std::path::PathBuf;
+use std::{net::IpAddr, path::PathBuf, time::Duration};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Enrollment {
+    address: String,
+    api_key: String,
+}
 
 pub(super) fn route_at(method: &str, path: &[&str], body: &[u8], file: PathBuf) -> Reply {
     let lock = super::connections::lock_for(&file);
@@ -14,21 +22,45 @@ pub(super) fn route_at(method: &str, path: &[&str], body: &[u8], file: PathBuf) 
             200,
             &match Settings::load(&file) {
                 Ok(s) => {
-                    json!({"origin":s.origin,"certificate_sha256":s.certificate_sha256,"media_certificate_sha256":s.media_certificate_sha256,"media_origin":s.media_origin,"private_ca_set":s.private_ca_pem.is_some(),"stream_host":s.stream_host,"key_set":true})
+                    json!({"address":s.address().map(|v|v.to_string()),"key_set":true})
                 }
                 Err(_) => json!({"key_set":false}),
             },
         );
     }
     if method == "PUT" && path == ["connection"] {
-        let settings: Settings = match serde_json::from_slice(body) {
+        let enrollment: Enrollment = match serde_json::from_slice(body) {
             Ok(value) => value,
-            Err(_) => {
-                return Reply::error(
-                    400,
-                    "Enter the console origin, API key and explicit certificate trust",
-                )
-            }
+            Err(_) => return Reply::error(400, "Enter the NVR IP address and API key"),
+        };
+        let address: IpAddr = match enrollment.address.trim().parse::<IpAddr>() {
+            Ok(value) if !value.is_unspecified() && !value.is_multicast() => value,
+            _ => return Reply::error(400, "Enter the NVR's IPv4 or IPv6 address"),
+        };
+        let host = match address {
+            IpAddr::V4(value) => value.to_string(),
+            IpAddr::V6(value) => format!("[{value}]"),
+        };
+        let timeout = Duration::from_secs(5);
+        // No credential is sent until the leaf has been observed and an exact
+        // pinned client has been constructed. Successful enrollment records
+        // both pins; a later certificate change fails closed.
+        let api_pin = match observe_certificate_sha256(&format!("https://{host}"), None, timeout) {
+            Ok(value) => value,
+            Err(_) => return Reply::error(502, "Could not reach the NVR HTTPS service"),
+        };
+        let media_pin = match observe_certificate_sha256(
+            &format!("rtsps://{host}:7441"),
+            Some("unifi.local"),
+            timeout,
+        ) {
+            Ok(value) => value,
+            Err(_) => return Reply::error(502, "Could not reach the NVR camera stream service"),
+        };
+        let settings = match Settings::pinned_local(address, enrollment.api_key, api_pin, media_pin)
+        {
+            Ok(value) => value,
+            Err(_) => return Reply::error(400, "Enter a valid NVR IP address and API key"),
         };
         let cameras = match settings.client().and_then(|c| c.cameras()) {
             Ok(c) => c,
@@ -95,10 +127,10 @@ mod tests {
         let result = route_at(
             "PUT",
             &["connection"],
-            br#"{"origin":"http://console.test","api_key":"another-private"}"#,
+            br#"{"address":"not-an-ip","api_key":"another-private"}"#,
             file.clone(),
         );
-        assert_eq!(result.status, 502);
+        assert_eq!(result.status, 400);
         assert_eq!(std::fs::read(&file).unwrap(), before);
         assert!(!String::from_utf8(result.body)
             .unwrap()

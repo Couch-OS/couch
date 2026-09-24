@@ -1,9 +1,8 @@
-//! Protocol 3, end to end, with the switch on: this tree's host, the SDK's
+//! Protocol 3, end to end: this tree's host, the SDK's
 //! `serve` loop in a real subprocess, and a fake television.
 //!
-//! Protocol 3 is unreleased. This file is built only with
-//! `--features protocol-3-preview`; `tests/plugin.rs` holds the other half,
-//! that with the switch off the same manifest is refused.
+//! This file is built only with `--features protocol-3-preview` because that
+//! feature supplies its example subprocesses.
 
 use couch_plugin::{
     testing::{self, Adapter, ConformanceCase},
@@ -274,6 +273,7 @@ fn the_bridge_lists_its_children_pages_them_and_answers_for_one_at_a_time() {
         bridge(),
         ChildrenCase {
             device: Box::new(NoDevice(hostile("none"))),
+            credential: None,
             expect: CHILDREN,
             kind: "light",
             write: TypedAction::SetLight {

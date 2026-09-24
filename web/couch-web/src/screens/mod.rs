@@ -384,8 +384,6 @@ mod tests {
     }
 }
 
-mod hue;
-
 mod connections;
 mod device_picker;
 mod plugin_children;
@@ -393,10 +391,8 @@ pub mod plugin_pairing;
 
 mod appearance;
 
-mod tizen;
-mod webos;
-
 mod kodi;
+mod tizen;
 
 mod remote;
 mod remote_device;

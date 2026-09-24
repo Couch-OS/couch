@@ -13,9 +13,22 @@ import tarfile
 import tempfile
 
 from clean_stage import (GENERATED, StageError, archive_name, build, checksum,
-                         require, secret_path)
+                         require, reviewed_set_id, secret_path)
 from package_closure import restore as restore_closure, verify
 from os_baseline import PIN as BASELINE_PIN, check_archive, seed as seed_os_baseline
+
+
+# Per-device identity that a package hook minted on the build host, dropped from
+# the assembled rootfs rather than refused. The D-Bus install hook writes a
+# machine ID wherever it runs; since D-Bus joined the OS package closure that is
+# the build container, and shipping the result would give every remote installed
+# from the image the same D-Bus identity. It is not a build input, so there is
+# nothing to review or pin - the file simply must not travel.
+# stage2/runtime-boot.sh mints a real one on the remote at first boot.
+#
+# Exactly these two paths, and only as regular files. Every other private-state
+# path, and anything unexpected at these paths, still fails the build.
+PRUNED = ('etc/machine-id', 'var/lib/dbus/machine-id')
 
 
 def normalize(data, epoch, private_files=None):
@@ -33,18 +46,21 @@ def normalize(data, epoch, private_files=None):
             name = archive_name(member.name)
             if name == '.':
                 continue
+            if name in PRUNED and member.isreg():
+                continue
             require(name not in entries, 'Duplicate assembled path')
             require(not secret_path(name) or name in private_files or (member.isdir() and name in private_dirs), f'Private runtime state in assembled rootfs: {name}')
             require(member.isdir() or member.isreg() or member.issym() or member.islnk(),
                     'Special filesystem entry after package installation')
-            require(not member.mode & 0o6000, 'Set-ID package file requires separate review')
+            content = archive.extractfile(member).read() if member.isreg() else b''
+            require(not member.mode & 0o6000 or reviewed_set_id(name, member, content),
+                    'Set-ID package file requires separate review')
             require(not name.startswith('dev/'), 'Runtime /dev entry in assembled rootfs')
             if member.issym() or member.islnk():
                 require('\\' not in member.linkname, 'Invalid assembled link')
                 target = posixpath.normpath(posixpath.join(
                     posixpath.dirname(name) if member.issym() else '', member.linkname))
                 require(target != '..' and not target.startswith('../'), 'Assembled link escape')
-            content = archive.extractfile(member).read() if member.isreg() else b''
             if name in private_files:
                 require(member.isreg() and checksum(content) == private_files[name], 'Private vendor member mismatch')
             if name == 'etc/shadow':

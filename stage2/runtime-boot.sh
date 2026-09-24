@@ -8,6 +8,22 @@ BCB=/dev/mmcblk0p10
 export COUCH_RUNTIME_SELECTED=1
 # Recovery must remain usable even when an application update is broken.
 [ "${COUCH_NO_UI:-0}" = 1 ] && exec "$BB" sh "$ROOT/stage2.sh"
+# The D-Bus machine ID identifies this remote, so it is made here and never
+# shipped: an image carrying one would hand the same identity to every remote
+# installed from it. D-Bus's install hook mints it, and that hook used to run on
+# the remote the first time Bluetooth was switched on. Now that D-Bus is part of
+# the OS image the hook has already run on the build host, so release staging
+# drops its file and the remote mints its own on first boot instead. Guarded and
+# idempotent: an Alpine root without dbus-uuidgen, and every later boot, do
+# nothing.
+ALPINE=/mnt/alpine
+if [ ! -s "$ALPINE/etc/machine-id" ] && [ -x "$ALPINE/usr/bin/dbus-uuidgen" ]; then
+    $BB chroot "$ALPINE" /usr/bin/dbus-uuidgen --ensure=/etc/machine-id && $BB sync
+fi
+if [ -s "$ALPINE/etc/machine-id" ] && [ ! -s "$ALPINE/var/lib/dbus/machine-id" ]; then
+    $BB mkdir -p "$ALPINE/var/lib/dbus" &&
+        $BB cp "$ALPINE/etc/machine-id" "$ALPINE/var/lib/dbus/machine-id" && $BB sync
+fi
 valid_id() {
     [ ${#1} -eq 64 ] || return 1
     case "$1" in *[!0-9a-f]*) return 1;; esac

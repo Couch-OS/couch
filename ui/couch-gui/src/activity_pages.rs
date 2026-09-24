@@ -211,13 +211,12 @@ impl Pages {
                 work,
                 reply,
                 current,
-                |request, caches: &mut (HashMap<_, _>, HashMap<_, _>, HashMap<_, _>)| {
+                |request, caches: &mut (HashMap<_, _>, HashMap<_, _>)| {
                     crate::activity_buttons::execute(
                         &request.config,
                         &request.action,
                         &mut caches.0,
                         &mut caches.1,
-                        &mut caches.2,
                         &crate::connections::matter(),
                     )
                 },
@@ -1232,12 +1231,14 @@ mod tests {
         assert_eq!(&*actions.borrow(), &[("page".into(), -1)]);
         pages.handle(&app, "page", -1);
         actions.borrow_mut().clear();
+        // Inside the first tile, which starts below the shared header band
+        // rather than under the title (ui/screens/activity_pages.slint).
         window.dispatch_event(WindowEvent::PointerPressed {
-            position: slint::LogicalPosition::new(40., 160.),
+            position: slint::LogicalPosition::new(40., 240.),
             button: PointerEventButton::Left,
         });
         window.dispatch_event(WindowEvent::PointerReleased {
-            position: slint::LogicalPosition::new(40., 160.),
+            position: slint::LogicalPosition::new(40., 240.),
             button: PointerEventButton::Left,
         });
         assert_eq!(&*actions.borrow(), &[("command".into(), 0)]);

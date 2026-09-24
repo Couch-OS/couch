@@ -5,7 +5,7 @@
 //! its status, its inputs and its commands. This module only asks the package
 //! and says what it answered; like `tv_sonos`, all I/O runs on the bounded TV
 //! worker, never on the UI thread.
-use super::{Command, Details, Event, Work};
+use super::{Button, Command, Details, Event, Work};
 use couch_model::{Integration, PluginComponent, PluginStatusField};
 use couch_plugin::{Request, Response, Status, VolumeDb};
 use std::sync::atomic::AtomicU64;
@@ -24,10 +24,58 @@ const KEYED: &[&str] = &[
     "power-off",
 ];
 
+/// A television-profile package receives these from the panel's native
+/// transport row and physical keys. They must not be duplicated in Commands.
+const TV_KEYED: &[&str] = &[
+    "up",
+    "down",
+    "left",
+    "right",
+    "ok",
+    "back",
+    "home",
+    "menu",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "channel-up",
+    "channel-down",
+    "play",
+    "pause",
+    "stop",
+    "rewind",
+    "fast-forward",
+];
+
+/// The complete standard vocabulary that makes a package a television rather
+/// than a receiver with a few cursor commands. This is deliberately derived
+/// from already-released manifest data: adding a new protocol-3 presentation
+/// tag would make the package unreadable by existing protocol-3 cores.
+const TELEVISION_PROFILE: &[&str] = &[
+    "power-off",
+    "volume-up",
+    "volume-down",
+    "mute",
+    "up",
+    "down",
+    "left",
+    "right",
+    "ok",
+    "back",
+    "home",
+    "play",
+    "pause",
+    "stop",
+    "rewind",
+    "fast-forward",
+];
+
 /// What a packaged device puts on the screen, from its declaration alone.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct Layout {
     pub kind: String,
+    pub television: bool,
     pub power: bool,
     pub inputs: bool,
     /// (function id, label) for the Commands list.
@@ -49,16 +97,27 @@ pub(crate) fn layout(config: &couch_model::Config, device: &couch_model::Device)
     let toggles_power = presentation.iter().any(|component| {
         matches!(component, PluginComponent::Toggle { state, .. } if *state == PluginStatusField::On)
     });
+    let television = supports_inputs
+        && presentation
+            .iter()
+            .any(|component| matches!(component, PluginComponent::InputSelector { .. }))
+        && TELEVISION_PROFILE.iter().all(|id| has(id));
     Some(Layout {
         kind: config
             .connection(&connection_id)
             .map(|c| c.provider.label().to_uppercase())
             .unwrap_or_default(),
-        power: toggles_power || has("power-on") && has("power-off"),
+        television,
+        power: toggles_power
+            || has("power-on") && has("power-off")
+            || television && has("power-off"),
         inputs: supports_inputs,
         commands: capabilities
             .iter()
-            .filter(|c| !KEYED.contains(&c.id.as_str()))
+            .filter(|c| {
+                !KEYED.contains(&c.id.as_str())
+                    && !(television && TV_KEYED.contains(&c.id.as_str()))
+            })
             .map(|c| (c.id.clone(), c.label.clone()))
             .collect(),
     })
@@ -166,29 +225,58 @@ pub(crate) fn ask_device(
 }
 
 /// The function a screen action means for this device, given its last status.
-fn function(action: &Command, status: Option<&Status>) -> Result<Option<String>, String> {
-    Ok(Some(match action {
+fn function(
+    action: &Command,
+    status: Option<&Status>,
+    capabilities: &[couch_model::PluginCapability],
+) -> Result<Option<String>, String> {
+    let has = |id: &str| capabilities.iter().any(|capability| capability.id == id);
+    let function = match action {
         Command::Retry => return Ok(None),
         Command::Power => match status.and_then(|s| s.on) {
-            Some(true) => "power-off".into(),
-            Some(false) => "power-on".into(),
+            Some(true) if has("power-off") => "power-off",
+            Some(false) if has("power-on") => "power-on",
+            Some(false) => return Err("This device does not support power on".into()),
             None => return Err("This device has not said whether it is on".into()),
+            Some(true) => return Err("This device does not support power off".into()),
         },
-        Command::Wake => "power-on".into(),
-        Command::Volume(true) => "volume-up".into(),
-        Command::Volume(false) => "volume-down".into(),
-        Command::ToggleMute => "mute".into(),
-        Command::Mute(true) => "mute-on".into(),
-        Command::Mute(false) => "mute-off".into(),
-        Command::Play(true) => "play".into(),
-        Command::Play(false) => "pause".into(),
-        Command::Next(true) => "next".into(),
-        Command::Next(false) => "previous".into(),
-        Command::Stop => "stop".into(),
-        Command::Input(id) => format!("input:{id}"),
-        Command::Function(id) => id.clone(),
+        Command::Wake => "power-on",
+        Command::Volume(true) => "volume-up",
+        Command::Volume(false) => "volume-down",
+        Command::ToggleMute => "mute",
+        Command::Mute(true) => "mute-on",
+        Command::Mute(false) => "mute-off",
+        Command::Play(true) => "play",
+        Command::Play(false) => "pause",
+        Command::Next(true) => "next",
+        Command::Next(false) => "previous",
+        Command::Stop => "stop",
+        Command::Rewind(false) => "rewind",
+        Command::Rewind(true) => "fast-forward",
+        Command::Channel(true) => "channel-up",
+        Command::Channel(false) => "channel-down",
+        Command::Key(Button::Up) => "up",
+        Command::Key(Button::Down) => "down",
+        Command::Key(Button::Left) => "left",
+        Command::Key(Button::Right) => "right",
+        Command::Key(Button::Enter) => "ok",
+        Command::Key(Button::Back) => "back",
+        Command::Key(Button::Home) => "home",
+        Command::Key(Button::Menu) => "menu",
+        Command::Key(Button::Red) => "red",
+        Command::Key(Button::Green) => "green",
+        Command::Key(Button::Yellow) => "yellow",
+        Command::Key(Button::Blue) => "blue",
+        Command::Input(id) => return Ok(Some(format!("input:{id}"))),
+        Command::Function(id) if has(id) => return Ok(Some(id.clone())),
+        Command::Function(_) => return Err("This control is not available for this device".into()),
         _ => return Err("This control is not available for this device".into()),
-    }))
+    };
+    if has(function) {
+        Ok(Some(function.into()))
+    } else {
+        Err("This control is not available for this device".into())
+    }
 }
 
 /// "−39.5 dB", "37%", "Muted", or nothing the device reports.
@@ -277,7 +365,9 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         .resolve_integration(&device.integration)
         .ok_or("Selected device is no longer a packaged integration")?;
     let Integration::Plugin {
-        supports_inputs, ..
+        capabilities,
+        supports_inputs,
+        ..
     } = &integration
     else {
         return Err("Selected device is no longer a packaged integration".into());
@@ -293,11 +383,16 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     let before = matches!(work.action, Command::Power)
         .then(|| read())
         .transpose()?;
-    if let Some(function) = function(&work.action, before.as_ref())? {
+    if let Some(function) = function(&work.action, before.as_ref(), capabilities)? {
         if !current() {
             return Ok(None);
         }
-        match ask(Request::command(function))? {
+        let phase = if work.repeat {
+            couch_model::KeyPhase::Repeat
+        } else {
+            couch_model::KeyPhase::Tap
+        };
+        match ask(Request::key(function, phase))? {
             Response::Ok => {}
             // A write to a child may be acknowledged with the state it left
             // it in; this screen reads the status straight after anyway.
@@ -405,6 +500,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_television_profile_keeps_native_remote_keys_out_of_commands() {
+        let mut config = denon();
+        let couch_model::Provider::Plugin { capabilities, .. } =
+            &mut config.connections[0].provider
+        else {
+            unreachable!()
+        };
+        for id in [
+            "up",
+            "down",
+            "left",
+            "right",
+            "ok",
+            "back",
+            "home",
+            "play",
+            "pause",
+            "stop",
+            "rewind",
+            "fast-forward",
+        ] {
+            capabilities.push(couch_model::PluginCapability {
+                id: id.into(),
+                label: id.into(),
+            });
+        }
+        config.validate().unwrap();
+        let (_, device) = config.devices().next().unwrap();
+        let declared = layout(&config, device).unwrap();
+        assert!(declared.television && declared.power && declared.inputs);
+        assert!(declared.commands.is_empty());
+    }
+
     /// `refusal` is what both the toast (`activity_buttons::plugin_failure`)
     /// and this screen's own status line are built from, so what it does for
     /// `Unpaired` reaches both: Couch's sentence and the browser hint, never
@@ -510,33 +639,80 @@ mod tests {
 
     #[test]
     fn power_is_decided_from_the_observed_state_and_never_guessed() {
+        let capabilities = |ids: &[&str]| {
+            ids.iter()
+                .map(|id| couch_model::PluginCapability {
+                    id: (*id).into(),
+                    label: (*id).into(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let commands = capabilities(&[
+            "power-on",
+            "power-off",
+            "channel-up",
+            "up",
+            "fast-forward",
+            "x:sound-mode-movie",
+        ]);
         let status = |json: serde_json::Value| -> Status { serde_json::from_value(json).unwrap() };
         let on = status(serde_json::json!({"on":true}));
         let off = status(serde_json::json!({"on":false}));
         assert_eq!(
-            function(&Command::Power, Some(&on)).unwrap().as_deref(),
+            function(&Command::Power, Some(&on), &commands)
+                .unwrap()
+                .as_deref(),
             Some("power-off")
         );
         assert_eq!(
-            function(&Command::Power, Some(&off)).unwrap().as_deref(),
+            function(&Command::Power, Some(&off), &commands)
+                .unwrap()
+                .as_deref(),
             Some("power-on")
         );
-        assert!(function(&Command::Power, Some(&status(serde_json::json!({})))).is_err());
-        assert!(function(&Command::Power, None).is_err());
+        assert!(function(
+            &Command::Power,
+            Some(&status(serde_json::json!({}))),
+            &commands
+        )
+        .is_err());
+        assert!(function(&Command::Power, None, &commands).is_err());
         assert_eq!(
-            function(&Command::Input("SAT/CBL".into()), None)
+            function(&Command::Input("SAT/CBL".into()), None, &commands)
                 .unwrap()
                 .as_deref(),
             Some("input:SAT/CBL")
         );
         assert_eq!(
-            function(&Command::Function("sound-mode-movie".into()), None)
+            function(
+                &Command::Function("x:sound-mode-movie".into()),
+                None,
+                &commands
+            )
+            .unwrap()
+            .as_deref(),
+            Some("x:sound-mode-movie")
+        );
+        assert_eq!(function(&Command::Retry, None, &commands).unwrap(), None);
+        assert_eq!(
+            function(&Command::Channel(true), None, &commands)
                 .unwrap()
                 .as_deref(),
-            Some("sound-mode-movie")
+            Some("channel-up")
         );
-        assert_eq!(function(&Command::Retry, None).unwrap(), None);
-        assert!(function(&Command::Channel(true), None).is_err());
+        assert_eq!(
+            function(&Command::Key(Button::Up), None, &commands)
+                .unwrap()
+                .as_deref(),
+            Some("up")
+        );
+        assert_eq!(
+            function(&Command::Rewind(true), None, &commands)
+                .unwrap()
+                .as_deref(),
+            Some("fast-forward")
+        );
+        assert!(function(&Command::Key(Button::Down), None, &commands).is_err());
         assert_eq!(
             level(&status(
                 serde_json::json!({"volume_db":{"kind":"reading","tenths":-395}})
@@ -682,6 +858,7 @@ mod tests {
             app.set_tv_shown(false);
             slint::platform::update_timers_and_animations();
             app.set_tv_generic(true);
+            app.set_tv_native(false);
             app.set_tv_kind_label(kind.into());
             app.set_tv_can_power(power);
             app.set_tv_can_input(input);
@@ -823,6 +1000,21 @@ mod tests {
         );
         assert_eq!(app.get_tv_input(), "Network");
         shot("core-6-title-and-input.png");
+        // A capability-profiled television keeps the same native transport row
+        // and sends the physical D-pad to the package instead of moving a
+        // selection border between generic tiles.
+        fill(
+            "LG WEBOS TV",
+            (true, true, false),
+            "Living room TV",
+            serde_json::json!({"on":true,"input":"NET","volume":12,"title":"Netflix"}),
+        );
+        app.set_tv_native(true);
+        actions.borrow_mut().clear();
+        key(slint::platform::Key::UpArrow);
+        key(slint::platform::Key::Return);
+        assert_eq!(&*actions.borrow(), &["up", "ok"]);
+        shot("core-7-native-tv.png");
         app.hide().unwrap();
     }
 }

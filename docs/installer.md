@@ -2,7 +2,7 @@
 
 The integrated native installer prepares the host dependencies, enrolls the
 remote over USB, and uses authenticated Wi-Fi for backups and OS transfer.
-Release `installer-v0.1.0`, the first installer published from
+Release `installer-v0.2.2`, published from
 [Couch-OS/couch-installer](https://github.com/Couch-OS/couch-installer), is a
 prerelease; it installs the OS payload its release descriptor pins. Its
 launchers passed download, checksum and safe-Cancel tests on Linux, macOS and
@@ -98,13 +98,13 @@ Linux x64 and macOS, from an interactive terminal:
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.0/install.sh | sh
+  https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.2.2/install.sh | sh
 ```
 
 Windows x64, from PowerShell:
 
 ```powershell
-Invoke-RestMethod 'https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.1.0/install.ps1' | Invoke-Expression
+Invoke-RestMethod 'https://github.com/Couch-OS/couch-installer/releases/download/installer-v0.2.2/install.ps1' | Invoke-Expression
 ```
 
 The release launcher verifies the native host, terminal and release configuration
@@ -116,10 +116,11 @@ session and opens no device.
 ## Installation flow
 
 1. Choose **Install with Android backup**, **YOLO — skip Android data backup**,
-   **Reinstall existing Couch**, or **Restore stock Android**. Reinstallation and
-   restore both need the saved Android enrollment described below. Restore returns
-   a Couch remote to stock Android over Wi-Fi; see
-   [Restore stock Android](installer-android-restore.md).
+   **Reinstall existing Couch**, or **Restore stock Android**. Reinstallation uses
+   your saved Android enrollment if you have it, and can otherwise start fresh
+   without it (see [Reinstalling Couch](#reinstalling-couch)). Restore needs the
+   saved Android enrollment; it returns a Couch remote to stock Android over
+   Wi-Fi; see [Restore stock Android](installer-android-restore.md).
 2. Follow the dependency and input preparation prompts. The installer downloads
    pinned official inputs and assembles vendor-dependent pieces locally; the
    public OS payload contains no device backups or owner firmware.
@@ -150,35 +151,20 @@ Follow the saved restore instructions and [device recovery guide](device-recover
 
 ## What version a fresh install runs
 
-The installer writes a **full OS image**, and that image carries its own bundled
-Couch software - currently the **.24** release, no matter which release the
-install command came from. (The exact tag is in
-[runtime updates](runtime-updates.md#compatibility-floor); it is deliberately
-not spelled out here, because every dated tag in this file is an install command
-a release bump rewrites.) So immediately after installing, the web UI and
-**Settings → Updates** report .24.
+From `installer-v0.2.2` the installer writes an OS image that carries **alpha
+.215**, so a fresh install starts on the current release and Settings → Updates
+reports nothing newer. The image also carries the boot script that clears the
+recovery flag after a rolled-back update, and the D-Bus and BlueZ packages that
+Bluetooth needs, so neither the first-use package download nor the "stuck in
+COUCH RECOVERY" failure of older images applies to a remote installed from it.
 
-That is expected. The version on the remote is the version of the software in
-the image that was written; it is not the version of the installer that wrote
-it. The two are decoupled on purpose: the OS image changes only when the Alpine
-package set or the stable boot scripts change, while application releases are
-cut continuously and the remote installs them itself.
-
-**Finish the install by updating.** Open the paired web UI, or hold Menu on the
-home screen for **Settings → Updates**, set the channel to **Alpha**, **Check
-for updates**, then **Download & verify** and **Install & restart**. The remote
-comes back on the current release, and only then does its reported version match
-the releases page.
-
-### Known task: rebuild the installer OS image
-
-A fresh install should start current rather than weeks behind. The same stale
-image is also what pins the [compatibility
-floor](runtime-updates.md#compatibility-floor): .24's updater is the oldest in
-the field, so no release may contain a file name it does not know. Rebuilding
-the OS image with a current runtime fixes both. Not done yet - it is a full OS
-build (`tools/release/prepare_rootfs.py` and the package closure), not a release
-cut, and it needs its own physical install acceptance.
+The OS image and the application release are still decoupled: the image changes
+only when the Alpine package set, the kernel or the boot scripts change, while
+application releases are cut continuously and the remote installs them itself
+from **Settings → Updates**. A remote installed from an older installer (`.24`
+image) updates itself to the current release the same way; see
+[runtime updates](runtime-updates.md#compatibility-floor) for the floor that keeps
+that working.
 
 ## Troubleshooting
 
@@ -211,20 +197,84 @@ are the remaining half: until those three `.dev` prereleases are withdrawn, or a
 newer promoted release is cut above them, an affected remote is still offered
 `.164.dev`. Retry **Check for updates** after the next release.
 
-## Reinstalling Couch on a new computer
+### My remote shows COUCH RECOVERY every time it starts
 
+A runtime update that fails its health check is rolled back correctly, but on
+images whose bootstrap predates the rollback fix the reboot enters recovery with
+the `boot-recovery` flag still armed, and recovery keeps that flag on purpose -
+so the remote returns to the COUCH RECOVERY screen on every boot until the flag
+is cleared. Run the installer and choose **My remote shows COUCH RECOVERY** at
+the first menu. It needs no release configuration and downloads nothing: connect
+the remote by USB while that screen is showing, and the installer finds it on
+its serial port, checks that it really is a Couch recovery shell on your remote,
+shows which Couch version the next boot will start, and, once you confirm,
+clears the flag, reads the block back to prove it is clear, and restarts the
+remote. Nothing else is written: only the first 512 bytes of the `para`
+partition change, the `ENV_v1` area is preserved, and no other partition is
+touched. If more than one remote in recovery is connected it refuses and asks
+you to disconnect the others; if the readback does not come back clear it stops
+without restarting and says so. Watch the remote restart, then open
+**Settings → Updates** to finish updating it. The same fix by hand, from the
+recovery shell, is in the [device recovery guide](device-recovery.md#leaving-recovery-after-a-rejected-runtime-candidate).
+
+If you are reinstalling from a Mac or Linux computer anyway, you do not need this
+first: **Reinstall existing Couch** offers to clear the flag itself once the
+remote has been on for about three minutes.
+
+## Reinstalling Couch
+
+Choose **Reinstall existing Couch** with Couch running on the remote and USB
+connected. After the downloads the installer lists the saved Android enrollments
+it finds on this computer.
+
+Before it restarts the remote, the installer asks it over USB for its storage ID
+and whether its next start is a normal one. It restarts it only once that is so.
+Couch arms its recovery flag at every start and clears it once its screen has come
+up properly, so a remote that has only just started is given until three minutes
+of uptime. If the remote has been on longer and would still start COUCH RECOVERY
+(it is in COUCH RECOVERY, or its screen never comes up properly), on macOS and
+Linux the installer offers to clear that flag itself, exactly as **My remote shows
+COUCH RECOVERY** does, and restart it straight into the installer; on Windows, use
+**My remote shows COUCH RECOVERY** first. The same check runs for Restore and for
+every retry.
+
+### With the saved Android enrollment
 Copy the **complete saved Android enrollment and original backups** from the
-previous computer, retain that original copy, and select **Reinstall existing
-Couch**. The installer imports the evidence into a new private session and checks
-it against the live remote before writing. Existing Couch backups are kept
-separate from the historical Android originals.
+previous computer, keep the original copy, and pick it. The installer imports the
+evidence into a new private session and checks it against the live remote before
+writing: same storage ID (eMMC CID), capacity, calibration, layout and overlay.
+Existing Couch backups are kept separate from the historical Android originals. An
+enrollment saved before Android was started again no longer matches the remote's
+calibration; pick the newest enrollment for the remote. The installer lists the
+saved enrollments it finds newest first, each with the date its `enrollment.json`
+was saved (a copied folder shows its copy date), and marks the one used last time.
 
-A running Couch screen, its configuration, or its current MAC address cannot
-replace the saved Android enrollment. Without that evidence, the current
-installer cannot admit a Couch reinstall on another computer. It does not treat
-Couch's current partitions as original Android backups. See
-[saved-enrollment requirements](installer-saved-enrollment.md), including support
-for verified older Python trial records.
+### Without a saved enrollment
+If none is found, or you choose **I don't have a saved enrollment**, the installer
+can reinstall Couch from what is on the remote now. It explains the trade-off
+first:
+- **Restore stock Android is not available for this remote afterwards**, because
+  the saved enrollment is the only copy of its original Android system. If the
+  original enrollment folder turns up later, Restore works with it as usual.
+- The remote's calibration and its current boot, recovery and logo images are
+  still saved and independently verified before any write, and calibration is
+  checked again on the remote before, during and after installation. The installer
+  never writes calibration.
+- Current Couch data is backed up or skipped, as chosen.
+
+The remote must be running Couch. Its storage ID, read over USB before the
+restart, must match the one read in download mode. Where the remote cannot be
+asked over USB, you restart it with its Power button after confirming its normal
+screen has been up for three minutes, and the storage ID read in download mode on
+the same physical USB port becomes the binding. Before any write the installer
+checks the saved boot and recovery images: both must be Couch's. An Android boot
+or recovery stops the installation with nothing written (use **Install with
+Android backup** for a remote that runs Android; that creates the enrollment), and
+so does an image that is neither.
+
+The session records `original_os: Couch` and `android_enrollment: none` in
+`current-couch-snapshot.json`. It is never offered or accepted as a saved Android
+enrollment.
 
 New native sessions live under `~/.couch-installer` on Linux/macOS or
 `%LOCALAPPDATA%\CouchInstaller` on Windows. The TUI reports the exact session path.

@@ -9,11 +9,11 @@ image to make the two releases appear atomic.
 The initial receiver pilot used the core contract at
 `b9eb59fd0a180fd3ae2d7b2ed27a61920cb5f6cb` with Denon `0.1.1` from the
 official preview feed. The renewed host compatibility set tests the exact same
-signed APK against core `9f453d53e9bae55e5dbcb88d638200137ba8e353` under
+signed APK against core `9c8a814055e24ff961bbb4777c044e3cf7734b97` under
 ARM emulation with a simulated receiver. The machine-readable identity is
 `tools/release/tested-integrations.json`. Its schema 2 separates:
 
-- the core's supported protocol versions `[1, 2]`, the package's protocol
+- the core's supported protocol versions `[1, 2, 3, 4]`, the package's protocol
   version `1`, the core files whose host behavior was tested, and the
   digest-pinned admission harness carved out of that freeze;
 - the immutable preview feed release snapshot, official public key and Denon
@@ -22,7 +22,8 @@ ARM emulation with a simulated receiver. The machine-readable identity is
 - the original core identity for the prior read-only receiver observations;
 - a hash-pinned host compatibility receipt, executable test harness and report
   covering signed package lifecycle, v1 handshake, simulated status/inputs/
-  commands, one shared HTTP/panel connection, and refusal of v2-only actions.
+  commands, one shared HTTP/panel connection, refusal of v2-only actions, and
+  an explicit probe that the host admits protocol 4 packages.
 
 The renewed evidence is host compatibility, not a new hardware certification.
 It does not validate Denon `0.2.0` on a receiver, full command parity, or a

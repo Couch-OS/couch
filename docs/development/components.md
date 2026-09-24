@@ -21,6 +21,13 @@ It is deliberately small and may evolve before public release.
 | `input_selector` | `label` | The input list returned by the integration. |
 | `volume_db_control` | `label` | An explicit dB control backed by declared `set_volume_db` action. **Protocol v2, unreleased.** |
 
+The panel also derives one bounded presentation profile from these existing
+declarations. An integration with an input selector, enumerated-input support,
+and Couch's complete standard TV command set uses the native television hero,
+transport row, and physical D-pad routing. This is capability composition, not
+a custom screen or vendor-name exception; incomplete command sets remain on
+the generic tile navigator.
+
 An integration may declare up to 16 components. A command group contains 1 to
 32 distinct declared capabilities. Labels and titles are plain text, at most
 128 bytes, with no control characters.
@@ -105,4 +112,4 @@ an arbitrary layout through this API.
 
 - [`model/couch-model/src/connection.rs`](https://github.com/Couch-OS/couch/blob/main/model/couch-model/src/connection.rs)
 - [`clients/couch-plugin/src/manifest.rs`](https://github.com/Couch-OS/couch/blob/main/clients/couch-plugin/src/manifest.rs)
-- [`couch-integration-denon/plugin.json`](https://github.com/Couch-OS/couch-integration-denon/blob/main/plugin.json), a protocol-v2 manifest with every component kind
+- [`couch-integration-denon/plugin.json`](https://github.com/Couch-OS/couch-integration-denon/blob/8d3081353188916d575dccd36582b460b9b190c6/plugin.json), a protocol-v2 manifest with every component kind

@@ -43,7 +43,7 @@ CONTRACT_PATHS = (
 HOST_CHECKS = (
     "signed_package_lifecycle", "v1_handshake", "fake_receiver_status",
     "fake_receiver_inputs", "fake_receiver_command", "shared_transport_ownership",
-    "v2_action_refused_for_v1",
+    "v2_action_refused_for_v1", "v4_protocol_probe",
 )
 # The admission harness is scaffolding a published package never links: its
 # module is compiled out of every shipped build, so it cannot alter the wire
@@ -137,7 +137,7 @@ def github_repositories(name):
 
 def validate_protocol(core, schema):
     supported = [1] if schema == 1 else core["supported_protocol_versions"]
-    require(type(supported) is list and supported == ([1] if schema == 1 else [1, 2])
+    require(type(supported) is list and supported == ([1] if schema == 1 else [1, 2, 3, 4])
             and all(type(version) is int for version in supported), "Invalid core protocol versions")
     protocol = (REPO / "clients/couch-plugin/src/protocol.rs").read_text()
     require(re.search(r"pub const PROTOCOL_VERSION:\s*u32\s*=\s*" + str(max(supported)) + r"\s*;", protocol),

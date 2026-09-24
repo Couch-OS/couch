@@ -95,6 +95,26 @@ export component RoomDevices inherits Rectangle {
     /// either would make a reader of the ring's geometry, and every frame of
     /// a move would repaint whatever read it (docs/slint-notes.md).
     public function scroll-destination() -> length { return root.scroll-goal; }
+    /// Whether a row is doing nothing and should sink back: a lamp that is
+    /// off, or a light or blind that has not said. Nothing else - a receiver's
+    /// row has controls behind it and no state to be idle in.
+    public pure function recessed(item: ChoiceItem) -> bool {
+        return !item.activity && (item.power-known ? !item.active : item.light);
+    }
+    /// What the focused row is actually drawn in. The lift cuts its name and
+    /// its icon out of that row and keys them on the card they sat on, and
+    /// the card it raises starts in the same colour - so it has to be the
+    /// colour the row really has, not the one a lit row would have had.
+    public pure function focused-surface() -> color {
+        if (root.index >= root.items.length) { return Theme.surface; }
+        return root.items[root.index].activity ? Theme.surface-raised
+             : root.recessed(root.items[root.index]) ? Theme.surface-idle : Theme.surface;
+    }
+    public pure function focused-border() -> color {
+        if (root.index >= root.items.length) { return Theme.border; }
+        return root.items[root.index].activity ? Theme.border-raised
+             : root.recessed(root.items[root.index]) ? Theme.border-idle : Theme.border;
+    }
     public function ring-position() -> length { return fs.ring-y; }
     /// The rest of the highlighted row's box, for the iris that opens out of
     /// it (panel.rs). Read at the press rather than kept anywhere, for the
@@ -151,9 +171,19 @@ export component RoomDevices inherits Rectangle {
                 x: 0px; y: i * root.pitch; width: parent.width; height: root.row-h;
                 // An activity row is the area page's activity strip, at row
                 // height: raised card, accent glyph, title over "source · room".
-                background: item.activity ? Theme.surface-raised : Theme.surface;
+                //
+                // A row that is doing nothing sinks back, the way a room row
+                // on the hub does: a lamp that is off, or a light or blind
+                // that has not answered. A device row with controls behind it
+                // is not "off" and does not sink - it has nothing to be off
+                // about. The title stays at full strength either way, because
+                // it is the word the lift flies to the screen's own title and
+                // the two have to be one drawing.
+                background: item.activity ? Theme.surface-raised
+                          : root.recessed(item) ? Theme.surface-idle : Theme.surface;
                 border-width: 1px;
-                border-color: item.activity ? Theme.border-raised : Theme.border;
+                border-color: item.activity ? Theme.border-raised
+                            : root.recessed(item) ? Theme.border-idle : Theme.border;
                 border-radius: item.activity ? Theme.r-card : Theme.r-row;
                 // Like the room list, a tap selects; OK acts on the focused row.
                 TouchArea { clicked => { root.index = i; } }
@@ -187,7 +217,7 @@ export component RoomDevices inherits Rectangle {
                     VerticalLayout {
                         alignment: center; spacing: 2px; horizontal-stretch: 1;
                         Text { text: item.title; color: Theme.text; font-size: Theme.device-name; font-weight: Theme.device-name-weight; overflow: elide; }
-                        Text { text: item.detail; color: item.active ? Theme.accent : Theme.text-secondary; font-size: 19px; overflow: elide; }
+                        Text { text: item.detail; color: item.active ? Theme.accent : root.recessed(item) ? Theme.text-quaternary : Theme.text-secondary; font-size: 19px; overflow: elide; }
                     }
                     // A row whose OK opens a screen says so with a chevron
                     // rather than words: the state text is what matters, and

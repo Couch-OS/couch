@@ -1,0 +1,9 @@
+[package]
+name = "couch-camera"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Provider-neutral bounded H264 camera decoder for Couch"
+
+[dependencies]
+libc = "0.2"

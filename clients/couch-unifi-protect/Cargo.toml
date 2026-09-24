@@ -6,6 +6,7 @@ license.workspace = true
 description = "Read-only UniFi Protect camera, snapshot and RTSPS discovery for Couch"
 
 [dependencies]
+couch-camera = { path = "../couch-camera", optional = true }
 couch-sdk = { path = "../couch-sdk", features = ["tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -17,14 +18,16 @@ sha2 = "0.10"
 base64 = "0.22"
 webrtc-srtp = { version = "=0.17.2", optional = true }
 webpki-roots = "1"
-libc = { version = "0.2", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]
 rcgen = "0.13"
 
 [features]
-media = ["dep:webrtc-srtp", "dep:libc"]
+media-transport = ["dep:webrtc-srtp"]
+# The built-in bridge keeps its player for migration acceptance. An external
+# package needs only `media-transport`; decoding belongs to Couch core.
+media = ["media-transport", "dep:couch-camera"]
 
 [[example]]
 name = "watch"

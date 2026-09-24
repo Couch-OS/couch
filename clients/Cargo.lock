@@ -532,6 +532,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "couch-camera"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "couch-control"
 version = "0.1.0"
 dependencies = [
@@ -540,7 +547,6 @@ dependencies = [
  "couch-kodi",
  "couch-sdk",
  "couch-tizen",
- "couch-webos",
  "libc",
  "prost",
  "rustls",
@@ -572,21 +578,6 @@ name = "couch-ha"
 version = "0.1.0"
 dependencies = [
  "couch-sdk",
- "serde",
- "serde_json",
- "tiny_http",
- "ureq",
- "url",
-]
-
-[[package]]
-name = "couch-hue"
-version = "0.1.0"
-dependencies = [
- "couch-ha",
- "couch-sdk",
- "rcgen",
- "rustls",
  "serde",
  "serde_json",
  "tiny_http",
@@ -635,6 +626,7 @@ dependencies = [
 name = "couch-plugin"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "couch-sdk",
  "libc",
  "serde",
@@ -682,8 +674,8 @@ name = "couch-unifi-protect"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "couch-camera",
  "couch-sdk",
- "libc",
  "rcgen",
  "rustls",
  "serde",
@@ -702,19 +694,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "serde_json",
-]
-
-[[package]]
-name = "couch-webos"
-version = "0.1.0"
-dependencies = [
- "couch-ir",
- "couch-sdk",
- "rustls",
- "serde",
- "serde_json",
- "tungstenite",
- "url",
 ]
 
 [[package]]
@@ -2532,7 +2511,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

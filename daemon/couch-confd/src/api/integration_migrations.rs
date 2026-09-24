@@ -124,8 +124,12 @@ impl LegacyConversion {
     }
 }
 
-fn settings_value(row: &LegacyBuiltin, provider: &Provider) -> Option<Value> {
-    let map = row
+fn settings_value(
+    row: &LegacyBuiltin,
+    provider: &Provider,
+    stored: Option<&Value>,
+) -> Option<Value> {
+    let mut map = row
         .settings(provider)?
         .into_iter()
         .map(|(key, value)| {
@@ -136,6 +140,17 @@ fn settings_value(row: &LegacyBuiltin, provider: &Provider) -> Option<Value> {
             (key.to_owned(), value)
         })
         .collect::<serde_json::Map<_, _>>();
+    if row.stored_settings.is_some() {
+        for (key, value) in row.map_stored_settings(stored?)? {
+            let value = match value {
+                LegacySetting::Text(text) => Value::String(text),
+                LegacySetting::Integer(number) => Value::from(number),
+            };
+            if map.insert(key.to_owned(), value).is_some() {
+                return None;
+            }
+        }
+    }
     Some(Value::Object(map))
 }
 
@@ -309,13 +324,22 @@ impl Api {
         let Some(provider) = snapshot else {
             return Ok(());
         };
-        let Some(settings) = settings_value(row, &provider) else {
-            return Ok(());
+        let stored = self.plugins.legacy_private(id.as_str(), row);
+        let settings = settings_value(row, &provider, stored.as_ref()).ok_or_else(|| {
+            "The saved built-in settings cannot be handed to its package".to_string()
+        })?;
+        let credential = match row.credential {
+            Some(_) => Some(
+                stored
+                    .as_ref()
+                    .and_then(|value| row.map_credential(value))
+                    .and_then(|value| couch_plugin::Credential::new(value).ok())
+                    .ok_or_else(|| {
+                        "The saved built-in pairing cannot be handed to its package".to_string()
+                    })?,
+            ),
+            None => None,
         };
-        // Protocol 3 (unreleased): the key the built-in kept, mapped to the
-        // shape its package takes. `None` for every row there is today, and
-        // the old file is left where it is either way.
-        let credential = self.plugins.legacy_credential(id.as_str(), row);
         // The slow part, with the configuration unlocked: start the package
         // and let it check the carried-over address (it contacts no device).
         let prepared = self

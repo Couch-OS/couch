@@ -243,7 +243,7 @@ pub(crate) fn plugin_row(
     let cover = match child_component(config, &device.integration, child) {
         ChildComponent::Light => false,
         ChildComponent::Cover => true,
-        ChildComponent::Climate | ChildComponent::Scene => return None,
+        ChildComponent::Climate | ChildComponent::Scene | ChildComponent::Camera => return None,
     };
     Some(PluginRow {
         connection: connection_id.to_string(),
@@ -1715,6 +1715,7 @@ impl Controller {
                             || opens_tv(entry)
                             || opens_the_player(entry)
                             || opens_camera(entry)
+                            || entry.id.starts_with("activity:")
                             || ha_domain(&entry.id) == "climate"
                     })
             }
@@ -1841,6 +1842,16 @@ impl Controller {
                     }
                     if let Some(id) = e.id.strip_prefix("activity:") {
                         app.invoke_open_activity(id.into());
+                        // After it opens, so the row's own disc wins: the
+                        // lift flies this one onto the header's, and the two
+                        // have to be the same drawing.
+                        app.set_player_icon(crate::icons::image(e.icon));
+                        app.set_player_active(
+                            e.state.as_ref().is_some_and(|s| s.active() == Some(true)),
+                        );
+                        app.set_player_known(
+                            e.state.as_ref().is_some_and(|s| s.active().is_some()),
+                        );
                         continue;
                     }
                     if e.id.starts_with("device:") {
@@ -1848,8 +1859,7 @@ impl Controller {
                         let camera = cfg.as_ref().is_some_and(|c| {
                             c.devices()
                                 .find(|(_, d)| d.id.as_str() == e.id.trim_start_matches("device:"))
-                                .and_then(|(_, d)| c.resolve_integration(&d.integration))
-                                .is_some_and(|i| matches!(i, Integration::UnifiProtect { .. }))
+                                .is_some_and(|(_, d)| crate::camera::target(c, d).is_some())
                         });
                         if camera {
                             app.invoke_open_camera(e.id.as_str().into(), e.name.as_str().into());
@@ -2138,13 +2148,11 @@ fn opens_tv(entry: &Entry) -> bool {
     let Some(config) = crate::connections::config() else {
         return false;
     };
-    let integration = config
-        .devices()
-        .find(|(_, d)| d.id.as_str() == device)
-        .and_then(|(_, d)| config.resolve_integration(&d.integration));
-    if integration
-        .as_ref()
-        .is_some_and(|i| matches!(i, Integration::UnifiProtect { .. }))
+    let Some((_, selected)) = config.devices().find(|(_, d)| d.id.as_str() == device) else {
+        return false;
+    };
+    let integration = config.resolve_integration(&selected.integration);
+    if crate::camera::target(&config, selected).is_some()
         || integration
             .as_ref()
             .is_some_and(crate::shortcuts::opens_player)
@@ -2161,11 +2169,11 @@ fn opens_camera(entry: &Entry) -> bool {
     let Some(config) = crate::connections::config() else {
         return false;
     };
-    let integration = config
+    let opens = config
         .devices()
         .find(|(_, d)| d.id.as_str() == device)
-        .and_then(|(_, d)| config.resolve_integration(&d.integration));
-    integration.is_some_and(|i| matches!(i, Integration::UnifiProtect { .. }))
+        .is_some_and(|(_, d)| crate::camera::target(&config, d).is_some());
+    opens
 }
 /// Whether a pick on this row opens the media player: a configured device the
 /// player knows how to drive, which today is Sonos and Kodi.
@@ -2232,7 +2240,6 @@ pub(crate) fn tv_connection(config: &couch_model::Config, device_id: &str) -> Op
             return Some(format!("plugin:{device_id}"))
         }
         Integration::Plugin { .. } => return None,
-        Integration::WebOs => couch_model::Provider::WebOs,
         Integration::AndroidTv => couch_model::Provider::AndroidTv,
         Integration::AppleTv => couch_model::Provider::AppleTv,
         Integration::Tizen => couch_model::Provider::Tizen,
@@ -3582,7 +3589,7 @@ mod tests {
     /// A built-in Hue room is a lamp as far as this screen is concerned.
     ///
     /// The bridge never reports a grouped light's colour temperature, so
-    /// `couch_hue` works the range and the value out from the room's lamps;
+    /// The Hue package works the range and value out from the room's lamps;
     /// from here on nothing is special about a room, which is the point. The
     /// write goes out through the one queue a level uses, so a held Channel key
     /// is paced exactly as a held Volume key on the same room.
@@ -4376,6 +4383,46 @@ mod tests {
             "top row",
         );
         crate::panel::checks::pops(&room, &screen, W, H, lift, "scrolled mid-list row");
+
+        // And the same row with the lamp off, which sinks the card back. The
+        // name and the icon are cut out of that card and keyed on it, and the
+        // card that rises starts in its colour - all three have to follow the
+        // row rather than assume the colour a lit row has, or every glyph
+        // carries a halo of the wrong grey.
+        controller.close_screen(&app, false);
+        let off = controller.entries[0]
+            .plugin
+            .clone()
+            .unwrap()
+            .state(
+                &controller.entries[0].name.clone(),
+                &reading(serde_json::json!({"light":{"on":false,"brightness":40,"mirek":370}})),
+            )
+            .unwrap();
+        controller.entries[0].state = Some(off);
+        controller.update_rows(&app, true);
+        app.set_light_index(0);
+        let mut dim = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut dim);
+        let sunk = crate::room_window(&app);
+        let dark = crate::light_plan(&app, sunk, W as i32, H as i32);
+        assert_ne!(
+            dark.surface,
+            crate::panel::lift_surface(),
+            "an off lamp's row is drawn in the same colour as a lit one, so it has not sunk"
+        );
+        controller.open_screen(&app, 0);
+        let mut lit = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut lit);
+        let (dim, lit) = (word(&dim), word(&lit));
+        crate::panel::checks::profile(&dim, &lit, W, H, dark, "recessed row");
+        crate::panel::checks::never_bare(&dim, &lit, W, H, dark, "recessed row");
+        crate::panel::checks::lands(&dim, &lit, W, H, dark, "recessed row");
+        crate::panel::checks::stronger(&dim, &lit, W, H, dark, "recessed row");
+        crate::panel::checks::ghosts(&dim, &lit, W, H, dark, "recessed row");
+        crate::panel::checks::pops(&dim, &lit, W, H, dark, "recessed row");
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }
@@ -5415,6 +5462,168 @@ mod tests {
             crate::panel::checks::ghosts(&leaving, &arriving, W, H, plan, name);
             crate::panel::checks::pops(&leaving, &arriving, W, H, plan, name);
         }
+        app.hide().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A packaged device's pages of buttons lift out of their row.
+    ///
+    /// The row it is opened from is the fixture's receiver: what matters is a
+    /// device row with a name and a disc to fly.
+    /// `COUCH_LIFT_SCREENSHOTS=<dir>` keeps the pictures.
+    #[test]
+    fn the_activity_pages_lift_out_of_their_row() {
+        const NAME: &str = "lights::tests::the_activity_pages_lift_out_of_their_row";
+        if std::env::var_os("COUCH_TEST_PAGES_LIFT").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env("COUCH_TEST_PAGES_LIFT", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use slint::ComponentHandle;
+        const W: usize = 480;
+        const H: usize = 800;
+        let config = packaged();
+        let path = std::env::temp_dir().join(format!("couch-pglift-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        crate::config_snapshot::start(path.clone());
+        let window =
+            crate::panel::CouchPlatform::install(slint::PhysicalSize::new(480, 800)).unwrap();
+        let app = crate::App::new().unwrap();
+        app.show().unwrap();
+        window.dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
+        let mut controller = Controller::install(&app);
+        let room = Id::new("living-room");
+        controller.entries = configured_in(&config, &room).unwrap();
+        controller.room = Some(room);
+        let which = controller
+            .entries
+            .iter()
+            .position(|e| e.id.as_str() == "device:avr")
+            .expect("the packaged fixture has a device row");
+        app.set_light_title("Living room".into());
+        app.set_light_shown(true);
+        app.set_feedback_enabled(true);
+        controller.update_rows(&app, true);
+        let settle = || {
+            for _ in 0..20 {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        };
+        let draw = |into: &mut Vec<slint::Rgb8Pixel>| {
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(into, W);
+            });
+        };
+        settle();
+        let top = crate::room_window(&app);
+        app.set_light_index(which as i32);
+        let mut a = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut a);
+        let from = crate::room_window(&app);
+        assert_ne!(from.y, top.y, "the ring never moved off the first row");
+        let word = |page: &[slint::Rgb8Pixel]| -> Vec<u32> {
+            page.iter()
+                .map(|p| 0xff00_0000 | ((p.b as u32) << 16) | ((p.g as u32) << 8) | p.r as u32)
+                .collect()
+        };
+        let leaving = word(&a);
+
+        let entry = &controller.entries[which];
+        let tile = |label: &str, detail: &str| crate::ActivityTile {
+            label: label.into(),
+            detail: detail.into(),
+            icon: crate::icons::image(couch_model::Icon::Tv),
+            enabled: true,
+        };
+        app.set_custom_activity_title("Receiver".into());
+        app.set_player_activity(entry.name.as_str().into());
+        app.set_player_icon(crate::icons::image(entry.icon));
+        app.set_player_active(true);
+        app.set_player_known(true);
+        app.set_custom_activity_tiles(slint::ModelRc::new(slint::VecModel::from(vec![
+            tile("Power", "Main zone"),
+            tile("Input", "Blu-ray"),
+            tile("Volume up", "One step"),
+            tile("Volume down", "One step"),
+        ])));
+        app.set_custom_activity_count(2);
+        app.set_custom_activity_status("Ready".into());
+        app.set_custom_activity_shown(true);
+        app.set_player_shown(true);
+        let mut b = vec![slint::Rgb8Pixel::default(); W * H];
+        settle();
+        draw(&mut b);
+        let arriving = word(&b);
+        assert!(leaving != arriving, "the two pages are the same picture");
+        let plan = crate::pages_plan(&app, from, W as i32, H as i32)
+            .expect("a page of buttons always has a plan");
+        let mut art = crate::lift_art(&leaving, &arriving, W, H, plan);
+        let content = crate::panel::lift_content(&leaving, W, H);
+        let screen_content = crate::panel::lift_content(&arriving, W, H);
+        let sweep = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        for (step, t) in sweep.iter().map(|n| (*n, *n as f32 / 100.0)) {
+            let mut pixels = vec![0u32; W * H];
+            crate::panel::lift_frame(
+                crate::panel::Surface {
+                    pixels: &mut pixels,
+                    stride: W,
+                    width: W,
+                    height: H,
+                },
+                (&arriving, &leaving),
+                plan,
+                &mut art,
+                (&content, &screen_content),
+                crate::panel::Shown::Arriving,
+                crate::panel::Frame::at(t),
+            );
+            match step {
+                0 => assert_eq!(pixels, leaving, "the first frame is not the room"),
+                100 => assert_eq!(pixels, arriving, "the last frame is not the screen"),
+                _ => {
+                    assert_ne!(pixels, leaving, "frame {step} never left the room");
+                    assert_ne!(pixels, arriving, "frame {step} is already the screen");
+                }
+            }
+            if let Some(dir) = std::env::var_os("COUCH_LIFT_SCREENSHOTS") {
+                let bytes: Vec<u8> = pixels
+                    .iter()
+                    .flat_map(|p| [*p as u8, (*p >> 8) as u8, (*p >> 16) as u8])
+                    .collect();
+                image::save_buffer(
+                    std::path::Path::new(&dir)
+                        .join(format!("pages-lift-{:03}.png", (t * 100.0).round() as u32)),
+                    &bytes,
+                    W as u32,
+                    H as u32,
+                    image::ColorType::Rgb8,
+                )
+                .unwrap();
+            }
+        }
+        let (mean, worst) = crate::panel::checks::profile(&leaving, &arriving, W, H, plan, "pages");
+        assert!(
+            mean <= 0.25 && worst <= 0.35,
+            "the pages lift costs {mean:.2} panels a frame on average and {worst:.2} at its \
+             worst"
+        );
+        crate::panel::checks::never_bare(&leaving, &arriving, W, H, plan, "pages");
+        crate::panel::checks::lands(&leaving, &arriving, W, H, plan, "pages");
+        crate::panel::checks::stronger(&leaving, &arriving, W, H, plan, "pages");
+        crate::panel::checks::ghosts(&leaving, &arriving, W, H, plan, "pages");
+        crate::panel::checks::pops(&leaving, &arriving, W, H, plan, "pages");
         app.hide().unwrap();
         let _ = std::fs::remove_file(&path);
     }

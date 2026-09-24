@@ -1009,6 +1009,13 @@ name = "couch-bt-hid"
 version = "0.1.0"
 
 [[package]]
+name = "couch-camera"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "couch-control"
 version = "0.1.0"
 dependencies = [
@@ -1017,7 +1024,6 @@ dependencies = [
  "couch-kodi",
  "couch-sdk",
  "couch-tizen",
- "couch-webos",
  "libc",
  "serde",
  "serde_json",
@@ -1031,9 +1037,9 @@ dependencies = [
  "couch-androidtv",
  "couch-appletv",
  "couch-bt-hid",
+ "couch-camera",
  "couch-control",
  "couch-ha",
- "couch-hue",
  "couch-ir",
  "couch-kodi",
  "couch-matter",
@@ -1045,7 +1051,6 @@ dependencies = [
  "couch-unifi-protect",
  "couch-updates",
  "couch-voice",
- "couch-webos",
  "image",
  "libc",
  "mimalloc",
@@ -1061,19 +1066,6 @@ name = "couch-ha"
 version = "0.1.0"
 dependencies = [
  "couch-sdk",
- "serde",
- "serde_json",
- "ureq",
- "url",
-]
-
-[[package]]
-name = "couch-hue"
-version = "0.1.0"
-dependencies = [
- "couch-ha",
- "couch-sdk",
- "rustls",
  "serde",
  "serde_json",
  "ureq",
@@ -1121,6 +1113,7 @@ dependencies = [
 name = "couch-plugin"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "couch-sdk",
  "libc",
  "serde",
@@ -1178,8 +1171,8 @@ name = "couch-unifi-protect"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "couch-camera",
  "couch-sdk",
- "libc",
  "rustls",
  "serde",
  "serde_json",
@@ -1213,19 +1206,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "serde_json",
-]
-
-[[package]]
-name = "couch-webos"
-version = "0.1.0"
-dependencies = [
- "couch-ir",
- "couch-sdk",
- "rustls",
- "serde",
- "serde_json",
- "tungstenite",
- "url",
 ]
 
 [[package]]

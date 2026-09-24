@@ -380,7 +380,6 @@ dependencies = [
  "couch-control",
  "couch-coreelec",
  "couch-ha",
- "couch-hue",
  "couch-integrations",
  "couch-ir",
  "couch-kodi",
@@ -392,7 +391,6 @@ dependencies = [
  "couch-system",
  "couch-tizen",
  "couch-unifi-protect",
- "couch-webos",
  "flate2",
  "if-addrs",
  "libc",
@@ -412,7 +410,6 @@ dependencies = [
  "couch-kodi",
  "couch-sdk",
  "couch-tizen",
- "couch-webos",
  "libc",
  "serde",
  "serde_json",
@@ -432,19 +429,6 @@ name = "couch-ha"
 version = "0.1.0"
 dependencies = [
  "couch-sdk",
- "serde",
- "serde_json",
- "ureq",
- "url",
-]
-
-[[package]]
-name = "couch-hue"
-version = "0.1.0"
-dependencies = [
- "couch-ha",
- "couch-sdk",
- "rustls",
  "serde",
  "serde_json",
  "ureq",
@@ -509,6 +493,7 @@ dependencies = [
 name = "couch-plugin"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "couch-sdk",
  "libc",
  "serde",
@@ -591,19 +576,6 @@ dependencies = [
  "sha2",
  "tar",
  "ureq",
-]
-
-[[package]]
-name = "couch-webos"
-version = "0.1.0"
-dependencies = [
- "couch-ir",
- "couch-sdk",
- "rustls",
- "serde",
- "serde_json",
- "tungstenite",
- "url",
 ]
 
 [[package]]

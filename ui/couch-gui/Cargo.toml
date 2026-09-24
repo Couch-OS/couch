@@ -15,6 +15,7 @@ couch-appletv = { path = "../../clients/couch-appletv" }
 couch-sonos = { path = "../../clients/couch-sonos" }
 couch-system = { path = "../../daemon/couch-system" }
 couch-updates = { path = "../../daemon/couch-updates" }
+couch-camera = { path = "../../clients/couch-camera" }
 couch-unifi-protect = { path = "../../clients/couch-unifi-protect", features = ["media"] }
 couch-androidtv = { path = "../../clients/couch-androidtv" }
 # The socket path and key words only; `daemon` off keeps zbus out of the GUI.
@@ -22,7 +23,6 @@ couch-bt-hid = { path = "../../clients/couch-bt-hid", default-features = false }
 couch-ir = { path = "../../clients/couch-ir" }
 couch-control = { path = "../../clients/couch-control" }
 couch-plugin = { path = "../../clients/couch-plugin" }
-couch-webos = { path = "../../clients/couch-webos" }
 couch-tizen = { path = "../../clients/couch-tizen" }
 base64 = "0.22"
 couch-kodi = { path = "../../clients/couch-kodi" }
@@ -35,7 +35,6 @@ slint = { version = "1.17", default-features = false, features = [
 libc = "0.2"
 serde_json = "1"
 couch-ha = { path = "../../clients/couch-ha" }
-couch-hue = { path = "../../clients/couch-hue" }
 couch-matter = { path = "../../clients/couch-matter" }
 couch-model = { path = "../../model/couch-model" }
 # The setup screen's QR. LVGL had one built in; Slint does not, and qrcodegen is

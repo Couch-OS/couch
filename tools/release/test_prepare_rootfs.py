@@ -2,7 +2,7 @@ import io
 import tarfile
 import unittest
 from clean_stage import GENERATED, StageError
-from prepare_rootfs import normalize
+from prepare_rootfs import PRUNED, normalize
 
 
 class PackagedRootfsTests(unittest.TestCase):
@@ -29,10 +29,37 @@ class PackagedRootfsTests(unittest.TestCase):
             self.assertTrue(all(m.uid == 123 and m.gid == 456 and m.mtime == 1234 for m in members))
 
     def test_rejects_runtime_private_state_after_package_scripts(self):
-        for path in ('root/.ssh/authorized_keys', 'etc/ssh/ssh_host_rsa_key', 'etc/machine-id',
+        for path in ('root/.ssh/authorized_keys', 'etc/ssh/ssh_host_rsa_key',
                      'opt/couch/networks.conf', 'dev/null'):
             with self.subTest(path=path), self.assertRaises(StageError):
                 normalize(self.fixture([(path, b'private', tarfile.REGTYPE, '')]), 1234)
+
+    def test_drops_the_build_hosts_machine_id_instead_of_shipping_it(self):
+        # D-Bus's install hook mints one wherever it runs, which is now the build
+        # container; the remote mints its own at first boot instead.
+        extra = [(path, b'c436676baef3e922f37b6e066ab24a63\n', tarfile.REGTYPE, '')
+                 for path in PRUNED]
+        data, count = normalize(self.fixture(extra), 1234)
+        self.assertEqual(count, len(GENERATED))
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            self.assertEqual([m.name for m in archive.getmembers()], sorted(GENERATED))
+
+    def test_the_prune_is_exact_and_drops_nothing_else(self):
+        # A neighbouring path is an ordinary file: it must survive, not be
+        # swept up by a prefix match.
+        for path in ('etc/machine-id.bak', 'var/lib/dbus/machine-id.old', 'etc/machine-idx'):
+            with self.subTest(path=path):
+                data, _ = normalize(self.fixture([(path, b'ordinary', tarfile.REGTYPE, '')]), 1234)
+                with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+                    self.assertIn(path, [m.name for m in archive.getmembers()])
+
+    def test_a_link_or_directory_at_a_pruned_path_is_still_refused(self):
+        # Only a regular file is dropped; anything else there is unexpected and
+        # keeps failing the private-state check.
+        for kind, target in ((tarfile.SYMTYPE, '/tmp/id'), (tarfile.DIRTYPE, '')):
+            for path in PRUNED:
+                with self.subTest(kind=kind, path=path), self.assertRaises(StageError):
+                    normalize(self.fixture([(path, b'', kind, target)]), 1234)
 
     def test_rejects_link_ancestor_and_archive_escape(self):
         for item in [('opt/couch', b'', tarfile.SYMTYPE, '/tmp'),

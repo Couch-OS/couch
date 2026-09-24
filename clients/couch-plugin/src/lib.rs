@@ -5,6 +5,8 @@
 //! complete requests have deadlines even when a child dribbles partial frames.
 //! stdout is exclusively protocol traffic. Settings travel over the socket,
 //! never argv or environment. Handshake and configuration do not contact devices.
+//! Only a protocol-4 package receives a second socket as fd 3; that socket
+//! carries bounded H264 records and nothing else.
 
 mod host;
 mod manifest;
@@ -12,10 +14,8 @@ mod protocol;
 mod server;
 #[cfg(feature = "testing")]
 pub mod testing;
-/// Protocol 3 (unreleased): the harness for a package with children. It moves
-/// into `testing` when the protocol ships; until then it is behind the same
-/// switch as everything else protocol 3.
-#[cfg(all(feature = "testing", feature = "protocol-3-preview"))]
+/// Admission harness for a protocol 3 package with children or pairing.
+#[cfg(feature = "testing")]
 pub mod testing_v3;
 #[cfg(test)]
 mod wire_golden;
@@ -33,13 +33,14 @@ pub use couch_sdk::{
 };
 pub use host::{
     is_non_dumpable, list_children, local_request, local_request_detailed, read_frame_timeout,
-    requires, write_frame_timeout, Endpoint, Host, HostPolicy, LocalRequest,
-    CHILD_LISTING_DEADLINE, MAX_CHILDREN, MAX_CHILD_PAGES, QUEUE_CAPACITY, QUEUE_TTL,
+    requires, write_frame_timeout, Endpoint, Host, HostPolicy, LocalCamera, LocalCameraInterrupt,
+    LocalRequest, CHILD_LISTING_DEADLINE, MAX_CHILDREN, MAX_CHILD_PAGES, QUEUE_CAPACITY, QUEUE_TTL,
     REQUEST_TIMEOUT, STARTUP_TIMEOUT,
 };
 pub use manifest::{Capability, FieldKind, Manifest, Pairing, SettingField};
 pub use protocol::{
-    accepted_protocol_version, read_frame, write_frame, Error, Failure, Request, Response, Result,
-    MAX_FRAME, NEXT_PROTOCOL_VERSION, PROTOCOL_VERSION,
+    accepted_protocol_version, read_frame, write_frame, CameraCodec, Error, Failure, Request,
+    Response, Result, MAX_CAMERA_SECONDS, MAX_FRAME, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_CHUNK_BASE64,
+    MAX_SNAPSHOT_CHUNK_BYTES, NEXT_PROTOCOL_VERSION, PROTOCOL_VERSION,
 };
 pub use server::serve;

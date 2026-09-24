@@ -3,23 +3,34 @@ use couch_sdk::{Credential, KeyPhase, PairInput, PairStep, Reason, Selectable, S
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const PROTOCOL_VERSION: u32 = 2;
-/// Protocol 3 is unreleased. Its wire types are compiled in so that one host
-/// can be tested against both, but nothing accepts a protocol 3 manifest
-/// unless the `protocol-3-preview` feature is on, and no shipped crate turns
-/// it on.
+/// The current package contract. Protocol 4 adds camera children and their
+/// bounded H264 side channel while preserving protocols 1-3 byte for byte.
+pub const PROTOCOL_VERSION: u32 = 4;
+/// The protocol generation that introduced children, typed actions, pairing,
+/// and host-owned credentials. Keep this name for source compatibility with
+/// packages developed while protocol 3 was in preview.
 pub const NEXT_PROTOCOL_VERSION: u32 = 3;
-/// The newest manifest protocol this build admits. The only thing the
-/// `protocol-3-preview` feature changes. [`PROTOCOL_VERSION`] is what a release
-/// supports and is deliberately not feature-dependent.
+/// The newest manifest protocol this build admits.
 pub const fn accepted_protocol_version() -> u32 {
-    if cfg!(feature = "protocol-3-preview") {
-        NEXT_PROTOCOL_VERSION
-    } else {
-        PROTOCOL_VERSION
-    }
+    PROTOCOL_VERSION
 }
 pub const MAX_FRAME: usize = 64 * 1024;
+/// Protocol 4: largest JPEG the core will assemble from snapshot chunks.
+pub const MAX_SNAPSHOT_BYTES: usize = 8 * 1024 * 1024;
+/// Protocol 4: largest base64 field in one ordinary control frame. This leaves
+/// room for the JSON envelope under [`MAX_FRAME`].
+pub const MAX_SNAPSHOT_CHUNK_BASE64: usize = 48 * 1024;
+/// The decoded bytes represented by [`MAX_SNAPSHOT_CHUNK_BASE64`].
+pub const MAX_SNAPSHOT_CHUNK_BYTES: usize = MAX_SNAPSHOT_CHUNK_BASE64 / 4 * 3;
+/// Protocol 4: an explicitly opened live view is always short-lived.
+pub const MAX_CAMERA_SECONDS: u8 = 60;
+
+/// The only media codec protocol 4 admits on its binary side channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraCodec {
+    H264AnnexB,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -170,6 +181,19 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
     },
+    /// Protocol 4. Read one bounded chunk of a camera's JPEG snapshot.
+    CameraSnapshot {
+        resource: String,
+        offset: u32,
+    },
+    /// Protocol 4. Begin one short live view on the inherited media socket.
+    CameraOpen {
+        resource: String,
+    },
+    /// Protocol 4. Cancel a live view. Dropping either socket is equivalent.
+    CameraClose {
+        resource: String,
+    },
     /// Protocol 3. Begin a pairing conversation for these settings. It needs
     /// no prior `configure`: pairing is how a connection becomes usable, and
     /// the daemon runs it in a child of its own so the connection that is
@@ -275,6 +299,25 @@ impl Request {
     pub fn children(cursor: Option<String>) -> Self {
         Self::Children { cursor }
     }
+    /// Protocol 4: read a JPEG snapshot from this byte offset.
+    pub fn camera_snapshot(resource: impl Into<String>, offset: u32) -> Self {
+        Self::CameraSnapshot {
+            resource: resource.into(),
+            offset,
+        }
+    }
+    /// Protocol 4: begin a short H264 view.
+    pub fn camera_open(resource: impl Into<String>) -> Self {
+        Self::CameraOpen {
+            resource: resource.into(),
+        }
+    }
+    /// Protocol 4: close a view.
+    pub fn camera_close(resource: impl Into<String>) -> Self {
+        Self::CameraClose {
+            resource: resource.into(),
+        }
+    }
     /// Protocol 3: the same request, aimed at one child of the connection.
     ///
     /// Only a command, a typed action and a status read can name a child;
@@ -288,6 +331,9 @@ impl Request {
             | Self::Configure { .. }
             | Self::Inputs
             | Self::Children { .. }
+            | Self::CameraSnapshot { .. }
+            | Self::CameraOpen { .. }
+            | Self::CameraClose { .. }
             | Self::PairStart { .. }
             | Self::PairContinue { .. }
             | Self::PairCancel { .. } => (),
@@ -300,6 +346,9 @@ impl Request {
             Self::Command { resource, .. }
             | Self::Action { resource, .. }
             | Self::Status { resource } => resource.as_deref(),
+            Self::CameraSnapshot { resource, .. }
+            | Self::CameraOpen { resource }
+            | Self::CameraClose { resource } => Some(resource),
             Self::Hello { .. }
             | Self::Configure { .. }
             | Self::Inputs
@@ -329,6 +378,17 @@ pub enum Response {
         children: Vec<couch_sdk::Child>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next: Option<String>,
+    },
+    /// Protocol 4. One base64-encoded JPEG chunk at `offset` of `total` bytes.
+    CameraSnapshot {
+        data: String,
+        offset: u32,
+        total: u32,
+    },
+    /// Protocol 4. The media socket will now carry bounded H264 records.
+    CameraOpen {
+        codec: CameraCodec,
+        seconds: u8,
     },
     /// Protocol 3. One step of a pairing conversation, and the session it
     /// belongs to. The package names the session on the first step and
