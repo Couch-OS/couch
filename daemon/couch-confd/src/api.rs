@@ -36,7 +36,6 @@ mod sonos;
 mod streaming_tv;
 mod tizen;
 mod updates;
-mod webos;
 
 use std::io::Read;
 use std::sync::Arc;
@@ -331,10 +330,9 @@ impl Api {
             );
         }
 
-        if let Some(kind @ ("hue" | "ha" | "webos")) = rest.first().copied() {
+        if let Some(kind @ ("hue" | "ha")) = rest.first().copied() {
             let provider = match kind {
                 "ha" => "home-assistant",
-                "webos" => "web-os",
                 _ => "hue",
             };
             let ids = self.with(|s| {
@@ -374,9 +372,6 @@ impl Api {
         }
         if rest.first() == Some(&"integrations") {
             return self.integration_route(&method, &rest[1..], &body);
-        }
-        if rest.first() == Some(&"webos") {
-            return webos::route(&method, &rest[1..], &body);
         }
         if rest.first() == Some(&"ha") {
             return ha::route(&method, &rest[1..], &body);

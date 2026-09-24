@@ -25,11 +25,11 @@ subprocess boundary, rather than a Rust dynamic-library ABI, is what permits an
 integration to be built and installed independently.
 
 This is a developer preview. Integrations live in their own repositories and
-the OS carries only the host that runs them. Denon is the first independently
-sourced package and the first built-in to leave the OS: its client is no longer
-linked into Couch, and a connection saved before that converts by itself
-([Built-in integrations that became packages](integration-migration.md)). The
-other built-in integrations remain until their packages can replace them; Echo
+the OS carries only the host that runs them. Denon, Philips Hue, and LG webOS
+have left the OS for independently sourced packages. Their clients are no
+longer linked into Couch, and connections saved before that convert by
+themselves ([Built-in integrations that became packages](integration-migration.md)).
+Other built-in integrations remain until their packages can replace them; Echo
 is the in-tree template. The published
 `v0.1.0-alpha.20260916.171.dev` prerelease provides the protocol-v1 host and
 paired web package management. It is not a production compatibility guarantee.
@@ -203,7 +203,7 @@ passed admission, or that a device has been validated.
 | Sonos | `couch-sonos::sdk::Client` already implements `DeviceClient` for playback, volume, mute, status, and inputs. | **Package-shaped adapter; not yet a migration.** | Needs a package binary/manifest, four package cases, catalog/feed admission, and an explicit owner/configuration migration. Discovery is not carried by v1. |
 | Echo | `couch-echo` is a packaged `DeviceClient` with fake-peer admission coverage. | **Test-only fixture.** | It is fictional and must never become a device-support migration. |
 | Kodi | The client has JSON-RPC playback, chapters, streams, and notification handling. | **Needs a richer media/event contract.** | Protocol v1 cannot express unsolicited notifications, chapters, stream selection, or richer media state. |
-| LG webOS | The client performs explicit pairing, subscriptions, inputs, app listing, and app launch. | **Needs pairing, apps, and event contracts.** | v1 has no interactive pairing, subscription, app-list, or launch request. |
+| LG webOS | External `couch-integration-webos` implements pairing, status, inputs, apps, and the television command profile. | **Moved; the built-in client is removed.** Saved connections convert automatically. | Network wake and the old private power sidecar are not package capabilities; use core device IR for power-on where needed. |
 | Samsung Tizen | The client performs user-approved pairing, app discovery/launch, and WebSocket control. | **Needs pairing, apps, and event contracts.** | The same v1 gaps block a faithful migration. |
 | Apple TV | The client maintains pairing credentials and Companion/media metadata flows. | **Needs pairing and media/event contracts.** | v1 cannot carry its pairing exchange, metadata flow, or unsolicited state. |
 | Android / Google TV | The client performs mutual-TLS pairing, remote control, Cast status, and launch URLs. | **Needs pairing, discovery, apps, and media/event contracts.** | v1 lacks those interactive and streamed contracts. |

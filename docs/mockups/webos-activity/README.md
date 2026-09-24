@@ -68,7 +68,8 @@ cycling, hidden calibration calls, or fixed HDR/SDR mode lists.
 - [Picture-settings implementation](https://github.com/chros73/bscpylgtv/blob/master/bscpylgtv/webos_client.py)
 - [Home Assistant limitations and next/previous behavior](https://www.home-assistant.io/integrations/webostv/)
 
-`clients/couch-webos/examples/capabilities.rs` reproduces the read-only probe.
+The external [`couch-integration-webos`](https://github.com/dangerouslaser/couch-integration-webos)
+repository contains the maintained implementation of these capabilities.
 Do not commit its raw output: system info can include a TV serial number.
 Browser checks exercise all three designs, playback, input sheets, picture
 fallback, offline mode and mobile overflow. PNGs are exported from the browser.

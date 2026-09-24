@@ -3,14 +3,13 @@
 //! # What this is
 //!
 //! Couch drives home devices from crates in the `clients/` workspace. Each one
-//! owns a transport - Kodi's JSON-RPC, an LG TV's SSAP socket, a Denon AVR's
-//! CR-delimited TCP protocol, the remote's own IR blaster - and is linked into
-//! the configuration daemon and the device GUI. This crate is the small set of
-//! types they have in common, extracted from the ones that already exist:
+//! owns a transport - Kodi's JSON-RPC, a Sonos HTTPS API, or the remote's own
+//! IR blaster. Some remain linked into the core and others run as independently
+//! installed packages. This crate is the small set of types they share:
 //!
 //! - [`ClientSettings`] - the private per-connection credential file, written
 //!   atomically at mode 0600, the way `couch-denon`, `couch-ha`, `couch-hue`,
-//!   `couch-kodi` and `couch-webos` each write it today.
+//!   `couch-kodi` and the independently packaged clients each write it today.
 //! - [`DeviceClient`] - what the client declares it can do, and how it is asked
 //!   to do it, in `couch-model`'s existing [`Function`](couch_model::commands::Function)
 //!   vocabulary rather than a new one.

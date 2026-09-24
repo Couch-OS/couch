@@ -123,7 +123,7 @@ impl Api {
                 None => Reply::error(404, "CoreELEC connection not found"),
             };
         }
-        if let [id, kind @ ("protect" | "ha" | "webos" | "kodi" | "androidtv" | "appletv" | "tizen"), rest @ ..] =
+        if let [id, kind @ ("protect" | "ha" | "kodi" | "androidtv" | "appletv" | "tizen"), rest @ ..] =
             path
         {
             let file = self.with(|s| {
@@ -132,7 +132,7 @@ impl Api {
                     Provider::UnifiProtect => "protect",
                     Provider::LegacyHue => return None,
                     Provider::HomeAssistant => "ha",
-                    Provider::WebOs => "webos",
+                    Provider::LegacyWebOs => return None,
                     Provider::AndroidTv => "androidtv",
                     Provider::AppleTv => "appletv",
                     Provider::Tizen => "tizen",
@@ -173,7 +173,7 @@ impl Api {
                     super::streaming_tv::route(method, rest, body, file, *kind == "appletv")
                 }
                 "tizen" => super::tizen::route(method, rest, body, file),
-                _ => super::webos::route_at(method, rest, body, file),
+                _ => unreachable!("connection route kind was checked above"),
             };
         }
         match (method, path) {

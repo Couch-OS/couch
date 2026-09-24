@@ -109,7 +109,10 @@ pub enum Provider {
     /// The `hue` package takes it over through [`crate::LEGACY_BUILTINS`].
     #[serde(rename = "hue")]
     LegacyHue,
-    WebOs,
+    /// An LG TV connection saved while the webOS client was built into the
+    /// OS. The `webos` package takes it over through [`crate::LEGACY_BUILTINS`].
+    #[serde(rename = "web-os")]
+    LegacyWebOs,
     AndroidTv,
     AppleTv,
     Tizen,
@@ -149,7 +152,7 @@ impl Provider {
             Self::LegacyDenon { .. } => "denon",
             Self::HomeAssistant => "home-assistant",
             Self::LegacyHue => "hue",
-            Self::WebOs => "web-os",
+            Self::LegacyWebOs => "web-os",
             Self::AndroidTv => "android-tv",
             Self::AppleTv => "apple-tv",
             Self::Tizen => "tizen",
@@ -168,7 +171,7 @@ impl Provider {
             Self::LegacyDenon { .. } => "Denon AVR",
             Self::HomeAssistant => "Home Assistant",
             Self::LegacyHue => "Philips Hue",
-            Self::WebOs => "LG webOS",
+            Self::LegacyWebOs => "LG webOS",
             Self::AndroidTv => "Android / Google TV",
             Self::AppleTv => "Apple TV",
             Self::Tizen => "Samsung Tizen",
@@ -258,7 +261,7 @@ impl Config {
             Provider::LegacyHue => Integration::Hue {
                 light_id: alloc::format!("{connection_id}/{resource_id}"),
             },
-            Provider::WebOs => Integration::WebOs,
+            Provider::LegacyWebOs => Integration::WebOs,
             Provider::AndroidTv => Integration::AndroidTv,
             Provider::AppleTv => Integration::AppleTv,
             Provider::Tizen => Integration::Tizen,
@@ -492,7 +495,7 @@ mod tests {
         config.connections.push(Connection {
             id: "lg".into(),
             name: "LG TV".into(),
-            provider: Provider::WebOs,
+            provider: Provider::LegacyWebOs,
         });
         let integration = Integration::Connection {
             connection_id: "lg".into(),
@@ -517,7 +520,7 @@ mod tests {
         config.connections.push(Connection {
             id: "second".into(),
             name: "Second TV".into(),
-            provider: Provider::WebOs,
+            provider: Provider::LegacyWebOs,
         });
         assert!(config.validate().is_ok());
     }

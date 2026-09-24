@@ -391,7 +391,6 @@ dependencies = [
  "couch-system",
  "couch-tizen",
  "couch-unifi-protect",
- "couch-webos",
  "flate2",
  "if-addrs",
  "libc",
@@ -411,7 +410,6 @@ dependencies = [
  "couch-kodi",
  "couch-sdk",
  "couch-tizen",
- "couch-webos",
  "libc",
  "serde",
  "serde_json",
@@ -578,19 +576,6 @@ dependencies = [
  "sha2",
  "tar",
  "ureq",
-]
-
-[[package]]
-name = "couch-webos"
-version = "0.1.0"
-dependencies = [
- "couch-ir",
- "couch-sdk",
- "rustls",
- "serde",
- "serde_json",
- "tungstenite",
- "url",
 ]
 
 [[package]]

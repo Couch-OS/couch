@@ -79,6 +79,16 @@ pub const LEGACY_BUILTINS: &[LegacyBuiltin] = &[
         credential: Some(hue_credential),
         convert: convert_hue_resources,
     },
+    LegacyBuiltin {
+        kind: "web-os",
+        package: "webos",
+        name: "LG webOS",
+        settings: webos_settings,
+        credential_file: Some("webos-connection.json"),
+        stored_settings: Some(webos_stored_settings),
+        credential: Some(webos_credential),
+        convert: keep_resources,
+    },
 ];
 
 fn denon_settings(provider: &Provider) -> Option<LegacySettings> {
@@ -119,6 +129,40 @@ fn hue_credential(stored: &serde_json::Value) -> Option<serde_json::Value> {
         "application_key": application_key,
         "certificate": base64(&bytes?),
     }))
+}
+
+fn webos_settings(provider: &Provider) -> Option<LegacySettings> {
+    matches!(provider, Provider::LegacyWebOs).then(Vec::new)
+}
+
+fn webos_stored_settings(stored: &serde_json::Value) -> Option<LegacySettings> {
+    let url = stored.get("url")?.as_str()?.trim();
+    (!url.is_empty() && url.len() <= 2048)
+        .then(|| alloc::vec![("url", LegacySetting::Text(url.into()))])
+}
+
+fn webos_credential(stored: &serde_json::Value) -> Option<serde_json::Value> {
+    let client_key = stored.get("client_key")?.as_str()?;
+    if client_key.is_empty() || client_key.len() > 4096 {
+        return None;
+    }
+    let certificate = stored.get("certificate")?.as_array()?;
+    if certificate.len() > 8 * 1024 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = certificate
+        .iter()
+        .map(|byte| u8::try_from(byte.as_u64()?).ok())
+        .collect();
+    let bytes = bytes?;
+    if bytes.is_empty() {
+        Some(serde_json::json!({"client_key": client_key}))
+    } else {
+        Some(serde_json::json!({
+            "client_key": client_key,
+            "certificate": base64(&bytes),
+        }))
+    }
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -262,7 +306,7 @@ impl Integration {
     /// As [`Provider::legacy_builtin`], for what a device resolves to.
     pub fn legacy_builtin(&self) -> Option<&'static LegacyBuiltin> {
         match self {
-            Integration::LegacyDenon { .. } | Integration::Hue { .. } => {
+            Integration::LegacyDenon { .. } | Integration::Hue { .. } | Integration::WebOs => {
                 LegacyBuiltin::for_kind(self.via())
             }
             _ => None,
@@ -655,6 +699,88 @@ mod tests {
         assert_eq!(
             config.scenes[0].resource.as_ref().unwrap().resource_id,
             alloc::format!("scene/{SCENE}")
+        );
+    }
+
+    #[test]
+    fn webos_conversion_maps_the_private_pairing_without_changing_the_connection_id() {
+        let mut config = Config::default();
+        config.connections.push(Connection {
+            id: "living-tv".into(),
+            name: "Living room TV".into(),
+            provider: Provider::LegacyWebOs,
+        });
+        config.rooms.push(crate::Room {
+            id: "living".into(),
+            name: "Living room".into(),
+            icon: None,
+            devices: alloc::vec![
+                crate::Device::new("tv".into(), "TV", crate::DeviceKind::Tv,).with_integration(
+                    Integration::Connection {
+                        connection_id: "living-tv".into(),
+                        resource_id: String::new(),
+                        child: None,
+                    }
+                )
+            ],
+        });
+        config.validate().unwrap();
+
+        let row = Provider::LegacyWebOs.legacy_builtin().unwrap();
+        assert_eq!(row.package, "webos");
+        assert_eq!(row.credential_file, Some("webos-connection.json"));
+        let stored = serde_json::json!({
+            "url": "wss://192.0.2.20:3001/",
+            "client_key": "client-key",
+            "certificate": [1, 2, 3, 4]
+        });
+        assert_eq!(
+            row.map_stored_settings(&stored),
+            Some(alloc::vec![(
+                "url",
+                LegacySetting::Text("wss://192.0.2.20:3001/".into())
+            )])
+        );
+        assert_eq!(
+            row.map_credential(&stored),
+            Some(serde_json::json!({
+                "client_key": "client-key",
+                "certificate": "AQIDBA=="
+            }))
+        );
+        assert_eq!(
+            row.map_credential(&serde_json::json!({
+                "url": "ws://192.0.2.20:3000/",
+                "client_key": "client-key",
+                "certificate": []
+            })),
+            Some(serde_json::json!({"client_key": "client-key"}))
+        );
+
+        let plugin = Provider::Plugin {
+            id: "webos".into(),
+            label: "LG webOS".into(),
+            capabilities: alloc::vec![],
+            supports_inputs: true,
+            presentation: alloc::vec![],
+            actions: alloc::vec![],
+            children: alloc::vec![],
+        };
+        assert!(config
+            .convert_legacy(&Id::new("living-tv"), plugin)
+            .unwrap());
+        config.validate().unwrap();
+        assert!(matches!(
+            &config.connections[0].provider,
+            Provider::Plugin { id, .. } if id == "webos"
+        ));
+        assert_eq!(
+            config.rooms[0].devices[0].integration,
+            Integration::Connection {
+                connection_id: "living-tv".into(),
+                resource_id: String::new(),
+                child: None,
+            }
         );
     }
 

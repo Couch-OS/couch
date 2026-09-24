@@ -42,8 +42,6 @@ serde_json = "1"
 couch-ha = { path = "../../clients/couch-ha" }
 couch-matter = { path = "../../clients/couch-matter" }
 
-couch-webos = { path = "../../clients/couch-webos" }
-
 couch-kodi = { path = "../../clients/couch-kodi" }
 
 couch-androidtv = { path = "../../clients/couch-androidtv" }

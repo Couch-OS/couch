@@ -6,7 +6,6 @@ license.workspace = true
 [dependencies]
 couch-sdk = { path = "../couch-sdk" }
 couch-kodi = { path = "../couch-kodi" }
-couch-webos = { path = "../couch-webos" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"

@@ -659,7 +659,7 @@ mod scoped_credentials_tests {
             config.connections.push(couch_model::Connection {
                 id: id.into(),
                 name: id.into(),
-                provider: couch_model::Provider::WebOs,
+                provider: couch_model::Provider::LegacyWebOs,
             });
         }
         fs::write(

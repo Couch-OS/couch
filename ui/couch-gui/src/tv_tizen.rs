@@ -1,9 +1,8 @@
 //! Samsung Tizen adapter for the shared TV screen. Keys are fire-and-forget
 //! through the control broker; no playback, mute or power state is inferred.
-use super::{android::current, Command, Details, Event, Work};
+use super::{android::current, Button, Command, Details, Event, Work};
 use couch_control::{StreamingConnection, StreamingTv};
 use couch_model::{commands::Function, Integration};
-use couch_webos::Button;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn function(action: &Command) -> Result<Option<String>, String> {
@@ -22,9 +21,6 @@ fn function(action: &Command) -> Result<Option<String>, String> {
             Button::Green => "green",
             Button::Yellow => "yellow",
             Button::Blue => "blue",
-            Button::Info | Button::Exit => {
-                return Err("This key is not part of Couch's Samsung command set".into())
-            }
         }
         .into(),
         Command::Volume(true) => "volume-up".into(),
@@ -193,7 +189,6 @@ mod tests {
         );
         assert!(function(&Command::Mute(true)).is_err());
         assert!(function(&Command::Next(true)).is_err());
-        assert!(function(&Command::Key(Button::Info)).is_err());
         assert_eq!(
             function(&Command::Key(Button::Blue)).unwrap().as_deref(),
             Some("blue")
