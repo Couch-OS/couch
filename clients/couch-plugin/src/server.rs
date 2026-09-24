@@ -547,7 +547,7 @@ mod camera_tests {
         os::fd::{FromRawFd, IntoRawFd},
         os::unix::net::UnixStream,
         sync::atomic::AtomicUsize,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     #[derive(serde::Deserialize, serde::Serialize)]
@@ -660,10 +660,14 @@ mod camera_tests {
             couch_sdk::read_h264_record(&mut host).unwrap(),
             Some(vec![0, 0, 0, 1, 0x65, 0x88])
         );
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while calls.load(Ordering::Acquire) < 2 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(calls.load(Ordering::Acquire) >= 2);
         running.closing.store(true, Ordering::Release);
         (running.cancel)();
         running.join().unwrap();
         assert_eq!(couch_sdk::read_h264_record(&mut host).unwrap(), None);
-        assert!(calls.load(Ordering::Acquire) >= 2);
     }
 }
