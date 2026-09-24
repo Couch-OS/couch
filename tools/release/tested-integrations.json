@@ -4,7 +4,7 @@
   "name": "denon-preview-0.1.1-protocol-3-host",
   "core": {
     "repository": "https://github.com/dangerouslaser/couch.git",
-    "tested_commit": "01df1a3745c7ee6cef061732877cb6b763f86e87",
+    "tested_commit": "8a168faba79e4090f691032f053c6db2cf0354bf",
     "compatibility_floor": "v0.1.0-alpha.20260910.24",
     "contract_paths": [
       "clients/couch-plugin",
@@ -104,8 +104,8 @@
     "automatic_configuration_migration": true
   },
   "host_compatibility": {
-    "file": "denon-0.1.1-core-01df1a3-host-compatibility.json",
+    "file": "denon-0.1.1-core-8a168fa-host-compatibility.json",
     "size": 1419,
-    "sha256": "f355e3dfa3c793d668207ec2496e5926757f63acce029e64563cc627b7b781af"
+    "sha256": "d66a0e9febb140f121663d4d12ecfe2e711a42d3765e5b4566b5bdc6acc58ae7"
   }
 }
