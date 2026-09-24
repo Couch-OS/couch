@@ -5,6 +5,8 @@
 //! complete requests have deadlines even when a child dribbles partial frames.
 //! stdout is exclusively protocol traffic. Settings travel over the socket,
 //! never argv or environment. Handshake and configuration do not contact devices.
+//! A build with `protocol-4-preview` gives only a protocol-4 package a second
+//! socket as fd 3; that socket carries bounded H264 records and nothing else.
 
 mod host;
 mod manifest;
@@ -37,7 +39,8 @@ pub use host::{
 };
 pub use manifest::{Capability, FieldKind, Manifest, Pairing, SettingField};
 pub use protocol::{
-    accepted_protocol_version, read_frame, write_frame, Error, Failure, Request, Response, Result,
-    MAX_FRAME, NEXT_PROTOCOL_VERSION, PROTOCOL_VERSION,
+    accepted_protocol_version, read_frame, write_frame, CameraCodec, Error, Failure, Request,
+    Response, Result, MAX_CAMERA_SECONDS, MAX_FRAME, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_CHUNK_BASE64,
+    MAX_SNAPSHOT_CHUNK_BYTES, NEXT_PROTOCOL_VERSION, PROTOCOL_VERSION,
 };
 pub use server::serve;

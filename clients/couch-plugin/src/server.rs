@@ -1,9 +1,56 @@
 use crate::{
     protocol::{Envelope, ReplyEnvelope},
-    read_frame, write_frame, Error, Failure, Manifest, Request, Response, Result,
-    NEXT_PROTOCOL_VERSION,
+    read_frame, write_frame, CameraCodec, Error, Failure, Manifest, Request, Response, Result,
+    MAX_CAMERA_SECONDS, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_CHUNK_BYTES, NEXT_PROTOCOL_VERSION,
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use couch_sdk::{ClientSettings, Credential, DeviceClient, KeyPhase, PairFlow};
+use std::{
+    fs::File,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread::JoinHandle,
+};
+
+struct SnapshotCache {
+    resource: String,
+    bytes: Vec<u8>,
+}
+
+struct RunningCamera {
+    resource: String,
+    cancel: Arc<dyn Fn() + Send + Sync>,
+    closing: Arc<AtomicBool>,
+    worker: Option<JoinHandle<Result<()>>>,
+}
+
+impl RunningCamera {
+    fn close(mut self) -> Result<()> {
+        self.closing.store(true, Ordering::Release);
+        (self.cancel)();
+        self.join()
+    }
+
+    fn join(&mut self) -> Result<()> {
+        self.worker
+            .take()
+            .ok_or(Error::Protocol)?
+            .join()
+            .map_err(|_| Error::Transport)?
+    }
+}
+
+impl Drop for RunningCamera {
+    fn drop(&mut self) {
+        self.closing.store(true, Ordering::Release);
+        (self.cancel)();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
 
 /// Run an SDK integration over stdin/stdout. Configure validates settings and
 /// clears prior state; the first actual device operation connects lazily.
@@ -50,6 +97,8 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
     // At most one conversation, numbered so a stale step from a dialog that
     // was already replaced names a session this package no longer has.
     let mut flow: Option<(String, Box<dyn PairFlow>)> = None;
+    let mut snapshot: Option<SnapshotCache> = None;
+    let mut camera: Option<RunningCamera> = None;
     let mut sessions: u64 = 0;
     let mut last_id = 0;
     loop {
@@ -81,6 +130,10 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                     settings: value,
                     credential: key,
                 } => {
+                    if let Some(running) = camera.take() {
+                        running.close()?;
+                    }
+                    snapshot = None;
                     if key.is_some() && !pairs {
                         return Err(Error::Unsupported.into());
                     }
@@ -191,6 +244,16 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                     if matches!(request, Request::Children { .. }) && manifest.children.is_empty() {
                         return Err(Error::Unsupported.into());
                     }
+                    if manifest.protocol_version < couch_sdk::CAMERA_PROTOCOL_VERSION
+                        && matches!(
+                            request,
+                            Request::CameraSnapshot { .. }
+                                | Request::CameraOpen { .. }
+                                | Request::CameraClose { .. }
+                        )
+                    {
+                        return Err(Error::Unsupported.into());
+                    }
                     if client.is_none() {
                         client = Some(C::connect_with(
                             settings.as_ref().ok_or(Error::Invalid)?,
@@ -244,6 +307,40 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                                 children: page.children,
                                 next: page.next,
                             }),
+                        (Request::CameraSnapshot { resource, offset }, Some(_)) => {
+                            camera_snapshot(client_ref, &mut snapshot, resource, offset)
+                        }
+                        (Request::CameraOpen { resource }, Some(_)) => {
+                            if camera.is_some() {
+                                Err(couch_sdk::Error::Invalid)
+                            } else {
+                                let view = client_ref.camera_open(&resource)?;
+                                let (stream, cancel, seconds) = view.into_parts();
+                                if seconds > MAX_CAMERA_SECONDS {
+                                    Err(couch_sdk::Error::Invalid)
+                                } else {
+                                    let file = camera_file().map_err(couch_sdk::Error::from)?;
+                                    camera = Some(start_camera(resource, stream, cancel, file));
+                                    Ok(Response::CameraOpen {
+                                        codec: CameraCodec::H264AnnexB,
+                                        seconds,
+                                    })
+                                }
+                            }
+                        }
+                        (Request::CameraClose { resource }, Some(_)) => {
+                            if camera.as_ref().is_none_or(|open| open.resource != resource) {
+                                Err(couch_sdk::Error::Invalid)
+                            } else {
+                                let running = camera.take().ok_or(couch_sdk::Error::Invalid)?;
+                                running.close().map_err(|error| match error {
+                                    Error::Protocol => couch_sdk::Error::Protocol,
+                                    Error::Timeout => couch_sdk::Error::Timeout,
+                                    _ => couch_sdk::Error::Transport,
+                                })?;
+                                Ok(Response::Ok)
+                            }
+                        }
                         _ => unreachable!(),
                     };
                     if result.as_ref().is_err_and(|error| {
@@ -285,6 +382,98 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
             },
         )?;
     }
+}
+
+fn camera_snapshot<C: DeviceClient>(
+    client: &mut C,
+    cache: &mut Option<SnapshotCache>,
+    resource: String,
+    offset: u32,
+) -> couch_sdk::Result<Response> {
+    if offset == 0 {
+        let bytes = client.camera_snapshot(&resource)?;
+        if !(4..=MAX_SNAPSHOT_BYTES).contains(&bytes.len())
+            || !bytes.starts_with(&[0xff, 0xd8])
+            || !bytes.ends_with(&[0xff, 0xd9])
+        {
+            return Err(couch_sdk::Error::Protocol);
+        }
+        *cache = Some(SnapshotCache {
+            resource: resource.clone(),
+            bytes,
+        });
+    }
+    let held = cache.as_ref().ok_or(couch_sdk::Error::Invalid)?;
+    let offset = offset as usize;
+    if held.resource != resource || offset >= held.bytes.len() {
+        return Err(couch_sdk::Error::Invalid);
+    }
+    let end = offset
+        .saturating_add(MAX_SNAPSHOT_CHUNK_BYTES)
+        .min(held.bytes.len());
+    Ok(Response::CameraSnapshot {
+        data: STANDARD.encode(&held.bytes[offset..end]),
+        offset: offset as u32,
+        total: held.bytes.len() as u32,
+    })
+}
+
+fn start_camera(
+    resource: String,
+    mut stream: Box<dyn couch_sdk::CameraStream>,
+    cancel: Arc<dyn Fn() + Send + Sync>,
+    mut file: File,
+) -> RunningCamera {
+    let closing = Arc::new(AtomicBool::new(false));
+    let worker_closing = closing.clone();
+    let worker = std::thread::spawn(move || {
+        let result = loop {
+            if worker_closing.load(Ordering::Acquire) {
+                break Ok(());
+            }
+            match stream.next_h264() {
+                Ok(bytes) => {
+                    if let Err(error) = couch_sdk::write_h264_record(&mut file, &bytes) {
+                        break Err(camera_wire_error(error));
+                    }
+                }
+                Err(_) if worker_closing.load(Ordering::Acquire) => break Ok(()),
+                Err(error) => break Err(error.into()),
+            }
+        };
+        match couch_sdk::write_camera_end(&mut file) {
+            Ok(()) => result,
+            Err(error) => Err(camera_wire_error(error)),
+        }
+    });
+    RunningCamera {
+        resource,
+        cancel,
+        closing,
+        worker: Some(worker),
+    }
+}
+
+fn camera_wire_error(error: couch_sdk::CameraWireError) -> Error {
+    match error {
+        couch_sdk::CameraWireError::Io(_) => Error::Transport,
+        couch_sdk::CameraWireError::Protocol => Error::Protocol,
+    }
+}
+
+#[cfg(unix)]
+fn camera_file() -> std::io::Result<File> {
+    use std::os::fd::FromRawFd;
+    let fd = unsafe { libc::dup(3) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(not(unix))]
+fn camera_file() -> std::io::Result<File> {
+    Err(std::io::ErrorKind::Unsupported.into())
 }
 
 /// Give up being dumpable, which hands `/proc/<pid>` to root and closes the
@@ -348,4 +537,133 @@ pub(crate) fn refusal(manifest: &Manifest, mut failure: Failure) -> Response {
         failure.reason = None;
     }
     Response::error(failure)
+}
+
+#[cfg(all(test, unix))]
+mod camera_tests {
+    use super::*;
+    use couch_sdk::{couch_model::commands::Function, CameraStream, Capability, ClientSettings};
+    use std::{
+        os::fd::{FromRawFd, IntoRawFd},
+        os::unix::net::UnixStream,
+        sync::atomic::AtomicUsize,
+        time::Duration,
+    };
+
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct Settings;
+    impl ClientSettings for Settings {
+        const FILE_PREFIX: &'static str = "camera-test";
+        fn validate(&self) -> couch_sdk::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct Client {
+        jpeg: Vec<u8>,
+    }
+    impl DeviceClient for Client {
+        type Settings = Settings;
+        const KIND: &'static str = "camera-test";
+        const LABEL: &'static str = "Camera test";
+        fn capabilities() -> &'static [Capability] {
+            &[]
+        }
+        fn connect(_: &Settings) -> couch_sdk::Result<Self> {
+            unreachable!()
+        }
+        fn execute(&mut self, _: &Function) -> couch_sdk::Result<()> {
+            Err(couch_sdk::Error::Unsupported)
+        }
+        fn camera_snapshot(&mut self, _: &str) -> couch_sdk::Result<Vec<u8>> {
+            Ok(self.jpeg.clone())
+        }
+    }
+
+    #[test]
+    fn snapshot_bytes_are_validated_cached_and_chunked_by_the_sdk() {
+        let mut jpeg = vec![7; MAX_SNAPSHOT_CHUNK_BYTES + 4];
+        jpeg[..2].copy_from_slice(&[0xff, 0xd8]);
+        let end = jpeg.len();
+        jpeg[end - 2..].copy_from_slice(&[0xff, 0xd9]);
+        let mut client = Client { jpeg: jpeg.clone() };
+        let mut cache = None;
+        let first = camera_snapshot(&mut client, &mut cache, "front".into(), 0).unwrap();
+        let Response::CameraSnapshot {
+            data,
+            offset,
+            total,
+        } = first
+        else {
+            panic!("snapshot response")
+        };
+        assert_eq!(offset, 0);
+        assert_eq!(total as usize, jpeg.len());
+        assert_eq!(
+            STANDARD.decode(data).unwrap(),
+            jpeg[..MAX_SNAPSHOT_CHUNK_BYTES]
+        );
+        let second = camera_snapshot(
+            &mut client,
+            &mut cache,
+            "front".into(),
+            MAX_SNAPSHOT_CHUNK_BYTES as u32,
+        )
+        .unwrap();
+        let Response::CameraSnapshot { data, .. } = second else {
+            panic!("snapshot response")
+        };
+        assert_eq!(
+            STANDARD.decode(data).unwrap(),
+            jpeg[MAX_SNAPSHOT_CHUNK_BYTES..]
+        );
+        assert_eq!(
+            camera_snapshot(&mut client, &mut cache, "other".into(), 4),
+            Err(couch_sdk::Error::Invalid)
+        );
+    }
+
+    struct BlockingStream {
+        cancelled: Arc<AtomicBool>,
+        calls: Arc<AtomicUsize>,
+    }
+    impl CameraStream for BlockingStream {
+        fn next_h264(&mut self) -> couch_sdk::Result<Vec<u8>> {
+            if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                return Ok(vec![0, 0, 0, 1, 0x65, 0x88]);
+            }
+            while !self.cancelled.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(couch_sdk::Error::Transport)
+        }
+    }
+
+    #[test]
+    fn live_worker_frames_h264_and_close_interrupts_the_source() {
+        let (package, mut host) = UnixStream::pair().unwrap();
+        host.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let file = unsafe { File::from_raw_fd(package.into_raw_fd()) };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let source = BlockingStream {
+            cancelled: cancelled.clone(),
+            calls: calls.clone(),
+        };
+        let mut running = start_camera(
+            "front".into(),
+            Box::new(source),
+            Arc::new(move || cancelled.store(true, Ordering::Release)),
+            file,
+        );
+        assert_eq!(
+            couch_sdk::read_h264_record(&mut host).unwrap(),
+            Some(vec![0, 0, 0, 1, 0x65, 0x88])
+        );
+        running.closing.store(true, Ordering::Release);
+        (running.cancel)();
+        running.join().unwrap();
+        assert_eq!(couch_sdk::read_h264_record(&mut host).unwrap(), None);
+        assert!(calls.load(Ordering::Acquire) >= 2);
+    }
 }

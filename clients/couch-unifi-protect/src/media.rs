@@ -71,10 +71,24 @@ impl Session {
             .trim_end_matches(']');
         let port = url.port().unwrap_or(322);
         let config = media_tls(settings)?;
-        let name = ServerName::try_from(host.to_owned()).map_err(|_| Error::Configuration)?;
+        // UniFi's default certificate is issued to `unifi.local`, and its media
+        // server requires that DNS SNI even when the official API returns an IP
+        // address in the RTSPS URL. Exact leaf pinning still authenticates the
+        // peer; the name here selects the media service on the console.
+        let server_name = settings
+            .media_server_name
+            .as_deref()
+            .or_else(|| {
+                (settings.media_certificate_sha256.is_some()
+                    && host.parse::<std::net::IpAddr>().is_ok())
+                .then_some("unifi.local")
+            })
+            .unwrap_or(host);
+        let name =
+            ServerName::try_from(server_name.to_owned()).map_err(|_| Error::Configuration)?;
         let mut socket = None;
         for address in crate::media_io::resolve(host, port, view.expires_at(), &cancel)
-            .map_err(|_| Error::Transport)?
+            .map_err(|_| Error::MediaResolve)?
         {
             if cancel.is_cancelled() || Instant::now() >= view.expires_at() {
                 return Err(Error::Expired);
@@ -89,17 +103,17 @@ impl Session {
                 break;
             }
         }
-        let socket = socket.ok_or(Error::Transport)?;
+        let socket = socket.ok_or(Error::MediaConnect)?;
         let socket = crate::media_io::Socket::new(socket, view.expires_at(), cancel)
-            .map_err(|_| Error::Transport)?;
+            .map_err(|_| Error::MediaConnect)?;
         let mut tls = StreamOwned::new(
-            ClientConnection::new(Arc::new(config), name).map_err(|_| Error::Transport)?,
+            ClientConnection::new(Arc::new(config), name).map_err(|_| Error::MediaTls)?,
             socket,
         );
         while tls.conn.is_handshaking() {
             tls.conn
                 .complete_io(&mut tls.sock)
-                .map_err(|_| Error::Transport)?;
+                .map_err(|_| Error::MediaTls)?;
         }
         let mut s = Self {
             tls,
@@ -113,7 +127,14 @@ impl Session {
             depacketizer: H264::default(),
             initialization: Zeroizing::new(Vec::new()),
         };
-        let describe = s.request("DESCRIBE", s.url.clone(), "Accept: application/sdp\r\n")?;
+        // Protect's RTSPS server follows the ordinary RTSP client handshake:
+        // establish the connection with OPTIONS before asking for the SDP.
+        // Some versions close a connection that starts with DESCRIBE.
+        s.request("OPTIONS", s.url.clone(), "")
+            .map_err(|_| Error::MediaOptions)?;
+        let describe = s
+            .request("DESCRIBE", s.url.clone(), "Accept: application/sdp\r\n")
+            .map_err(|_| Error::MediaDescribe)?;
         let description = Sdp::parse(&describe.body)?;
         let base = match describe.headers.get("content-base") {
             Some(v) => checked_control(&s.url, v)?,
@@ -126,16 +147,14 @@ impl Session {
         }
         s.srtp = description.srtp;
         s.initialization = description.initialization;
-        let transport = if s.srtp.is_some() {
-            "RTP/SAVP/TCP"
-        } else {
-            "RTP/AVP/TCP"
-        };
-        let setup = s.request(
-            "SETUP",
-            track,
-            &format!("Transport: {transport};unicast;interleaved=0-1\r\n"),
-        )?;
+        let transport = description.transport;
+        let setup = s
+            .request(
+                "SETUP",
+                track,
+                &format!("Transport: {transport};unicast;interleaved=0-1\r\n"),
+            )
+            .map_err(|_| Error::MediaSetup)?;
         let negotiated = setup.headers.get("transport").ok_or(Error::Response)?;
         if !negotiated.starts_with(transport)
             || !negotiated.split(';').any(|s| s.trim() == "interleaved=0-1")
@@ -156,7 +175,8 @@ impl Session {
             return bad();
         }
         s.session = Zeroizing::new(session.into());
-        s.request("PLAY", s.url.clone(), "Range: npt=0.000-\r\n")?;
+        s.request("PLAY", s.url.clone(), "Range: npt=0.000-\r\n")
+            .map_err(|_| Error::MediaPlay)?;
         s.keepalive = Instant::now();
         Ok(s)
     }
@@ -191,7 +211,7 @@ impl Session {
             let mut header = [0; 4];
             self.tls
                 .read_exact(&mut header)
-                .map_err(|_| Error::Transport)?;
+                .map_err(|_| Error::MediaRead)?;
             if header[0] != b'$' || header[1] > 1 {
                 return bad();
             }
@@ -202,7 +222,7 @@ impl Session {
             let mut packet = vec![0; len];
             self.tls
                 .read_exact(&mut packet)
-                .map_err(|_| Error::Transport)?;
+                .map_err(|_| Error::MediaRead)?;
             if Instant::now() >= self.deadline {
                 return Err(Error::Expired);
             }
@@ -222,12 +242,12 @@ impl Session {
             format!("Session: {}\r\n", *self.session)
         };
         let request = Zeroizing::new(format!(
-            "{method} {url} RTSP/1.0\r\nCSeq: {}\r\n{session}{extra}\r\n",
+            "{method} {url} RTSP/1.0\r\nCSeq: {}\r\nUser-Agent: Couch/0.1\r\n{session}{extra}\r\n",
             self.cseq
         ));
         self.tls
             .write_all(request.as_bytes())
-            .map_err(|_| Error::Transport)?;
+            .map_err(|_| Error::MediaWrite)?;
         // In-flight interleaved media may precede an OPTIONS/TEARDOWN reply.
         let result = read_response(&mut self.tls, self.deadline)?;
         if result
@@ -295,15 +315,15 @@ fn read_response(stream: &mut impl Read, deadline: Instant) -> Result<Response> 
             return Err(Error::Expired);
         }
         let mut byte = [0];
-        stream.read_exact(&mut byte).map_err(|_| Error::Transport)?;
+        stream.read_exact(&mut byte).map_err(|_| Error::MediaRead)?;
         if header.is_empty() && byte[0] == b'$' {
             let mut rest = [0; 3];
-            stream.read_exact(&mut rest).map_err(|_| Error::Transport)?;
+            stream.read_exact(&mut rest).map_err(|_| Error::MediaRead)?;
             let len = u16::from_be_bytes([rest[1], rest[2]]) as usize;
             let mut discard = vec![0; len];
             stream
                 .read_exact(&mut discard)
-                .map_err(|_| Error::Transport)?;
+                .map_err(|_| Error::MediaRead)?;
             continue;
         }
         header.push(byte[0]);
@@ -337,7 +357,7 @@ fn read_response(stream: &mut impl Read, deadline: Instant) -> Result<Response> 
         return bad();
     }
     let mut body = Zeroizing::new(vec![0; size]);
-    stream.read_exact(&mut body).map_err(|_| Error::Transport)?;
+    stream.read_exact(&mut body).map_err(|_| Error::MediaRead)?;
     Ok(Response { headers, body })
 }
 fn checked_control(base: &Url, value: &str) -> Result<Url> {
@@ -364,6 +384,7 @@ fn checked_control(base: &Url, value: &str) -> Result<Url> {
 struct Sdp {
     control: String,
     payload_type: u8,
+    transport: &'static str,
     srtp: Option<Context>,
     initialization: Zeroizing<Vec<u8>>,
 }
@@ -381,6 +402,15 @@ impl Sdp {
         if fields.len() != 4 || !matches!(fields[2], "RTP/AVP" | "RTP/SAVP") {
             return bad();
         }
+        // Protect advertises SDES SRTP with `RTP/AVP`; its SETUP endpoint
+        // expects the advertised profile plus `/TCP`, not a synthesized SAVP
+        // profile. Preserve the SDP value independently of whether a crypto
+        // attribute is present.
+        let transport = match fields[2] {
+            "RTP/AVP" => "RTP/AVP/TCP",
+            "RTP/SAVP" => "RTP/SAVP/TCP",
+            _ => unreachable!(),
+        };
         let payload_type = fields[3].parse::<u8>().map_err(|_| Error::Response)?;
         if payload_type > 127 {
             return bad();
@@ -453,6 +483,7 @@ impl Sdp {
         Ok(Self {
             control,
             payload_type,
+            transport,
             srtp,
             initialization,
         })
@@ -740,25 +771,29 @@ mod peer_tests {
                 socket,
             );
             let mut seen = Vec::new();
-            for cseq in 1..=3 {
+            for cseq in 1..=4 {
                 let received = request(&mut stream);
                 seen.push(received.clone());
                 let response = match cseq {
                     1 => {
-                        assert!(received.starts_with("DESCRIBE rtsps://localhost:"));
-                        let sdp="v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track0\r\n";
-                        format!("RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Base: rtsps://localhost:{port}/private/\r\nContent-Length: {}\r\n\r\n{sdp}",sdp.len())
+                        assert!(received.starts_with("OPTIONS rtsps://localhost:"));
+                        "RTSP/1.0 200 OK\r\nCSeq: 1\r\nPublic: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n\r\n".into()
                     }
                     2 => {
+                        assert!(received.starts_with("DESCRIBE rtsps://localhost:"));
+                        let sdp="v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track0\r\n";
+                        format!("RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Base: rtsps://localhost:{port}/private/\r\nContent-Length: {}\r\n\r\n{sdp}",sdp.len())
+                    }
+                    3 => {
                         assert!(received.starts_with(&format!(
                             "SETUP rtsps://localhost:{port}/private/track0 "
                         )));
-                        "RTSP/1.0 200 OK\r\nCSeq: 2\r\nSession: fixture-session;timeout=30\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n".into()
+                        "RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: fixture-session;timeout=30\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n".into()
                     }
                     _ => {
                         assert!(received.starts_with("PLAY "));
                         assert!(received.contains("Session: fixture-session"));
-                        "RTSP/1.0 200 OK\r\nCSeq: 3\r\n\r\n".into()
+                        "RTSP/1.0 200 OK\r\nCSeq: 4\r\n\r\n".into()
                     }
                 };
                 stream.write_all(response.as_bytes()).unwrap();

@@ -532,6 +532,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "couch-camera"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "couch-control"
 version = "0.1.0"
 dependencies = [
@@ -620,6 +627,7 @@ dependencies = [
 name = "couch-plugin"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "couch-sdk",
  "libc",
  "serde",
@@ -667,8 +675,8 @@ name = "couch-unifi-protect"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "couch-camera",
  "couch-sdk",
- "libc",
  "rcgen",
  "rustls",
  "serde",

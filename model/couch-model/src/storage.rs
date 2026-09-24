@@ -2,14 +2,15 @@
 //! shape. Old runtimes ignore the extension and see usable built-in devices;
 //! current readers recover the complete document from the same atomic write.
 //!
-//! The file is up to four documents, each one the projection of the next:
+//! The file is up to five documents, each one the projection of the next:
 //!
 //! | key | read by | is |
 //! | --- | --- | --- |
 //! | top level | every Couch | `projection`: no packages at all |
 //! | `integration_config` | protocol 1 cores | `v1_projection` of the next |
 //! | `integration_config_v2` | protocol 2 cores | `v2_projection` of the next |
-//! | `integration_config_v3` | this core (protocol 3, unreleased) | everything |
+//! | `integration_config_v3` | protocol 3 cores | `v3_projection` of the next |
+//! | `integration_config_v4` | this core (protocol 4 preview) | everything |
 //!
 //! A layer is written only when it differs from the one before it, so a file
 //! that needs no newer layer has exactly the bytes an older Couch wrote. Every
@@ -37,16 +38,21 @@ pub struct StoredConfig {
     /// Protocol-v2 cores read integration_config_v2 and ignore this extension.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     integration_config_v3: Option<Config>,
+    /// Protocol-v3 cores read integration_config_v3 and ignore this extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integration_config_v4: Option<Config>,
 }
 
 impl StoredConfig {
     pub fn new(config: &Config) -> Self {
-        let v2 = v2_projection(config);
+        let v3 = v3_projection(config);
+        let v2 = v2_projection(&v3);
         let v1 = v1_projection(&v2);
         let rollback = projection(&v2);
         Self {
             integration_config: (rollback != v1).then(|| v1.clone()),
-            integration_config_v3: (v2 != *config).then(|| config.clone()),
+            integration_config_v4: (v3 != *config).then(|| config.clone()),
+            integration_config_v3: (v2 != v3).then_some(v3),
             integration_config_v2: (v1 != v2).then_some(v2),
             rollback,
         }
@@ -69,10 +75,15 @@ impl StoredConfig {
             }
             None => v1,
         };
-        match self.integration_config_v3 {
+        let v3 = match self.integration_config_v3 {
             Some(config) if v2_projection(&config) == v2 => Ok(config),
             Some(_) => Err("Protocol-v3 configuration does not match its protocol-v2 projection"),
             None => Ok(v2),
+        }?;
+        match self.integration_config_v4 {
+            Some(config) if v3_projection(&config) == v3 => Ok(config),
+            Some(_) => Err("Protocol-v4 configuration does not match its protocol-v3 projection"),
+            None => Ok(v3),
         }
     }
 
@@ -80,7 +91,56 @@ impl StoredConfig {
         self.integration_config.is_some()
             || self.integration_config_v2.is_some()
             || self.integration_config_v3.is_some()
+            || self.integration_config_v4.is_some()
     }
+}
+
+/// What a protocol 3 core can read: camera child kinds and the snapshots that
+/// identify devices as those kinds are protocol 4 vocabulary. The device,
+/// connection and resource stay in place, exactly as protocol 2 keeps a
+/// protocol 3 child after clearing its snapshot. An older core therefore sees
+/// an inert camera device rather than losing room/activity references or
+/// sending a request to a provider-specific transport.
+fn v3_projection(config: &Config) -> Config {
+    let mut result = config.clone();
+    let mut cameras: Vec<(crate::Id, alloc::string::String)> = Vec::new();
+    for connection in &mut result.connections {
+        let Provider::Plugin { children, .. } = &mut connection.provider else {
+            continue;
+        };
+        for kind in children
+            .iter()
+            .filter(|kind| kind.component == crate::ChildComponent::Camera)
+        {
+            cameras.push((connection.id.clone(), kind.kind.clone()));
+        }
+        children.retain(|kind| kind.component != crate::ChildComponent::Camera);
+    }
+    for room in &mut result.rooms {
+        for device in &mut room.devices {
+            let (connection, child) = match &mut device.integration {
+                Integration::Connection {
+                    connection_id,
+                    child,
+                    ..
+                }
+                | Integration::Plugin {
+                    connection_id,
+                    child,
+                    ..
+                } => (connection_id, child),
+                _ => continue,
+            };
+            if child.as_ref().is_some_and(|child| {
+                cameras
+                    .iter()
+                    .any(|(id, kind)| id == connection && kind == &child.kind)
+            }) {
+                *child = None;
+            }
+        }
+    }
+    result
 }
 
 /// What a protocol 2 core can read: `config` without anything protocol 3
@@ -1201,6 +1261,17 @@ mod tests {
         }
     }
 
+    fn camera_kind() -> crate::PluginChildKind {
+        crate::PluginChildKind {
+            kind: "camera".into(),
+            label: "Camera".into(),
+            device_kind: crate::DeviceKind::Camera,
+            component: crate::ChildComponent::Camera,
+            capabilities: vec![],
+            actions: vec![],
+        }
+    }
+
     /// A valid configuration with one packaged connection and a random mix of
     /// protocol 1, 2 and (with `custom`) 3 content in every place a command can
     /// be saved, aimed at packaged and built-in devices alike. Protocol 3 is
@@ -2178,6 +2249,10 @@ mod tests {
         // refuse, this core reads it all back, and a save by the release is
         // the truth afterwards.
         let stored = StoredConfig::new(&config);
+        assert!(
+            stored.integration_config_v4.is_none(),
+            "ordinary protocol 3 children do not create a protocol 4 layer"
+        );
         assert_eq!(stored.integration_config_v3.as_ref(), Some(&config));
         stored.rollback.validate().unwrap();
         stored
@@ -2221,6 +2296,88 @@ mod tests {
         assert!(
             old.holds().refusal().is_some(),
             "and refuses what is bound to a child"
+        );
+    }
+
+    #[test]
+    fn camera_children_live_only_in_the_v4_layer_and_v3_keeps_an_inert_device() {
+        let mut config = plugin_config();
+        let connection = Id::new("external");
+        let camera = camera_kind();
+        let device_id = config.rooms[0].devices[0].id.clone();
+        if let Provider::Plugin { children, .. } =
+            &mut config.connections.last_mut().unwrap().provider
+        {
+            children.push(camera);
+        }
+        let device = config
+            .rooms
+            .iter_mut()
+            .flat_map(|room| &mut room.devices)
+            .find(|device| device.id == device_id)
+            .unwrap();
+        device.kind = crate::DeviceKind::Camera;
+        device.integration = Integration::Connection {
+            connection_id: connection,
+            resource_id: "front-yard".into(),
+            child: Some(snapshot("camera")),
+        };
+        config.validate().unwrap();
+
+        let v3 = v3_projection(&config);
+        v3.validate().unwrap();
+        let Provider::Plugin { children, .. } = &v3.connections.last().unwrap().provider else {
+            unreachable!()
+        };
+        assert!(children.is_empty());
+        let projected = v3
+            .devices()
+            .find(|(_, device)| device.id == device_id)
+            .unwrap()
+            .1;
+        assert_eq!(projected.kind, crate::DeviceKind::Camera);
+        assert!(matches!(
+            projected.integration,
+            Integration::Connection {
+                ref resource_id,
+                child: None,
+                ..
+            } if resource_id == "front-yard"
+        ));
+
+        let stored = StoredConfig::new(&config);
+        assert_eq!(stored.integration_config_v4.as_ref(), Some(&config));
+        let mut wire = serde_json::to_value(&stored).unwrap();
+        assert_eq!(
+            serde_json::from_value::<StoredConfig>(wire.clone())
+                .unwrap()
+                .into_config()
+                .unwrap(),
+            config
+        );
+
+        // A protocol 3 save discards the unknown extension. Reopening that
+        // save must treat its camera-free projection as authoritative.
+        wire.as_object_mut()
+            .unwrap()
+            .remove("integration_config_v4");
+        assert_eq!(
+            serde_json::from_value::<StoredConfig>(wire)
+                .unwrap()
+                .into_config()
+                .unwrap(),
+            v3
+        );
+
+        // The richer layer is accepted only when its protocol-3 projection
+        // exactly matches the adjacent layer in the same atomic document.
+        let mut inconsistent = serde_json::to_value(StoredConfig::new(&config)).unwrap();
+        inconsistent["integration_config_v4"]["revision"] = serde_json::json!(999);
+        assert_eq!(
+            serde_json::from_value::<StoredConfig>(inconsistent)
+                .unwrap()
+                .into_config(),
+            Err("Protocol-v4 configuration does not match its protocol-v3 projection")
         );
     }
 

@@ -1009,6 +1009,13 @@ name = "couch-bt-hid"
 version = "0.1.0"
 
 [[package]]
+name = "couch-camera"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "couch-control"
 version = "0.1.0"
 dependencies = [
@@ -1031,6 +1038,7 @@ dependencies = [
  "couch-androidtv",
  "couch-appletv",
  "couch-bt-hid",
+ "couch-camera",
  "couch-control",
  "couch-ha",
  "couch-ir",
@@ -1107,6 +1115,7 @@ dependencies = [
 name = "couch-plugin"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "couch-sdk",
  "libc",
  "serde",
@@ -1164,8 +1173,8 @@ name = "couch-unifi-protect"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "couch-camera",
  "couch-sdk",
- "libc",
  "rustls",
  "serde",
  "serde_json",

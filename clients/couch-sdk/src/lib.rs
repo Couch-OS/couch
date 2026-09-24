@@ -79,6 +79,7 @@
 //! A complete, runnable version with a fake device, a scripted failure and a
 //! test suite is `clients/couch-echo`.
 
+pub mod camera;
 pub mod children;
 pub mod client;
 pub mod discovery;
@@ -92,6 +93,10 @@ pub mod testing;
 pub mod tls;
 pub mod wol;
 
+pub use camera::{
+    read_h264_record, write_camera_end, write_h264_record, CameraStream, CameraView,
+    CameraWireError, CameraWireResult, CAMERA_PROTOCOL_VERSION, MAX_H264_ACCESS_UNIT,
+};
 pub use children::{Child, ChildPage, MAX_CHILD_LABEL, MAX_CURSOR, MAX_PAGE, MAX_PAGE_BYTES};
 pub use client::{catalog_differences, Capability, DeviceClient};
 pub use discovery::{Discover, Discovered};

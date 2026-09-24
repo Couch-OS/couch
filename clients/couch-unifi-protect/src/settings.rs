@@ -24,6 +24,8 @@ pub struct Settings {
     pub media_certificate_sha256: Option<String>,
     #[serde(default)]
     pub media_origin: Option<String>,
+    #[serde(default)]
+    pub media_server_name: Option<String>,
 }
 impl std::fmt::Debug for Settings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -36,6 +38,34 @@ impl Drop for Settings {
     }
 }
 impl Settings {
+    pub fn pinned_local(
+        address: std::net::IpAddr,
+        api_key: String,
+        certificate_sha256: String,
+        media_certificate_sha256: String,
+    ) -> Result<Self> {
+        let host = match address {
+            std::net::IpAddr::V4(value) => value.to_string(),
+            std::net::IpAddr::V6(value) => format!("[{value}]"),
+        };
+        let settings = Self {
+            origin: format!("https://{host}"),
+            api_key,
+            certificate_sha256: Some(certificate_sha256),
+            private_ca_pem: None,
+            stream_host: None,
+            media_certificate_sha256: Some(media_certificate_sha256),
+            media_origin: Some(format!("rtsps://{host}:7441")),
+            media_server_name: Some("unifi.local".into()),
+        };
+        settings.client()?;
+        Ok(settings)
+    }
+
+    pub fn address(&self) -> Option<std::net::IpAddr> {
+        url::Url::parse(&self.origin).ok()?.host_str()?.parse().ok()
+    }
+
     pub fn client(&self) -> Result<Client> {
         if self
             .private_ca_pem
@@ -47,6 +77,11 @@ impl Settings {
         }
         if self.media_certificate_sha256.is_some() != self.media_origin.is_some() {
             return Err(Error::Configuration);
+        }
+        if let Some(name) = &self.media_server_name {
+            if name.len() > 253 || rustls::pki_types::ServerName::try_from(name.clone()).is_err() {
+                return Err(Error::Configuration);
+            }
         }
         if let Some(pin) = &self.media_certificate_sha256 {
             crate::pinning::tls_config(pin)?;
@@ -159,6 +194,24 @@ mod tests {
         assert!(s.client().is_ok());
         s.private_ca_pem = Some("invalid".into());
         assert!(s.client().is_err());
+    }
+    #[test]
+    fn local_enrollment_derives_private_origins_without_exposing_the_key() {
+        let settings = Settings::pinned_local(
+            "192.0.2.8".parse().unwrap(),
+            "fixture-private-key".into(),
+            "11".repeat(32),
+            "22".repeat(32),
+        )
+        .unwrap();
+        assert_eq!(settings.origin, "https://192.0.2.8");
+        assert_eq!(
+            settings.media_origin.as_deref(),
+            Some("rtsps://192.0.2.8:7441")
+        );
+        assert_eq!(settings.media_server_name.as_deref(), Some("unifi.local"));
+        assert_eq!(settings.address(), Some("192.0.2.8".parse().unwrap()));
+        assert!(!format!("{settings:?}").contains("fixture-private-key"));
     }
     #[test]
     #[cfg(unix)]

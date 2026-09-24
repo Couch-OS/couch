@@ -42,6 +42,29 @@ impl Drop for Package {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
+
+#[test]
+fn protocol_1_to_3_packages_do_not_inherit_the_camera_descriptor() {
+    let p = Package::new();
+    let hello_request = serde_json::to_vec(&json!({
+        "id": 1,
+        "body": {"method": "hello", "protocol_version": 1}
+    }))
+    .unwrap()
+    .len()
+        + 4;
+    let unexpected = print_frame(&json!({
+        "id": 1,
+        "body": {"type": "error", "code": "protocol"}
+    }));
+    p.script(&format!(
+        "dd bs=1 count={hello_request} of=/dev/null 2>/dev/null\n\
+         if : >&3 2>/dev/null; then\n{unexpected}else\n{}fi\n\
+         exec /bin/sleep 10",
+        p.hello()
+    ));
+    assert!(Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).is_ok());
+}
 /// Writes a package executable without this process ever holding a descriptor
 /// open for writing it.
 ///
@@ -323,22 +346,27 @@ fn light_cover_and_climate_are_in_no_manifest_an_older_package_could_send() {
     );
 }
 
-/// The released host accepts protocol 3 and refuses anything newer.
+/// The default host is protocol 3; the explicit camera-preview build is 4.
 #[test]
-fn protocol_3_is_the_current_contract() {
+fn the_selected_protocol_is_current_and_protocol_3_stays_accepted() {
     assert_eq!(
         couch_plugin::accepted_protocol_version(),
         couch_plugin::PROTOCOL_VERSION
     );
-    assert_eq!(couch_plugin::PROTOCOL_VERSION, 3);
+    assert_eq!(
+        couch_plugin::PROTOCOL_VERSION,
+        if cfg!(feature = "protocol-4-preview") {
+            4
+        } else {
+            3
+        }
+    );
     let p = Package::new();
     assert_eq!(v3_manifest(p.manifest.clone()).validate(), Ok(()));
 }
 
 #[test]
 fn protocol_3_admits_its_contract_and_nothing_newer() {
-    assert_eq!(couch_plugin::accepted_protocol_version(), 3);
-    assert_eq!(couch_plugin::PROTOCOL_VERSION, 3);
     let p = Package::new();
     let manifest = v3_manifest(p.manifest.clone());
     assert_eq!(manifest.validate(), Ok(()));
@@ -349,8 +377,8 @@ fn protocol_3_admits_its_contract_and_nothing_newer() {
     assert_eq!(wire["min_core_protocol_version"], 3);
 
     let mut next = manifest.clone();
-    next.protocol_version = 4;
-    next.min_core_protocol_version = 4;
+    next.protocol_version = couch_plugin::accepted_protocol_version() + 1;
+    next.min_core_protocol_version = next.protocol_version;
     assert_eq!(next.validate(), Err(Error::Incompatible));
 
     for id in ["x:", "x:Info", "x:in fo", "x:info!"] {
@@ -1105,6 +1133,154 @@ fn only_a_protocol_3_manifest_may_declare_children() {
             manifest.protocol_version
         );
     }
+}
+
+#[test]
+fn camera_children_are_protocol_4_vocabulary() {
+    use couch_plugin::ChildComponent;
+    use couch_sdk::couch_model::DeviceKind;
+
+    let p = Package::new();
+    let mut manifest = v3_manifest(p.manifest.clone());
+    manifest.children = vec![couch_plugin::PluginChildKind {
+        kind: "camera".into(),
+        label: "Camera".into(),
+        device_kind: DeviceKind::Camera,
+        component: ChildComponent::Camera,
+        capabilities: vec![],
+        actions: vec![],
+    }];
+    assert_eq!(manifest.validate(), Err(Error::Invalid));
+    assert_eq!(
+        serde_json::to_value(&manifest.children[0]).unwrap(),
+        json!({
+            "kind": "camera",
+            "label": "Camera",
+            "device_kind": "camera",
+            "component": "camera"
+        })
+    );
+
+    #[cfg(feature = "protocol-4-preview")]
+    {
+        manifest.protocol_version = 4;
+        manifest.min_core_protocol_version = 4;
+        assert_eq!(manifest.validate(), Ok(()));
+    }
+}
+
+#[cfg(feature = "protocol-4-preview")]
+#[test]
+fn protocol_4_inherits_only_bounded_h264_records_on_fd_3() {
+    use couch_plugin::{CameraCodec, ChildComponent, PluginChildKind};
+    use couch_sdk::couch_model::DeviceKind;
+
+    fn framed_len(value: serde_json::Value) -> usize {
+        serde_json::to_vec(&value).unwrap().len() + 4
+    }
+    let mut p = Package::new();
+    p.manifest.protocol_version = 4;
+    p.manifest.min_core_protocol_version = 4;
+    p.manifest.children = vec![PluginChildKind {
+        kind: "camera".into(),
+        label: "Camera".into(),
+        device_kind: DeviceKind::Camera,
+        component: ChildComponent::Camera,
+        capabilities: vec![],
+        actions: vec![],
+    }];
+    let hello_request = framed_len(json!({
+        "id": 1,
+        "body": {"method": "hello", "protocol_version": 4}
+    }));
+    let open_request = framed_len(json!({
+        "id": 2,
+        "body": {"method": "camera_open", "resource": "front-yard"}
+    }));
+    let open_response = print_frame(&json!({
+        "id": 2,
+        "body": {"type": "camera_open", "codec": "h264_annex_b", "seconds": 60}
+    }));
+    let no_media_response = print_frame(&json!({
+        "id": 2,
+        "body": {"type": "error", "code": "transport"}
+    }));
+    let records = format!(
+        "{} >&3\n",
+        print_bytes(&[
+            0, 0, 0, 6, 0, 0, 0, 1, 0x65, 0x88, // one record
+            0, 0, 0, 0, // clean terminal record
+        ])
+        .trim_end()
+    );
+    p.script(&format!(
+        "dd bs=1 count={hello_request} of=/dev/null 2>/dev/null\n{}\
+         dd bs=1 count={open_request} of=/dev/null 2>/dev/null\n\
+         if : >&3 2>/dev/null; then\n{open_response}{records}\
+         else\n{no_media_response}fi\n\
+         exec /bin/sleep 10",
+        p.hello()
+    ));
+
+    let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        host.request_child_detailed(Some("camera"), Request::camera_open("front-yard")),
+        Ok(Response::CameraOpen {
+            codec: CameraCodec::H264AnnexB,
+            seconds: 60,
+        })
+    );
+    assert_eq!(
+        host.read_camera_record().unwrap(),
+        Some(vec![0, 0, 0, 1, 0x65, 0x88])
+    );
+    assert_eq!(host.read_camera_record(), Ok(None));
+    assert_eq!(host.read_camera_record(), Err(Error::Invalid));
+}
+
+#[cfg(feature = "protocol-4-preview")]
+#[test]
+fn protocol_4_retires_a_package_that_writes_media_before_open() {
+    use couch_plugin::{ChildComponent, PluginChildKind};
+    use couch_sdk::couch_model::DeviceKind;
+
+    let mut p = Package::new();
+    p.manifest.protocol_version = 4;
+    p.manifest.min_core_protocol_version = 4;
+    p.manifest.children = vec![PluginChildKind {
+        kind: "camera".into(),
+        label: "Camera".into(),
+        device_kind: DeviceKind::Camera,
+        component: ChildComponent::Camera,
+        capabilities: vec![],
+        actions: vec![],
+    }];
+    let hello_request = serde_json::to_vec(&json!({
+        "id": 1,
+        "body": {"method": "hello", "protocol_version": 4}
+    }))
+    .unwrap()
+    .len()
+        + 4;
+    let early = format!(
+        "{} >&3\n",
+        print_bytes(&[0, 0, 0, 4, 0, 0, 0, 1]).trim_end()
+    );
+    p.script(&format!(
+        "dd bs=1 count={hello_request} of=/dev/null 2>/dev/null\n{}{early}\
+         exec /bin/sleep 10",
+        p.hello()
+    ));
+
+    let mut host = Host::spawn(&p.root, &p.manifest, Duration::from_secs(5)).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        host.request_child_detailed(Some("camera"), Request::camera_open("front-yard"))
+            .unwrap_err()
+            .code,
+        Error::Protocol
+    );
+    assert!(!host.is_alive());
 }
 
 /// Pairing and a kept-alive child are protocol 3 words, like children and

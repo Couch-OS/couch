@@ -243,7 +243,7 @@ pub(crate) fn plugin_row(
     let cover = match child_component(config, &device.integration, child) {
         ChildComponent::Light => false,
         ChildComponent::Cover => true,
-        ChildComponent::Climate | ChildComponent::Scene => return None,
+        ChildComponent::Climate | ChildComponent::Scene | ChildComponent::Camera => return None,
     };
     Some(PluginRow {
         connection: connection_id.to_string(),

@@ -436,10 +436,16 @@ test-only trust bypass is needed.
 
 ### 4.6 Later - live camera video (protocol 4, size XL)
 
-Needs a byte stream beside the JSON frames (a second inherited socket carrying
-length-prefixed H.264 access units), a decision about where `ffmpeg` runs and
-whether SRTP keys may live in a package. Do not start until a second camera
-integration is wanted; UniFi Protect can stay built in with no harm.
+Work began for UniFi Protect on 2026-09-23 after its physical-remote path was
+made reliable and extraction was explicitly requested. The settled design uses
+a second inherited socket carrying bounded length-prefixed H264 access units;
+`ffmpeg` stays core-owned, while SRTP, stream URLs and certificate pins remain
+inside the package. The provider-neutral decoder, rollback-safe camera child,
+bounded control frames and record codec now exist in source, still behind
+protocol-4 admission. The host-side inherited socket also works behind the
+explicit `protocol-4-preview` feature; SDK serving, daemon/GUI forwarding, the
+package adapter and migration are the remaining large pieces. See
+`docs/plans/camera-package-data-plane.md`.
 
 ### What should not become a package
 
@@ -527,7 +533,7 @@ the bar is raised in one place, and a **template repository** cut from Echo.
 | Apple TV | `couch-integration-appletv` | 3 | both credential files | preview, never validated |
 | Philips Hue | `couch-integration-hue` (exists, client only) | 3 | `hue-connection.json` -> package credential; `light_id` -> resource id, `room:`/`scene:` -> `room/`/`scene/`; `Scene.hue` -> `Scene.resource` | |
 | Home Assistant | `couch-integration-home-assistant` | 3 | `ha-connection.json`; `entity_id` -> resource id | after the voice decision |
-| UniFi Protect | `couch-integration-unifi-protect` | 3 (stills) | credentials; `camera_id` -> resource id | live video stays built in until protocol 4 |
+| UniFi Protect | `couch-integration-unifi-protect` | 4 | address/API key -> package settings; pins -> credential; `camera_id` -> resource id | Extract once as a complete camera package; the provider-neutral decoder and protocol 4 data-plane plan are in `docs/plans/camera-package-data-plane.md`. |
 
 ## 6. Cross-cutting work
 
