@@ -159,21 +159,40 @@ struct RecoverySnapshot {
 }
 
 fn catalog_message(catalog: &Catalog) -> String {
+    let available = available_packages(catalog).len();
     match catalog.catalog_error.as_deref() {
         Some(error) if !error.is_empty() => format!("Catalog refresh problem: {error}"),
-        _ if catalog.available.is_empty() => {
-            "No packages are available from your trusted repositories.".into()
-        }
+        _ if available == 0 => "No packages are available from your trusted repositories.".into(),
         _ => format!(
             "{} package{} available from trusted repositories.",
-            catalog.available.len(),
-            if catalog.available.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
+            available,
+            if available == 1 { "" } else { "s" }
         ),
     }
+}
+
+/// Entries the install picker should show and whether each repairs a package
+/// that is retained in the installed list. The daemon already removes healthy
+/// installed IDs from `available`; keeping the distinction here makes the UI
+/// unambiguous during a rolling upgrade from an older daemon response too.
+fn available_packages(catalog: &Catalog) -> Vec<(Available, bool)> {
+    catalog
+        .available
+        .iter()
+        .filter_map(|available| {
+            let installed = catalog
+                .installed
+                .iter()
+                .find(|installed| installed.id == available.id);
+            let reinstall = installed.is_some_and(|installed| {
+                matches!(
+                    installed.status.get("kind").and_then(Value::as_str),
+                    Some("missing" | "invalid")
+                )
+            });
+            (installed.is_none() || reinstall).then(|| (available.clone(), reinstall))
+        })
+        .collect()
 }
 
 fn name(name: &str, id: &str) -> String {
@@ -571,8 +590,9 @@ pub fn screen(app: App) -> AnyView {
             <div class="integration-grid">{move || catalog.get().installed.into_iter().map(|item| installed_card(app, item, busy, operation, message, error, result)).collect_view()}</div>
         </section>
         <section class="card">
-            <h2>"Available packages" <span class="count">{move || catalog.get().available.len()}</span></h2>
-            <div class="integration-grid">{move || catalog.get().available.into_iter().map(|item| available_card(app, item, busy, operation, message, error, result)).collect_view()}</div>
+            <h2>"Available packages" <span class="count">{move || available_packages(&catalog.get()).len()}</span></h2>
+            {move || available_packages(&catalog.get()).is_empty().then(|| view! { <p class="dim">"No additional packages are available. Installed packages and their updates are listed above."</p> })}
+            <div class="integration-grid">{move || available_packages(&catalog.get()).into_iter().map(|(item, reinstall)| available_card(app, item, reinstall, busy, operation, message, error, result)).collect_view()}</div>
         </section>
         {super::integration_migrations::section(app, busy)}
         <section class="creation integration-repositories">
@@ -644,6 +664,7 @@ fn installed_card(
 fn available_card(
     app: App,
     item: Available,
+    reinstall: bool,
     busy: RwSignal<bool>,
     operation: RwSignal<Option<String>>,
     message: RwSignal<String>,
@@ -659,7 +680,7 @@ fn available_card(
         <p class="mono">{format!("{} · {}", item.id, item.version)}</p>
         {(!item.description.is_empty()).then(|| view! { <p>{item.description}</p> })}
         {reason.map(|reason| view! { <p class="notice small">{format!("{reason}.")}</p> })}
-        <button class="primary" disabled=move || cannot_install || busy.get() on:click=move |_| begin_operation(app, busy, operation, message, error, result, "/api/integrations/install".into(), json!({"id": id, "repository": repository, "preserve_connection_config": true}))>"Install"</button>
+        <button class="primary" disabled=move || cannot_install || busy.get() on:click=move |_| begin_operation(app, busy, operation, message, error, result, "/api/integrations/install".into(), json!({"id": id, "repository": repository, "preserve_connection_config": true}))>{if reinstall { "Reinstall" } else { "Install" }}</button>
     </article> }.into_any()
 }
 
@@ -726,6 +747,39 @@ mod tests {
         assert_eq!(
             catalog_message(&catalog),
             "1 package available from trusted repositories."
+        );
+    }
+
+    #[test]
+    fn available_packages_exclude_installed_entries_and_name_repairs() {
+        let mut catalog = Catalog::default();
+        catalog.available = ["ready", "broken", "new"]
+            .into_iter()
+            .map(|id| Available {
+                id: id.into(),
+                ..Available::default()
+            })
+            .collect();
+        catalog.installed = vec![
+            Installed {
+                id: "ready".into(),
+                status: json!({"kind":"installed"}),
+                ..Installed::default()
+            },
+            Installed {
+                id: "broken".into(),
+                status: json!({"kind":"invalid"}),
+                ..Installed::default()
+            },
+        ];
+
+        let available = available_packages(&catalog);
+        assert_eq!(
+            available
+                .iter()
+                .map(|(item, reinstall)| (item.id.as_str(), *reinstall))
+                .collect::<Vec<_>>(),
+            vec![("broken", true), ("new", false)]
         );
     }
 
