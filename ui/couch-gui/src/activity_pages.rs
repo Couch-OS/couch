@@ -211,13 +211,12 @@ impl Pages {
                 work,
                 reply,
                 current,
-                |request, caches: &mut (HashMap<_, _>, HashMap<_, _>, HashMap<_, _>)| {
+                |request, caches: &mut (HashMap<_, _>, HashMap<_, _>)| {
                     crate::activity_buttons::execute(
                         &request.config,
                         &request.action,
                         &mut caches.0,
                         &mut caches.1,
-                        &mut caches.2,
                         &crate::connections::matter(),
                     )
                 },
@@ -807,10 +806,14 @@ fn plugin_pages(view: &PluginView) -> Vec<PluginPanelPage> {
                     chunk_page(label, tiles, &mut pages);
                 }
                 // Protocol 3 (unreleased): no manifest this build accepts can
-                // declare one, and the controls come with the panel step.
+                // declare one, and the controls come with the panel step. A
+                // media player is never drawn here at all: such a row opens
+                // the player screen instead of this one.
                 PluginComponent::Light { .. }
                 | PluginComponent::Cover { .. }
-                | PluginComponent::Climate { .. } => {}
+                | PluginComponent::Climate { .. }
+                | PluginComponent::MediaPlayer { .. }
+                | PluginComponent::VolumePercentControl { .. } => {}
             }
         }
     }

@@ -7,8 +7,11 @@ use rustls::{
 };
 use sha2::{Digest, Sha256};
 use std::{
+    fmt::Write as _,
     io::{Read, Write},
-    sync::Arc,
+    net::{TcpStream, ToSocketAddrs},
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 use ureq::unversioned::{
     resolver::DefaultResolver,
@@ -162,4 +165,108 @@ pub(crate) fn tls_config(pin: &str) -> super::Result<ClientConfig> {
     }
     couch_sdk::tls::pinned_client_config(Arc::new(PinnedVerifier(bytes)))
         .map_err(|_| super::Error::Configuration)
+}
+
+#[derive(Debug)]
+struct ObservedVerifier(Arc<Mutex<Option<[u8; 32]>>>);
+impl ServerCertVerifier for ObservedVerifier {
+    fn verify_server_cert(
+        &self,
+        cert: &CertificateDer<'_>,
+        _: &[CertificateDer<'_>],
+        _: &ServerName<'_>,
+        _: &[u8],
+        _: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        *self.0.lock().unwrap() = Some(Sha256::digest(cert.as_ref()).into());
+        Ok(ServerCertVerified::assertion())
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        signed: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        couch_sdk::tls::verify_tls12_signature(message, cert, signed)
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        signed: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        couch_sdk::tls::verify_tls13_signature(message, cert, signed)
+    }
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        couch_sdk::tls::supported_verify_schemes()
+    }
+}
+
+/// Observe a leaf certificate without sending HTTP, RTSP, or credentials.
+/// The caller must persist the returned fingerprint and use pinned transport
+/// before sending secrets. This is deliberately only an enrollment primitive.
+pub(crate) fn observe(
+    origin: &Url,
+    server_name: Option<&str>,
+    timeout: Duration,
+) -> super::Result<String> {
+    if !matches!(origin.scheme(), "https" | "rtsps")
+        || origin.host_str().is_none()
+        || !matches!(origin.path(), "" | "/")
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+        || origin.username() != ""
+        || origin.password().is_some()
+        || timeout.is_zero()
+        || timeout > Duration::from_secs(30)
+    {
+        return Err(super::Error::Configuration);
+    }
+    let host = origin.host_str().unwrap();
+    let port = origin
+        .port()
+        .unwrap_or(if origin.scheme() == "https" { 443 } else { 322 });
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|_| super::Error::Transport)?;
+    let mut socket = addresses
+        .filter_map(|address| TcpStream::connect_timeout(&address, timeout).ok())
+        .next()
+        .ok_or(super::Error::Transport)?;
+    socket
+        .set_read_timeout(Some(timeout))
+        .and_then(|_| socket.set_write_timeout(Some(timeout)))
+        .map_err(|_| super::Error::Transport)?;
+    let observed = Arc::new(Mutex::new(None));
+    let config = couch_sdk::tls::pinned_client_config(Arc::new(ObservedVerifier(observed.clone())))
+        .map_err(|_| super::Error::Configuration)?;
+    let name = ServerName::try_from(server_name.unwrap_or(host).to_owned())
+        .map_err(|_| super::Error::Configuration)?;
+    let mut connection =
+        ClientConnection::new(Arc::new(config), name).map_err(|_| super::Error::Transport)?;
+    while connection.is_handshaking() {
+        while connection.wants_write() {
+            connection
+                .write_tls(&mut socket)
+                .map_err(|_| super::Error::Transport)?;
+        }
+        if connection.wants_read() {
+            if connection
+                .read_tls(&mut socket)
+                .map_err(|_| super::Error::Transport)?
+                == 0
+            {
+                return Err(super::Error::Transport);
+            }
+            connection
+                .process_new_packets()
+                .map_err(|_| super::Error::Transport)?;
+        }
+    }
+    let fingerprint = observed.lock().unwrap().ok_or(super::Error::Transport)?;
+    let mut output = String::with_capacity(64);
+    for byte in fingerprint {
+        write!(&mut output, "{byte:02x}").map_err(|_| super::Error::Transport)?;
+    }
+    Ok(output)
 }

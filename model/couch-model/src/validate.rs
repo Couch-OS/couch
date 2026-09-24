@@ -208,6 +208,15 @@ impl Config {
                 }
                 if !crate::PluginActionSchema::valid_set(actions)
                     || presentation.len() > 16
+                    // One screen, so at most one player (protocol 3,
+                    // unreleased).
+                    || presentation
+                        .iter()
+                        .filter(|component| {
+                            matches!(component, crate::PluginComponent::MediaPlayer { .. })
+                        })
+                        .count()
+                        > 1
                     || presentation.iter().any(|component| {
                         !valid_plugin_component(component, capabilities, *supports_inputs, actions)
                     })
@@ -305,7 +314,7 @@ impl Config {
                     None=>problems.push(Problem{at,message:"This device refers to a missing connection; remove its devices before deleting the connection".into()}),
                     Some(c)=>{
                         let valid=match c.provider {
-                            crate::Provider::Kodi{..}|crate::Provider::CoreElec{..}|crate::Provider::Sonos{..}|crate::Provider::LegacyDenon{..}|crate::Provider::WebOs|crate::Provider::AndroidTv|crate::Provider::AppleTv|crate::Provider::Tizen|crate::Provider::BluetoothTv=>resource_id.is_empty(),
+                            crate::Provider::Kodi{..}|crate::Provider::CoreElec{..}|crate::Provider::Sonos{..}|crate::Provider::LegacyDenon{..}|crate::Provider::LegacyWebOs|crate::Provider::AndroidTv|crate::Provider::AppleTv|crate::Provider::Tizen|crate::Provider::BluetoothTv=>resource_id.is_empty(),
                             crate::Provider::UnifiProtect=>device.kind==crate::DeviceKind::Camera && !resource_id.is_empty() && resource_id.len()<=128 && resource_id.bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-' || b==b'_'),
                             crate::Provider::HomeAssistant=>valid_ha_resource(resource_id, device.kind),
                             crate::Provider::Matter=>valid_matter_resource(resource_id),
@@ -604,7 +613,73 @@ fn valid_plugin_component(
         crate::PluginComponent::Climate { label } => {
             valid_plugin_label(label) && declares(actions, crate::ActionKind::SetClimate)
         }
+        // The mirror of the manifest's own rules, so a saved snapshot is held
+        // to exactly what the package was admitted under. The model does not
+        // depend on couch-plugin, so the rules live in both places and the
+        // crossload states are what keeps them the same.
+        crate::PluginComponent::MediaPlayer {
+            layout,
+            artwork,
+            lists,
+            up_next,
+            navigation,
+            refresh_ms,
+            keys,
+        } => {
+            let mut seen_roles = Vec::new();
+            let mut seen_lists = Vec::new();
+            let mut seen_keys = Vec::new();
+            // Couch owns the key map; the manifest only chooses between the
+            // two modes, so navigation needs every key that mode sends.
+            const NAVIGATION: [&str; 8] =
+                ["up", "down", "left", "right", "ok", "back", "home", "menu"];
+            // Sources, modes, up next and the declared lists all open a sheet,
+            // and the screen holds three.
+            let sheets = usize::from(supports_inputs)
+                + usize::from(declares(actions, crate::ActionKind::SetMode))
+                + usize::from(*up_next)
+                + lists.len();
+            let declared = |command: &str| {
+                capabilities
+                    .iter()
+                    .any(|capability| capability.id == command)
+            };
+            (declared("play-pause") || (declared("play") && declared("pause")))
+                && (!*up_next || declared("next"))
+                && (!*navigation || NAVIGATION.iter().all(|key| declared(key)))
+                && sheets <= 3
+                && (crate::MIN_REFRESH_MS..=crate::MAX_REFRESH_MS).contains(refresh_ms)
+                && artwork.len() <= 3
+                && artwork.iter().all(|role| {
+                    let distinct = !seen_roles.contains(&role);
+                    seen_roles.push(role);
+                    distinct && role.fits(*layout)
+                })
+                && lists.iter().all(|list| {
+                    let distinct = !seen_lists.contains(&&list.id);
+                    seen_lists.push(&list.id);
+                    distinct && valid_list_id(&list.id) && valid_plugin_label(&list.label)
+                })
+                && keys.len() <= crate::MAX_MEDIA_KEYS
+                && keys.iter().all(|key| {
+                    let distinct = !seen_keys.contains(&key.key);
+                    seen_keys.push(key.key);
+                    distinct && declared(&key.command)
+                })
+        }
+        crate::PluginComponent::VolumePercentControl { label } => {
+            valid_plugin_label(label) && declares(actions, crate::ActionKind::SetVolumePercent)
+        }
     }
+}
+
+/// A list's own name, as the package spells it: an identifier it can also use
+/// in a URL, never a path.
+fn valid_list_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 fn declares(actions: &[crate::PluginActionSchema], kind: crate::ActionKind) -> bool {
@@ -1044,6 +1119,385 @@ mod tests {
                 cfg.validate().is_ok(),
                 valid,
                 "{actions:?} {presentation:?}"
+            );
+        }
+    }
+
+    /// The mirror of the manifest's own rules for a packaged media player
+    /// (protocol 3, unreleased). Nothing here reaches a released core: see
+    /// `storage::v2_projection` and `tools/tests/config-crossload.rs`.
+    #[test]
+    fn a_packaged_player_declares_a_screen_it_can_actually_drive() {
+        use crate::{
+            ActionKind, ArtRole, ColourKey, MediaKey, MediaLayout, MediaList, PlayMode,
+            PlayModeSet, PluginActionSchema, PluginComponent,
+        };
+        const TRANSPORT: &[&str] = &["play-pause", "next", "previous"];
+        const NAVIGATION: &[&str] = &[
+            "play-pause",
+            "next",
+            "up",
+            "down",
+            "left",
+            "right",
+            "ok",
+            "back",
+            "home",
+            "menu",
+        ];
+        let player = |layout, artwork: &[ArtRole], lists: Vec<MediaList>, up_next, navigation| {
+            PluginComponent::MediaPlayer {
+                layout,
+                artwork: artwork.to_vec(),
+                lists,
+                up_next,
+                navigation,
+                refresh_ms: crate::DEFAULT_REFRESH_MS,
+                keys: vec![],
+            }
+        };
+        let list = |id: &str| MediaList {
+            id: id.into(),
+            label: "Sheet".into(),
+            choose: true,
+        };
+        let music = player(MediaLayout::Music, &[ArtRole::Cover], vec![], false, false);
+        let modes = PluginActionSchema::SetMode {
+            modes: PlayModeSet::new().with(PlayMode::Shuffle),
+        };
+        let percent = PluginActionSchema::SetVolumePercent { max_percent: 100 };
+        let check = |capabilities: &[&str],
+                     presentation: Vec<PluginComponent>,
+                     actions: Vec<PluginActionSchema>,
+                     supports_inputs: bool| {
+            let mut cfg = packaged(capabilities);
+            if let crate::Provider::Plugin {
+                actions: a,
+                presentation: p,
+                supports_inputs: i,
+                ..
+            } = &mut cfg.connections[0].provider
+            {
+                *a = actions;
+                *p = presentation;
+                *i = supports_inputs;
+            }
+            cfg.validate().is_ok()
+        };
+        // The transport it is drawn over has to exist: `play-pause`, or both
+        // halves of it.
+        assert!(check(TRANSPORT, vec![music.clone()], vec![], false));
+        assert!(check(
+            &["play", "pause", "next"],
+            vec![music.clone()],
+            vec![],
+            false
+        ));
+        assert!(!check(
+            &["play", "next"],
+            vec![music.clone()],
+            vec![],
+            false
+        ));
+        assert!(!check(&["menu"], vec![music.clone()], vec![], false));
+        // One screen, one player.
+        assert!(!check(
+            TRANSPORT,
+            vec![music.clone(), music.clone()],
+            vec![],
+            false
+        ));
+        // A picture belongs to the layout that has somewhere to put it, once.
+        for (layout, roles, valid) in [
+            (MediaLayout::Music, &[ArtRole::Cover][..], true),
+            (MediaLayout::Music, &[ArtRole::Backdrop], false),
+            (MediaLayout::Music, &[ArtRole::Logo], false),
+            (
+                MediaLayout::Video,
+                &[ArtRole::Backdrop, ArtRole::Logo],
+                true,
+            ),
+            (MediaLayout::Video, &[ArtRole::Cover], false),
+            (
+                MediaLayout::Video,
+                &[ArtRole::Backdrop, ArtRole::Backdrop],
+                false,
+            ),
+        ] {
+            assert_eq!(
+                check(
+                    TRANSPORT,
+                    vec![player(layout, roles, vec![], false, false)],
+                    vec![],
+                    false
+                ),
+                valid,
+                "{layout:?} {roles:?}"
+            );
+        }
+        // Up next is built from what the player says is next, so it needs the
+        // command that plays it.
+        assert!(check(
+            TRANSPORT,
+            vec![player(MediaLayout::Music, &[], vec![], true, false)],
+            vec![],
+            false
+        ));
+        assert!(!check(
+            &["play-pause"],
+            vec![player(MediaLayout::Music, &[], vec![], true, false)],
+            vec![],
+            false
+        ));
+        // Navigation needs every key that mode sends, and Couch chooses which
+        // those are.
+        assert!(check(
+            NAVIGATION,
+            vec![player(MediaLayout::Video, &[], vec![], false, true)],
+            vec![],
+            false
+        ));
+        for missing in ["menu", "ok", "back", "home", "up"] {
+            let short: Vec<&str> = NAVIGATION
+                .iter()
+                .copied()
+                .filter(|k| *k != missing)
+                .collect();
+            assert!(
+                !check(
+                    &short,
+                    vec![player(MediaLayout::Video, &[], vec![], false, true)],
+                    vec![],
+                    false
+                ),
+                "navigation without {missing}"
+            );
+        }
+        // The screen holds three sheets, whichever they are.
+        for (lists, up_next, inputs, mode_sheet, valid) in [
+            (
+                vec!["chapters", "audio", "subtitles"],
+                false,
+                false,
+                false,
+                true,
+            ),
+            (vec!["chapters", "audio"], true, false, false, true),
+            (vec!["chapters"], true, true, false, true),
+            (vec![], true, true, true, true),
+            (
+                vec!["chapters", "audio", "subtitles"],
+                true,
+                false,
+                false,
+                false,
+            ),
+            (vec!["chapters", "audio"], true, true, false, false),
+            (vec!["chapters"], true, true, true, false),
+        ] {
+            let sheets: Vec<MediaList> = lists.iter().map(|id| list(id)).collect();
+            assert_eq!(
+                check(
+                    TRANSPORT,
+                    vec![player(MediaLayout::Video, &[], sheets, up_next, false)],
+                    if mode_sheet { vec![modes] } else { vec![] },
+                    inputs
+                ),
+                valid,
+                "{lists:?} {up_next} {inputs} {mode_sheet}"
+            );
+        }
+        // A list is named once, by an identifier.
+        for ids in [
+            &["chapters", "chapters"][..],
+            &["Chapters"],
+            &[""],
+            &["../etc"],
+        ] {
+            let sheets: Vec<MediaList> = ids.iter().map(|id| list(id)).collect();
+            assert!(
+                !check(
+                    TRANSPORT,
+                    vec![player(MediaLayout::Video, &[], sheets, false, false)],
+                    vec![],
+                    false
+                ),
+                "{ids:?}"
+            );
+        }
+        // A re-read that never stops, or one every millisecond, is neither.
+        for (refresh_ms, valid) in [(999, false), (1000, true), (30_000, true), (30_001, false)] {
+            let component = PluginComponent::MediaPlayer {
+                layout: MediaLayout::Music,
+                artwork: vec![],
+                lists: vec![],
+                up_next: false,
+                navigation: false,
+                refresh_ms,
+                keys: vec![],
+            };
+            assert_eq!(
+                check(TRANSPORT, vec![component], vec![], false),
+                valid,
+                "{refresh_ms}"
+            );
+        }
+        // The four colour keys, each once, each naming something the package
+        // declares - a word Couch knows or one of its own.
+        let keyed = |keys: Vec<MediaKey>| PluginComponent::MediaPlayer {
+            layout: MediaLayout::Video,
+            artwork: vec![],
+            lists: vec![],
+            up_next: false,
+            navigation: false,
+            refresh_ms: crate::DEFAULT_REFRESH_MS,
+            keys,
+        };
+        let key = |key, command: &str| MediaKey {
+            key,
+            command: command.into(),
+        };
+        let named = &["play-pause", "next", "stop", "x:info"][..];
+        assert!(check(
+            named,
+            vec![keyed(vec![
+                key(ColourKey::Red, "x:info"),
+                key(ColourKey::Blue, "stop"),
+            ])],
+            vec![],
+            false
+        ));
+        assert!(check(
+            named,
+            vec![keyed(vec![
+                key(ColourKey::Red, "x:info"),
+                key(ColourKey::Green, "stop"),
+                key(ColourKey::Yellow, "next"),
+                key(ColourKey::Blue, "play-pause"),
+            ])],
+            vec![],
+            false
+        ));
+        for keys in [
+            vec![key(ColourKey::Red, "x:osd")],
+            vec![key(ColourKey::Red, "rewind")],
+            vec![key(ColourKey::Red, "x:info"), key(ColourKey::Red, "stop")],
+        ] {
+            assert!(
+                !check(named, vec![keyed(keys.clone())], vec![], false),
+                "{keys:?}"
+            );
+        }
+        // The percentage control is drawn over its own action, exactly as the
+        // decibel one is.
+        let control = PluginComponent::VolumePercentControl {
+            label: "Volume".into(),
+        };
+        assert!(check(
+            TRANSPORT,
+            vec![control.clone()],
+            vec![percent],
+            false
+        ));
+        assert!(!check(TRANSPORT, vec![control.clone()], vec![], false));
+        assert!(!check(
+            TRANSPORT,
+            vec![control.clone()],
+            vec![PluginActionSchema::SetVolumePercent { max_percent: 0 }],
+            false
+        ));
+        assert!(!check(
+            TRANSPORT,
+            vec![control],
+            vec![PluginActionSchema::SetVolumeDb {
+                min_tenths: -800,
+                max_tenths: 180,
+                step_tenths: 5,
+            }],
+            false
+        ));
+        assert_eq!(percent.kind(), ActionKind::SetVolumePercent);
+    }
+
+    /// A player, its lists, its keys and its schemas survive a save and a
+    /// load, and every field a package did not fill vanishes from the bytes.
+    #[test]
+    fn a_player_round_trips_and_writes_only_what_the_package_asked_for() {
+        use crate::{ArtRole, ColourKey, MediaKey, MediaLayout, MediaList, PluginComponent};
+        let bare = PluginComponent::MediaPlayer {
+            layout: MediaLayout::Music,
+            artwork: vec![],
+            lists: vec![],
+            up_next: false,
+            navigation: false,
+            refresh_ms: crate::DEFAULT_REFRESH_MS,
+            keys: vec![],
+        };
+        assert_eq!(
+            serde_json::to_value(&bare).unwrap(),
+            serde_json::json!({"kind":"media_player","layout":"music"}),
+            "nothing a package left alone is written, so an old reader sees no new word"
+        );
+        assert_eq!(
+            serde_json::from_value::<PluginComponent>(
+                serde_json::json!({"kind":"media_player","layout":"music"})
+            )
+            .unwrap(),
+            bare
+        );
+        let full = PluginComponent::MediaPlayer {
+            layout: MediaLayout::Video,
+            artwork: vec![ArtRole::Backdrop, ArtRole::Logo],
+            lists: vec![
+                MediaList {
+                    id: "chapters".into(),
+                    label: "Chapters".into(),
+                    choose: true,
+                },
+                MediaList {
+                    id: "audio".into(),
+                    label: "Audio".into(),
+                    choose: false,
+                },
+            ],
+            up_next: true,
+            navigation: true,
+            refresh_ms: 2_000,
+            keys: vec![MediaKey {
+                key: ColourKey::Yellow,
+                command: "x:subtitle-next".into(),
+            }],
+        };
+        let value = serde_json::to_value(&full).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"kind":"media_player","layout":"video",
+                "artwork":["backdrop","logo"],
+                "lists":[{"id":"chapters","label":"Chapters","choose":true},
+                         {"id":"audio","label":"Audio"}],
+                "up_next":true,"navigation":true,"refresh_ms":2000,
+                "keys":[{"key":"yellow","command":"x:subtitle-next"}]})
+        );
+        assert_eq!(
+            serde_json::from_value::<PluginComponent>(value).unwrap(),
+            full
+        );
+        for bad in [
+            serde_json::json!({"kind":"media_player"}),
+            serde_json::json!({"kind":"media_player","layout":"radio"}),
+            serde_json::json!({"kind":"media_player","layout":"music","seek":true}),
+            serde_json::json!({"kind":"media_player","layout":"music","artwork":["poster"]}),
+            serde_json::json!({"kind":"media_player","layout":"music",
+                "lists":[{"id":"a","label":"A","pick":true}]}),
+            serde_json::json!({"kind":"media_player","layout":"music",
+                "keys":[{"key":"power","command":"stop"}]}),
+            serde_json::json!({"kind":"media_player","layout":"music",
+                "keys":[{"key":"red"}]}),
+            serde_json::json!({"kind":"volume_percent_control"}),
+        ] {
+            assert!(
+                serde_json::from_value::<PluginComponent>(bad.clone()).is_err(),
+                "{bad}"
             );
         }
     }

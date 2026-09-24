@@ -41,7 +41,10 @@ scenes and other device domains are still pending. The screen preview is a
 configuration visualization, not a live screenshot or a free-form layout editor.
 Server and bridge setup live in Connections; discovery, assignment and light
 controls live inside rooms. See [Home Assistant lights](home-assistant.md).
-Infrared learning/discovery and execution of configured scenes remain pending. The separate `stage2/www` portal handles Wi-Fi and SSH setup.
+Infrared learning/discovery and execution of configured scenes remain pending.
+The separate `stage2/www` portal handles Wi-Fi and first-boot SSH setup. The
+paired configuration UI can also enroll another SSH key or change the password
+with a fresh physical-button approval.
 
 ### Validation
 
@@ -310,6 +313,7 @@ JSON. `{id}` is a slug like `living-room`.
 | `PUT`    | `/api/rooms/{id}/devices`              | `["lamp", ...]` - the order the remote lists them in; devices left out keep their place after the named ones |
 | `GET`    | `/api/remote/device`                   | the remote's own settings: `brightness` (10-100 in tens), `keys` (keypad backlight while awake), `dim_index`/`off_index` with their `dim_choices`/`off_choices`, and `ssh` `{available, enabled, running}` |
 | `PUT`    | `/api/remote/device`                   | the same five fields; written to the remote's settings file, which the remote applies within a second; `ssh` also starts or stops sshd through the system service |
+| `POST`   | `/api/remote/ssh`                      | enroll one public key or password from the paired browser; couch-system requires a new physical keypad press, then the route enables SSH and saves the preference without returning the credential |
 | `GET`    | `/api/remote/network`                  | `address`, `gateway`, `dns`, `mac`, `web` and `host` (`couch.local`), as the remote's Settings → Network shows them |
 | `POST`   | `/api/remote/power`                    | `{"action": "off" \| "restart" \| "recovery", "confirm": true}`; 202 once the system service has accepted it |
 | `POST`   | `/api/remote/bluetooth`                | `{"action": "pair" \| "stop" \| "forget" \| "enter"}`: open a two-minute pairing window (forgetting every bond first), close it, forget the bonds, or press Enter on the paired TV; 202 once the system service has passed it to the HID daemon. Progress is `bluetooth.pairing` `{phase, detail}` and `bluetooth.peer` in `GET /api/remote/device` |
@@ -656,6 +660,12 @@ connection page renders text, secret, integer and boolean controls directly in
 Leptos; it does not load package scripts. A
 secret is never echoed to the browser. Blank secret input preserves a saved
 value and the adjacent clear control sends an explicit `null`.
+
+The **Integrations** catalog lists a healthy package only under **Installed
+packages**, where a newer feed version appears as an update action. **Available
+packages** contains only additional packages. If an installed selection is
+missing or failed validation, its feed entry remains there with **Reinstall**
+instead of the misleading fresh-install action.
 
 **Rooms & devices** creates rooms and assigns devices from saved connections.
 Open a room, select **From connection**, then search discovered HA/Hue lights or

@@ -3,14 +3,13 @@
 //! # What this is
 //!
 //! Couch drives home devices from crates in the `clients/` workspace. Each one
-//! owns a transport - Kodi's JSON-RPC, an LG TV's SSAP socket, a Denon AVR's
-//! CR-delimited TCP protocol, the remote's own IR blaster - and is linked into
-//! the configuration daemon and the device GUI. This crate is the small set of
-//! types they have in common, extracted from the ones that already exist:
+//! owns a transport - Kodi's JSON-RPC, a Sonos HTTPS API, or the remote's own
+//! IR blaster. Some remain linked into the core and others run as independently
+//! installed packages. This crate is the small set of types they share:
 //!
 //! - [`ClientSettings`] - the private per-connection credential file, written
 //!   atomically at mode 0600, the way `couch-denon`, `couch-ha`, `couch-hue`,
-//!   `couch-kodi` and `couch-webos` each write it today.
+//!   `couch-kodi` and the independently packaged clients each write it today.
 //! - [`DeviceClient`] - what the client declares it can do, and how it is asked
 //!   to do it, in `couch-model`'s existing [`Function`](couch_model::commands::Function)
 //!   vocabulary rather than a new one.
@@ -79,6 +78,7 @@
 //! A complete, runnable version with a fake device, a scripted failure and a
 //! test suite is `clients/couch-echo`.
 
+pub mod camera;
 pub mod children;
 pub mod client;
 pub mod discovery;
@@ -92,6 +92,10 @@ pub mod testing;
 pub mod tls;
 pub mod wol;
 
+pub use camera::{
+    read_h264_record, write_camera_end, write_h264_record, CameraStream, CameraView,
+    CameraWireError, CameraWireResult, CAMERA_PROTOCOL_VERSION, MAX_H264_ACCESS_UNIT,
+};
 pub use children::{Child, ChildPage, MAX_CHILD_LABEL, MAX_CURSOR, MAX_PAGE, MAX_PAGE_BYTES};
 pub use client::{catalog_differences, Capability, DeviceClient};
 pub use discovery::{Discover, Discovered};

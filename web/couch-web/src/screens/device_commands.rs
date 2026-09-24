@@ -71,19 +71,10 @@ impl Commands {
 /// number first. Returns the `<kind>` prefix and its label for each level this
 /// device's integration accepts, so a caller renders one control per entry.
 pub fn levels(config: &Config, device: &Device) -> Vec<(&'static str, &'static str)> {
-    use couch_model::commands::Function;
-    let Some(integration) = config.resolve_integration(&device.integration) else {
-        return Vec::new();
-    };
-    [
-        ("dim", "Brightness", Function::Dim(0)),
-        ("volume", "Volume", Function::Volume(0)),
-        ("position", "Position", Function::Position(0)),
-    ]
-    .into_iter()
-    .filter(|(_, _, function)| function.supports(&integration))
-    .map(|(kind, label, _)| (kind, label))
-    .collect()
+    config
+        .resolve_integration(&device.integration)
+        .map(|integration| couch_model::buttons::levels(&integration))
+        .unwrap_or_default()
 }
 /// A saved `dim:30` has no catalog row to name it, so spell the value out.
 pub fn value_label(command: &str) -> Option<String> {

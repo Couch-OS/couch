@@ -51,9 +51,8 @@ fn run() -> Result<(), &'static str> {
             frames += 1;
         }
         if player.status() == Status::Unavailable {
-            return Err(
-                "Live decode unavailable; check media trust, codec and decoder installation",
-            );
+            eprintln!("Playback failure: {:?}", player.failure());
+            return Err("Live decode unavailable");
         }
         std::thread::sleep(Duration::from_millis(50));
     }

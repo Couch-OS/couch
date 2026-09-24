@@ -58,6 +58,16 @@ pub enum Request {
     SetPassword {
         password: String,
     },
+    /// The paired configuration UI's enrollment path. Unlike the recovery
+    /// portal variants above, these do not require setup mode; the caller has
+    /// already passed Couch's browser authentication and `access` still
+    /// requires a new physical keypad press before persisting anything.
+    EnrollKeyAuthenticated {
+        key: String,
+    },
+    SetPasswordAuthenticated {
+        password: String,
+    },
     PortalJoin {
         ssid: String,
         password: String,

@@ -1,14 +1,13 @@
 //! Trust a device certificate during explicit pairing; pin it on reconnect.
 //!
-//! Four clients - LG webOS, Android TV, Samsung Tizen and the Hue bridge - all
-//! face the same problem: a LAN device presents a self-signed certificate that
-//! no public root can verify. Reference clients disable verification entirely;
-//! Couch instead records the certificate seen while the user approves the
-//! pairing and refuses any other one until the device is paired again.
+//! LAN integrations such as LG webOS, Android TV, Samsung Tizen and Hue all
+//! face the same problem: a device presents a self-signed certificate that no
+//! public root can verify. Reference clients disable verification entirely;
+//! Couch integrations instead record the certificate seen while the user
+//! approves pairing and refuse any other one until the device is paired again.
 //!
-//! That verifier was copied into each of those crates, differing only in the
-//! sentence the user is shown, so a fix to one silently missed the other three.
-//! It is here once, and [`Pin::changed`] is the one thing that still varies.
+//! The shared verifier lives here so independently packaged and core clients
+//! follow the same rule. [`Pin::changed`] supplies the device-specific wording.
 
 use rustls::{
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},

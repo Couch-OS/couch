@@ -30,6 +30,9 @@ Settings → Wi-Fi → Recovery hotspot (also on the welcome screen) explicitly
 starts the existing `Couch-Setup` portal. This switches the radio away from its
 normal connection. Restart the remote to return to normal station mode. The
 portal retains its existing physical approval requirement for SSH enrollment.
+From the paired configuration UI, **Remote settings → SSH** can also enroll a
+public key or password without leaving the current Wi-Fi; it requires the same
+new physical-button approval and enables SSH after the credential is saved.
 Headless rescue can explicitly request it with `COUCH_SETUP_AP=1`; it does not
 start the graphical onboarding flow.
 

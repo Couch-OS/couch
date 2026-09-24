@@ -308,6 +308,7 @@ pub(super) fn state_line(status: Option<&Value>, component: ChildComponent) -> S
             }
         }
         ChildComponent::Scene => String::new(),
+        ChildComponent::Camera => "Camera available".into(),
     }
 }
 
@@ -985,6 +986,10 @@ pub(super) fn controls(app: App, config: &Config, device: &Device) -> AnyView {
         }
         .into_any(),
         ChildComponent::Scene => ().into_any(),
+        ChildComponent::Camera => view! {
+            <p class="dim small">"Open this camera from the remote."</p>
+        }
+        .into_any(),
     };
 
     view! {<div class="child-controls">{badge}

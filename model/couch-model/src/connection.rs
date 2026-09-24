@@ -60,6 +60,116 @@ pub enum PluginComponent {
     Climate {
         label: String,
     },
+    /// Protocol 3 (unreleased): the connection plays something, and its row
+    /// opens the player screen instead of the generic controls screen. What is
+    /// drawn is Couch's own player; the package only says which parts of it
+    /// have anything behind them.
+    ///
+    /// Seeking and the modes sheet are *not* declared here. They follow from
+    /// the declared [`crate::PluginActionSchema::Seek`] and
+    /// [`crate::PluginActionSchema::SetMode`], so there is one source of truth
+    /// and no cross-check rule to get wrong.
+    MediaPlayer {
+        layout: MediaLayout,
+        /// Which pictures the package can supply, at most one of each.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        artwork: Vec<ArtRole>,
+        /// Choosable lists behind their own sheets: Kodi's chapters, audio
+        /// tracks and subtitles.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lists: Vec<MediaList>,
+        /// A sheet built from what the player says is next.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        up_next: bool,
+        /// The D-pad, OK, Back, Home and Menu go straight to the device from
+        /// the moment the screen opens, as they do for built-in Kodi. Couch
+        /// still owns the key map; this only chooses between the two modes.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        navigation: bool,
+        #[serde(
+            default = "default_refresh_ms",
+            skip_serializing_if = "is_default_refresh_ms"
+        )]
+        refresh_ms: u32,
+        /// What the four colour keys do on this package's own screen. Only a
+        /// suggestion: a binding in the running activity always wins, and an
+        /// unnamed key stays unbound. Vanishes when the package names none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keys: Vec<MediaKey>,
+    },
+    /// A percentage volume slider, drawn over
+    /// [`crate::PluginActionSchema::SetVolumePercent`] exactly as
+    /// [`Self::VolumeDbControl`] is drawn over the decibel one.
+    VolumePercentControl {
+        label: String,
+    },
+}
+
+/// How a player's screen is laid out: a record sleeve, or a still from a film.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaLayout {
+    Music,
+    Video,
+}
+/// Which picture of what is playing this is. A music layout names a cover; a
+/// video layout names a backdrop, a logo, or both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtRole {
+    Cover,
+    Backdrop,
+    Logo,
+}
+impl ArtRole {
+    /// Whether this picture belongs on that layout.
+    pub fn fits(self, layout: MediaLayout) -> bool {
+        match layout {
+            MediaLayout::Music => matches!(self, Self::Cover),
+            MediaLayout::Video => matches!(self, Self::Backdrop | Self::Logo),
+        }
+    }
+}
+/// One list the player offers behind a sheet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaList {
+    pub id: String,
+    pub label: String,
+    /// Whether a row may be chosen, or the list is only shown.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub choose: bool,
+}
+/// One of the four colour keys, and the command the package suggests for it on
+/// its own screen. The command is one the package declares, so an `x:` id of
+/// its own is as good as a word Couch knows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaKey {
+    pub key: ColourKey,
+    pub command: String,
+}
+/// The four keys a package may suggest for, and the only ones it may: nothing
+/// a package says ever moves the D-pad, volume, power or the shortcut keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColourKey {
+    Red,
+    Green,
+    Yellow,
+    Blue,
+}
+/// How many keys a package may name: the four colour keys, each once.
+pub const MAX_MEDIA_KEYS: usize = 4;
+/// How often the player screen re-reads `media` while it is open.
+pub const MIN_REFRESH_MS: u32 = 1_000;
+pub const DEFAULT_REFRESH_MS: u32 = 3_000;
+pub const MAX_REFRESH_MS: u32 = 30_000;
+fn default_refresh_ms() -> u32 {
+    DEFAULT_REFRESH_MS
+}
+fn is_default_refresh_ms(value: &u32) -> bool {
+    *value == DEFAULT_REFRESH_MS
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,7 +219,10 @@ pub enum Provider {
     /// The `hue` package takes it over through [`crate::LEGACY_BUILTINS`].
     #[serde(rename = "hue")]
     LegacyHue,
-    WebOs,
+    /// An LG TV connection saved while the webOS client was built into the
+    /// OS. The `webos` package takes it over through [`crate::LEGACY_BUILTINS`].
+    #[serde(rename = "web-os")]
+    LegacyWebOs,
     AndroidTv,
     AppleTv,
     Tizen,
@@ -149,7 +262,7 @@ impl Provider {
             Self::LegacyDenon { .. } => "denon",
             Self::HomeAssistant => "home-assistant",
             Self::LegacyHue => "hue",
-            Self::WebOs => "web-os",
+            Self::LegacyWebOs => "web-os",
             Self::AndroidTv => "android-tv",
             Self::AppleTv => "apple-tv",
             Self::Tizen => "tizen",
@@ -168,7 +281,7 @@ impl Provider {
             Self::LegacyDenon { .. } => "Denon AVR",
             Self::HomeAssistant => "Home Assistant",
             Self::LegacyHue => "Philips Hue",
-            Self::WebOs => "LG webOS",
+            Self::LegacyWebOs => "LG webOS",
             Self::AndroidTv => "Android / Google TV",
             Self::AppleTv => "Apple TV",
             Self::Tizen => "Samsung Tizen",
@@ -258,7 +371,7 @@ impl Config {
             Provider::LegacyHue => Integration::Hue {
                 light_id: alloc::format!("{connection_id}/{resource_id}"),
             },
-            Provider::WebOs => Integration::WebOs,
+            Provider::LegacyWebOs => Integration::WebOs,
             Provider::AndroidTv => Integration::AndroidTv,
             Provider::AppleTv => Integration::AppleTv,
             Provider::Tizen => Integration::Tizen,
@@ -492,7 +605,7 @@ mod tests {
         config.connections.push(Connection {
             id: "lg".into(),
             name: "LG TV".into(),
-            provider: Provider::WebOs,
+            provider: Provider::LegacyWebOs,
         });
         let integration = Integration::Connection {
             connection_id: "lg".into(),
@@ -517,7 +630,7 @@ mod tests {
         config.connections.push(Connection {
             id: "second".into(),
             name: "Second TV".into(),
-            provider: Provider::WebOs,
+            provider: Provider::LegacyWebOs,
         });
         assert!(config.validate().is_ok());
     }

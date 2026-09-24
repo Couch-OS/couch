@@ -247,6 +247,9 @@ pub enum ChildComponent {
     Scene,
     Cover,
     Climate,
+    /// Protocol 4: a read-only camera rendered by Couch. Live media travels
+    /// over the package camera side channel, never as a command or action.
+    Camera,
 }
 impl ChildComponent {
     /// The one typed action a child of this component may declare.
@@ -255,7 +258,7 @@ impl ChildComponent {
             Self::Light => Some(crate::ActionKind::SetLight),
             Self::Cover => Some(crate::ActionKind::SetCover),
             Self::Climate => Some(crate::ActionKind::SetClimate),
-            Self::Scene => None,
+            Self::Scene | Self::Camera => None,
         }
     }
     /// The kinds of room device a child of this component may be saved as.
@@ -265,6 +268,7 @@ impl ChildComponent {
             Self::Cover => &[crate::DeviceKind::Blind],
             Self::Climate => &[crate::DeviceKind::Thermostat],
             Self::Scene => &[crate::DeviceKind::Other],
+            Self::Camera => &[crate::DeviceKind::Camera],
         }
     }
 }
@@ -310,6 +314,8 @@ impl PluginChildKind {
                 .all(|schema| Some(schema.kind()) == self.component.action())
             && (self.component != ChildComponent::Scene
                 || (self.capabilities.len() == 1 && self.capabilities[0].id == "on"))
+            && (self.component != ChildComponent::Camera
+                || (self.capabilities.is_empty() && self.actions.is_empty()))
     }
 }
 
@@ -360,7 +366,14 @@ impl ChildSnapshot {
             return false;
         }
         match action {
-            TypedAction::SetVolumeDb { .. } => false,
+            // A child is a lamp, a blind or a thermostat. Neither a receiver's
+            // decibels nor a player's media actions are ever aimed at one.
+            TypedAction::SetVolumeDb { .. }
+            | TypedAction::SetVolumePercent { .. }
+            | TypedAction::StepVolumePercent { .. }
+            | TypedAction::Seek { .. }
+            | TypedAction::SeekBy { .. }
+            | TypedAction::SetMode { .. } => false,
             TypedAction::SetLight {
                 brightness,
                 mirek,
@@ -594,10 +607,14 @@ mod tests {
             label: "Thing".into(),
             device_kind,
             component,
-            capabilities: vec![PluginCapability {
-                id: "on".into(),
-                label: "On".into(),
-            }],
+            capabilities: if component == ChildComponent::Camera {
+                vec![]
+            } else {
+                vec![PluginCapability {
+                    id: "on".into(),
+                    label: "On".into(),
+                }]
+            },
             actions: vec![],
         }
     }
@@ -622,6 +639,7 @@ mod tests {
                 Some(PluginActionSchema::SetClimate {}),
             ),
             (ChildComponent::Scene, &[DeviceKind::Other][..], None),
+            (ChildComponent::Camera, &[DeviceKind::Camera][..], None),
         ] {
             for device_kind in crate::ALL_DEVICE_KINDS {
                 assert_eq!(
@@ -658,6 +676,17 @@ mod tests {
         assert!(!scene.is_valid());
         scene.capabilities.clear();
         assert!(!scene.is_valid());
+
+        // A camera is display-only. Media is opened over the camera side
+        // channel, not represented as a button capability or typed action.
+        let camera = kind(ChildComponent::Camera, DeviceKind::Camera);
+        assert!(camera.is_valid());
+        let mut commanded_camera = camera.clone();
+        commanded_camera.capabilities.push(PluginCapability {
+            id: "on".into(),
+            label: "On".into(),
+        });
+        assert!(!commanded_camera.is_valid());
 
         let light = kind(ChildComponent::Light, DeviceKind::Light);
         for (id, label) in [
@@ -748,6 +777,7 @@ mod tests {
             ChildComponent::Scene,
             ChildComponent::Cover,
             ChildComponent::Climate,
+            ChildComponent::Camera,
         ] {
             assert!(bare.fits(component));
         }

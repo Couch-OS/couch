@@ -130,7 +130,8 @@ def run(args):
     command([args.confd, "--supports-integration-protocol=1"])
     command([args.confd, "--supports-integration-protocol=2"])
     command([args.confd, "--supports-integration-protocol=3"])
-    checks = {"v3_protocol_probe": "passed"}
+    command([args.confd, "--supports-integration-protocol=4"])
+    checks = {"v4_protocol_probe": "passed"}
     with tempfile.TemporaryDirectory(prefix="couch-v1-compat-", dir="/tmp") as temporary:
         home = Path(temporary)
         home.chmod(0o755)  # subprocess is deliberately dropped to nobody
@@ -243,7 +244,7 @@ def run(args):
     report_path = args.out / f"denon-0.1.1-core-{core[:7]}-host-report.json"
     report_path.write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
     receipt = {"schema":1,"kind":"couch-integration-host-compatibility","evidence_level":"host-protocol-compatibility",
-        "core":{"source_commit":core,"supported_protocol_versions":[1,2,3],"target":"armv7-unknown-linux-musleabihf","binary_sha256":digest(args.confd)},
+        "core":{"source_commit":core,"supported_protocol_versions":[1,2,3,4],"target":"armv7-unknown-linux-musleabihf","binary_sha256":digest(args.confd)},
         "integrations":[{"id":"denon","version":"0.1.1","protocol_version":1,"apk_sha256":EXPECTED["apk"],"manifest_sha256":EXPECTED["manifest"],"binary_sha256":EXPECTED["plugin"],"provenance_sha256":EXPECTED["provenance"]}],
         "checks":checks,"hardware_validation":False,"harness_sha256":digest(__file__),"report_sha256":digest(report_path)}
     receipt_path = args.out / f"denon-0.1.1-core-{core[:7]}-host-compatibility.json"

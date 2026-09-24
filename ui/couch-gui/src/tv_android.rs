@@ -1,7 +1,6 @@
 //! Android TV adapter for the shared TV screen; all calls run on its worker.
-use super::{Command, Details, Event, Work};
+use super::{Button, Command, Details, Event, Work};
 use couch_control::{StreamingConnection, StreamingTv};
-use couch_webos::Button;
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -50,11 +49,9 @@ fn function(action: &Command, state: &Value) -> Result<Option<&'static str>, Str
         Command::Play(false) => "pause",
         Command::Rewind(true) => "fast-forward",
         Command::Rewind(false) => "rewind",
-        Command::Wake
-        | Command::SetVolume(_)
-        | Command::Input(_)
-        | Command::App(_)
-        | Command::Sound(_) => return Err("This control is only available for LG webOS TVs".into()),
+        Command::Wake | Command::Input(_) | Command::App(_) => {
+            return Err("This control is not available on Android TV".into())
+        }
     }))
 }
 fn event(generation: u64, state: &Value) -> Event {
@@ -205,7 +202,6 @@ mod tests {
             "yellow",
             "input:HDMI_1",
             "app:com.lg.settings",
-            "sound:tv_speaker",
         ] {
             assert!(function(&super::super::command(input).unwrap(), &Value::Null).is_err());
         }

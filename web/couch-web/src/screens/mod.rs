@@ -391,10 +391,8 @@ pub mod plugin_pairing;
 
 mod appearance;
 
-mod tizen;
-mod webos;
-
 mod kodi;
+mod tizen;
 
 mod remote;
 mod remote_device;

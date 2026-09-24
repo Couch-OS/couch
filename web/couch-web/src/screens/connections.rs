@@ -109,7 +109,6 @@ pub fn screen(app: App) -> AnyView {
         ("core-elec", "CoreELEC"),
         ("sonos", "Sonos"),
         ("home-assistant", "Home Assistant"),
-        ("web-os", "LG webOS TV"),
         ("android-tv", "Android / Google TV · experimental"),
         ("apple-tv", "Apple TV · experimental"),
         ("tizen", "Samsung Tizen TV · experimental"),
@@ -133,7 +132,7 @@ pub fn screen(app: App) -> AnyView {
             // tab): go straight to its form.
             let id=id.to_string();
             match plugins.get().into_iter().find(|plugin|plugin.id==id){Some(plugin)=>create_plugin(app,plugin),None=>install_first(app,&id)}
-        }else if let Some(id)=selected.strip_prefix("plugin:"){plugins.get().into_iter().find(|plugin|plugin.id==id).map(|plugin|create_plugin(app,plugin)).unwrap_or_else(||view!{<p class="notice">"That integration package is no longer installed. Existing connections are retained, but a new one cannot be created."</p>}.into_any())}else{match selected.as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"matter"=>create_named(app,Provider::Matter),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"web-os"=>create_named(app,Provider::WebOs),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),"tizen"=>create_named(app,Provider::Tizen),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}}}
+        }else if let Some(id)=selected.strip_prefix("plugin:"){plugins.get().into_iter().find(|plugin|plugin.id==id).map(|plugin|create_plugin(app,plugin)).unwrap_or_else(||view!{<p class="notice">"That integration package is no longer installed. Existing connections are retained, but a new one cannot be created."</p>}.into_any())}else{match selected.as_str(){"unifi-protect"=>create_named(app,Provider::UnifiProtect),"matter"=>create_named(app,Provider::Matter),"sonos"=>super::sonos::form(app,None),"core-elec"=>super::coreelec::form(app,None),"kodi"=>local_form(app,None,false),"home-assistant"=>create_named(app,Provider::HomeAssistant),"android-tv"=>create_named(app,Provider::AndroidTv),"apple-tv"=>create_named(app,Provider::AppleTv),"tizen"=>create_named(app,Provider::Tizen),_=>view!{<p class="dim">"Add multiple bridges, servers and TVs. Infrared is built into the remote and is configured on each device."</p>}.into_any()}}}}
         </section>
     }.into_any()
 }
@@ -142,7 +141,11 @@ pub fn screen(app: App) -> AnyView {
 /// connection picker all the same so nobody has to know that to find them.
 /// Installed, a package lists itself; until then its entry leads to the
 /// Integrations page.
-const PACKAGED: [(&str, &str); 2] = [("denon", "Denon AVR"), ("hue", "Philips Hue")];
+const PACKAGED: [(&str, &str); 3] = [
+    ("denon", "Denon AVR"),
+    ("hue", "Philips Hue"),
+    ("webos", "LG webOS TV"),
+];
 
 fn install_first(app: App, id: &str) -> AnyView {
     let label = PACKAGED
@@ -271,7 +274,7 @@ fn page(app: App, id: Id) -> AnyView {
         Provider::Sonos { .. } => view!{{titled("Connection",super::sonos::form(app,Some(c.clone())))}{super::sonos::controls(app,c.id.to_string())}}.into_any(),
         Provider::CoreElec { .. } => view!{{titled("Connection",super::coreelec::form(app,Some(c.clone())))}{super::kodi::setup(app,&c)}{super::coreelec::setup(app,&c)}}.into_any(),
         Provider::Kodi { .. } => view!{{titled("Connection",local_form(app, Some(c.clone()), false))}{super::kodi::setup(app, &c)}}.into_any(),
-        Provider::LegacyDenon { .. } | Provider::LegacyHue => super::integration_migrations::connection_notice(
+        Provider::LegacyDenon { .. } | Provider::LegacyHue | Provider::LegacyWebOs => super::integration_migrations::connection_notice(
             app,
             c.id.to_string(),
             c.provider
@@ -284,7 +287,6 @@ fn page(app: App, id: Id) -> AnyView {
         Provider::Matter => super::matter::setup(app, &c),
         Provider::Plugin { .. } => plugin_setup(app, &c),
         Provider::HomeAssistant => super::home_assistant::setup(app, &c),
-        Provider::WebOs => super::webos::setup(app, &c),
         Provider::AndroidTv | Provider::AppleTv => titled(label.clone(), super::streaming_tv::setup(app, &c)),
         Provider::Tizen => super::tizen::setup(app, &c),
         Provider::BluetoothTv => titled(label.clone(), bluetooth_notes()),
@@ -905,7 +907,8 @@ fn plugin_controls(
                 PluginComponent::InputSelector{label}=>view!{<section class="integration-component"><h3>{label}</h3><div class="actions"><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("inputs",None)>"Refresh inputs"</button><select aria-label="Integration input" disabled=move ||live_busy.get()||inputs.with(Vec::is_empty) on:change=move |event|{let id=event_target_value(&event);if !id.is_empty(){call("action",Some(json!({"command":format!("input:{id}")})));}}><option value="">"Choose an input"</option>{move ||inputs.get().into_iter().map(|(id,name)|view!{<option value=id>{name}</option>}).collect_view()}</select></div></section>}.into_any(),
                 // Protocol 3 (unreleased): no manifest this build accepts can
                 // declare one, and the controls come with the web step.
-                PluginComponent::Light{..}|PluginComponent::Cover{..}|PluginComponent::Climate{..}=>().into_any(),
+                PluginComponent::Light{..}|PluginComponent::Cover{..}|PluginComponent::Climate{..}
+                |PluginComponent::MediaPlayer{..}|PluginComponent::VolumePercentControl{..}=>().into_any(),
             }).collect_view()
         }}
         </section>}.into_any()

@@ -122,6 +122,15 @@ omitted array remains compatible with the basic command list.
 | `toggle` | `label`, `state`, `on`, `off` | Boolean status field plus two distinct declared commands |
 | `input_selector` | `label` | Enumerated inputs; requires `supports_inputs: true` |
 
+On the remote, Couch recognizes a native television profile without adding a
+vendor-specific manifest field. A package qualifies when it declares an input
+selector, supports enumerated inputs, and advertises the complete standard TV
+set: power off, volume up/down, mute, D-pad/OK/Back/Home, and
+play/pause/stop/rewind/fast-forward. The screen then uses Couch's TV hero and
+transport row and sends physical navigation keys to the package. A package
+missing any of that contract keeps the generic tile navigator, so a receiver
+with a few cursor commands is never mistaken for a television.
+
 For example, a receiver can declare:
 
 ```json
@@ -162,8 +171,8 @@ config.json ──────────► model/couch-model ◄────�
         Private Unix socket, mode 0600, beside config.json.
                    │
                    ▼
-   clients/couch-kodi   couch-webos   couch-sonos   couch-ha   couch-hue
-   couch-androidtv      couch-appletv couch-tizen   couch-ir     couch-voice
+   clients/couch-kodi   couch-sonos   couch-ha      couch-tizen
+   couch-androidtv      couch-appletv couch-ir      couch-voice
                    ▲
                    └── clients/couch-sdk: the contract they share
 ```
@@ -658,10 +667,10 @@ Notes that will save you a day:
 - **Two existing clients have been adapted.** `couch-denon` uses the shared
   settings helper and implements `DeviceClient`; `couch-sonos` implements both
   over its HTTPS Control API transport, and shows what a client does when the
-  mock host cannot speak its protocol (`docs/sonos.md`). The other eight keep
+  mock host cannot speak its protocol (`docs/sonos.md`). The other clients keep
   their own shapes; there is no migration in progress and none is required.
-- **No streaming or subscription API.** `couch-webos` and `couch-kodi` receive
-  pushed updates, and those paths stay in the client and the broker. The SDK
+- **No streaming or subscription API.** `couch-kodi` receives pushed updates,
+  and that path stays in the client and the broker. The SDK
   covers request/response, status and enumeration only.
 - **No async.** Everything is blocking with explicit deadlines, matching the
   rest of the repository.

@@ -1,9 +1,12 @@
 use crate::{accepted_protocol_version, Error, Reason, Result, NEXT_PROTOCOL_VERSION};
-use couch_sdk::couch_model::{
-    commands::{valid_input_id, Function, MAX_CUSTOM_FUNCTIONS},
-    domain::valid_child_kinds,
-    ActionKind, PluginActionSchema, PluginChildKind, PluginComponent, PluginStatusField,
-    TypedAction,
+use couch_sdk::{
+    couch_model::{
+        commands::{valid_input_id, Function, MAX_CUSTOM_FUNCTIONS},
+        domain::valid_child_kinds,
+        ActionKind, ChildComponent, PluginActionSchema, PluginChildKind, PluginComponent,
+        PluginStatusField, TypedAction,
+    },
+    CAMERA_PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -178,6 +181,14 @@ impl Manifest {
             // package Couch can already run will ever be asked to list them.
             || (self.protocol_version < NEXT_PROTOCOL_VERSION && !self.children.is_empty())
             || !valid_child_kinds(&self.children)
+            // Camera is protocol 4 vocabulary. The model and disk envelope
+            // may understand it before the host admits protocol 4 packages,
+            // but a protocol 3 manifest must never activate the data plane.
+            || (self.protocol_version < CAMERA_PROTOCOL_VERSION
+                && self
+                    .children
+                    .iter()
+                    .any(|kind| kind.component == ChildComponent::Camera))
             // Pairing and a kept-alive child arrived with protocol 3, like
             // children and `x:` ids: an older manifest that declares either is
             // invalid, so no package Couch can already run is ever sent a
@@ -271,6 +282,14 @@ impl Manifest {
                 PluginComponent::Climate { label: text } => {
                     self.composes(text, ActionKind::SetClimate)
                 }
+                // A packaged media player and its percentage volume control
+                // land with the model first (T4 PR-A), so the saved snapshot
+                // and the rollback projection can be proved before anything
+                // can be admitted with one. The wire step gives these the
+                // manifest rules the model already mirrors; until then no
+                // manifest declaring either is accepted.
+                PluginComponent::MediaPlayer { .. }
+                | PluginComponent::VolumePercentControl { .. } => false,
             };
             if !valid {
                 return Err(Error::Invalid);

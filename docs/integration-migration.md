@@ -2,9 +2,8 @@
 
 Integrations live in their own repositories and reach a remote through the
 signed package feed; the OS carries only the host that runs them. Denon was the
-first built-in integration to leave (`Couch-OS/couch-integration-denon`), and
-what happens to a connection saved before it left is described here. The same
-road is meant for the built-ins that follow.
+first built-in integration to leave, followed by Philips Hue and LG webOS.
+What happens to a connection saved before one of them left is described here.
 
 ## What a user sees
 
@@ -22,14 +21,16 @@ makes that happen by itself:
    connection then keeps waiting and says that the official feed does not
    offer the package yet. A package the owner installed by hand, from any
    repository they trust, is used as it is;
-3. it gives the package the address the connection carried, lets the package
-   validate it, and switches the connection over in place.
+3. it maps the connection's public settings and, where applicable, its old
+   private credential into the package store, lets the package validate them,
+   and switches the connection over in place.
 
 The connection keeps its id and name, so nothing that points at it changes. No
 command is sent to the device by the conversion. It is one way: there is no
 built-in client to go back to.
 
-While a connection is still waiting it reads **Needs the Denon package**:
+While a connection is still waiting it reads **Needs the Denon package**,
+**Needs the Philips Hue package**, or **Needs the LG webOS package**:
 
 - in the web UI on the connection's card and page (with the reason the last
   attempt gave, for example that the package feed could not be read, and a
@@ -61,21 +62,23 @@ Known limits:
   stop the rest of the file loading. Delete the device, or add the receiver
   again as a package connection.
 
-Adding a receiver afterwards is an ordinary package connection: the connection
-picker keeps a **Denon AVR · integration package** entry that leads to
-Integrations until the package is installed, and a new built-in connection is
-refused by the API.
+Adding one afterwards is an ordinary package connection: the connection picker
+keeps an integration-package entry that leads to Integrations until the package
+is installed, and a new built-in connection is refused by the API.
 
 ## How it is built
 
 `couch_model::LEGACY_BUILTINS` (`model/couch-model/src/integration_migration.rs`)
 is the table: for each departed built-in, the connection kind, the package id,
 the package's name in a sentence, and the function that turns the saved
-connection's fields into package settings. Denon's row maps `host` and `port`.
+connection's fields into package settings. Denon's row maps `host` and `port`;
+Hue maps its private bridge URL and credential; webOS maps its private URL,
+client key, and pinned certificate.
 
-- **The file still loads.** `Provider::LegacyDenon` and
-  `Integration::LegacyDenon` keep the `"denon"` tag on disk. They exist to read
-  an older file and keep its saved commands valid; no code drives them. A
+- **The file still loads.** `Provider::LegacyDenon`, `Provider::LegacyHue`, and
+  `Provider::LegacyWebOs` keep their old tags on disk. The corresponding
+  resolved integrations exist to read an older file and keep its saved commands
+  valid; no code drives them. A
   variant is never removed: `Provider` and `Integration` are tagged enums with
   no fallback, and a file that does not parse is a daemon that does not start.
 - **`Config::migrate`** gives a receiver named inline on a device (the shape
@@ -96,9 +99,8 @@ connection's fields into package settings. Denon's row maps `host` and `port`.
   configuration write per connection. `GET /api/integrations/legacy` reports what is waiting and
   why; `POST /api/integrations/legacy/retry` makes the next attempt immediate.
 
-Adding the next built-in to the table takes a row, a `Legacy*` variant kept for
-reading, and the removal of its client. The daemon, the web UI and the panel
-need no further change.
+Each departed built-in has one row, a `Legacy*` provider variant kept for
+reading, and no client in the core image.
 
 ## Core rollback
 

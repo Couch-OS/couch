@@ -137,6 +137,38 @@ fn trusted_tls_discovers_typed_cameras_with_api_key_and_exact_route() {
         .contains("x-api-key: fixture-secret\r\n"));
 }
 #[test]
+fn certificate_observation_sends_no_http_or_credentials() {
+    let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    use sha2::Digest;
+    let expected = format!("{:x}", sha2::Sha256::digest(certified.cert.der()));
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![certified.cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()).into(),
+        )
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!(
+        "https://localhost:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let worker = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut connection = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+        while connection.is_handshaking() {
+            if connection.complete_io(&mut socket).is_err() {
+                break;
+            }
+        }
+    });
+    assert_eq!(
+        observe_certificate_sha256(&origin, None, Duration::from_secs(2)).unwrap(),
+        expected
+    );
+    worker.join().unwrap();
+}
+#[test]
 fn untrusted_tls_is_rejected_before_sending_api_key() {
     let p = Peer::new(200, "application/json", b"[]".to_vec(), "");
     let client = Client::new(
@@ -178,6 +210,7 @@ fn existing_stream_preserves_srtp_query_and_local_expiry_without_mutation() {
         view.url().unwrap(),
         "rtsps://localhost:7441/fixture-token?enableSrtp"
     );
+    assert_eq!(view.media_origin().unwrap(), "rtsps://localhost:7441/");
     assert!(!format!("{view:?}").contains("fixture-token"));
     view.deadline = Instant::now();
     assert_eq!(view.url(), Err(Error::Expired));

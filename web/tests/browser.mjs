@@ -116,6 +116,20 @@ try {
   assert.equal(await page.getByLabel('Connection type',{exact:true}).locator('option[value=ir]').count(),0);
   // Appearance lives on Remote settings.
   await navigate('Remote settings');
+  // A remote with no SSH credential no longer leaves only a disabled toggle:
+  // the paired browser offers either enrollment method and explains the
+  // physical approval. The host fixture has no couch-system, so it is exactly
+  // the not-enrolled state and no credential is submitted here.
+  await page.getByRole('heading',{name:'SSH',exact:true}).waitFor();
+  assert(await page.getByRole('checkbox',{name:'SSH access',exact:true}).isDisabled());
+  await page.getByText('Enroll SSH access',{exact:true}).waitFor();
+  await page.getByLabel('SSH public key',{exact:true}).waitFor();
+  await page.getByLabel('Password',{exact:true}).fill('first-password');
+  await page.getByLabel('Confirm password',{exact:true}).fill('different-password');
+  await page.getByRole('button',{name:'Set password & enable SSH',exact:true}).click();
+  await page.getByRole('status').filter({hasText:'The passwords do not match.'}).waitFor();
+  await noOverflow();
+  await page.screenshot({path:'build/webui-review/ssh-enrollment-mobile.png',fullPage:true});
   const appearance=page.locator('.appearance');
   await appearance.getByRole('button',{name:'Purple accent',exact:true}).click();
   assert.equal((await config()).appearance.accent,'#FFFFFF');

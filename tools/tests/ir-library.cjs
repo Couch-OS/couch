@@ -10,7 +10,7 @@ const assert=require('node:assert/strict');
 (async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'couch-device-ir-browser-'));
  const configPath=path.join(dir,'config.json');
- const config={schema_version:1,revision:12,connections:[{id:'lg',name:'LG TV',provider:{kind:'web-os'}},{id:'legacy-blaster',name:'Old infrared connection',provider:{kind:'ir'}}],areas:[],rooms:[{id:'office',name:'Office',devices:[{id:'tv',name:'Office TV',kind:'tv',integration:{via:'connection',connection_id:'lg',resource_id:''}},{id:'old-tv',name:'Legacy TV',kind:'tv',integration:{via:'ir',codeset:'shared'}}]}],activities:[],scenes:[]};
+ const config={schema_version:1,revision:12,connections:[{id:'tv-network',name:'Network TV',provider:{kind:'android-tv'}},{id:'legacy-blaster',name:'Old infrared connection',provider:{kind:'ir'}}],areas:[],rooms:[{id:'office',name:'Office',devices:[{id:'tv',name:'Office TV',kind:'tv',integration:{via:'connection',connection_id:'tv-network',resource_id:''}},{id:'old-tv',name:'Legacy TV',kind:'tv',integration:{via:'ir',codeset:'shared'}}]}],activities:[],scenes:[]};
  fs.mkdirSync(path.join(dir,'ir'));fs.writeFileSync(path.join(dir,'ir/shared.codeset'),'toggle nec 4 8\n');fs.writeFileSync(configPath,JSON.stringify(config));
  const server=spawn('daemon/target/release/couch-confd',['--addr','127.0.0.1:18196','--config',configPath,'--no-auth','--www','web/couch-web/dist'],{stdio:'ignore'});
  const browser=await chromium.launch();
@@ -19,7 +19,6 @@ const assert=require('node:assert/strict');
   const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
   let catalogReads=0,transmissions=0;const writes=[];
   const extras=Array.from({length:5500},(_,i)=>({id:`extra-${i}`,brand:`Brand ${Math.floor(i/100)}`,device_type:'TV',model:`Model ${i}`,supported_commands:8}));
-  await page.route('**/api/connections/lg/webos/**',r=>{assert.equal(r.request().method(),'GET','No network control in browser test');return r.fulfill({json:{paired:true,url:'wss://192.0.2.10:3001',method:'ir',codeset:'',blaster_available:true}});});
   await page.route('**/api/ir/**',r=>{
    const pathname=new URL(r.request().url()).pathname;
    if(pathname==='/api/ir/catalog'){catalogReads++;return r.fulfill({json:{source:{name:'Fixture library',license:'CC0'},codesets:[{id:'lg-tv',brand:'LG',device_type:'TV',model:'Example TV',supported_commands:3},...extras]}});}

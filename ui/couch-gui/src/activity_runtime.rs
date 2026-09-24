@@ -41,19 +41,11 @@ fn execute_sequence(
     generation: &AtomicU64,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<(), String> {
-    let mut tv = HashMap::new();
     let mut streaming = HashMap::new();
     let mut sonos = HashMap::new();
     let matter = crate::connections::matter();
     execute_steps(job, generation, &mut progress, |action| {
-        crate::activity_buttons::execute(
-            &job.config,
-            action,
-            &mut tv,
-            &mut streaming,
-            &mut sonos,
-            &matter,
-        )
+        crate::activity_buttons::execute(&job.config, action, &mut streaming, &mut sonos, &matter)
     })
 }
 fn execute_steps(
@@ -102,7 +94,6 @@ pub(crate) fn has_screen(config: &Config, device: &couch_model::Device) -> bool 
                     i,
                     couch_model::Integration::Sonos { .. }
                         | couch_model::Integration::Kodi { .. }
-                        | couch_model::Integration::WebOs
                         | couch_model::Integration::AndroidTv
                         | couch_model::Integration::AppleTv
                         | couch_model::Integration::Tizen
