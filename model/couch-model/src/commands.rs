@@ -207,6 +207,7 @@ impl Function {
         if let Integration::Plugin {
             capabilities,
             supports_inputs,
+            supports_apps,
             actions,
             child,
             ..
@@ -214,6 +215,9 @@ impl Function {
         {
             if let Self::Input(id) = self {
                 return *supports_inputs && valid_input_id(id);
+            }
+            if let Self::App(id) = self {
+                return *supports_apps && (valid_id(id) || crate::valid_app_url(id));
             }
             // Protocol 3 (unreleased). A level sent to a child is a typed
             // action the host makes from it, so what decides is the action its
@@ -581,6 +585,7 @@ pub(crate) mod tests {
                 })
                 .collect(),
             supports_inputs: true,
+            supports_apps: false,
             presentation: alloc::vec![],
             actions: alloc::vec![],
             child: None,
@@ -872,6 +877,7 @@ pub(crate) mod tests {
                 resource_id: "".into(),
                 capabilities,
                 supports_inputs: false,
+                supports_apps: false,
                 presentation: vec![],
                 actions,
                 child: None,

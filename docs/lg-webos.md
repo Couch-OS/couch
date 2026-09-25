@@ -23,6 +23,12 @@ D-pad, volume, mute, channel, playback, inputs, and apps declared by the
 package. Physical buttons and touchscreen controls use the same package
 connection and bounded command path. Commands are not retried automatically.
 
+Protocol-5 packages restore the four cards from the original built-in screen:
+Input, Picture, Sound output, and Apps. Apps are read from the TV's installed
+launch points. Picture opens the TV's Settings app when webOS reports it, and
+Sound output offers TV speakers and HDMI ARC/eARC while showing the current
+output when the TV reports one.
+
 Package settings and credentials live in the connection's private store:
 
 - `plugin-connection.json` contains the normalized URL setting.

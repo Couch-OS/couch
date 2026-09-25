@@ -805,6 +805,14 @@ fn plugin_pages(view: &PluginView) -> Vec<PluginPanelPage> {
                     };
                     chunk_page(label, tiles, &mut pages);
                 }
+                PluginComponent::SoundOutputSelector { label, outputs } => chunk_page(
+                    label,
+                    outputs
+                        .iter()
+                        .map(|command| command_tile(view, command, "Sound output"))
+                        .collect(),
+                    &mut pages,
+                ),
                 // Protocol 3 (unreleased): no manifest this build accepts can
                 // declare one, and the controls come with the panel step. A
                 // media player is never drawn here at all: such a row opens

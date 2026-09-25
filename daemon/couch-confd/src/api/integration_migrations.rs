@@ -374,6 +374,7 @@ impl Api {
                             })
                             .collect(),
                         supports_inputs: manifest.supports_inputs,
+                        supports_apps: manifest.supports_apps,
                         presentation: manifest.presentation.clone(),
                         actions: manifest.actions.clone(),
                         children: manifest.children.clone(),

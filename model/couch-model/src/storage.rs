@@ -10,7 +10,8 @@
 //! | `integration_config` | protocol 1 cores | `v1_projection` of the next |
 //! | `integration_config_v2` | protocol 2 cores | `v2_projection` of the next |
 //! | `integration_config_v3` | protocol 3 cores | `v3_projection` of the next |
-//! | `integration_config_v4` | this core (protocol 4 preview) | everything |
+//! | `integration_config_v4` | protocol 4 cores | `v4_projection` of the next |
+//! | `integration_config_v5` | this core (protocol 5 preview) | everything |
 //!
 //! A layer is written only when it differs from the one before it, so a file
 //! that needs no newer layer has exactly the bytes an older Couch wrote. Every
@@ -41,17 +42,22 @@ pub struct StoredConfig {
     /// Protocol-v3 cores read integration_config_v3 and ignore this extension.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     integration_config_v4: Option<Config>,
+    /// Protocol-v4 cores read integration_config_v4 and ignore this extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integration_config_v5: Option<Config>,
 }
 
 impl StoredConfig {
     pub fn new(config: &Config) -> Self {
-        let v3 = v3_projection(config);
+        let v4 = v4_projection(config);
+        let v3 = v3_projection(&v4);
         let v2 = v2_projection(&v3);
         let v1 = v1_projection(&v2);
         let rollback = projection(&v2);
         Self {
             integration_config: (rollback != v1).then(|| v1.clone()),
-            integration_config_v4: (v3 != *config).then(|| config.clone()),
+            integration_config_v5: (v4 != *config).then(|| config.clone()),
+            integration_config_v4: (v3 != v4).then_some(v4),
             integration_config_v3: (v2 != v3).then_some(v3),
             integration_config_v2: (v1 != v2).then_some(v2),
             rollback,
@@ -80,10 +86,15 @@ impl StoredConfig {
             Some(_) => Err("Protocol-v3 configuration does not match its protocol-v2 projection"),
             None => Ok(v2),
         }?;
-        match self.integration_config_v4 {
+        let v4 = match self.integration_config_v4 {
             Some(config) if v3_projection(&config) == v3 => Ok(config),
             Some(_) => Err("Protocol-v4 configuration does not match its protocol-v3 projection"),
             None => Ok(v3),
+        }?;
+        match self.integration_config_v5 {
+            Some(config) if v4_projection(&config) == v4 => Ok(config),
+            Some(_) => Err("Protocol-v5 configuration does not match its protocol-v4 projection"),
+            None => Ok(v4),
         }
     }
 
@@ -92,7 +103,86 @@ impl StoredConfig {
             || self.integration_config_v2.is_some()
             || self.integration_config_v3.is_some()
             || self.integration_config_v4.is_some()
+            || self.integration_config_v5.is_some()
     }
+}
+
+/// What a protocol 4 core can read: protocol 5 app capability and the fixed
+/// sound-output selector are removed while the ordinary commands and device
+/// remain usable.
+fn v4_projection(config: &Config) -> Config {
+    let mut result = config.clone();
+    let app_devices: Vec<crate::DeviceId> = config
+        .devices()
+        .filter_map(
+            |(_, device)| match config.resolve_integration(&device.integration) {
+                Some(Integration::Plugin {
+                    supports_apps: true,
+                    ..
+                }) => Some(device.id.clone()),
+                _ => None,
+            },
+        )
+        .collect();
+    for connection in &mut result.connections {
+        if let Provider::Plugin {
+            supports_apps,
+            presentation,
+            ..
+        } = &mut connection.provider
+        {
+            *supports_apps = false;
+            presentation.retain(|component| {
+                !matches!(
+                    component,
+                    crate::PluginComponent::SoundOutputSelector { .. }
+                )
+            });
+        }
+    }
+    for room in &mut result.rooms {
+        for device in &mut room.devices {
+            if let Integration::Plugin {
+                supports_apps,
+                presentation,
+                ..
+            } = &mut device.integration
+            {
+                *supports_apps = false;
+                presentation.retain(|component| {
+                    !matches!(
+                        component,
+                        crate::PluginComponent::SoundOutputSelector { .. }
+                    )
+                });
+            }
+        }
+    }
+    let compatible = |action: &crate::Action| {
+        !action.command.starts_with("app:") || !app_devices.contains(&action.device)
+    };
+    for activity in &mut result.activities {
+        for binding in &mut activity.buttons {
+            if binding
+                .action
+                .as_ref()
+                .is_some_and(|action| !compatible(action))
+            {
+                binding.action = None;
+            }
+        }
+        activity.steps.retain(compatible);
+        for steps in [&mut activity.setup.on, &mut activity.setup.off] {
+            steps.retain(|step| !matches!(step, crate::SequenceStep::Command { action } if !compatible(action)));
+        }
+        for page in &mut activity.setup.pages {
+            page.widgets.retain(|widget| compatible(&widget.action));
+        }
+    }
+    for scene in &mut result.scenes {
+        scene.steps.retain(compatible);
+    }
+    result
 }
 
 /// What a protocol 3 core can read: camera child kinds and the snapshots that
@@ -378,7 +468,8 @@ fn v2_component(component: &mut crate::PluginComponent) -> bool {
         | crate::PluginComponent::Cover { .. }
         | crate::PluginComponent::Climate { .. }
         | crate::PluginComponent::MediaPlayer { .. }
-        | crate::PluginComponent::VolumePercentControl { .. } => false,
+        | crate::PluginComponent::VolumePercentControl { .. }
+        | crate::PluginComponent::SoundOutputSelector { .. } => false,
     }
 }
 
@@ -536,6 +627,7 @@ mod tests {
                 label: "Echo".into(),
                 capabilities: vec![],
                 supports_inputs: false,
+                supports_apps: false,
                 presentation: vec![],
                 actions: vec![],
                 children: vec![],
@@ -736,6 +828,7 @@ mod tests {
             resource_id: "zone1".into(),
             capabilities: vec![],
             supports_inputs: false,
+            supports_apps: false,
             presentation: vec![],
             actions: vec![],
             child: None,
@@ -1366,6 +1459,9 @@ mod tests {
             }
         }
         let supports_inputs = random.below(2) == 0;
+        // This generator models everything protocol 2/3/4 readers can hold;
+        // protocol 5 coverage has a focused projection test below.
+        let supports_apps = false;
         let mut actions = vec![];
         let mut presentation = vec![];
         if random.below(2) == 0 {
@@ -1482,6 +1578,7 @@ mod tests {
                 label: "Echo".into(),
                 capabilities: capabilities.clone(),
                 supports_inputs,
+                supports_apps,
                 presentation: presentation.clone(),
                 actions: actions.clone(),
                 children: children.clone(),
@@ -1499,6 +1596,7 @@ mod tests {
                 resource_id: "zone2".into(),
                 capabilities,
                 supports_inputs,
+                supports_apps,
                 presentation,
                 actions,
                 child: None,
@@ -1559,6 +1657,7 @@ mod tests {
                         resource_id: "room/9d2b7c10-35aa-4c0e-8a57-6e1f0b94d2c3".into(),
                         capabilities: light_kind.capabilities.clone(),
                         supports_inputs: false,
+                        supports_apps: false,
                         presentation: vec![],
                         actions: light_kind.actions.clone(),
                         child: Some(lamp),
@@ -2402,6 +2501,7 @@ mod tests {
             resource_id: "5f0c9a52".into(),
             capabilities: kinds[0].capabilities.clone(),
             supports_inputs: false,
+            supports_apps: false,
             presentation: vec![],
             actions: kinds[0].actions.clone(),
             child: Some(lamp),
@@ -2711,6 +2811,50 @@ mod tests {
                 .into_config(),
             Err("Protocol-v4 configuration does not match its protocol-v3 projection")
         );
+    }
+
+    #[test]
+    fn app_and_sound_selectors_live_only_in_the_v5_layer() {
+        let mut random = crate::commands::tests::Lcg(5);
+        let mut config = random_config(&mut random, true);
+        let Provider::Plugin {
+            capabilities,
+            supports_apps,
+            presentation,
+            ..
+        } = &mut config.connections.last_mut().unwrap().provider
+        else {
+            unreachable!()
+        };
+        *supports_apps = true;
+        capabilities.push(crate::PluginCapability {
+            id: "x:sound-tv-speaker".into(),
+            label: "TV speakers".into(),
+        });
+        presentation.push(crate::PluginComponent::SoundOutputSelector {
+            label: "Sound output".into(),
+            outputs: vec!["x:sound-tv-speaker".into()],
+        });
+        config.validate().unwrap();
+        v4_projection(&config).validate().unwrap();
+
+        let stored = StoredConfig::new(&config);
+        assert_eq!(stored.integration_config_v5.as_ref(), Some(&config));
+        assert_eq!(
+            serde_json::from_slice::<StoredConfig>(&serde_json::to_vec(&stored).unwrap())
+                .unwrap()
+                .into_config()
+                .unwrap(),
+            config
+        );
+
+        let mut old = serde_json::to_value(stored).unwrap();
+        old.as_object_mut().unwrap().remove("integration_config_v5");
+        let held = serde_json::from_value::<StoredConfig>(old)
+            .unwrap()
+            .into_config()
+            .unwrap();
+        assert_eq!(held, v4_projection(&config));
     }
 
     #[test]

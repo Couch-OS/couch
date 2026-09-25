@@ -47,6 +47,12 @@ pub enum PluginComponent {
     InputSelector {
         label: String,
     },
+    /// Protocol 5: a small, fixed set of sound outputs. The package performs
+    /// the declared commands; Couch owns the selector UI.
+    SoundOutputSelector {
+        label: String,
+        outputs: Vec<String>,
+    },
     /// Protocol 3 (unreleased): the connection is itself one lamp, blind or
     /// thermostat, drawn with the built-in control and driven by the matching
     /// typed action. A connection with many of them declares `children`
@@ -241,6 +247,9 @@ pub enum Provider {
         capabilities: Vec<PluginCapability>,
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         supports_inputs: bool,
+        /// Protocol 5: the package can enumerate and launch `app:<id>`.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        supports_apps: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         presentation: Vec<PluginComponent>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -392,6 +401,7 @@ impl Config {
                     resource_id: resource_id.clone(),
                     capabilities: kind.map(|k| k.capabilities.clone()).unwrap_or_default(),
                     supports_inputs: false,
+                    supports_apps: false,
                     presentation: Vec::new(),
                     actions: kind.map(|k| k.actions.clone()).unwrap_or_default(),
                     child: child.clone(),
@@ -401,6 +411,7 @@ impl Config {
                 id,
                 capabilities,
                 supports_inputs,
+                supports_apps,
                 presentation,
                 actions,
                 ..
@@ -410,6 +421,7 @@ impl Config {
                 resource_id: resource_id.clone(),
                 capabilities: capabilities.clone(),
                 supports_inputs: *supports_inputs,
+                supports_apps: *supports_apps,
                 presentation: presentation.clone(),
                 actions: actions.clone(),
                 child: None,
@@ -436,6 +448,7 @@ mod tests {
                 label: "Volume up".into(),
             }],
             supports_inputs: true,
+            supports_apps: false,
             actions: vec![],
             presentation: vec![PluginComponent::CommandGroup {
                 title: "Volume".into(),
@@ -468,6 +481,7 @@ mod tests {
                     label: "Volume up".into(),
                 }],
                 supports_inputs: true,
+                supports_apps: false,
                 actions: vec![],
                 presentation: vec![PluginComponent::CommandGroup {
                     title: "Volume".into(),
@@ -497,6 +511,7 @@ mod tests {
                     },
                 ],
                 supports_inputs: false,
+                supports_apps: false,
                 presentation,
                 actions: vec![],
                 children: vec![],

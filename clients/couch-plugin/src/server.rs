@@ -241,6 +241,9 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                     if matches!(request, Request::Inputs) && !manifest.supports_inputs {
                         return Err(Error::Unsupported.into());
                     }
+                    if matches!(request, Request::Apps) && !manifest.supports_apps {
+                        return Err(Error::Unsupported.into());
+                    }
                     if matches!(request, Request::Children { .. }) && manifest.children.is_empty() {
                         return Err(Error::Unsupported.into());
                     }
@@ -301,6 +304,7 @@ pub fn serve<C: DeviceClient>(manifest: Manifest) -> Result<()> {
                         (Request::Inputs, _) => client_ref
                             .inputs()
                             .map(|inputs| Response::Inputs { inputs }),
+                        (Request::Apps, _) => client_ref.apps().map(|apps| Response::Apps { apps }),
                         (Request::Children { cursor }, _) => client_ref
                             .children(cursor.as_deref())
                             .map(|page| Response::Children {
@@ -507,6 +511,10 @@ fn shaped(manifest: &Manifest, mut status: couch_sdk::Status) -> couch_sdk::Stat
         status.light = None;
         status.cover = None;
         status.climate = None;
+    }
+    if manifest.protocol_version < crate::APP_PROTOCOL_VERSION {
+        status.sound_output = None;
+        status.picture_mode = None;
     }
     status
 }

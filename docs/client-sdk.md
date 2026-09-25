@@ -102,11 +102,12 @@ The frame limit is 64 KiB, the endpoint queue holds eight requests, and queued
 requests expire after 750 ms. Startup and configuration each have a three-second
 deadline; device operations have a twelve-second absolute deadline.
 
-Version 1 covers fixed commands, status, and enumerated inputs. Advanced pairing
-flows, automatic discovery, apps, and unsolicited events require future protocol
-extensions or a built-in integration. Capability changes beyond the shared
-command vocabulary also require a core update. This is a network integration
-pilot; it does not expose privileged hardware access to plugins.
+Version 1 covers fixed commands, status, and enumerated inputs. Protocol 5 adds
+installed-app enumeration and launch through the same bounded selectable and
+`app:<id>` command vocabulary. Advanced automatic discovery and unsolicited
+events still require future protocol extensions or a built-in integration.
+This is a network integration pilot; it does not expose privileged hardware
+access to plugins.
 
 ### Composing native integration controls
 
@@ -121,6 +122,7 @@ omitted array remains compatible with the basic command list.
 | `status_text` | `label`, `field` | `on`, `playing`, `muted`, `volume`, `input`, or `title` |
 | `toggle` | `label`, `state`, `on`, `off` | Boolean status field plus two distinct declared commands |
 | `input_selector` | `label` | Enumerated inputs; requires `supports_inputs: true` |
+| `sound_output_selector` | `label`, `outputs` | One to eight distinct declared output command IDs; protocol 5 |
 
 On the remote, Couch recognizes a native television profile without adding a
 vendor-specific manifest field. A package qualifies when it declares an input
@@ -130,6 +132,12 @@ play/pause/stop/rewind/fast-forward. The screen then uses Couch's TV hero and
 transport row and sends physical navigation keys to the package. A package
 missing any of that contract keeps the generic tile navigator, so a receiver
 with a few cursor commands is never mistaken for a television.
+
+A protocol-5 television may also set `supports_apps: true`. Couch then asks
+for `Apps`, renders the returned launch points in its native Apps sheet, and
+sends the selected `app:<id>` through the ordinary command gate. Optional
+`sound_output_selector` data creates the native Sound output sheet without
+letting the package provide UI code.
 
 For example, a receiver can declare:
 

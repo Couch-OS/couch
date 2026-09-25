@@ -42,6 +42,7 @@ impl Api {
                 label,
                 capabilities,
                 supports_inputs,
+                supports_apps,
                 presentation,
                 actions,
                 children,
@@ -66,6 +67,7 @@ impl Api {
                     }
                 }
                 *supports_inputs |= manifest.supports_inputs;
+                *supports_apps |= manifest.supports_apps;
                 *presentation = manifest.presentation.clone();
                 *actions = manifest.actions.clone();
             }
@@ -567,6 +569,7 @@ impl Api {
         let request = match (method, path) {
             ("GET", ["status"]) => Request::status(),
             ("GET", ["inputs"]) => Request::Inputs,
+            ("GET", ["apps"]) => Request::Apps,
             ("POST", ["typed-action"]) => {
                 let action: couch_model::TypedAction = match parse(body) {
                     Ok(value) => value,
@@ -901,6 +904,7 @@ fn answered(result: Result<Response, Failure>) -> Reply {
         Ok(Response::Ok) => Reply::json(200, &json!({"accepted":true})),
         Ok(Response::Status { status }) => Reply::json(200, &status),
         Ok(Response::Inputs { inputs }) => Reply::json(200, &inputs),
+        Ok(Response::Apps { apps }) => Reply::json(200, &apps),
         Ok(_) => Reply::error(502, "Invalid integration reply"),
         Err(failure) => refused(status_for(failure.code), &failure),
     }

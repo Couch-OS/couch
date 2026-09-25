@@ -833,7 +833,7 @@ after a failure, and that copy is the one from before the rotation.
 
 **`plugin.sock` has one camera phase.** Ordinary panel requests still end after
 one bounded JSON response and `Runtime::execute` still accepts only `command`,
-`action`, `status` and `inputs`. A protocol-4 `camera_open` is the one separate
+`action`, `status`, `inputs` and protocol-5 `apps`. A protocol-4 `camera_open` is the one separate
 path: after the bounded opening response, that same owner-only local socket
 carries only length-prefixed H264 records until a terminal record or socket
 close. `couch-confd` reads each record from the exact persistent package child
@@ -856,6 +856,20 @@ the configuration from inside the registry would take them the other way round,
 and one sweep and one delete would wait on each other for good while every
 configuration read on the remote queued behind them.
 
+## Protocol 5: installed apps and television selectors
+
+Protocol 5 adds `supports_apps`, the `Apps` request and `Apps` response, and
+the `sound_output_selector` presentation component. App rows use the existing
+bounded `Selectable` shape. Launch still travels as a capability-gated
+`app:<id>` command, so an integration cannot turn the request into arbitrary
+device traffic.
+
+The optional status fields `sound_output` and `picture_mode` are cleared by
+the SDK for every package below protocol 5. The saved connection snapshot puts
+`supports_apps` and `sound_output_selector` only in `integration_config_v5`;
+protocol-4 cores read the verified v4 projection and keep the connection,
+ordinary controls, and device references intact.
+
 ### Compatibility feature
 
 `couch-plugin` retains the Cargo feature names `protocol-3-preview` and
@@ -863,9 +877,9 @@ configuration read on the remote queued behind them.
 source-compatible. Both are now no-ops:
 
 ```rust
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 pub const NEXT_PROTOCOL_VERSION: u32 = 3;
-pub const fn accepted_protocol_version() -> u32; // 4
+pub const fn accepted_protocol_version() -> u32; // 5
 ```
 
 `Manifest::validate` accepts `1..=accepted_protocol_version()`. The Echo

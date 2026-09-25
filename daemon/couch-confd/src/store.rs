@@ -731,6 +731,7 @@ mod integration_storage_tests {
                 label: "Echo".into(),
                 capabilities: vec![],
                 supports_inputs: false,
+                supports_apps: false,
                 presentation: vec![],
                 actions: vec![],
                 children: vec![],

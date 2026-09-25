@@ -482,6 +482,7 @@ mod tests {
             })
             .collect(),
             supports_inputs: true,
+            supports_apps: false,
             presentation: alloc::vec![],
             actions: alloc::vec![],
             children: alloc::vec![],
@@ -513,6 +514,7 @@ mod tests {
             label: "Philips Hue".into(),
             capabilities: alloc::vec![],
             supports_inputs: false,
+            supports_apps: false,
             presentation: alloc::vec![],
             actions: alloc::vec![],
             children: alloc::vec![
@@ -762,6 +764,7 @@ mod tests {
             label: "LG webOS".into(),
             capabilities: alloc::vec![],
             supports_inputs: true,
+            supports_apps: false,
             presentation: alloc::vec![],
             actions: alloc::vec![],
             children: alloc::vec![],

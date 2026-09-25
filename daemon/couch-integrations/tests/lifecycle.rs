@@ -117,6 +117,7 @@ fn upgrade_and_rollback_validate_saved_settings_and_preserve_atomic_history() {
             label: "Fixture".into(),
             capabilities: vec![],
             supports_inputs: false,
+            supports_apps: false,
             presentation: vec![],
             actions: vec![],
             children: vec![],

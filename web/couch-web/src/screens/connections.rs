@@ -34,6 +34,8 @@ struct PluginManifest {
     #[serde(default)]
     supports_inputs: bool,
     #[serde(default)]
+    supports_apps: bool,
+    #[serde(default)]
     presentation: Vec<PluginComponent>,
     /// Protocol 3 (unreleased): how this package pairs, if it pairs at all.
     /// Absent from every manifest a shipped build accepts.
@@ -399,6 +401,7 @@ fn create_plugin(app: App, manifest: PluginManifest) -> AnyView {
         capabilities: manifest.capabilities,
         actions: manifest.actions,
         supports_inputs: manifest.supports_inputs,
+        supports_apps: manifest.supports_apps,
         presentation: manifest.presentation,
         children: vec![],
     };
@@ -416,6 +419,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
         capabilities,
         actions,
         supports_inputs,
+        supports_apps,
         presentation,
         ..
     } = &connection.provider
@@ -428,6 +432,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
     let cached_capabilities = capabilities.clone();
     let cached_actions = actions.clone();
     let cached_inputs = *supports_inputs;
+    let cached_apps = *supports_apps;
     let cached_presentation = presentation.clone();
     let connection_id = connection.id.to_string();
     let base = StoredValue::new(format!("/api/connections/{connection_id}/plugin"));
@@ -515,6 +520,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
         actions: cached_actions,
         settings: Vec::new(),
         supports_inputs: cached_inputs,
+        supports_apps: cached_apps,
         presentation: cached_presentation,
         pairing: None,
     };
@@ -905,6 +911,10 @@ fn plugin_controls(
                 PluginComponent::StatusText{label,field}=>view!{<div class="integration-component integration-reading"><span>{label}</span><strong>{move ||plugin_status_text(&status.get(),field)}</strong></div>}.into_any(),
                 PluginComponent::Toggle{label,state:on_field,on,off}=>view!{<section class="integration-component"><h3>{label}</h3><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none()||plugin_status_bool(&status.get(),on_field).is_none() on:click=move |_|{if let Some(enabled)=plugin_status_bool(&status.get_untracked(),on_field){let command=if enabled{off.clone()}else{on.clone()};call("action",Some(json!({"command":command})));}}>{move ||match plugin_status_bool(&status.get(),on_field){Some(true)=>"Turn off",Some(false)=>"Turn on",None=>"Status unavailable"}}</button></section>}.into_any(),
                 PluginComponent::InputSelector{label}=>view!{<section class="integration-component"><h3>{label}</h3><div class="actions"><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("inputs",None)>"Refresh inputs"</button><select aria-label="Integration input" disabled=move ||live_busy.get()||inputs.with(Vec::is_empty) on:change=move |event|{let id=event_target_value(&event);if !id.is_empty(){call("action",Some(json!({"command":format!("input:{id}")})));}}><option value="">"Choose an input"</option>{move ||inputs.get().into_iter().map(|(id,name)|view!{<option value=id>{name}</option>}).collect_view()}</select></div></section>}.into_any(),
+                PluginComponent::SoundOutputSelector{label,outputs}=>{
+                    let capabilities=source.capabilities.clone();
+                    view!{<section class="integration-component"><h3>{label}</h3><div class="actions">{outputs.into_iter().filter_map(|command|capabilities.iter().find(|capability|capability.id==command).map(|capability|(command,capability.label.clone()))).map(|(command,label)|view!{<button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("action",Some(json!({"command":command})) )>{label}</button>}).collect_view()}</div></section>}.into_any()
+                }
                 // Protocol 3 (unreleased): no manifest this build accepts can
                 // declare one, and the controls come with the web step.
                 PluginComponent::Light{..}|PluginComponent::Cover{..}|PluginComponent::Climate{..}

@@ -144,7 +144,7 @@ pub trait DeviceClient: Sized {
         Ok(Vec::new())
     }
 
-    /// Apps the user may launch, if the device can enumerate them.
+    /// Protocol 5: apps the user may launch, if the device can enumerate them.
     fn apps(&mut self) -> Result<Vec<Selectable>> {
         Ok(Vec::new())
     }
