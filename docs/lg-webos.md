@@ -29,6 +29,14 @@ launch points. Picture opens the TV's Settings app when webOS reports it, and
 Sound output offers TV speakers and HDMI ARC/eARC while showing the current
 output when the TV reports one.
 
+The browser connection page exposes the same live app catalog under
+**Integration controls**: choose **Refresh apps** to read the TV, then choose an
+app to launch it. Its **Power control** section embeds the assigned TV's core IR
+editor. Assign **Power toggle** there to use the remote's built-in blaster for
+both the physical and touchscreen Power controls; remove that assignment to
+return to the package's network power-off. The package cannot wake an offline
+TV over the network.
+
 Package settings and credentials live in the connection's private store:
 
 - `plugin-connection.json` contains the normalized URL setting.
@@ -52,10 +60,11 @@ Until conversion succeeds, every surface reports **Needs the LG webOS package**
 instead of trying the removed built-in transport.
 
 The old `webos-power.json` and `webos-wake.json` sidecars are also left on disk
-for rollback; the package does not read them. Power-on therefore needs a
-separately configured core IR command or a package version that explicitly
-declares `power-on`. The current package declares network power-off and never
-guesses that an unreachable TV is off.
+for rollback; the package does not read them. Power-on therefore needs a core
+IR Power toggle assigned on the WebOS connection page (or the same device's
+room card), or a package version that explicitly declares `power-on`. The
+current package declares network power-off and never guesses that an
+unreachable TV is off.
 
 See [integration migration](integration-migration.md),
 [connection storage](connections.md), and
