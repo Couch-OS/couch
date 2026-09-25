@@ -318,10 +318,13 @@ class TestedIntegrationSetTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not cover"):
                 verify.verify_receipt(manifest, path, require_artifacts=True)
 
-    def test_committed_manifest_is_refused_until_protocol_5_evidence_is_cut(self):
+    def test_committed_manifest_accepts_protocol_5_evidence(self):
         with mock.patch.object(verify, "HOST_HARNESS", verify.REPO / "tools/tests/denon-v1-host-compatibility.py"):
-            with self.assertRaisesRegex(ValueError, "Integration contract changed after its tested commit"):
-                verify.receipt()
+            result = verify.receipt()
+        self.assertEqual(result["core_tested_commit"], "b6f861e9623391389f5f3dd2c8c60285f604e1a3")
+        self.assertEqual(result["core_supported_protocol_versions"], [1, 2, 3, 4, 5])
+        self.assertEqual(result["host_compatibility_sha256"],
+                         "4b0b0de49970c30a9b01c24e7038b1f80d5181be7a75c03c9a2c4b526c79a152")
 
     def test_core_and_feed_repositories_may_name_either_couch_owner_only(self):
         with tempfile.TemporaryDirectory() as directory:
