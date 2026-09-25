@@ -22,7 +22,12 @@ const v1Presentation = [{kind: 'command_group', title: 'Volume', commands: ['vol
 const config = {
   schema_version: 1,
   revision: 12,
-  areas: [], rooms: [], scenes: [], activities: [],
+  areas: [], rooms: [{
+    id: 'living-room', name: 'Living room', devices: [{
+      id: 'tv', name: 'Living room TV', kind: 'tv',
+      integration: {via: 'connection', connection_id: 'webos', resource_id: ''},
+    }],
+  }], scenes: [], activities: [],
   connections: [
     {
       id: 'receiver-v2', name: 'Denon package v2',
@@ -45,6 +50,14 @@ const config = {
       provider: {
         kind: 'plugin', id: 'tv-settings', label: 'TV package',
         capabilities: [], actions: [], supports_inputs: false, presentation: [],
+      },
+    },
+    {
+      id: 'webos', name: 'LG webOS',
+      provider: {
+        kind: 'plugin', id: 'webos', label: 'LG webOS',
+        capabilities: [{id: 'power-off', label: 'Power off'}], actions: [],
+        supports_inputs: true, supports_apps: true, presentation: [],
       },
     },
   ],
@@ -82,6 +95,11 @@ const catalog = {
     {
       id: 'tv-settings', label: 'TV package', capabilities: [], actions: [],
       settings: tvSettings, supports_inputs: false, presentation: [],
+    },
+    {
+      id: 'webos', label: 'LG webOS',
+      capabilities: [{id: 'power-off', label: 'Power off'}], actions: [], settings: [],
+      supports_inputs: true, supports_apps: true, presentation: [],
     },
   ],
 };
@@ -123,6 +141,25 @@ async function mockApi(page) {
       return route.fulfill({
         status: refusal.status, contentType: 'application/json', body: JSON.stringify(refusal.body),
       });
+    }
+    if (request.method() === 'GET' && path === '/api/connections/webos/plugin/settings') {
+      return json({configured: true, settings: {}, secrets: []});
+    }
+    if (request.method() === 'GET' && path === '/api/connections/webos/plugin/apps') {
+      return json([{id: 'netflix', name: 'Netflix'}, {id: 'youtube', name: 'YouTube'}]);
+    }
+    if (request.method() === 'POST' && path === '/api/connections/webos/plugin/action') {
+      assert.deepEqual(body, {command: 'app:youtube'});
+      return json({accepted: true});
+    }
+    if (request.method() === 'GET' && path === '/api/connections/webos/plugin/status') {
+      return json({on: true});
+    }
+    if (request.method() === 'GET' && path === '/api/rooms/living-room/devices/tv/ir') {
+      return json({text: '', codeset: ''});
+    }
+    if (request.method() === 'GET' && path === '/api/ir/catalog') {
+      return json({source: {name: 'Fixture IR library', license: 'MIT'}, codesets: []});
     }
     if (request.method() === 'GET' && path === '/api/connections/receiver-v2/plugin/status') return json(status());
     if (request.method() === 'POST' && path === '/api/connections/receiver-v2/plugin/typed-action') {
@@ -191,6 +228,22 @@ try {
   assert.equal(await page.getByRole('button', {name: 'Set volume', exact: true}).count(), 0, 'v1 manifests cannot invoke typed dB actions');
   assert.equal(calls.filter(call => call.path.endsWith('/typed-action')).length, 1, 'only the declared v2 action reached the API');
 
+  await openConnection(page, 'LG webOS');
+  await page.getByRole('heading', {name: 'Power control', exact: true}).waitFor();
+  await page.getByText('Assign Power toggle below to switch', {exact: false}).waitFor();
+  await page.getByRole('button', {name: 'Add IR commands', exact: true}).click();
+  await page.getByRole('heading', {name: 'Choose remote codes', exact: true}).waitFor();
+  assert(calls.some(call => call.method === 'GET' && call.path === '/api/rooms/living-room/devices/tv/ir'), 'WebOS power setup opens the assigned device IR editor');
+
+  await page.getByRole('button', {name: 'Refresh apps', exact: true}).click();
+  const appPicker = page.getByLabel('Integration app', {exact: true});
+  await page.getByText('2 apps available.', {exact: true}).waitFor();
+  assert.equal(await appPicker.locator('option[value="youtube"]').count(), 1);
+  await appPicker.selectOption('youtube');
+  await page.getByText('Command sent. Status refreshed.', {exact: true}).waitFor();
+  assert(calls.some(call => call.method === 'GET' && call.path === '/api/connections/webos/plugin/apps'), 'the browser asks protocol 5 for apps');
+  assert(calls.some(call => call.method === 'POST' && call.path === '/api/connections/webos/plugin/action' && call.body?.command === 'app:youtube'), 'choosing an app launches it through the package');
+
   // A refused save. The form's own line has always shown the sentence; a
   // reason that names a setting marks that setting and puts the package's
   // words under it.
@@ -247,7 +300,7 @@ try {
   ], 'a refused save is never retried by the page');
 
   assert.deepEqual(errors, []);
-  console.log('PASS: v2 dB controls validate declared bounds, post one typed action then refresh status, and preserve v1 controls; a refused save marks the setting its reason names.');
+  console.log('PASS: plugin controls cover typed dB actions, WebOS apps and core IR power setup, v1 compatibility, and field-specific save refusals.');
 } finally {
   await browser.close();
 }

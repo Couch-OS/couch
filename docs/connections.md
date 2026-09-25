@@ -92,9 +92,11 @@ Hue state and SSE subscriptions are separate per bridge; UI cache keys include t
 connection ID. The upstream ID is stripped before sending any command.
 
 External integrations use `GET /api/integrations` for the installed manifest
-catalog and `/api/connections/<id>/plugin/{settings,status,inputs,action}` for
-one connection. The action body carries one typed function string already
-declared by the installed manifest. A connection whose package offers devices
+catalog and `/api/connections/<id>/plugin/{settings,status,inputs,apps,action}`
+for one connection. Inputs and protocol-5 apps can be refreshed and selected
+from the connection page when the installed manifest declares them. The action
+body carries one typed function string already declared by the installed
+manifest. A connection whose package offers devices
 of its own (protocol 3, unreleased, and so never in a shipped build) also has
 `/plugin/children`, `/plugin/children/refresh` and
 `/plugin/children/<id>/{status,action,typed-action}`, where `<id>` is the rest
