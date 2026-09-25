@@ -78,6 +78,9 @@ pub(crate) struct Layout {
     pub television: bool,
     pub power: bool,
     pub inputs: bool,
+    pub apps: bool,
+    /// Fixed sound-output commands, in display order.
+    pub sound_outputs: Vec<(String, String)>,
     /// (function id, label) for the Commands list.
     pub commands: Vec<(String, String)>,
 }
@@ -87,6 +90,7 @@ pub(crate) fn layout(config: &couch_model::Config, device: &couch_model::Device)
         connection_id,
         capabilities,
         supports_inputs,
+        supports_apps,
         presentation,
         ..
     } = config.resolve_integration(&device.integration)?
@@ -102,6 +106,23 @@ pub(crate) fn layout(config: &couch_model::Config, device: &couch_model::Device)
             .iter()
             .any(|component| matches!(component, PluginComponent::InputSelector { .. }))
         && TELEVISION_PROFILE.iter().all(|id| has(id));
+    let sound_outputs: Vec<(String, String)> = presentation
+        .iter()
+        .find_map(|component| match component {
+            PluginComponent::SoundOutputSelector { outputs, .. } => Some(
+                outputs
+                    .iter()
+                    .filter_map(|id| {
+                        capabilities
+                            .iter()
+                            .find(|capability| &capability.id == id)
+                            .map(|capability| (id.clone(), capability.label.clone()))
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
     Some(Layout {
         kind: config
             .connection(&connection_id)
@@ -112,11 +133,14 @@ pub(crate) fn layout(config: &couch_model::Config, device: &couch_model::Device)
             || has("power-on") && has("power-off")
             || television && has("power-off"),
         inputs: supports_inputs,
+        apps: supports_apps,
+        sound_outputs: sound_outputs.clone(),
         commands: capabilities
             .iter()
             .filter(|c| {
                 !KEYED.contains(&c.id.as_str())
                     && !(television && TV_KEYED.contains(&c.id.as_str()))
+                    && !sound_outputs.iter().any(|(id, _)| id == &c.id)
             })
             .map(|c| (c.id.clone(), c.label.clone()))
             .collect(),
@@ -268,6 +292,7 @@ fn function(
         Command::Key(Button::Yellow) => "yellow",
         Command::Key(Button::Blue) => "blue",
         Command::Input(id) => return Ok(Some(format!("input:{id}"))),
+        Command::App(id) => return Ok(Some(format!("app:{id}"))),
         Command::Function(id) if has(id) => return Ok(Some(id.clone())),
         Command::Function(_) => return Err("This control is not available for this device".into()),
         _ => return Err("This control is not available for this device".into()),
@@ -367,12 +392,14 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     let Integration::Plugin {
         capabilities,
         supports_inputs,
+        supports_apps,
         ..
     } = &integration
     else {
         return Err("Selected device is no longer a packaged integration".into());
     };
     let supports_inputs = *supports_inputs;
+    let supports_apps = *supports_apps;
     let ask = |request| ask_device(&integration, request).map_err(|f| refusal(&f));
     let read = || match ask(Request::status())? {
         Response::Status { status } => Ok(status),
@@ -409,6 +436,14 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     } else {
         vec![]
     };
+    let apps = if supports_apps {
+        match ask(Request::Apps) {
+            Ok(Response::Apps { apps }) => apps,
+            _ => vec![],
+        }
+    } else {
+        vec![]
+    };
     if active.load(std::sync::atomic::Ordering::SeqCst) != work.generation
         || !crate::connections::config().is_some_and(|c| std::sync::Arc::ptr_eq(&c, config))
     {
@@ -429,7 +464,26 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
             )
         })
         .collect();
+    choices.extend(
+        apps.iter()
+            .map(|app| (format!("app:{}", app.id), app.name.clone(), "App".into())),
+    );
+    let settings_app = apps
+        .iter()
+        .find(|app| {
+            matches!(
+                app.id.as_str(),
+                "com.palm.app.settings" | "com.webos.app.settings"
+            )
+        })
+        .map(|app| app.id.clone());
     if let Some(layout) = layout(config, device) {
+        choices.extend(
+            layout
+                .sound_outputs
+                .into_iter()
+                .map(|(id, label)| (format!("fn:{id}"), label, "Sound output".into())),
+        );
         choices.extend(
             layout
                 .commands
@@ -446,9 +500,19 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
         details: Some(Details {
             source: shown.source,
             input: shown.input,
-            sound: shown.power.into(),
-            picture: level(&status),
+            sound: status
+                .sound_output
+                .clone()
+                .unwrap_or_else(|| shown.power.into()),
+            picture: status.picture_mode.clone().unwrap_or_else(|| {
+                if supports_apps {
+                    "On your TV".into()
+                } else {
+                    level(&status)
+                }
+            }),
             choices,
+            settings_app,
             ..Details::default()
         }),
     }))
@@ -503,8 +567,12 @@ mod tests {
     #[test]
     fn a_television_profile_keeps_native_remote_keys_out_of_commands() {
         let mut config = denon();
-        let couch_model::Provider::Plugin { capabilities, .. } =
-            &mut config.connections[0].provider
+        let couch_model::Provider::Plugin {
+            capabilities,
+            supports_apps,
+            presentation,
+            ..
+        } = &mut config.connections[0].provider
         else {
             unreachable!()
         };
@@ -527,10 +595,31 @@ mod tests {
                 label: id.into(),
             });
         }
+        *supports_apps = true;
+        for (id, label) in [
+            ("x:sound-tv-speaker", "TV speakers"),
+            ("x:sound-external-arc", "HDMI ARC / eARC"),
+        ] {
+            capabilities.push(couch_model::PluginCapability {
+                id: id.into(),
+                label: label.into(),
+            });
+        }
+        presentation.push(PluginComponent::SoundOutputSelector {
+            label: "Sound output".into(),
+            outputs: vec!["x:sound-tv-speaker".into(), "x:sound-external-arc".into()],
+        });
         config.validate().unwrap();
         let (_, device) = config.devices().next().unwrap();
         let declared = layout(&config, device).unwrap();
-        assert!(declared.television && declared.power && declared.inputs);
+        assert!(declared.television && declared.power && declared.inputs && declared.apps);
+        assert_eq!(
+            declared.sound_outputs,
+            vec![
+                ("x:sound-tv-speaker".into(), "TV speakers".into()),
+                ("x:sound-external-arc".into(), "HDMI ARC / eARC".into())
+            ]
+        );
         assert!(declared.commands.is_empty());
     }
 

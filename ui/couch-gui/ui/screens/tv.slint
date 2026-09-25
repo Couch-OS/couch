@@ -52,6 +52,9 @@ export component Television inherits Rectangle {
     in property <string> kind-label;
     in property <bool> can-power;
     in property <bool> can-input;
+    in property <bool> can-app;
+    in property <bool> can-picture;
+    in property <bool> can-sound;
     in property <bool> can-command;
     in-out property <int> tray-selected: 0;
     property <int> tile-count: (root.can-power ? 1 : 0) + (root.can-input ? 1 : 0) + (root.can-command ? 1 : 0);
@@ -151,9 +154,15 @@ export component Television inherits Rectangle {
     if (root.apple-tv || root.tizen) && !root.media-view: Tile {x:24px;y:514px;width:210px;height:120px;title:"Wake";detail:root.tizen ? "Wake-on-LAN" : "Resume Apple TV";icon:@image-url("../../../../assets/lucide/power.svg");activate=>{root.action("wake");}}
     if (root.apple-tv || root.tizen) && !root.media-view: Tile {x:246px;y:514px;width:210px;height:120px;title:"Apps";detail:"Installed apps";icon:@image-url("../../../../assets/lucide/layout-grid.svg");activate=>{root.action("apps");}}
     if root.infrared: Tile {x:24px;y:424px;width:432px;height:120px;title:"Commands";detail:"Assigned to this device";icon:@image-url("../../../../assets/lucide/list.svg");activate=>{root.action("commands");}}
-    if root.generic && root.can-power: Tile {x:24px;y:514px;width:210px;height:120px;title:"Power";detail:root.sound;selected:!root.native-tv && root.selected-tile==0 && root.panel==0;icon:@image-url("../../../../assets/lucide/power.svg");activate=>{root.selected-tile=0;root.action("power");}}
-    if root.generic && root.can-input: Tile {x:24px + mod(root.input-slot,2)*222px;y:514px + floor(root.input-slot/2)*132px;width:210px;height:120px;title:"Input";detail:root.input-name != "" ? root.input-name : root.source-name;selected:!root.native-tv && root.selected-tile==root.input-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/hdmi-port.svg");activate=>{root.selected-tile=root.input-slot;root.action("inputs");}}
-    if root.generic && root.can-command: Tile {x:24px + mod(root.command-slot,2)*222px;y:514px + floor(root.command-slot/2)*132px;width:210px;height:120px;title:"Commands";detail:"More controls";selected:!root.native-tv && root.selected-tile==root.command-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/list.svg");activate=>{root.selected-tile=root.command-slot;root.action("commands");}}
+    // Protocol-5 television packages recover the native LG card layout: the
+    // package supplies data and commands, while Couch still owns every pixel.
+    if root.generic && root.native-tv && root.can-app: Tile {x:24px;y:514px;width:210px;height:120px;title:"Input";detail:root.input-name != "" ? root.input-name : root.source-name;icon:@image-url("../../../../assets/lucide/hdmi-port.svg");activate=>{root.action("inputs");}}
+    if root.generic && root.native-tv && root.can-picture: Tile {x:246px;y:514px;width:210px;height:120px;title:"Picture";detail:root.picture;icon:@image-url("../../../../assets/lucide/sliders-horizontal.svg");activate=>{root.action("picture");}}
+    if root.generic && root.native-tv && root.can-sound: Tile {x:24px;y:646px;width:210px;height:120px;title:"Sound output";detail:root.sound;icon:@image-url("../../../../assets/lucide/speaker.svg");activate=>{root.action("sound");}}
+    if root.generic && root.native-tv && root.can-app: Tile {x:246px;y:646px;width:210px;height:120px;title:"Apps";detail:"Open on TV";icon:@image-url("../../../../assets/lucide/layout-grid.svg");activate=>{root.action("apps");}}
+    if root.generic && (!root.native-tv || !root.can-app) && root.can-power: Tile {x:24px;y:514px;width:210px;height:120px;title:"Power";detail:root.sound;selected:!root.native-tv && root.selected-tile==0 && root.panel==0;icon:@image-url("../../../../assets/lucide/power.svg");activate=>{root.selected-tile=0;root.action("power");}}
+    if root.generic && (!root.native-tv || !root.can-app) && root.can-input: Tile {x:24px + mod(root.input-slot,2)*222px;y:514px + floor(root.input-slot/2)*132px;width:210px;height:120px;title:"Input";detail:root.input-name != "" ? root.input-name : root.source-name;selected:!root.native-tv && root.selected-tile==root.input-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/hdmi-port.svg");activate=>{root.selected-tile=root.input-slot;root.action("inputs");}}
+    if root.generic && (!root.native-tv || !root.can-app) && root.can-command: Tile {x:24px + mod(root.command-slot,2)*222px;y:514px + floor(root.command-slot/2)*132px;width:210px;height:120px;title:"Commands";detail:"More controls";selected:!root.native-tv && root.selected-tile==root.command-slot && root.panel==0;icon:@image-url("../../../../assets/lucide/list.svg");activate=>{root.selected-tile=root.command-slot;root.action("commands");}}
     tray := BottomTray {
         width: parent.width; height: parent.height;
         open: root.panel > 0;
@@ -162,7 +171,7 @@ export component Television inherits Rectangle {
         // Explicit bounds keep projected children relative to the inset surface.
         Rectangle { x: Theme.overlay-inset; y: tray.content-y; width: tray.content-width; height: tray.content-height;
             TouchArea { }
-            Text {x:26px;y:24px;width:parent.width - 110px;height:36px;text:root.displayed-panel==1 ? "Choose an input" : root.displayed-panel==2 ? (root.generic ? "Commands" : root.infrared ? "Assigned commands" : root.android-tv ? "App shortcuts" : "TV apps") : root.displayed-panel==3 ? "Picture" : "Sound output";font-size:27px;color:Theme.text;font-weight:600;}
+            Text {x:26px;y:24px;width:parent.width - 110px;height:36px;text:root.displayed-panel==1 ? "Choose an input" : root.displayed-panel==2 ? (root.generic && !root.native-tv ? "Commands" : root.infrared ? "Assigned commands" : root.android-tv ? "App shortcuts" : "TV apps") : root.displayed-panel==3 ? "Picture" : "Sound output";font-size:27px;color:Theme.text;font-weight:600;}
             IconButton {x:parent.width - 70px;y:20px;width:44px;height:44px;icon:@image-url("../../../../assets/lucide/x.svg");activate=>{root.action("dismiss");}}
             Text {x:26px;y:80px;width:parent.width - 52px;height:84px;wrap:word-wrap;text:root.displayed-panel==3 ? "Picture-mode changes are available through your TV’s on-screen settings." : root.choices.length==0 ? (root.infrared ? "Assign commands in Rooms & devices in the web UI." : root.android-tv ? "Add app shortcuts in Connections in the web UI." : "No choices available. Reconnect to refresh.") : root.generic && !root.native-tv ? "Up and Down to move, OK to choose." : "Select by touch. Physical buttons continue to control the TV.";font-size:19px;color:Theme.text-secondary;}
             Flickable {x:24px;y:176px;width:parent.width - 48px;height:parent.height - 198px;viewport-height:root.choices.length*82px;viewport-width:self.width;

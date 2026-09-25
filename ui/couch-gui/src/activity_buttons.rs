@@ -1396,6 +1396,7 @@ mod tests {
                 })
                 .collect(),
             supports_inputs: true,
+            supports_apps: false,
             presentation: vec![],
             actions: vec![],
             children: vec![],

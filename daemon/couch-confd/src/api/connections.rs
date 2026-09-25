@@ -198,6 +198,7 @@ impl Api {
                     label,
                     capabilities,
                     supports_inputs,
+                    supports_apps,
                     presentation,
                     actions,
                     children,
@@ -221,6 +222,7 @@ impl Api {
                                 })
                                 .collect();
                             *supports_inputs = manifest.supports_inputs;
+                            *supports_apps = manifest.supports_apps;
                             *presentation = manifest.presentation;
                             *actions = manifest.actions;
                         }

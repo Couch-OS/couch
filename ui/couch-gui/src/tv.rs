@@ -677,6 +677,9 @@ impl Controller {
                 app.set_tv_kind_label(declared.kind.as_str().into());
                 app.set_tv_can_power(declared.power);
                 app.set_tv_can_input(declared.inputs);
+                app.set_tv_can_app(declared.apps);
+                app.set_tv_can_picture(declared.apps);
+                app.set_tv_can_sound(!declared.sound_outputs.is_empty());
                 app.set_tv_can_command(!declared.commands.is_empty());
                 app.set_tv_ir(one_way(connection));
                 let bluetooth = connection.starts_with("bt:");
@@ -744,19 +747,35 @@ impl Controller {
                 if app.get_tv_generic() {
                     let (panel, prefix) = match action {
                         "inputs" => (1, "input:"),
+                        "apps" => (2, "app:"),
+                        "picture" => (3, "app:"),
+                        "sound" => (4, "fn:"),
                         "commands" => (2, "fn:"),
                         _ => continue,
                     };
-                    let rows: Vec<TvChoice> = self
-                        .choices
-                        .iter()
-                        .filter(|(id, _, _)| id.starts_with(prefix))
-                        .map(|(id, title, detail)| TvChoice {
-                            action: id.as_str().into(),
-                            title: title.as_str().into(),
-                            detail: detail.as_str().into(),
-                        })
-                        .collect();
+                    let mut rows: Vec<TvChoice> =
+                        self.choices
+                            .iter()
+                            .filter(|(id, _, detail)| {
+                                id.starts_with(prefix)
+                                    && (action != "picture"
+                                        || self.settings_app.as_ref().is_some_and(|settings| {
+                                            id == &format!("app:{settings}")
+                                        }))
+                                    && (action != "sound" || detail == "Sound output")
+                            })
+                            .map(|(id, title, detail)| TvChoice {
+                                action: id.as_str().into(),
+                                title: title.as_str().into(),
+                                detail: detail.as_str().into(),
+                            })
+                            .collect();
+                    if action == "picture" {
+                        for row in &mut rows {
+                            row.title = "Open TV settings".into();
+                            row.detail = "Adjust picture on your TV".into();
+                        }
+                    }
                     // Start on the current input, so OK-then-Down moves from
                     // where the device is rather than from the top.
                     app.set_tv_tray_selected(

@@ -207,6 +207,9 @@ export component App inherits Window {
     in-out property <string> tv-kind-label;
     in-out property <bool> tv-can-power: false;
     in-out property <bool> tv-can-input: false;
+    in-out property <bool> tv-can-app: false;
+    in-out property <bool> tv-can-picture: false;
+    in-out property <bool> tv-can-sound: false;
     in-out property <bool> tv-can-command: false;
     in-out property <int> tv-tray-selected: 0;
     in-out property <bool> tv-media-active: false;
@@ -796,7 +799,7 @@ export component App inherits Window {
     }
 
     television := Television {
-        visible:root.tv-shown;shown:root.tv-shown;android-tv:root.tv-android;apple-tv:root.tv-apple;tizen:root.tv-tizen;infrared:root.tv-ir;sonos:root.tv-sonos;generic:root.tv-generic;native-tv:root.tv-native;kind-label:root.tv-kind-label;can-power:root.tv-can-power;can-input:root.tv-can-input;can-command:root.tv-can-command;tray-selected<=>root.tv-tray-selected;
+        visible:root.tv-shown;shown:root.tv-shown;android-tv:root.tv-android;apple-tv:root.tv-apple;tizen:root.tv-tizen;infrared:root.tv-ir;sonos:root.tv-sonos;generic:root.tv-generic;native-tv:root.tv-native;kind-label:root.tv-kind-label;can-power:root.tv-can-power;can-input:root.tv-can-input;can-app:root.tv-can-app;can-picture:root.tv-can-picture;can-sound:root.tv-can-sound;can-command:root.tv-can-command;tray-selected<=>root.tv-tray-selected;
         width:parent.width;height:parent.height;
         title:root.tv-title;room:root.tv-room;icon:root.tv-icon;active:root.tv-active;known:root.tv-known;status:root.tv-status;error:root.tv-error;
         source-name:root.tv-source;input-name:root.tv-input;sound:root.tv-sound;picture:root.tv-picture;panel:root.tv-panel;choices:root.tv-choices;

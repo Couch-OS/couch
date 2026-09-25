@@ -419,6 +419,9 @@ pub enum Integration {
         capabilities: Vec<PluginCapability>,
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         supports_inputs: bool,
+        /// Protocol 5: this packaged device enumerates and launches apps.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        supports_apps: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         presentation: Vec<PluginComponent>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

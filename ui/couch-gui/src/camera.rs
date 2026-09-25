@@ -415,6 +415,7 @@ mod tests {
                 label: "UniFi Protect".into(),
                 capabilities: vec![],
                 supports_inputs: false,
+                supports_apps: false,
                 presentation: vec![],
                 actions: vec![],
                 children: vec![PluginChildKind {

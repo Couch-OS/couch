@@ -137,8 +137,9 @@ def github_repositories(name):
 
 def validate_protocol(core, schema):
     supported = [1] if schema == 1 else core["supported_protocol_versions"]
-    require(type(supported) is list and supported == ([1] if schema == 1 else [1, 2, 3, 4])
-            and all(type(version) is int for version in supported), "Invalid core protocol versions")
+    require(type(supported) is list and supported
+            and all(type(version) is int for version in supported)
+            and supported == list(range(1, max(supported) + 1)), "Invalid core protocol versions")
     protocol = (REPO / "clients/couch-plugin/src/protocol.rs").read_text()
     require(re.search(r"pub const PROTOCOL_VERSION:\s*u32\s*=\s*" + str(max(supported)) + r"\s*;", protocol),
             "Current plugin protocol maximum differs from tested core")

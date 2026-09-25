@@ -29,7 +29,7 @@ class TestedIntegrationSetTests(unittest.TestCase):
         self.manifest = json.loads(verify.DEFAULT.read_text())
         self.manifest["schema"] = 2
         self.manifest["core"].pop("protocol_version", None)
-        self.manifest["core"]["supported_protocol_versions"] = [1, 2, 3, 4]
+        self.manifest["core"]["supported_protocol_versions"] = [1, 2, 3, 4, 5]
         self.manifest["core"]["tested_commit"] = verify.git("rev-parse", "HEAD").stdout.strip()
         self.manifest["core"]["contract_paths"] = list(verify.CONTRACT_PATHS)
         self.manifest["core"]["harness_paths"] = {
@@ -55,7 +55,7 @@ class TestedIntegrationSetTests(unittest.TestCase):
             "harness_sha256": verify.digest(self.harness.read_bytes()),
             "report_sha256": verify.digest(self.report_bytes),
             "core": {"source_commit": self.manifest["core"]["tested_commit"],
-                     "supported_protocol_versions": [1, 2, 3, 4],
+                     "supported_protocol_versions": [1, 2, 3, 4, 5],
                      "target": "armv7-unknown-linux-musleabihf", "binary_sha256": "c" * 64},
             "checks": {name: "passed" for name in verify.HOST_CHECKS},
             "integrations": [{
@@ -122,7 +122,7 @@ class TestedIntegrationSetTests(unittest.TestCase):
             receipt = verify.receipt(self.write_manifest(Path(directory)))
         self.assertEqual(receipt["schema"], 2)
         self.assertNotIn("protocol_version", receipt)
-        self.assertEqual(receipt["core_supported_protocol_versions"], [1, 2, 3, 4])
+        self.assertEqual(receipt["core_supported_protocol_versions"], [1, 2, 3, 4, 5])
         self.assertEqual(receipt["integration_protocol_versions"], {"denon": 1})
         self.assertEqual(receipt["hardware_evidence_core_commits"], {"denon": verify.LEGACY_EVIDENCE_COMMIT})
         self.assertFalse(receipt["artifact_bytes_verified"])
@@ -318,18 +318,10 @@ class TestedIntegrationSetTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not cover"):
                 verify.verify_receipt(manifest, path, require_artifacts=True)
 
-    def test_committed_manifest_matches_current_contract_and_limits_claims(self):
+    def test_committed_manifest_is_refused_until_protocol_5_evidence_is_cut(self):
         with mock.patch.object(verify, "HOST_HARNESS", verify.REPO / "tools/tests/denon-v1-host-compatibility.py"):
-            receipt = verify.receipt()
-        self.assertEqual(receipt["integration_versions"], {"denon": "0.1.1"})
-        self.assertFalse(receipt["artifact_bytes_verified"])
-        # Whatever the committed set says about automatic conversion, it never
-        # bundles a package.
-        self.assertTrue(all(type(value) is bool for value in receipt["rollout"].values()))
-        self.assertIs(receipt["rollout"]["bundle_packages_in_runtime"], False)
-        self.assertIs(receipt["rollout"]["bundle_packages_in_installer"], False)
-        # The committed set exempts the admission harness and nothing else.
-        self.assertEqual(set(receipt["core_harness_paths"]), {self.HARNESS})
+            with self.assertRaisesRegex(ValueError, "Integration contract changed after its tested commit"):
+                verify.receipt()
 
     def test_core_and_feed_repositories_may_name_either_couch_owner_only(self):
         with tempfile.TemporaryDirectory() as directory:

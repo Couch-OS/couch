@@ -393,16 +393,42 @@ fn light_cover_and_climate_are_in_no_manifest_an_older_package_could_send() {
     );
 }
 
-/// Protocol 4 is the normal host and retains protocol 3 packages.
+/// Protocol 5 is the normal host and retains protocol 3 packages.
 #[test]
 fn the_selected_protocol_is_current_and_protocol_3_stays_accepted() {
     assert_eq!(
         couch_plugin::accepted_protocol_version(),
         couch_plugin::PROTOCOL_VERSION
     );
-    assert_eq!(couch_plugin::PROTOCOL_VERSION, 4);
+    assert_eq!(couch_plugin::PROTOCOL_VERSION, 5);
     let p = Package::new();
     assert_eq!(v3_manifest(p.manifest.clone()).validate(), Ok(()));
+}
+
+#[test]
+fn installed_apps_and_sound_output_selectors_are_protocol_5_only() {
+    use couch_plugin::{Capability, Component};
+
+    assert_eq!(couch_plugin::requires(&Request::Apps), 5);
+    assert_eq!(couch_plugin::requires(&Request::command("app:netflix")), 5);
+    let mut manifest = Package::new().manifest.clone();
+    manifest.protocol_version = 5;
+    manifest.min_core_protocol_version = 5;
+    manifest.supports_apps = true;
+    manifest.capabilities.push(Capability {
+        id: "x:sound-tv-speaker".into(),
+        label: "TV speakers".into(),
+    });
+    manifest.presentation.push(Component::SoundOutputSelector {
+        label: "Sound output".into(),
+        outputs: vec!["x:sound-tv-speaker".into()],
+    });
+    assert_eq!(manifest.validate(), Ok(()));
+    assert!(manifest.supports("app:com.webos.app.settings"));
+
+    manifest.protocol_version = 4;
+    manifest.min_core_protocol_version = 4;
+    assert_eq!(manifest.validate(), Err(Error::Invalid));
 }
 
 #[test]
