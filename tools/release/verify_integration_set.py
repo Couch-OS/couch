@@ -43,7 +43,7 @@ CONTRACT_PATHS = (
 HOST_CHECKS = (
     "signed_package_lifecycle", "v1_handshake", "fake_receiver_status",
     "fake_receiver_inputs", "fake_receiver_command", "shared_transport_ownership",
-    "v2_action_refused_for_v1", "v4_protocol_probe",
+    "v2_action_refused_for_v1", "v5_protocol_probe",
 )
 # The admission harness is scaffolding a published package never links: its
 # module is compiled out of every shipped build, so it cannot alter the wire
