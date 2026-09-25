@@ -1,10 +1,10 @@
 {
   "schema": 2,
   "kind": "couch-tested-integration-set",
-  "name": "denon-preview-0.1.1-protocol-4-host",
+  "name": "denon-preview-0.1.1-protocol-5-host",
   "core": {
     "repository": "https://github.com/dangerouslaser/couch.git",
-    "tested_commit": "17ec20c9c20ec5a96cb6268f24523dbfe7248056",
+    "tested_commit": "b6f861e9623391389f5f3dd2c8c60285f604e1a3",
     "compatibility_floor": "v0.1.0-alpha.20260910.24",
     "contract_paths": [
       "clients/couch-plugin",
@@ -38,7 +38,8 @@
       1,
       2,
       3,
-      4
+      4,
+      5
     ]
   },
   "feed": {
@@ -105,8 +106,8 @@
     "automatic_configuration_migration": true
   },
   "host_compatibility": {
-    "file": "denon-0.1.1-core-17ec20c-host-compatibility.json",
-    "size": 1428,
-    "sha256": "c7a0c203e827fdd1699cec9162fea7eb1d2be0a27f89339358ce3ea6329e30b5"
+    "file": "denon-0.1.1-core-b6f861e-host-compatibility.json",
+    "size": 1437,
+    "sha256": "4b0b0de49970c30a9b01c24e7038b1f80d5181be7a75c03c9a2c4b526c79a152"
   }
 }
