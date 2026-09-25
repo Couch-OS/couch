@@ -50,6 +50,7 @@ fn main() {
         || early == ["--supports-integration-protocol=2"]
         || early == ["--supports-integration-protocol=3"]
         || early == ["--supports-integration-protocol=4"]
+        || early == ["--supports-integration-protocol=5"]
     {
         return;
     }

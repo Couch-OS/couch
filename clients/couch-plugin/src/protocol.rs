@@ -3,9 +3,11 @@ use couch_sdk::{Credential, KeyPhase, PairInput, PairStep, Reason, Selectable, S
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{Read, Write};
 
-/// The current package contract. Protocol 4 adds camera children and their
-/// bounded H264 side channel while preserving protocols 1-3 byte for byte.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// The current package contract. Protocol 5 adds installed-app enumeration
+/// while preserving protocols 1-4 byte for byte.
+pub const PROTOCOL_VERSION: u32 = 5;
+/// The protocol generation that added installed-app enumeration and launch.
+pub const APP_PROTOCOL_VERSION: u32 = 5;
 /// The protocol generation that introduced children, typed actions, pairing,
 /// and host-owned credentials. Keep this name for source compatibility with
 /// packages developed while protocol 3 was in preview.
@@ -175,6 +177,8 @@ pub enum Request {
         resource: Option<String>,
     },
     Inputs,
+    /// Protocol 5. Apps the connection itself can launch.
+    Apps,
     /// Protocol 3. One page of the children behind this connection, starting
     /// after nothing (`None`) or at a cursor the package gave out.
     Children {
@@ -330,6 +334,7 @@ impl Request {
             Self::Hello { .. }
             | Self::Configure { .. }
             | Self::Inputs
+            | Self::Apps
             | Self::Children { .. }
             | Self::CameraSnapshot { .. }
             | Self::CameraOpen { .. }
@@ -352,6 +357,7 @@ impl Request {
             Self::Hello { .. }
             | Self::Configure { .. }
             | Self::Inputs
+            | Self::Apps
             | Self::Children { .. }
             | Self::PairStart { .. }
             | Self::PairContinue { .. }
@@ -371,6 +377,10 @@ pub enum Response {
     },
     Inputs {
         inputs: Vec<Selectable>,
+    },
+    /// Protocol 5. Apps the connection itself can launch.
+    Apps {
+        apps: Vec<Selectable>,
     },
     /// Protocol 3. One page of children, and the cursor for the next page if
     /// there is one. A page with a cursor is never empty.

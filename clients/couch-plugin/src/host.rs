@@ -1,8 +1,8 @@
 use crate::{
     protocol::{Envelope, ReplyEnvelope},
     read_frame, write_frame, Error, Failure, Manifest, Request, Response, Result,
-    MAX_CAMERA_SECONDS, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_CHUNK_BASE64, MAX_SNAPSHOT_CHUNK_BYTES,
-    NEXT_PROTOCOL_VERSION,
+    APP_PROTOCOL_VERSION, MAX_CAMERA_SECONDS, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_CHUNK_BASE64,
+    MAX_SNAPSHOT_CHUNK_BYTES, NEXT_PROTOCOL_VERSION,
 };
 use base64::Engine;
 use couch_sdk::{
@@ -391,6 +391,12 @@ impl Host {
             _ => Err(Error::Protocol),
         }
     }
+    pub fn apps(&mut self) -> Result<Vec<couch_sdk::Selectable>> {
+        match self.request(Request::Apps)? {
+            Response::Apps { apps } => Ok(apps),
+            _ => Err(Error::Protocol),
+        }
+    }
     /// A key press with its phase. A protocol 1 or 2 package is sent a tap.
     pub fn key(&mut self, function: &str, phase: KeyPhase) -> Result<()> {
         match self.request(Request::key(function, phase))? {
@@ -716,6 +722,7 @@ pub(crate) fn admit(
             return Err(Error::Unsupported)
         }
         Request::Inputs if !manifest.supports_inputs => return Err(Error::Unsupported),
+        Request::Apps if !manifest.supports_apps => return Err(Error::Unsupported),
         Request::Children { cursor } => {
             if manifest.children.is_empty() {
                 return Err(Error::Unsupported);
@@ -927,6 +934,7 @@ fn accept_credential(
         | Request::Action { .. }
         | Request::Status { .. }
         | Request::Inputs
+        | Request::Apps
         | Request::Children { .. }
         | Request::CameraSnapshot { .. }
         | Request::CameraOpen { .. }
@@ -1020,6 +1028,9 @@ pub(crate) fn accept(manifest: &Manifest, request: &Request, response: &Response
 /// phase is not counted: the host drops it for an older package instead of
 /// refusing the key.
 pub fn requires(request: &Request) -> u32 {
+    if matches!(request, Request::Apps) {
+        return APP_PROTOCOL_VERSION;
+    }
     if matches!(
         request,
         Request::CameraSnapshot { .. } | Request::CameraOpen { .. } | Request::CameraClose { .. }
@@ -1038,6 +1049,11 @@ pub fn requires(request: &Request) -> u32 {
             NEXT_PROTOCOL_VERSION
         }
         Request::Action { .. } => 2,
+        Request::Command { function, .. }
+            if matches!(Function::parse(function), Some(Function::App(_))) =>
+        {
+            APP_PROTOCOL_VERSION
+        }
         Request::Command { function, .. }
             if matches!(Function::parse(function), Some(Function::Custom(_))) =>
         {
@@ -1080,6 +1096,17 @@ fn validate_response(request: &Request, response: &Response) -> Result<()> {
                     couch_sdk::couch_model::commands::valid_input_id(&i.id)
                         && i.name.len() <= 256
                         && !i.name.chars().any(char::is_control)
+                }) =>
+        {
+            Ok(())
+        }
+        (Request::Apps, Response::Apps { apps })
+            if apps.len() <= 256
+                && apps.iter().all(|app| {
+                    Function::parse(&format!("app:{}", app.id)).is_some()
+                        && app.name.len() <= 256
+                        && !app.name.is_empty()
+                        && !app.name.chars().any(char::is_control)
                 }) =>
         {
             Ok(())

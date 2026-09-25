@@ -264,6 +264,7 @@ mod tests {
                 label: "Denon AVR".into(),
                 capabilities: vec![],
                 supports_inputs: true,
+                supports_apps: false,
                 presentation: vec![],
                 actions: vec![],
                 children: vec![],
@@ -433,6 +434,7 @@ mod tests {
             label: "Philips Hue".into(),
             capabilities: vec![],
             supports_inputs: false,
+            supports_apps: false,
             presentation: vec![],
             actions: vec![],
             children: vec![couch_model::PluginChildKind {

@@ -1307,6 +1307,7 @@ mod tests {
                     label: "Power on".into(),
                 }],
                 supports_inputs: false,
+                supports_apps: false,
                 actions: vec![],
                 presentation: vec![couch_model::PluginComponent::StatusText {
                     label: "Now playing".into(),

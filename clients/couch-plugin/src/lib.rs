@@ -40,7 +40,7 @@ pub use host::{
 pub use manifest::{Capability, FieldKind, Manifest, Pairing, SettingField};
 pub use protocol::{
     accepted_protocol_version, read_frame, write_frame, CameraCodec, Error, Failure, Request,
-    Response, Result, MAX_CAMERA_SECONDS, MAX_FRAME, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_CHUNK_BASE64,
-    MAX_SNAPSHOT_CHUNK_BYTES, NEXT_PROTOCOL_VERSION, PROTOCOL_VERSION,
+    Response, Result, APP_PROTOCOL_VERSION, MAX_CAMERA_SECONDS, MAX_FRAME, MAX_SNAPSHOT_BYTES,
+    MAX_SNAPSHOT_CHUNK_BASE64, MAX_SNAPSHOT_CHUNK_BYTES, NEXT_PROTOCOL_VERSION, PROTOCOL_VERSION,
 };
 pub use server::serve;

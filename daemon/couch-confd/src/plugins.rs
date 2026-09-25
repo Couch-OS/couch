@@ -1027,6 +1027,7 @@ impl Runtime {
                 | Request::Action { .. }
                 | Request::Status { .. }
                 | Request::Inputs
+                | Request::Apps
         ) {
             return Err(Error::Unsupported.into());
         }
@@ -3803,6 +3804,7 @@ mod pairing_tests {
                         label: "Sample".into(),
                         capabilities: Vec::new(),
                         supports_inputs: false,
+                        supports_apps: false,
                         presentation: Vec::new(),
                         actions: Vec::new(),
                         children: Vec::new(),

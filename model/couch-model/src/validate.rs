@@ -155,6 +155,7 @@ impl Config {
                 label,
                 capabilities,
                 supports_inputs,
+                supports_apps: _,
                 presentation,
                 actions,
                 children,
@@ -603,6 +604,17 @@ fn valid_plugin_component(
         crate::PluginComponent::InputSelector { label } => {
             valid_plugin_label(label) && supports_inputs
         }
+        crate::PluginComponent::SoundOutputSelector { label, outputs } => {
+            let mut seen = Vec::new();
+            valid_plugin_label(label)
+                && !outputs.is_empty()
+                && outputs.len() <= 8
+                && outputs.iter().all(|command| {
+                    let unique = !seen.contains(&command);
+                    seen.push(command);
+                    unique && declared(command)
+                })
+        }
         // Each is drawn over one typed action, as the decibel control is.
         crate::PluginComponent::Light { label } => {
             valid_plugin_label(label) && declares(actions, crate::ActionKind::SetLight)
@@ -940,6 +952,7 @@ mod tests {
                     resource_id: "".into(),
                     capabilities: capabilities.clone(),
                     supports_inputs: false,
+                    supports_apps: false,
                     presentation: vec![],
                     actions: vec![],
                     child: None,
@@ -965,6 +978,7 @@ mod tests {
                     label: "Sample".into(),
                     capabilities,
                     supports_inputs: false,
+                    supports_apps: false,
                     presentation: vec![],
                     actions: vec![],
                     children: vec![],
@@ -1704,6 +1718,7 @@ mod child_tests {
                 label: "Echo".into(),
                 capabilities: named(&["power-on", "dim:30"]),
                 supports_inputs: true,
+                supports_apps: false,
                 presentation: vec![],
                 actions: vec![],
                 children: kinds(),
@@ -1743,6 +1758,7 @@ mod child_tests {
                 resource_id: LAMP.into(),
                 capabilities: named(&["on", "off", "toggle"]),
                 supports_inputs: false,
+                supports_apps: false,
                 presentation: vec![],
                 actions: vec![PluginActionSchema::SetLight {}],
                 child: Some(lamp(true)),
@@ -1948,6 +1964,7 @@ mod child_tests {
                 resource_id: LAMP.into(),
                 capabilities: named(&["on", "toggle"]),
                 supports_inputs: false,
+                supports_apps: false,
                 presentation: vec![],
                 actions: vec![],
                 child: Some(lamp(true)),
@@ -2073,6 +2090,7 @@ mod child_tests {
             resource_id: "../x".into(),
             capabilities: vec![],
             supports_inputs: false,
+            supports_apps: false,
             presentation: vec![],
             actions: vec![],
             child: Some(lamp(true)),

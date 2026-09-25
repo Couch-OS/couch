@@ -108,6 +108,7 @@ fn v1_manifest() -> Manifest {
             },
         ],
         supports_inputs: false,
+        supports_apps: false,
         presentation: Vec::new(),
         children: Vec::new(),
         pairing: None,

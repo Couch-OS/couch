@@ -1,4 +1,6 @@
-use crate::{accepted_protocol_version, Error, Reason, Result, NEXT_PROTOCOL_VERSION};
+use crate::{
+    accepted_protocol_version, Error, Reason, Result, APP_PROTOCOL_VERSION, NEXT_PROTOCOL_VERSION,
+};
 use couch_sdk::{
     couch_model::{
         commands::{valid_input_id, Function, MAX_CUSTOM_FUNCTIONS},
@@ -60,6 +62,10 @@ pub struct Manifest {
     pub settings: Vec<SettingField>,
     #[serde(default)]
     pub supports_inputs: bool,
+    /// Protocol 5: this package enumerates installed apps and accepts
+    /// `app:<id>` commands for them.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub supports_apps: bool,
     /// Native controls rendered by Couch; packages never supply UI code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub presentation: Vec<PluginComponent>,
@@ -195,6 +201,7 @@ impl Manifest {
             // pairing request, told a key, or exempted from the idle reaper.
             || (self.protocol_version < NEXT_PROTOCOL_VERSION
                 && (self.pairing.is_some() || self.keep_alive))
+            || (self.protocol_version < APP_PROTOCOL_VERSION && self.supports_apps)
             || self.pairing.is_some_and(|pairing| !pairing.is_valid())
         {
             return Err(Error::Invalid);
@@ -273,6 +280,17 @@ impl Manifest {
                 }
                 PluginComponent::InputSelector { label: text } => {
                     label(text) && self.supports_inputs
+                }
+                PluginComponent::SoundOutputSelector {
+                    label: text,
+                    outputs,
+                } => {
+                    let mut seen = HashSet::new();
+                    self.protocol_version >= APP_PROTOCOL_VERSION
+                        && label(text)
+                        && !outputs.is_empty()
+                        && outputs.len() <= 8
+                        && outputs.iter().all(|id| declared(id) && seen.insert(id))
                 }
                 // A connection that is itself one lamp, blind or thermostat.
                 // Protocol 3 only, and only over the action that drives it, as
@@ -387,5 +405,9 @@ impl Manifest {
                 && function
                     .strip_prefix("input:")
                     .is_some_and(|id| valid_input_id(id)))
+            || (self.supports_apps
+                && function
+                    .strip_prefix("app:")
+                    .is_some_and(|id| Function::parse(&format!("app:{id}")).is_some()))
     }
 }

@@ -35,6 +35,13 @@ pub struct Status {
     /// What is on screen, if the device says. Shown to the user verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Protocol 5. The device's current sound-output token, matching one of
+    /// the package's fixed sound-output commands when it can observe it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound_output: Option<String>,
+    /// Protocol 5. The current picture-mode token when the TV reports one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture_mode: Option<String>,
     /// Protocol 3 (unreleased). What one child of a connection reports, when
     /// the request named one. Absent from every protocol 1 and 2 status, in
     /// both directions: `serve` clears these for an older manifest as it
@@ -99,7 +106,14 @@ impl Status {
     pub fn is_valid(&self) -> bool {
         self.volume.is_none_or(|v| v <= 100)
             && self.volume_db.is_none_or(|v| v.is_valid())
-            && [&self.input, &self.title].iter().all(|text| {
+            && [
+                &self.input,
+                &self.title,
+                &self.sound_output,
+                &self.picture_mode,
+            ]
+            .iter()
+            .all(|text| {
                 text.as_ref()
                     .is_none_or(|v| v.len() <= 4096 && !v.chars().any(char::is_control))
             })
