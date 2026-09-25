@@ -434,6 +434,7 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
     let cached_inputs = *supports_inputs;
     let cached_apps = *supports_apps;
     let cached_presentation = presentation.clone();
+    let is_webos = package_id == "webos";
     let connection_id = connection.id.to_string();
     let base = StoredValue::new(format!("/api/connections/{connection_id}/plugin"));
     let manifest = RwSignal::new(None::<PluginManifest>);
@@ -536,7 +537,32 @@ fn plugin_setup(app: App, connection: &Connection) -> AnyView {
             {super::plugin_pairing::settings_card(app,pairing,&card_connection,base.get_value())}
         </section>
         {plugin_controls(app,pairing,connection_id,cached,manifest,busy)}
+        {is_webos.then(||webos_power_control(app,connection.id.to_string()))}
     }.into_any()
+}
+
+/// IR stays a core device transport rather than package privilege. Keep the
+/// WebOS power choice on the connection page all the same: assigning the
+/// device's Power toggle makes both the touchscreen and physical key take IR;
+/// removing it lets the package handle network power again.
+fn webos_power_control(app: App, connection_id: String) -> AnyView {
+    let connection_id = StoredValue::new(connection_id);
+    view! {<section class="card"><h2>"Power control"</h2>
+        <p>"Use infrared for reliable on/off control. The WebOS package can turn an awake TV off over the network, but it cannot wake an offline TV."</p>
+        <p class="dim">"Assign Power toggle below to switch the remote’s Power button and touchscreen Power control to IR. Remove that assignment to use network power off again. Other buttons keep using WebOS unless you assign their IR commands too."</p>
+        {move ||{
+            let assigned=app.devices.get().into_iter().filter(|(_,device)|matches!(&device.integration,Integration::Connection{connection_id:id,..} if id.as_str()==connection_id.get_value())).collect::<Vec<_>>();
+            if assigned.is_empty(){
+                view!{<p class="notice">"Add this connection to a TV in Rooms & devices first. Its IR power setup will appear here."</p>}.into_any()
+            }else{
+                let house=app.house();
+                assigned.into_iter().map(|(room,device)|{
+                    let name=device.name.clone();
+                    view!{<div class="integration-component"><h3>{name}</h3>{super::infrared::device_commands(app,&house,&room,&device)}</div>}
+                }).collect_view().into_any()
+            }
+        }}
+    </section>}.into_any()
 }
 
 /// Take a redacted settings view as what the form is showing. Never a
@@ -817,6 +843,7 @@ fn plugin_controls(
     let result = RwSignal::new(String::new());
     let status = RwSignal::new(Value::Null);
     let inputs = RwSignal::new(Vec::<(String, String)>::new());
+    let apps = RwSignal::new(Vec::<(String, String)>::new());
     let base = StoredValue::new(format!("/api/connections/{connection_id}/plugin"));
     let noticed = StoredValue::new(connection_id.clone());
     let call = move |method: &'static str, body: Option<Value>| {
@@ -853,10 +880,10 @@ fn plugin_controls(
                             format!("Command sent. Status unavailable: {}", error.message)
                         }
                     }
-                } else if method == "inputs" {
+                } else if matches!(method, "inputs" | "apps") {
                     let choices = value
                         .as_array()
-                        .or_else(|| value["inputs"].as_array())
+                        .or_else(|| value[method].as_array())
                         .into_iter()
                         .flatten()
                         .filter_map(|item| {
@@ -869,16 +896,25 @@ fn plugin_controls(
                             ))
                         })
                         .collect::<Vec<_>>();
+                    let (noun, empty) = if method == "apps" {
+                        ("app", "No launchable apps reported.")
+                    } else {
+                        ("input", "No selectable inputs reported.")
+                    };
                     let message = if choices.is_empty() {
-                        "No selectable inputs reported.".into()
+                        empty.into()
                     } else {
                         format!(
-                            "{} input{} available.",
+                            "{} {noun}{} available.",
                             choices.len(),
                             if choices.len() == 1 { "" } else { "s" }
                         )
                     };
-                    inputs.set(choices);
+                    if method == "apps" {
+                        apps.set(choices);
+                    } else {
+                        inputs.set(choices);
+                    }
                     message
                 } else {
                     status.set(value);
@@ -901,8 +937,9 @@ fn plugin_controls(
         </div>
         {move ||{
             let source=installed.get().unwrap_or_else(||cached.clone());
+            let supports_apps=source.supports_apps;
             let components=if source.presentation.is_empty(){vec![PluginComponent::CommandGroup{title:"Commands".into(),commands:source.capabilities.iter().map(|capability|capability.id.clone()).collect()}]}else{source.presentation.clone()};
-            components.into_iter().map(|component|match component {
+            let components=components.into_iter().map(|component|match component {
                 PluginComponent::VolumeDbControl{label} => plugin_volume_control(label, source.actions.clone(), status, move ||live_busy.get()||settings_busy.get()||installed.get().is_none(), move |action|call("typed-action",Some(json!(action)))),
                 PluginComponent::CommandGroup{title,commands}=>{
                     let capabilities=source.capabilities.clone();
@@ -919,7 +956,11 @@ fn plugin_controls(
                 // declare one, and the controls come with the web step.
                 PluginComponent::Light{..}|PluginComponent::Cover{..}|PluginComponent::Climate{..}
                 |PluginComponent::MediaPlayer{..}|PluginComponent::VolumePercentControl{..}=>().into_any(),
-            }).collect_view()
+            }).collect_view();
+            view!{
+                {supports_apps.then(||view!{<section class="integration-component"><h3>"Apps"</h3><div class="actions"><button class="ghost" disabled=move ||live_busy.get()||settings_busy.get()||installed.get().is_none() on:click=move |_|call("apps",None)>"Refresh apps"</button><select aria-label="Integration app" disabled=move ||live_busy.get()||apps.with(Vec::is_empty) on:change=move |event|{let id=event_target_value(&event);if !id.is_empty(){call("action",Some(json!({"command":format!("app:{id}")})));}}><option value="">"Choose an app"</option>{move ||apps.get().into_iter().map(|(id,name)|view!{<option value=id>{name}</option>}).collect_view()}</select></div></section>})}
+                {components}
+            }
         }}
         </section>}.into_any()
 }
