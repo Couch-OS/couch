@@ -169,7 +169,6 @@ mod tests {
             .iter_mut()
             .find(|d| d.id.as_str() == "living-kodi")
             .unwrap();
-        device.ir = Some(crate::DeviceIr { codeset: "tv".into() });
         let setup = ActivitySetup {
             custom_screen: true,
             devices: alloc::vec!["living-kodi".into()],
@@ -187,6 +186,9 @@ mod tests {
             }],
             ..Default::default()
         };
+        // The same names are not valid on an ordinary network-only device.
+        assert!(setup.validate(&config).is_err());
+        device.ir = Some(crate::DeviceIr { codeset: "tv".into() });
         assert!(setup.validate(&config).is_ok());
     }
 
