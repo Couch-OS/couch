@@ -667,19 +667,6 @@ pub(crate) fn execute_with_input(
         .find(|(_, d)| d.id == action.device)
         .map(|(_, d)| d)
         .ok_or("Mapped device was removed")?;
-    // A name explicitly present in this device's assigned codeset is an
-    // additional IR command, even if another command family parses it.
-    if couch_model::commands::supports_ir_code_name(&action.command, device, config)
-        && try_additional_device_ir_name(
-            config,
-            device.id.as_str(),
-            &action.command,
-            repeat,
-            current,
-        )?
-    {
-        return Ok(Outcome::default());
-    }
     if let Some(tenths) = action.command.strip_prefix(SET_VOLUME_DB) {
         let tenths: i16 = tenths.parse().map_err(|_| "Unsupported button function")?;
         let Some(integration @ Integration::Plugin { .. }) = device.network_integration(config)
@@ -703,6 +690,19 @@ pub(crate) fn execute_with_input(
     }
     if action.command == POWER_TOGGLE {
         return power_toggle(config, device, streaming, sonos, matter, phase, current);
+    }
+    // Additional IR names are only commands that no existing typed or
+    // internal activity command family recognizes.
+    if couch_model::commands::supports_ir_code_name(&action.command, device, config)
+        && try_additional_device_ir_name(
+            config,
+            device.id.as_str(),
+            &action.command,
+            repeat,
+            current,
+        )?
+    {
+        return Ok(Outcome::default());
     }
     let command = F::parse(&action.command).ok_or("Unsupported button function")?;
     let order = device.transport_order(config);

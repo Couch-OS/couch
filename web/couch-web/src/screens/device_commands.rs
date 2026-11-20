@@ -116,10 +116,7 @@ fn merge(config: &Config, device: &Device, names: &[String], dynamic: Rows) -> R
             }
         }
         for name in names {
-            if !couch_model::commands::valid_ir_code_name(name)
-                || couch_model::commands::is_standard_ir_command(name)
-                || couch_model::commands::Function::parse(name).is_some()
-            {
+            if !couch_model::commands::supports_ir_code_name(name, device, config) {
                 continue;
             }
             let label = format!("{} · IR override", name.replace('-', " "));

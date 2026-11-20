@@ -85,7 +85,7 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
             .map_err(|e| e.to_string())?;
         choices.extend(codes.entries.iter().filter(|entry| {
             couch_model::commands::standard_ir_command(&entry.button).is_some()
-                || couch_model::commands::Function::parse(&entry.button).is_none()
+                || couch_model::commands::supports_ir_code_name(&entry.button, device, config)
         }).map(|entry| {
             (
                 format!("ir:{}", entry.button),
