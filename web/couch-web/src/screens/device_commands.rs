@@ -118,6 +118,7 @@ fn merge(config: &Config, device: &Device, names: &[String], dynamic: Rows) -> R
         for name in names {
             if !couch_model::commands::valid_ir_code_name(name)
                 || couch_model::commands::is_standard_ir_command(name)
+                || couch_model::commands::Function::parse(name).is_some()
             {
                 continue;
             }
@@ -184,11 +185,19 @@ mod tests {
         let rows = merge(
             &config,
             &device,
-            &["hdmi2".into(), "input:HDMI2".into(), "volume-up".into(), "bad name".into()],
+            &[
+                "hdmi2".into(),
+                "input:HDMI2".into(),
+                "x:info".into(),
+                "dim:30".into(),
+                "volume-up".into(),
+                "bad name".into(),
+            ],
             vec![("input:hdmi2".into(), "HDMI 2 (IP)".into())],
         );
         assert!(rows.iter().any(|(id, label)| id == "hdmi2" && label == "hdmi2 · IR"));
-        assert!(rows.iter().any(|(id, label)| id == "input:HDMI2" && label.contains("IR override")));
+        assert!(rows.iter().any(|(id, label)| id == "input:hdmi2" && label == "HDMI 2 (IP)"));
+        assert!(!rows.iter().any(|(id, _)| id == "x:info" || id == "dim:30"));
         assert_eq!(rows.iter().filter(|(id, _)| id == "volume-up").count(), 1);
         assert!(!rows.iter().any(|(id, _)| id == "bad name"));
     }

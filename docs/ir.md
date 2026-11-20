@@ -147,9 +147,10 @@ voldn   nec   0x04 0x03
 
 Codeset command names are exposed as command names without a namespace or
 translation. The fixed Couch IR catalog (navigation, power, volume, playback,
-and colour keys) retains its existing typed behavior. Every other valid name
-in the assigned codeset is an additional IR command and can be selected in the
-IR controls and activity command pickers. Names are 1–80 ASCII letters/digits
+and colour keys) retains its existing typed behavior. A valid codeset name
+that is not already recognized by another typed command family (such as input,
+app, package, or level commands) is an additional IR command and can be selected
+in the IR controls and activity command pickers. Names are 1–80 ASCII letters/digits
 or `_`, `-`, `:`, `+`, and `.`, matching the codeset parser. For an
 additional command, the name stored in an activity or mapping is the exact
 codeset name; it is not rewritten as `ir-code:<name>` or `x:<name>`.

@@ -83,7 +83,10 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     if let Some(codeset) = device.effective_ir_codeset(config) {
         let codes = couch_ir::codeset::load(&crate::home::path("ir"), codeset)
             .map_err(|e| e.to_string())?;
-        choices.extend(codes.entries.iter().map(|entry| {
+        choices.extend(codes.entries.iter().filter(|entry| {
+            couch_model::commands::standard_ir_command(&entry.button).is_some()
+                || couch_model::commands::Function::parse(&entry.button).is_none()
+        }).map(|entry| {
             (
                 format!("ir:{}", entry.button),
                 entry.button.replace('-', " "),

@@ -93,6 +93,7 @@ pub fn supports_ir_code_name(
 ) -> bool {
     valid_ir_code_name(name)
         && !is_standard_ir_command(name)
+        && Function::parse(name).is_none()
         && device.effective_ir_codeset(config).is_some()
 }
 /// How many `x:` ids one package may declare.
@@ -467,9 +468,9 @@ pub(crate) mod tests {
         assert!(!supports_ir_code_name("hdmi2", &device, &config));
         device.ir = Some(crate::DeviceIr { codeset: "tv".into() });
         assert!(supports_ir_code_name("hdmi2", &device, &config));
-        assert!(supports_ir_code_name("input:HDMI2", &device, &config));
-        assert!(supports_ir_code_name("x:info", &device, &config));
-        assert!(supports_ir_code_name("dim:30", &device, &config));
+        assert!(!supports_ir_code_name("input:HDMI2", &device, &config));
+        assert!(!supports_ir_code_name("x:info", &device, &config));
+        assert!(!supports_ir_code_name("dim:30", &device, &config));
         assert!(!supports_ir_code_name("volume-up", &device, &config));
         assert!(!supports_ir_code_name("two words", &device, &config));
     }
