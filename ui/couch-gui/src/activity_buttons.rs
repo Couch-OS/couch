@@ -1555,20 +1555,14 @@ mod tests {
 
         // A missing/unreadable assigned codeset must not consume a command
         // that the ordinary IP/package dispatcher may understand.
-        let mut fallback = false;
         assert!(!additional_ir_override_with(None, "input:HDMI2", || {
-            fallback = true;
-            Ok(())
+            panic!("a missing codeset must not send IR")
         }).unwrap());
-        assert!(fallback);
 
         // The same applies when the assigned codeset loads but has no entry.
-        let mut fallback = false;
         assert!(!additional_ir_override_with(Some(&codes), "input:HDMI2", || {
-            fallback = true;
-            Ok(())
+            panic!("a missing entry must not send IR")
         }).unwrap());
-        assert!(fallback);
 
         // A codeset match takes precedence over a generic command family.
         let mut sent = false;

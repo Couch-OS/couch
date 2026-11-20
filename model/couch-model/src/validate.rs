@@ -431,11 +431,9 @@ impl Config {
                 None => target.is_some_and(|d| {
                     crate::commands::supports_ir_code_name(&step.command, d, self)
                 }),
-                Some(function @ crate::commands::Function::Custom(_)) => target
-                    .is_some_and(|d| {
-                        function.supports_device(d, self)
-                            || crate::commands::supports_ir_code_name(&step.command, d, self)
-                    }),
+                Some(function @ crate::commands::Function::Custom(_)) => {
+                    target.is_some_and(|d| function.supports_device(d, self))
+                },
                 Some(_) => true,
             };
             (!declared).then(|| alloc::format!("unsupported command \"{}\"", step.command))
@@ -482,9 +480,14 @@ impl Config {
                         self.devices()
                             .find(|(_, d)| d.id == action.device)
                             .is_some_and(|(_, d)| {
-                                crate::commands::Function::parse(&action.command)
-                                    .is_some_and(|f| f.supports_device(d, self))
-                                    || crate::commands::supports_ir_code_name(&action.command, d, self)
+                                match crate::commands::Function::parse(&action.command) {
+                                    Some(function) => function.supports_device(d, self),
+                                    None => crate::commands::supports_ir_code_name(
+                                        &action.command,
+                                        d,
+                                        self,
+                                    ),
+                                }
                             })
                     });
                 if !valid {
