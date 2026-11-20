@@ -1350,7 +1350,7 @@ fn try_additional_device_ir_name(
     }
     let codes = match couch_ir::codeset::load(&crate::home::path("ir"), codeset) {
         Ok(codes) => codes,
-        Err(_) => return additional_ir_override_with(None, command, || Ok(())),
+        Err(_) => return Ok(false),
     };
     send_ir_codeset_name(&codes, device_id, command, repeat, current)
 }
