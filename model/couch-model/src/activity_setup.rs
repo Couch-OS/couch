@@ -161,14 +161,6 @@ mod tests {
     #[test]
     fn custom_activity_pages_accept_additional_names_for_assigned_ir_devices() {
         let mut config = Config::seed();
-        let device = config
-            .rooms
-            .first_mut()
-            .unwrap()
-            .devices
-            .iter_mut()
-            .find(|d| d.id.as_str() == "living-kodi")
-            .unwrap();
         let setup = ActivitySetup {
             custom_screen: true,
             devices: alloc::vec!["living-kodi".into()],
@@ -188,7 +180,15 @@ mod tests {
         };
         // The same names are not valid on an ordinary network-only device.
         assert!(setup.validate(&config).is_err());
-        device.ir = Some(crate::DeviceIr { codeset: "tv".into() });
+        config
+            .rooms
+            .first_mut()
+            .unwrap()
+            .devices
+            .iter_mut()
+            .find(|d| d.id.as_str() == "living-kodi")
+            .unwrap()
+            .ir = Some(crate::DeviceIr { codeset: "tv".into() });
         assert!(setup.validate(&config).is_ok());
     }
 
