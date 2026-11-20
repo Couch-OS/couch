@@ -102,9 +102,14 @@ impl ActivitySetup {
                 .devices()
                 .find(|(_, d)| d.id == action.device)
                 .is_some_and(|(_, d)| {
-                    crate::commands::Function::parse(&action.command)
-                        .is_some_and(|f| f.supports_device(d, config))
-                        || crate::commands::supports_ir_code_name(&action.command, d, config)
+                    match crate::commands::Function::parse(&action.command) {
+                        Some(function) => function.supports_device(d, config),
+                        None => crate::commands::supports_ir_code_name(
+                            &action.command,
+                            d,
+                            config,
+                        ),
+                    }
                 })
     }
     pub fn forget_device(&mut self, id: &DeviceId) {
