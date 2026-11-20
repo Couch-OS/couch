@@ -24,7 +24,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 if ! git -C "$ROOT" rev-parse --quiet --verify "refs/tags/$TAG^{commit}" >/dev/null; then
   echo "fetching $TAG"
-  git -C "$ROOT" fetch --quiet --depth 1 origin "refs/tags/$TAG:refs/tags/$TAG"
+  git -C "$ROOT" fetch --quiet --depth 1 https://github.com/Couch-OS/couch.git "refs/tags/$TAG:refs/tags/$TAG"
 fi
 
 mkdir -p "$WORK/old" "$WORK/new" "$WORK/files"
