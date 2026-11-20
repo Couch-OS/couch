@@ -145,13 +145,26 @@ volup   nec   0x04 0x02
 voldn   nec   0x04 0x03
 ```
 
-Button names are free text, but the intended vocabulary is `couch-model`'s
-`Action.command` (`on`/`off`/`volume:up`/…). The convention — documented here,
-not baked into a shared type — is that `codeset` resolves to
-`/opt/couch/ir/<codeset>.codeset`. **`couch-model` is unchanged**: it already
-carries the one field this needs, and adding an IR-code table to a crate that
-also builds for wasm would be the wrong place for it. `couch-ir` deliberately
-does not depend on `couch-model`, the same separation `couch-voice` keeps.
+Codeset command names are exposed as command names without a namespace or
+translation. The fixed Couch IR catalog (navigation, power, volume, playback,
+and colour keys) retains its existing typed behavior. Every other valid name
+in the assigned codeset is an additional IR command and can be selected in the
+IR controls and activity command pickers. Names are 1–80 ASCII letters/digits
+or `_`, `-`, `:`, `+`, and `.`, matching the codeset parser. For an
+additional command, the name stored in an activity or mapping is the exact
+codeset name; it is not rewritten as `ir-code:<name>` or `x:<name>`.
+Standard catalog commands retain their existing canonical command IDs.
+
+An additional name is only valid for a device with an assigned IR codeset.
+Configuration validation checks the name grammar and that the device has a
+codeset; at execution, Couch loads that device's assigned codeset and requires
+a matching entry (codeset lookup is case-insensitive) before using the existing
+IR encoder and transmitter. If no matching entry exists, no additional IR
+transmission occurs; ordinary typed commands retain their pre-existing network
+or package behavior. Standard IR command behavior and the codeset
+file format remain unchanged. `couch-ir` deliberately does not depend on
+`couch-model`; the two crates share the documented name grammar without
+coupling the model to the IR client.
 
 ## Building
 
@@ -167,7 +180,7 @@ dependency is `libc`, for `open`/`ioctl`/`write`/`close`.
 
 ## What is verified, and how
 
-Proven by `cargo test -p couch-ir` (32 tests, host):
+Proven by `cargo test -p couch-ir` (33 tests, host):
 
 * **Every protocol encoder**, against exact spec tables — NEC's worked example
   (address 0x00, command 0x16), NEC extended, Samsung's symmetric leader and

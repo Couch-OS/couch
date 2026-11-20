@@ -16,16 +16,17 @@
 //! input   nec   0x04 0x0b
 //! ```
 //!
-//! The button names are free text on purpose, but the intended vocabulary is
-//! `couch-model`'s: an `Action.command` of `on`/`off`/`play`/`volume:up` maps
-//! to a button here. This crate does **not** depend on `couch-model` - the same
-//! separation `couch-voice` keeps, and the reason the model stays wasm-clean -
-//! so the correspondence is a convention, documented in `docs/ir.md`, not a
-//! shared type. Resolving `codeset` to a file is likewise the daemon's job; the
-//! documented convention is `/opt/couch/ir/<codeset>.codeset`.
+//! Button names are codeset-owned identifiers. Couch's standard IR command names
+//! retain their existing meanings; any other valid name can be exposed as an
+//! additional IR command by the assigned codeset. The name grammar is shared
+//! with `couch-model` by documentation and tests, not by a crate dependency:
+//! `couch-ir` deliberately stays independent so the model remains wasm-clean.
+//! Resolving `codeset` to a file is likewise the daemon's job; the documented
+//! convention is `/opt/couch/ir/<codeset>.codeset`.
 //!
-//! Nothing in `couch-model` changes for any of this. `Integration::Ir` already
-//! carries exactly the one field - the codeset name - that this needs.
+//! `couch-model` does not carry the codes themselves: `Integration::Ir`
+//! continues to identify the assigned codeset by name, keeping the model
+//! independent of protocol values and the IR client.
 
 use crate::error::{Error, Result};
 use crate::proto::{self, Message, Protocol};
@@ -200,6 +201,18 @@ sony    sony12 1 21
         assert_eq!(cs.get("mute").unwrap().protocol, Protocol::Rc5);
         assert_eq!(cs.get("volup").unwrap().command, 0x02);
         assert!(cs.get("nope").is_none());
+    }
+
+    #[test]
+    fn arbitrary_valid_command_names_are_preserved() {
+        let set = Codeset::parse(
+            "extra.codeset",
+            "HDMI2 nec 4 17\ninput:HDMI2 rc5 0 13\nsource.alt raw 38000 9000,4500,560,560",
+        )
+        .unwrap();
+        assert_eq!(set.buttons(), vec!["HDMI2", "input:HDMI2", "source.alt"]);
+        assert!(set.get("hdmi2").is_some());
+        assert!(set.get("INPUT:HDMI2").is_some());
     }
 
     #[test]

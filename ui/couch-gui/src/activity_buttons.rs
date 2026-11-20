@@ -667,6 +667,19 @@ pub(crate) fn execute_with_input(
         .find(|(_, d)| d.id == action.device)
         .map(|(_, d)| d)
         .ok_or("Mapped device was removed")?;
+    // A name explicitly present in this device's assigned codeset is an
+    // additional IR command, even if another command family parses it.
+    if couch_model::commands::supports_ir_code_name(&action.command, device, config)
+        && try_additional_device_ir_name(
+            config,
+            device.id.as_str(),
+            &action.command,
+            repeat,
+            current,
+        )?
+    {
+        return Ok(Outcome::default());
+    }
     if let Some(tenths) = action.command.strip_prefix(SET_VOLUME_DB) {
         let tenths: i16 = tenths.parse().map_err(|_| "Unsupported button function")?;
         let Some(integration @ Integration::Plugin { .. }) = device.network_integration(config)
@@ -1286,6 +1299,18 @@ pub(crate) fn try_device_ir(
     repeat: bool,
     current: &dyn Fn() -> bool,
 ) -> Result<bool, String> {
+    try_device_ir_name(config, device_id, &command.id(), repeat, current)
+}
+
+/// Resolve an exact name in this device's assigned codeset, then use the
+/// existing encoder and transmitter. No other codeset or transport is tried.
+pub(crate) fn try_device_ir_name(
+    config: &Config,
+    device_id: &str,
+    command: &str,
+    repeat: bool,
+    current: &dyn Fn() -> bool,
+) -> Result<bool, String> {
     let device = config
         .devices()
         .find(|(_, d)| d.id.as_str() == device_id)
@@ -1299,7 +1324,45 @@ pub(crate) fn try_device_ir(
     }
     let codes =
         couch_ir::codeset::load(&crate::home::path("ir"), codeset).map_err(|e| e.to_string())?;
-    ir_override_with(&codes, command, || {
+    send_ir_codeset_name(&codes, device_id, command, repeat, current)
+}
+
+/// Additional commands must be found in the assigned codeset. If that file is
+/// unavailable, preserve existing generic network/package command behavior;
+/// a pure additional name will still fail normal command parsing.
+fn try_additional_device_ir_name(
+    config: &Config,
+    device_id: &str,
+    command: &str,
+    repeat: bool,
+    current: &dyn Fn() -> bool,
+) -> Result<bool, String> {
+    let device = config
+        .devices()
+        .find(|(_, d)| d.id.as_str() == device_id)
+        .map(|(_, d)| d)
+        .ok_or("Device was removed")?;
+    let Some(codeset) = device.effective_ir_codeset(config) else {
+        return Ok(false);
+    };
+    if !current() {
+        return Ok(true);
+    }
+    let codes = match couch_ir::codeset::load(&crate::home::path("ir"), codeset) {
+        Ok(codes) => codes,
+        Err(_) => return Ok(false),
+    };
+    send_ir_codeset_name(&codes, device_id, command, repeat, current)
+}
+
+fn send_ir_codeset_name(
+    codes: &couch_ir::codeset::Codeset,
+    device_id: &str,
+    command: &str,
+    repeat: bool,
+    current: &dyn Fn() -> bool,
+) -> Result<bool, String> {
+    ir_override_with(codes, command, || {
         static TOGGLES: std::sync::OnceLock<std::sync::Mutex<HashMap<String, bool>>> =
             std::sync::OnceLock::new();
         let mut states = TOGGLES
@@ -1309,7 +1372,7 @@ pub(crate) fn try_device_ir(
         ir_send_with(
             &mut states,
             device_id,
-            &codes,
+            codes,
             command,
             repeat,
             current,
@@ -1328,10 +1391,10 @@ pub(crate) fn try_device_ir(
 }
 fn ir_override_with(
     codes: &couch_ir::codeset::Codeset,
-    command: &F,
+    command: &str,
     send: impl FnOnce() -> Result<(), String>,
 ) -> Result<bool, String> {
-    if codes.get(&command.id()).is_none() {
+    if codes.get(command).is_none() {
         return Ok(false);
     }
     send()?;
@@ -1342,7 +1405,7 @@ fn ir_send_with(
     states: &mut HashMap<String, bool>,
     device: &str,
     codes: &couch_ir::codeset::Codeset,
-    command: &F,
+    command: &str,
     repeat: bool,
     current: &dyn Fn() -> bool,
     send: impl FnOnce(&couch_ir::proto::Message) -> Result<bool, String>,
@@ -1366,12 +1429,12 @@ fn ir_send_with(
 
 fn ir_message(
     codes: &couch_ir::codeset::Codeset,
-    command: &F,
+    command: &str,
     toggle: bool,
 ) -> Result<couch_ir::proto::Message, String> {
     codes
-        .get(&command.id())
-        .ok_or_else(|| format!("No IR code assigned to {}", command.id()))?
+        .get(command)
+        .ok_or_else(|| format!("No IR code assigned to {command}"))?
         .encode(toggle)
         .map_err(|e| e.to_string())
 }
@@ -1448,6 +1511,28 @@ mod tests {
             .iter()
             .map(|b| (b.button, b.action.as_ref().unwrap().command.clone()))
             .collect()
+    }
+
+    #[test]
+    fn additional_ir_names_are_resolved_against_the_loaded_codeset() {
+        let codes = couch_ir::codeset::Codeset::parse(
+            "test",
+            "hdmi2 nec 0x04 0x11\nvolume-up nec 0x04 0x02",
+        )
+        .unwrap();
+        let mut sent = false;
+        assert!(ir_override_with(&codes, "hdmi2", || {
+            sent = true;
+            Ok(())
+        })
+        .unwrap());
+        assert!(sent);
+        assert!(!ir_override_with(&codes, "missing", || {
+            panic!("missing names must not be sent")
+        })
+        .unwrap());
+        assert!(ir_message(&codes, "hdmi2", false).is_ok());
+        assert!(ir_message(&codes, "HDMI2", false).is_ok());
     }
 
     #[test]
@@ -1696,20 +1781,20 @@ mod tests {
             couch_ir::codeset::Codeset::parse("fixture", "toggle nec 4 8\nvolume-up nec 4 2\n")
                 .unwrap();
         assert_eq!(
-            ir_override_with(&codes, &F::PowerOn, || panic!(
+            ir_override_with(&codes, &F::PowerOn.id(), || panic!(
                 "power-on must not use toggle"
             )),
             Ok(false)
         );
         assert_eq!(
-            ir_override_with(&codes, &F::VolumeDown, || panic!(
+            ir_override_with(&codes, &F::VolumeDown.id(), || panic!(
                 "unassigned must stay on network"
             )),
             Ok(false)
         );
-        assert_eq!(ir_override_with(&codes, &F::VolumeUp, || Ok(())), Ok(true));
+        assert_eq!(ir_override_with(&codes, &F::VolumeUp.id(), || Ok(())), Ok(true));
         assert_eq!(
-            ir_override_with(&codes, &F::VolumeUp, || Err("TX failure".into())),
+            ir_override_with(&codes, &F::VolumeUp.id(), || Err("TX failure".into())),
             Err("TX failure".into())
         );
     }
@@ -1718,21 +1803,21 @@ mod tests {
         let codes =
             couch_ir::codeset::Codeset::parse("fixture", "toggle nec 4 8\nvolume-up nec 4 2\n")
                 .unwrap();
-        assert!(ir_message(&codes, &F::Toggle, false).is_ok());
-        assert!(ir_message(&codes, &F::VolumeUp, false).is_ok());
-        assert!(ir_message(&codes, &F::PowerOn, false)
+        assert!(ir_message(&codes, "toggle", false).is_ok());
+        assert!(ir_message(&codes, "volume-up", false).is_ok());
+        assert!(ir_message(&codes, &F::PowerOn.id(), false)
             .unwrap_err()
             .contains("No IR code assigned"));
-        assert!(ir_message(&codes, &F::PowerOff, false).is_err());
+        assert!(ir_message(&codes, &F::PowerOff.id(), false).is_err());
     }
 
     #[test]
     fn infrared_actions_preserve_rc_toggle_and_exact_assignment() {
         let codes = couch_ir::codeset::Codeset::parse("fixture", "ok rc5 0 1\n").unwrap();
-        let first = ir_message(&codes, &F::Ok, false).unwrap();
-        let next = ir_message(&codes, &F::Ok, true).unwrap();
+        let first = ir_message(&codes, &F::Ok.id(), false).unwrap();
+        let next = ir_message(&codes, &F::Ok.id(), true).unwrap();
         assert_ne!(format!("{first:?}"), format!("{next:?}"));
-        assert!(ir_message(&codes, &F::Back, false).is_err());
+        assert!(ir_message(&codes, &F::Back.id(), false).is_err());
     }
 
     #[test]
@@ -1745,7 +1830,7 @@ mod tests {
                 &mut states,
                 "tv",
                 &codes,
-                &F::VolumeUp,
+                &F::VolumeUp.id(),
                 repeat,
                 &|| true,
                 |m| {
@@ -1763,7 +1848,7 @@ mod tests {
             &mut states,
             "tv",
             &codes,
-            &F::VolumeUp,
+            &F::VolumeUp.id(),
             false,
             &|| true,
             |_| Err("TX failed".into())
@@ -1774,7 +1859,7 @@ mod tests {
             &mut states,
             "tv",
             &codes,
-            &F::VolumeUp,
+            &F::VolumeUp.id(),
             false,
             &|| true,
             |_| Ok(false),
@@ -1785,7 +1870,7 @@ mod tests {
             &mut states,
             "tv",
             &codes,
-            &F::VolumeUp,
+            &F::VolumeUp.id(),
             false,
             &|| false,
             |_| panic!("stale command sent"),
@@ -1796,7 +1881,7 @@ mod tests {
             &mut states,
             "other",
             &codes,
-            &F::VolumeUp,
+            &F::VolumeUp.id(),
             false,
             &|| true,
             |m| {

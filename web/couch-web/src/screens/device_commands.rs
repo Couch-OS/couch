@@ -115,6 +115,23 @@ fn merge(config: &Config, device: &Device, names: &[String], dynamic: Rows) -> R
                 rows.push((id.into(), format!("{label} · IR")));
             }
         }
+        for name in names {
+            if !couch_model::commands::valid_ir_code_name(name)
+                || couch_model::commands::is_standard_ir_command(name)
+            {
+                continue;
+            }
+            let label = format!("{} · IR override", name.replace('-', " "));
+            if let Some((id, existing)) = rows
+                .iter_mut()
+                .find(|(id, _)| id.eq_ignore_ascii_case(name))
+            {
+                *id = name.clone();
+                *existing = label;
+            } else {
+                rows.push((name.clone(), format!("{} · IR", name.replace('-', " "))));
+            }
+        }
     }
     rows
 }
@@ -159,6 +176,23 @@ mod tests {
         assert!(rows.iter().any(|r| r.0 == "app:netflix"));
         assert!(rows.iter().any(|r| r.0 == "up" && !r.1.contains("IR")));
     }
+    #[test]
+    fn additional_codeset_names_are_offered_without_rewriting_them() {
+        let config = Config::default();
+        let mut device = Device::new("tv".into(), "TV", couch_model::DeviceKind::Tv);
+        device.ir = Some(couch_model::DeviceIr { codeset: "tv".into() });
+        let rows = merge(
+            &config,
+            &device,
+            &["hdmi2".into(), "input:HDMI2".into(), "volume-up".into(), "bad name".into()],
+            vec![("input:hdmi2".into(), "HDMI 2 (IP)".into())],
+        );
+        assert!(rows.iter().any(|(id, label)| id == "hdmi2" && label == "hdmi2 · IR"));
+        assert!(rows.iter().any(|(id, label)| id == "input:HDMI2" && label.contains("IR override")));
+        assert_eq!(rows.iter().filter(|(id, _)| id == "volume-up").count(), 1);
+        assert!(!rows.iter().any(|(id, _)| id == "bad name"));
+    }
+
     #[test]
     fn level_controls_are_offered_only_where_the_client_sets_one() {
         let config = Config::default();

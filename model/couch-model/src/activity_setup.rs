@@ -20,7 +20,7 @@ pub struct ActivitySetup {
     #[serde(default)]
     pub off: Vec<SequenceStep>,
 }
-/// Ordered fixed-grid pages. Commands use the same typed catalog as mappings.
+/// Ordered fixed-grid pages. Commands use the typed catalog or an assigned IR codeset name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActivityPage {
     pub title: String,
@@ -104,6 +104,7 @@ impl ActivitySetup {
                 .is_some_and(|(_, d)| {
                     crate::commands::Function::parse(&action.command)
                         .is_some_and(|f| f.supports_device(d, config))
+                        || crate::commands::supports_ir_code_name(&action.command, d, config)
                 })
     }
     pub fn forget_device(&mut self, id: &DeviceId) {
@@ -157,6 +158,38 @@ mod tests {
         setup.custom_screen = false;
         assert!(setup.validate(&config).is_ok());
     }
+    #[test]
+    fn custom_activity_pages_accept_additional_names_for_assigned_ir_devices() {
+        let mut config = Config::seed();
+        let device = config
+            .rooms
+            .first_mut()
+            .unwrap()
+            .devices
+            .iter_mut()
+            .find(|d| d.id.as_str() == "living-kodi")
+            .unwrap();
+        device.ir = Some(crate::DeviceIr { codeset: "tv".into() });
+        let setup = ActivitySetup {
+            custom_screen: true,
+            devices: alloc::vec!["living-kodi".into()],
+            pages: alloc::vec![ActivityPage {
+                title: "Sources".into(),
+                widgets: alloc::vec![ActivityWidget {
+                    label: "HDMI 2".into(),
+                    icon: None,
+                    action: Action::new("living-kodi", "hdmi2"),
+                }, ActivityWidget {
+                    label: "HDMI 2 alternate".into(),
+                    icon: None,
+                    action: Action::new("living-kodi", "input:HDMI2"),
+                }],
+            }],
+            ..Default::default()
+        };
+        assert!(setup.validate(&config).is_ok());
+    }
+
     #[test]
     fn legacy_setups_default_to_source_screen_and_empty_pages() {
         let setup: ActivitySetup =

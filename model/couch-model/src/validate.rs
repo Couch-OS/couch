@@ -417,24 +417,25 @@ impl Config {
             }
         }
 
-        // A step is run by the same executor as a button binding, which parses
-        // the command and gives up on anything it does not know, so a step that
-        // does not parse saves and then fails on the first press. Only the parse
-        // is checked here, not `supports_device`: a binding picks from a
-        // device's button catalog, while a step says "on" or "off" to a device
-        // whose catalog has neither. A package-named button (`x:info`) is the
-        // exception: Couch has no meaning of its own for it, so it is a step
-        // only for a device whose package declares that exact id.
+        // A step may use an ordinary typed command even when the device's
+        // catalog does not list it (for example, power-on), or an x: command
+        // declared by its package. Additional IR names are also accepted for a
+        // device with an assigned codeset; the executor checks exact membership
+        // before sending. This model layer cannot read the codeset file.
         let step_problem = |step: &crate::Action| -> Option<String> {
             if !device_ids.contains(&&step.device) {
                 return Some(alloc::format!("no device \"{}\"", step.device));
             }
+            let target = self.devices().find(|(_, d)| d.id == step.device).map(|(_, d)| d);
             let declared = match crate::commands::Function::parse(&step.command) {
-                None => false,
-                Some(function @ crate::commands::Function::Custom(_)) => self
-                    .devices()
-                    .find(|(_, d)| d.id == step.device)
-                    .is_some_and(|(_, d)| function.supports_device(d, self)),
+                None => target.is_some_and(|d| {
+                    crate::commands::supports_ir_code_name(&step.command, d, self)
+                }),
+                Some(function @ crate::commands::Function::Custom(_)) => target
+                    .is_some_and(|d| {
+                        function.supports_device(d, self)
+                            || crate::commands::supports_ir_code_name(&step.command, d, self)
+                    }),
                 Some(_) => true,
             };
             (!declared).then(|| alloc::format!("unsupported command \"{}\"", step.command))
@@ -483,6 +484,7 @@ impl Config {
                             .is_some_and(|(_, d)| {
                                 crate::commands::Function::parse(&action.command)
                                     .is_some_and(|f| f.supports_device(d, self))
+                                    || crate::commands::supports_ir_code_name(&action.command, d, self)
                             })
                     });
                 if !valid {
