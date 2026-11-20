@@ -2,13 +2,15 @@
 //! peripheral, the TV paired to it gets consumer-control keys). All
 //! filesystem and transmitter I/O stays on the worker.
 use super::{Button, Command, Details, Event, Work};
-use couch_model::{commands::Function, Action, Integration};
+use couch_model::{Action, Integration};
 use std::sync::atomic::AtomicU64;
 
 pub(super) fn function(action: &Command) -> Result<Option<String>, String> {
     Ok(Some(match action {
         Command::Retry => return Ok(None),
-        Command::IrFunction(name) if Function::parse(name).is_some() => name.clone(),
+        Command::IrFunction(name) => couch_model::commands::standard_ir_command(name)
+            .unwrap_or(name)
+            .to_owned(),
         Command::Key(key) => match key {
             Button::Up => "up",
             Button::Down => "down",
@@ -79,20 +81,17 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     // A press goes through the device's transport order either way.
     let mut choices: Vec<(String, String, String)> = Vec::new();
     if let Some(codeset) = device.effective_ir_codeset(config) {
-        let integration = Integration::Ir {
-            codeset: codeset.into(),
-        };
         let codes = couch_ir::codeset::load(&crate::home::path("ir"), codeset)
             .map_err(|e| e.to_string())?;
-        choices.extend(codes.entries.iter().filter_map(|entry| {
-            let f = Function::parse(&entry.button)?;
-            f.supports(&integration).then(|| {
-                (
-                    format!("ir:{}", f.id()),
-                    entry.button.replace('-', " "),
-                    "Send infrared command".into(),
-                )
-            })
+        choices.extend(codes.entries.iter().filter(|entry| {
+            couch_model::commands::standard_ir_command(&entry.button).is_some()
+                || couch_model::commands::supports_ir_code_name(&entry.button, device, config)
+        }).map(|entry| {
+            (
+                format!("ir:{}", entry.button),
+                entry.button.replace('-', " "),
+                "Send infrared command".into(),
+            )
         }));
     } else if !bluetooth {
         return Err("Selected device has no infrared commands".into());
@@ -100,7 +99,10 @@ pub(super) fn run(work: &Work, active: &AtomicU64) -> Result<Option<Event>, Stri
     if device.bluetooth.is_some() {
         for (id, label) in couch_model::buttons::functions(&Integration::BluetoothTv) {
             let action = format!("ir:{id}");
-            if !choices.iter().any(|(a, _, _)| *a == action) {
+            if !choices.iter().any(|(a, _, _)| {
+                a.strip_prefix("ir:")
+                    .is_some_and(|name| name.eq_ignore_ascii_case(id))
+            }) {
                 choices.push((action, (*label).to_owned(), "Send over Bluetooth".into()));
             }
         }
@@ -186,6 +188,18 @@ mod tests {
         assert_eq!(
             function(&Command::Wake).unwrap().as_deref(),
             Some("power-on")
+        );
+        assert_eq!(
+            function(&Command::IrFunction("VOLUME-UP".into()))
+                .unwrap()
+                .as_deref(),
+            Some("volume-up")
+        );
+        assert_eq!(
+            function(&Command::IrFunction("HDMI2".into()))
+                .unwrap()
+                .as_deref(),
+            Some("HDMI2")
         );
         assert_eq!(
             function(&Command::Key(Button::Enter)).unwrap().as_deref(),

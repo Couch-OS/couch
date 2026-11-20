@@ -61,6 +61,43 @@ pub enum Function {
     /// exact id, and it never repeats while held.
     Custom(String),
 }
+/// Whether a string is a syntactically valid name in an IR codeset.
+/// Keep this grammar aligned with couch-ir's codeset parser; the actual
+/// assigned-codeset membership is checked by the transmitter at execution.
+pub fn valid_ir_code_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 80
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-:+.".contains(&b))
+}
+/// The fixed IR vocabulary keeps its existing typed command semantics.
+pub fn standard_ir_command(name: &str) -> Option<&'static str> {
+    crate::buttons::functions(&Integration::Ir {
+        codeset: String::new(),
+    })
+    .iter()
+    .find(|(id, _)| id.eq_ignore_ascii_case(name))
+    .map(|(id, _)| *id)
+}
+pub fn is_standard_ir_command(name: &str) -> bool {
+    standard_ir_command(name).is_some()
+}
+/// Additional IR names are only meaningful for a device with an assigned
+/// codeset. This checks syntax/configuration only; the executor checks actual
+/// membership in that device's loaded codeset before sending.
+pub fn supports_ir_code_name(
+    name: &str,
+    device: &crate::Device,
+    config: &crate::Config,
+) -> bool {
+    valid_ir_code_name(name)
+        && !is_standard_ir_command(name)
+        && Function::parse(name).is_none()
+        && name != "power-toggle"
+        && !name.starts_with("set-volume-db:")
+        && device.effective_ir_codeset(config).is_some()
+}
 /// How many `x:` ids one package may declare.
 pub const MAX_CUSTOM_FUNCTIONS: usize = 32;
 /// What kind of key event a command is. A package that speaks protocol 1 or 2
@@ -413,6 +450,35 @@ fn valid_id(id: &str) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[test]
+    fn ir_codeset_names_keep_the_codeset_grammar_and_require_an_assigned_set() {
+        for name in ["HDMI2", "HDMI_2", "HDMI-2", "input:HDMI2", "A.B+C"] {
+            assert!(valid_ir_code_name(name), "{name}");
+        }
+        for name in ["", " two", "two ", "two words", "a/b", "a#b", "a\\tb"] {
+            assert!(!valid_ir_code_name(name), "{name}");
+        }
+        assert!(valid_ir_code_name(&"a".repeat(80)));
+        assert!(!valid_ir_code_name(&"a".repeat(81)));
+        assert!(is_standard_ir_command("volume-up"));
+        assert!(is_standard_ir_command("VOLUME-UP"));
+        assert!(!is_standard_ir_command("hdmi2"));
+        assert!(Function::parse("hdmi2").is_none());
+
+        let config = crate::Config::seed();
+        let mut device = crate::Device::new("tv".into(), "TV", crate::DeviceKind::Tv);
+        assert!(!supports_ir_code_name("hdmi2", &device, &config));
+        device.ir = Some(crate::DeviceIr { codeset: "tv".into() });
+        assert!(supports_ir_code_name("hdmi2", &device, &config));
+        assert!(!supports_ir_code_name("input:HDMI2", &device, &config));
+        assert!(!supports_ir_code_name("x:info", &device, &config));
+        assert!(!supports_ir_code_name("dim:30", &device, &config));
+        assert!(!supports_ir_code_name("power-toggle", &device, &config));
+        assert!(!supports_ir_code_name("set-volume-db:10", &device, &config));
+        assert!(!supports_ir_code_name("volume-up", &device, &config));
+        assert!(!supports_ir_code_name("two words", &device, &config));
+    }
+
     #[test]
     fn input_tokens_preserve_internal_spaces_without_expanding_other_grammars() {
         for id in ["SAT/CBL", "HD RADIO", "IPOD DIRECT", "A  B"] {
