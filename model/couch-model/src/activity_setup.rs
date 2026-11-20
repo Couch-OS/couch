@@ -176,9 +176,9 @@ mod tests {
                     icon: None,
                     action: Action::new("living-kodi", "hdmi2"),
                 }, ActivityWidget {
-                    label: "HDMI 2 alternate".into(),
+                    label: "Alternate source".into(),
                     icon: None,
-                    action: Action::new("living-kodi", "input:HDMI2"),
+                    action: Action::new("living-kodi", "source.alt"),
                 }],
             }],
             ..Default::default()
@@ -195,6 +195,13 @@ mod tests {
             .unwrap()
             .ir = Some(crate::DeviceIr { codeset: "tv".into() });
         assert!(setup.validate(&config).is_ok());
+        // Recognized typed commands must still pass their normal device-capability
+        // check; an IR codeset must not turn an unsupported input selector into
+        // an additional IR command.
+        assert!(!setup.supports_action(
+            &config,
+            &Action::new("living-kodi", "input:HDMI2")
+        ));
     }
 
     #[test]
