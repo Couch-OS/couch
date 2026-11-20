@@ -1350,9 +1350,23 @@ fn try_additional_device_ir_name(
     }
     let codes = match couch_ir::codeset::load(&crate::home::path("ir"), codeset) {
         Ok(codes) => codes,
-        Err(_) => return Ok(false),
+        Err(_) => return additional_ir_override_with(None, command, || Ok(())),
     };
     send_ir_codeset_name(&codes, device_id, command, repeat, current)
+}
+
+/// Try an additional name only when its assigned codeset is available and
+/// contains it. A miss deliberately returns false so the existing typed
+/// command dispatcher can retain network/package behavior.
+fn additional_ir_override_with(
+    codes: Option<&couch_ir::codeset::Codeset>,
+    command: &str,
+    send: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    let Some(codes) = codes else {
+        return Ok(false);
+    };
+    ir_override_with(codes, command, send)
 }
 
 fn send_ir_codeset_name(
@@ -1533,6 +1547,51 @@ mod tests {
         .unwrap());
         assert!(ir_message(&codes, "hdmi2", false).is_ok());
         assert!(ir_message(&codes, "HDMI2", false).is_ok());
+    }
+
+    #[test]
+    fn additional_ir_names_fall_back_when_codeset_or_entry_is_unavailable() {
+        let codes = couch_ir::codeset::Codeset::parse("test", "hdmi2 nec 0x04 0x11").unwrap();
+
+        // A missing/unreadable assigned codeset must not consume a command
+        // that the ordinary IP/package dispatcher may understand.
+        let mut fallback = false;
+        assert!(!additional_ir_override_with(None, "input:HDMI2", || {
+            fallback = true;
+            Ok(())
+        }).unwrap());
+        assert!(fallback);
+
+        // The same applies when the assigned codeset loads but has no entry.
+        let mut fallback = false;
+        assert!(!additional_ir_override_with(Some(&codes), "input:HDMI2", || {
+            fallback = true;
+            Ok(())
+        }).unwrap());
+        assert!(fallback);
+
+        // A codeset match takes precedence over a generic command family.
+        let mut sent = false;
+        assert!(additional_ir_override_with(Some(&codes), "HDMI2", || {
+            sent = true;
+            Ok(())
+        }).unwrap());
+        assert!(sent);
+
+        // Once IR claims the command, a transmitter failure must not trigger
+        // a retry over IP/package.
+        assert_eq!(
+            additional_ir_override_with(Some(&codes), "HDMI2", || {
+                Err("IR transmitter failed".into())
+            }),
+            Err("IR transmitter failed".into())
+        );
+
+        // The override does not expand the global parser.
+        assert!(F::parse("input:HDMI2").is_some());
+        assert!(F::parse("x:info").is_some());
+        assert!(F::parse("dim:30").is_some());
+        assert!(F::parse("HDMI2").is_none());
     }
 
     #[test]
